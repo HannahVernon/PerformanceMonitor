@@ -22,7 +22,12 @@ public partial class LocalDataService
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
-        command.CommandText = @"
+
+        /* #1240 parity: exclude the user's ignored (benign) wait types at DISPLAY time too, so waiting
+           tasks already in the DuckDB (collected before a type was ignored) don't surface here — the same
+           BuildExclusionClause the wait-stats reads use. */
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        command.CommandText = $@"
 SELECT
     collection_time,
     session_id,
@@ -34,6 +39,7 @@ SELECT
 FROM v_waiting_tasks
 WHERE server_id = $1
 AND   collection_time >= $2
+{exclude}
 ORDER BY collection_time DESC, wait_duration_ms DESC";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -68,7 +74,10 @@ ORDER BY collection_time DESC, wait_duration_ms DESC";
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
-        command.CommandText = @"
+        /* #1240 parity: exclude the user's ignored (benign) wait types at DISPLAY time (mirrors the
+           wait-stats reads) so the Current Waits duration chart matches the Wait Stats tab. */
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        command.CommandText = $@"
 SELECT
     collection_time,
     wait_type,
@@ -78,6 +87,7 @@ WHERE server_id = $1
 AND   collection_time >= $2
 AND   collection_time <= $3
 AND   wait_type IS NOT NULL
+{exclude}
 GROUP BY
     collection_time,
     wait_type
