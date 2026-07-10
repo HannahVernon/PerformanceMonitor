@@ -20,6 +20,7 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -411,12 +412,29 @@ public partial class ServerTab : UserControl
             return;
         }
 
+        /* Data-modification gate: detect from the estimated plan XML (fail-safe to "modifying" when the plan
+           can't be analyzed) and flag it PROMINENTLY — distinct from the normal warning — since re-executing an
+           INSERT/UPDATE/DELETE/MERGE RE-APPLIES those writes to the database. FLAG, don't refuse: the operator
+           decides with eyes open. */
+        var modification = QueryModificationDetector.Detect(planXml, queryText);
+        var modificationWarning = QueryModificationDetector.BuildConsentWarning(modification, databaseName);
+
+        var prompt = new StringBuilder();
+        if (modificationWarning.Length > 0)
+        {
+            prompt.AppendLine(modificationWarning);
+            prompt.AppendLine("──────────────────────────────────────────");
+            prompt.AppendLine();
+        }
+        prompt.AppendLine($"You are about to execute this query against {_server.ServerName} in database [{databaseName ?? "default"}].");
+        prompt.AppendLine();
+        prompt.AppendLine("Make sure you understand what the query does before proceeding.");
+        prompt.AppendLine("The query will execute with SET STATISTICS XML ON to capture the actual plan.");
+        prompt.AppendLine("All data results will be discarded.");
+
         var result = MessageBox.Show(
-            $"You are about to execute this query against {_server.ServerName} in database [{databaseName ?? "default"}].\n\n" +
-            "Make sure you understand what the query does before proceeding.\n" +
-            "The query will execute with SET STATISTICS XML ON to capture the actual plan.\n" +
-            "All data results will be discarded.",
-            "Get Actual Plan",
+            prompt.ToString(),
+            modification.ModifiesData ? "Get Actual Plan — DATA WILL BE MODIFIED" : "Get Actual Plan",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
 
@@ -439,7 +457,8 @@ public partial class ServerTab : UserControl
                 isolationLevel,
                 isAzureSqlDb: false,
                 timeoutSeconds: 0,
-                _actualPlanCts.Token);
+                _actualPlanCts.Token,
+                productName: "SQL Server Performance Monitor Lite");
 
             if (!string.IsNullOrEmpty(actualPlanXml))
             {

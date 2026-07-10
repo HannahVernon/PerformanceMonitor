@@ -42,6 +42,12 @@
                 <MenuItem Header="View Plan" Click="ViewPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
+                <!-- Get Actual Plan (Dashboard parity): asks the SERVICE to RE-EXECUTE this Query Store query
+                     (identifier-only: query_id + database) and float the actual plan. The informed-consent +
+                     data-modification flag runs before it executes. -->
+                <MenuItem Header="Get Actual Plan" Click="GetActualPlan_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
+                </MenuItem>
             </ContextMenu>
         </ResourceDictionary>
     </Window.Resources>

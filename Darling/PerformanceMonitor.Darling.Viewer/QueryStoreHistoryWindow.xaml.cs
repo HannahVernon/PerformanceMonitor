@@ -46,6 +46,7 @@ public partial class QueryStoreHistoryWindow : Window
     private readonly DataGridFilterManager<ViewerQueryStoreHistoryRow> _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
+    private System.Threading.CancellationTokenSource? _actualPlanCts;
 
     public QueryStoreHistoryWindow(
         ViewerDataService dataService, int serverId, string databaseName, long queryId, long planId,
@@ -70,7 +71,7 @@ public partial class QueryStoreHistoryWindow : Window
         SummaryText.Text = displayText;
         Loaded += async (_, _) => await LoadHistoryAsync();
         ThemeManager.ThemeChanged += OnThemeChanged;
-        Closed += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
+        Closed += (_, _) => { ThemeManager.ThemeChanged -= OnThemeChanged; _actualPlanCts?.Cancel(); };
     }
 
     private async Task LoadHistoryAsync()
@@ -289,6 +290,35 @@ public partial class QueryStoreHistoryWindow : Window
 
         var window = GraphViewerWindow.ShowGraph(this, viewer, label);
         window.Closed += (_, _) => viewer.Cleanup();
+    }
+
+    /// <summary>"Get Actual Plan" — asks the SERVICE to RE-EXECUTE this Query Store query (SET STATISTICS XML) and
+    /// floats the captured actual plan. Identifier-only: the service resolves the text from query_store_stats by
+    /// (query_id, database). Shared consent + data-modification flag + read-only guard via
+    /// <see cref="ViewerActualPlanFlow"/>.</summary>
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (_queryId == 0) return;
+
+        var planId = SelectedPlanId;
+        string? estimatedPlanXml = null;
+        try { estimatedPlanXml = await _dataService.GetQueryStorePlanTextAsync(_serverId, _databaseName, _queryId, planId); }
+        catch { /* detection degrades to the fail-safe uncertain path */ }
+
+        var argsJson = ViewerDataService.BuildActualPlanArgsForQueryStore(_queryId, _databaseName);
+        var label = $"Actual Plan - QS {_queryId}/{planId}";
+
+        _actualPlanCts?.Dispose();
+        _actualPlanCts = new System.Threading.CancellationTokenSource();
+
+        var planXml = await ViewerActualPlanFlow.RequestActualPlanAsync(
+            this, _dataService, _serverId, "the monitored server", _databaseName, _queryText, estimatedPlanXml, argsJson,
+            onStarted: () => System.Windows.Input.Mouse.OverrideCursor = System.Windows.Input.Cursors.Wait,
+            onFinished: () => System.Windows.Input.Mouse.OverrideCursor = null,
+            _actualPlanCts.Token);
+
+        if (planXml != null)
+            await ViewerActualPlanFlow.OpenFloatingPlanAsync(this, planXml, label, _queryText);
     }
 
     // ── Column Filter Popup (mirrors WaitDrillDownWindow / ViewerServerTab.Filters.cs) ──

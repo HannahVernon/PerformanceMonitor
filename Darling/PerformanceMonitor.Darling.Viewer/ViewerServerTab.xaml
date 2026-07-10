@@ -252,7 +252,9 @@
              Viewer tab via ViewPlan_Click (ViewerServerTab.Plans.cs), which fetches by the row's key.
              "Copy Repro Script" builds from stored fields; for these aggregate rows it best-effort reads the
              STORED plan from Postgres (not a live connection) to enrich the extracted parameters, then falls
-             back to a plan-less repro (CopyReproScript_Click). Lite's "Get Actual Plan" (live) stays omitted. -->
+             back to a plan-less repro (CopyReproScript_Click). Lite's "Get Actual Plan" (a LIVE re-execution)
+             is enabled here on Top Queries rows only, gated per-row on CanGetActualPlan (the service re-executes
+             via the execute_actual_plan command — ViewerServerTab.ActualPlan.cs). -->
         <ContextMenu x:Key="QueryPlanGridContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
@@ -280,6 +282,15 @@
             <MenuItem Header="Fetch Live Plan" Click="FetchLiveQueryPlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasLivePlanHandle, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
+            </MenuItem>
+            <!-- Get Actual Plan (Lite parity): asks the service to RE-EXECUTE the stored query (SET STATISTICS
+                 XML) so the plan comes back with runtime stats. Gated on CanGetActualPlan so ONLY Top Queries
+                 rows (query text + query_hash) enable it — Query Store / Top Procedures rows (no CanGetActualPlan)
+                 fall back to disabled. Side-effecting: the click runs an informed-consent dialog that flags
+                 data-modifying queries prominently before enqueuing. -->
+            <MenuItem Header="Get Actual Plan" Click="GetActualQueryPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
             </MenuItem>
         </ContextMenu>
 
@@ -1543,9 +1554,9 @@
         <!-- Plan Viewer Tab — copied from Lite's ServerTab.xaml Plan Viewer tab (its inner tab index 3,
              between Queries and CPU). Hosts the shared PerformanceMonitor.Ui PlanViewerControl as closable
              sub-tabs; a "View Plan" on a Top Queries / Query Store row (or the sibling's Active Queries
-             snapshot grid) opens a plan here via OpenPlanTab (ViewerServerTab.Plans.cs). Unlike Lite there
-             is no "Get Actual Plan" loading path — the viewer never runs a live query — so the loading
-             overlay only ever shows while a stored plan parses; it is kept for structural parity with Lite. -->
+             snapshot grid) opens a plan here via OpenPlanTab (ViewerServerTab.Plans.cs). The loading overlay
+             shows while a stored plan parses AND while "Get Actual Plan" re-executes a Top Queries row through
+             the service (ViewerServerTab.ActualPlan.cs) — the overlay's Cancel button cancels that poll. -->
         <TabItem Header="Plan Viewer" x:Name="PlanViewerTabItem">
             <Grid Background="Transparent">
                 <Grid x:Name="PlanEmptyState">

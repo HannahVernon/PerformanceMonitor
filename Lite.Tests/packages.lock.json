@@ -916,6 +916,7 @@
       "performancemonitor.plananalysis": {
         "type": "Project",
         "dependencies": {
+          "Microsoft.Data.SqlClient": "[7.0.1, )",
           "PerformanceMonitor.Common": "[1.0.0, )"
         }
       },

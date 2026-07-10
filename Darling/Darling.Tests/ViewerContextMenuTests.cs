@@ -117,7 +117,10 @@ public sealed class ViewerReproScriptTests
         {
             QueryText = "SELECT * FROM dbo.Users WHERE Id = 1",
             DatabaseName = "tpcc",
-            TransactionIsolationLevel = "ReadCommitted",
+            /* The real value the snapshot collector records (CASE ... WHEN 2 THEN 'Read Committed'), which
+               uppercases to the valid T-SQL 'READ COMMITTED' — the repro builder only emits a SET for a
+               recognized isolation level. */
+            TransactionIsolationLevel = "Read Committed",
             QueryPlan = null,
         };
 
@@ -128,8 +131,8 @@ public sealed class ViewerReproScriptTests
         Assert.Contains("USE [tpcc];", script, StringComparison.Ordinal);
         Assert.Contains("Source: Active Queries", script, StringComparison.Ordinal);
         Assert.Contains(Product, script, StringComparison.Ordinal);
-        /* The stored isolation level rides through to the SET statement. */
-        Assert.Contains("SET TRANSACTION ISOLATION LEVEL", script, StringComparison.Ordinal);
+        /* The stored isolation level rides through to the SET statement as VALID T-SQL. */
+        Assert.Contains("SET TRANSACTION ISOLATION LEVEL READ COMMITTED;", script, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -22,6 +22,17 @@ namespace PerformanceMonitor.PlanAnalysis;
 public static partial class ReproScriptBuilder
 {
     /// <summary>
+    /// The valid <c>SET TRANSACTION ISOLATION LEVEL</c> arguments (uppercased). A captured isolation level that
+    /// is not one of these — the snapshot collector records <c>Unspecified</c> (level 0) and <c>???</c> (out of
+    /// range) for sessions with no explicit level — is NOT valid T-SQL, so the repro skips the SET rather than
+    /// emit a statement that fails to parse (the query then runs under the connection's default isolation).
+    /// </summary>
+    private static readonly HashSet<string> s_validIsolationLevels = new(StringComparer.Ordinal)
+    {
+        "READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE", "SNAPSHOT",
+    };
+
+    /// <summary>
     /// Builds a complete reproduction script from available query data.
     /// </summary>
     public static string BuildReproScript(
@@ -96,10 +107,13 @@ public static partial class ReproScriptBuilder
         sb.AppendLine("*/");
         sb.AppendLine();
 
-        /* USE database (skip for Azure SQL DB — USE is invalid there) */
+        /* USE database (skip for Azure SQL DB — USE is invalid there). QUOTENAME-escape the closing bracket so a
+           database name is never a script-injection vector — the actual-plan command's database_name is
+           payload-supplied, and while the executor also pins it as InitialCatalog, escaping here is defense in
+           depth for every repro consumer. */
         if (!string.IsNullOrEmpty(databaseName) && !isAzureSqlDb)
         {
-            sb.AppendLine($"USE [{databaseName}];");
+            sb.AppendLine($"USE [{databaseName.Replace("]", "]]")}];");
             sb.AppendLine();
         }
 
@@ -118,7 +132,11 @@ public static partial class ReproScriptBuilder
 
         if (!string.IsNullOrEmpty(isolationLevel))
         {
-            sb.AppendLine($"SET TRANSACTION ISOLATION LEVEL {isolationLevel.ToUpperInvariant()};");
+            var normalizedIsolation = isolationLevel.Trim().ToUpperInvariant();
+            if (s_validIsolationLevels.Contains(normalizedIsolation))
+            {
+                sb.AppendLine($"SET TRANSACTION ISOLATION LEVEL {normalizedIsolation};");
+            }
         }
         sb.AppendLine("SET NOCOUNT ON;");
         sb.AppendLine();

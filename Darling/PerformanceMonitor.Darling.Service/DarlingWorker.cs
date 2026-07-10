@@ -26,6 +26,7 @@ using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Analysis;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Notifications;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitor.Darling.Service;
 
@@ -1365,6 +1366,9 @@ LIMIT 1", connection);
 
         public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
             => _worker.RunFetchPlanAsync(_servers, _planFetcher, serverId, request, cancellationToken);
+
+        public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
+            => _worker.RunExecuteActualPlanAsync(_servers, serverId, request, cancellationToken);
     }
 
     /// <summary>
@@ -1685,6 +1689,253 @@ LIMIT 1", connection);
         _logger.LogInformation("[{Server}] fetch_plan returned a {Length}-char plan", displayName, planXml.Length);
         return new CommandOutcome(true, "plan fetched",
             JsonSerializer.Serialize(new { success = true, planXml }));
+    }
+
+    /// <summary>The store lookup that resolves the actual-plan command's <c>query_stats</c> IDENTIFIER (server_id +
+    /// query_hash + database_name) to the latest captured query text + estimated plan XML — the SERVICE's own
+    /// copy, so no SQL text ever rides on the command payload. Serves Top Queries, Query-Stats history, and the
+    /// FinOps High Impact grid. The third column (isolation level) is NULL here (query_stats does not capture it).
+    /// Public const so a test can pin its shape ($1 server_id, $2 query_hash, $3 database_name).</summary>
+    public const string ResolveStoredQueryForActualPlanSql = @"
+SELECT query_text, query_plan_xml, NULL::text AS transaction_isolation_level
+FROM query_stats
+WHERE server_id = $1
+AND   query_hash = $2
+AND   database_name = $3
+AND   query_text IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    /// <summary>The <c>query_store_stats</c> resolver — the Query Store history surface's identifier (server_id +
+    /// database_name + query_id) to its captured query text + stored plan. $1 server_id, $2 database_name, $3
+    /// query_id. Isolation is NULL (Query Store does not capture it).</summary>
+    public const string ResolveStoredQueryStoreForActualPlanSql = @"
+SELECT query_text, query_plan_text, NULL::text AS transaction_isolation_level
+FROM query_store_stats
+WHERE server_id = $1
+AND   database_name = $2
+AND   query_id = $3
+AND   query_text IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    /// <summary>The <c>query_snapshots</c> resolver — the Wait drill-down surface's identifier (server_id +
+    /// collection_time + session_id) to that captured request's query text, plan (live preferred), and isolation
+    /// level. $1 server_id, $2 collection_time, $3 session_id. The exact-timestamp match keys the one snapshot
+    /// the row represents.</summary>
+    public const string ResolveStoredSnapshotForActualPlanSql = @"
+SELECT query_text, COALESCE(live_query_plan, query_plan), transaction_isolation_level
+FROM query_snapshots
+WHERE server_id = $1
+AND   collection_time = $2
+AND   session_id = $3
+AND   query_text IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    /// <summary>The command timeout (seconds) for the actual-plan re-execution. Bounded so a runaway query
+    /// cannot pin the single-threaded command loop or outlive the stale-command reaper; comfortably under the
+    /// viewer's 3-minute poll budget so the viewer sees a real "timed out" outcome rather than a poll miss.</summary>
+    public const int ActualPlanCaptureTimeoutSeconds = 120;
+
+    /// <summary>
+    /// The <c>execute_actual_plan</c> command handler: RE-EXECUTES a stored query against one monitored server
+    /// with SET STATISTICS XML ON to capture its ACTUAL plan, and returns the plan XML. Unlike every other
+    /// worker-delegated command this WRITES to the target — re-running an INSERT/UPDATE/DELETE/MERGE re-applies
+    /// its changes (the viewer gates this behind informed consent). The command payload is an IDENTIFIER ONLY
+    /// (<see cref="ActualPlanRequest"/>): the query text + estimated plan XML are resolved HERE from the service's
+    /// OWN store (<see cref="ResolveStoredQueryForActualPlanSql"/>), never from the payload, so a command writer
+    /// can never smuggle arbitrary SQL onto a target. The query runs as the server's stored monitoring credential;
+    /// the least-privilege VIEW SERVER STATE login has no SELECT on user tables, so a permission failure is caught
+    /// and surfaced legibly (as are timeouts), rather than a raw SQL exception.
+    /// </summary>
+    private async Task<CommandOutcome> RunExecuteActualPlanAsync(
+        List<ServerLoopState> servers, int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
+    {
+        /* Resolve the connection under the lock (the command loop reconciles the list concurrently). Capture the
+           immutable connection string + Azure flag as locals — never hold the runtime across the execute. */
+        bool serverExists;
+        string? connectionString;
+        bool isAzureSqlDb;
+        string displayName;
+        lock (_serversLock)
+        {
+            var server = servers.Find(s => ServerIdHelper.GetDeterministicHashCode(s.Config.StorageName) == serverId);
+            serverExists = server is not null;
+            connectionString = server?.Runtime?.ConnectionString;
+            isAzureSqlDb = server?.Runtime?.Target.IsAzureSqlDb ?? false;
+            displayName = server?.Config.DisplayName ?? serverId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (!serverExists)
+        {
+            return new CommandOutcome(false, "server not monitored", JsonError($"no monitored server with server_id {serverId}"));
+        }
+
+        if (string.IsNullOrEmpty(connectionString))
+        {
+            return new CommandOutcome(false, "server not connected",
+                JsonError($"server '{displayName}' is not currently connected — the actual plan can only be captured from a connected server"));
+        }
+
+        if (_postgres is null)
+        {
+            return new CommandOutcome(false, "store unavailable", JsonError("the Postgres store is not available to resolve the query text"));
+        }
+
+        /* Resolve the query text + estimated plan + isolation level from the store BY THE IDENTIFIER (the
+           collector's own capture) — the identifier-only contract: the payload named a stored row; the service
+           supplies the text. The SQL + bound parameters are chosen by the identifier kind (query_stats /
+           query_store_stats / query_snapshots). */
+        string? queryText = null;
+        string? estimatedPlanXml = null;
+        string? isolationLevel = null;
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
+            await using var command = new NpgsqlCommand(ResolveActualPlanSql(request.Source), connection);
+            BindActualPlanResolveParameters(command, serverId, request);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                queryText = reader.IsDBNull(0) ? null : reader.GetString(0);
+                estimatedPlanXml = reader.IsDBNull(1) ? null : reader.GetString(1);
+                isolationLevel = reader.IsDBNull(2) ? null : reader.GetString(2);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new CommandOutcome(false, "store error",
+                JsonError($"could not resolve the stored query text for the actual-plan request: {ex.Message}"));
+        }
+
+        if (string.IsNullOrWhiteSpace(queryText))
+        {
+            return new CommandOutcome(false, "no stored query",
+                JsonError($"no stored query text was found for this {DescribeActualPlanIdentifier(request)} on '{displayName}' — the actual plan is captured by re-executing the stored query text, which is not available"));
+        }
+
+        /* RE-EXECUTE via the SHARED executor (SET STATISTICS XML ON), as the server's stored credential. */
+        try
+        {
+            var planXml = await ActualPlanExecutor.ExecuteForActualPlanAsync(
+                connectionString,
+                request.DatabaseName ?? "",
+                queryText,
+                estimatedPlanXml,
+                isolationLevel: isolationLevel,
+                isAzureSqlDb: isAzureSqlDb,
+                timeoutSeconds: ActualPlanCaptureTimeoutSeconds,
+                cancellationToken,
+                productName: "SQL Server Performance Monitor Darling");
+
+            if (string.IsNullOrEmpty(planXml))
+            {
+                _logger.LogInformation("[{Server}] execute_actual_plan: the query ran but no plan was captured", displayName);
+                return new CommandOutcome(true, "no plan captured",
+                    JsonSerializer.Serialize(new { success = true, planXml = (string?)null }));
+            }
+
+            _logger.LogInformation("[{Server}] execute_actual_plan captured a {Length}-char actual plan", displayName, planXml.Length);
+            return new CommandOutcome(true, "actual plan captured",
+                JsonSerializer.Serialize(new { success = true, planXml }));
+        }
+        catch (OperationCanceledException)
+        {
+            /* Service shutdown mid-execute — let the poller's catch stop the loop cleanly. */
+            throw;
+        }
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return new CommandOutcome(false, "timed out",
+                JsonError($"the query did not finish within the {ActualPlanCaptureTimeoutSeconds}s actual-plan capture budget on '{displayName}' and was cancelled"));
+        }
+        catch (SqlException ex) when (IsPermissionError(ex))
+        {
+            return new CommandOutcome(false, "permission denied",
+                JsonError($"the monitoring login for '{displayName}' lacks permission to execute this query. The least-privilege monitoring login has VIEW SERVER STATE for DMV reads but no SELECT/DML on the queried objects, so the actual plan cannot be captured. (SQL error {ex.Number}: {ex.Message})"));
+        }
+        catch (SqlException ex)
+        {
+            return new CommandOutcome(false, "sql error",
+                JsonError($"executing the query on '{displayName}' to capture the actual plan failed (SQL error {ex.Number}): {ex.Message}"));
+        }
+        catch (Exception ex)
+        {
+            return new CommandOutcome(false, "error",
+                JsonError($"executing the query on '{displayName}' to capture the actual plan failed: {ex.Message}"));
+        }
+    }
+
+    /// <summary>Picks the store-resolution SQL for the actual-plan request's identifier kind.</summary>
+    private static string ResolveActualPlanSql(ActualPlanSource source) => source switch
+    {
+        ActualPlanSource.QueryStats => ResolveStoredQueryForActualPlanSql,
+        ActualPlanSource.QueryStore => ResolveStoredQueryStoreForActualPlanSql,
+        ActualPlanSource.QuerySnapshot => ResolveStoredSnapshotForActualPlanSql,
+        _ => throw new InvalidOperationException($"no store resolver for actual-plan source {source}"),
+    };
+
+    /// <summary>Binds the store-resolution parameters ($1 server_id, then the identifier's $2/$3) for the request's
+    /// identifier kind. The snapshot's collection_time binds as a naive-UTC timestamp (Unspecified), matching how
+    /// the collector stores it.</summary>
+    private static void BindActualPlanResolveParameters(NpgsqlCommand command, int serverId, ActualPlanRequest request)
+    {
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        switch (request.Source)
+        {
+            case ActualPlanSource.QueryStats:
+                command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.QueryHash! });
+                command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.DatabaseName ?? "" });
+                break;
+            case ActualPlanSource.QueryStore:
+                command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = request.DatabaseName ?? "" });
+                command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = request.QueryId!.Value });
+                break;
+            case ActualPlanSource.QuerySnapshot:
+                command.Parameters.Add(new NpgsqlParameter<DateTime>
+                {
+                    TypedValue = DateTime.SpecifyKind(request.SnapshotCollectionTime!.Value, DateTimeKind.Unspecified),
+                });
+                command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = request.SnapshotSessionId!.Value });
+                break;
+            default:
+                throw new InvalidOperationException($"no store resolver for actual-plan source {request.Source}");
+        }
+    }
+
+    /// <summary>A human description of the request's identifier for the "no stored query" message.</summary>
+    private static string DescribeActualPlanIdentifier(ActualPlanRequest request) => request.Source switch
+    {
+        ActualPlanSource.QueryStats => $"query (query_hash {request.QueryHash})",
+        ActualPlanSource.QueryStore => $"Query Store query (query_id {request.QueryId})",
+        ActualPlanSource.QuerySnapshot => $"query snapshot (session {request.SnapshotSessionId})",
+        _ => "row",
+    };
+
+    /// <summary>
+    /// True when a SqlException is a permission denial — the expected failure when the least-privilege monitoring
+    /// login (VIEW SERVER STATE only) re-executes a query that reads/writes user objects. Detected by the known
+    /// permission error numbers or a "permission was denied" / "does not have permission" message, so the handler
+    /// can surface a clear cause instead of a raw exception.
+    /// </summary>
+    private static bool IsPermissionError(SqlException ex)
+    {
+        foreach (SqlError error in ex.Errors)
+        {
+            if (error.Number is 229 or 230 or 262 or 297 or 300 or 301 or 916 or 33044)
+            {
+                return true;
+            }
+
+            if (error.Message.Contains("permission was denied", StringComparison.OrdinalIgnoreCase)
+                || error.Message.Contains("does not have permission", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

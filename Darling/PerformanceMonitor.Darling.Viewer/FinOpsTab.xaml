@@ -215,8 +215,10 @@
 
         <!-- Plan-enabled variant for High Impact + Expensive Queries: their rows carry the stored
              query_stats.query_plan_xml (Darling captures plans), so "View Plan" raises PlanRequested, which the
-             shell routes into the standalone Plan Viewer — the same stored-plan surface as Top Queries. Lite's
-             "Get Actual Plan" (live execution) has no viewer equivalent and stays omitted everywhere. -->
+             shell routes into the standalone Plan Viewer — the same stored-plan surface as Top Queries. "Get
+             Actual Plan" (a LIVE re-execution via the service) is enabled on High Impact rows only, gated on
+             CanGetActualPlan — the Expensive Queries grid groups by text and carries no query_hash, so its rows
+             fall back to disabled (no store key to resolve the re-executable text by). -->
         <ContextMenu x:Key="FinOpsQueryPlanContextMenu">
             <MenuItem Header="Copy Cell" Click="CopyCell_Click"><MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon></MenuItem>
             <MenuItem Header="Copy Row" Click="CopyRow_Click"><MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon></MenuItem>
@@ -225,6 +227,10 @@
             <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click"><MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon></MenuItem>
             <Separator/>
             <MenuItem Header="View Plan" Click="FinOpsViewPlan_Click"><MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon></MenuItem>
+            <MenuItem Header="Get Actual Plan" Click="FinOpsGetActualPlan_Click"
+                      IsEnabled="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
+            </MenuItem>
         </ContextMenu>
         <Style x:Key="FinOpsQueryPlanRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
             <Setter Property="ContextMenu" Value="{StaticResource FinOpsQueryPlanContextMenu}"/>

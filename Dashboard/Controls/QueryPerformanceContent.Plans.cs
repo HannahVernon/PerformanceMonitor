@@ -17,6 +17,7 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorDashboard.Controls
 {

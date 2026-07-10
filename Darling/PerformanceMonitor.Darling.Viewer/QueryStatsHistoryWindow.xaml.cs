@@ -44,6 +44,7 @@ public partial class QueryStatsHistoryWindow : Window
     private readonly DataGridFilterManager<ViewerQueryStatsHistoryRow> _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
+    private System.Threading.CancellationTokenSource? _actualPlanCts;
 
     public QueryStatsHistoryWindow(
         ViewerDataService dataService, int serverId, string databaseName, string queryHash,
@@ -65,7 +66,7 @@ public partial class QueryStatsHistoryWindow : Window
         QueryIdentifierText.Text = $"Query Stats History: {queryHash} in [{databaseName}]";
         Loaded += async (_, _) => await LoadHistoryAsync();
         ThemeManager.ThemeChanged += OnThemeChanged;
-        Closed += (_, _) => ThemeManager.ThemeChanged -= OnThemeChanged;
+        Closed += (_, _) => { ThemeManager.ThemeChanged -= OnThemeChanged; _actualPlanCts?.Cancel(); };
     }
 
     private async Task LoadHistoryAsync()
@@ -256,6 +257,33 @@ public partial class QueryStatsHistoryWindow : Window
 
         var window = GraphViewerWindow.ShowGraph(this, viewer, label);
         window.Closed += (_, _) => viewer.Cleanup();
+    }
+
+    /// <summary>"Get Actual Plan" — asks the SERVICE to RE-EXECUTE this query (SET STATISTICS XML) and floats the
+    /// captured actual plan. Identifier-only: the service resolves the text from query_stats by (query_hash,
+    /// database). Shared consent + data-modification flag + read-only guard via <see cref="ViewerActualPlanFlow"/>.</summary>
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_queryHash)) return;
+
+        string? estimatedPlanXml = null;
+        try { estimatedPlanXml = await _dataService.GetQueryStatsPlanXmlAsync(_serverId, _databaseName, _queryHash); }
+        catch { /* detection degrades to the fail-safe uncertain path */ }
+
+        var argsJson = ViewerDataService.BuildActualPlanArgs(_queryHash, _databaseName);
+        var label = $"Actual Plan - {_queryHash}";
+
+        _actualPlanCts?.Dispose();
+        _actualPlanCts = new System.Threading.CancellationTokenSource();
+
+        var planXml = await ViewerActualPlanFlow.RequestActualPlanAsync(
+            this, _dataService, _serverId, "the monitored server", _databaseName, _queryText, estimatedPlanXml, argsJson,
+            onStarted: () => System.Windows.Input.Mouse.OverrideCursor = System.Windows.Input.Cursors.Wait,
+            onFinished: () => System.Windows.Input.Mouse.OverrideCursor = null,
+            _actualPlanCts.Token);
+
+        if (planXml != null)
+            await ViewerActualPlanFlow.OpenFloatingPlanAsync(this, planXml, label, _queryText);
     }
 
     /// <summary>"Fetch Live Plan" — asks the service to read the RIGHT-CLICKED snapshot's plan from the target's

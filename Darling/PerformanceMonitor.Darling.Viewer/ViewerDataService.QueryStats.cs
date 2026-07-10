@@ -80,6 +80,12 @@ public sealed class ViewerQueryStatsRow
     /// <summary>True when this row carries a plan_handle — gates the grid's "Fetch Live Plan" context item (the
     /// live-cache fetch is keyed on plan_handle, distinct from the stored query_plan_xml "View Plan" opens).</summary>
     public bool HasLivePlanHandle => !string.IsNullOrEmpty(PlanHandle);
+
+    /// <summary>True when this row can have its ACTUAL plan captured — it carries the query text plus the
+    /// stored-row key (query_hash) the service re-executes by. Gates the grid's "Get Actual Plan" context item;
+    /// only Top Queries rows define it, so the Query Store / Top Procedures rows that SHARE this menu fall back
+    /// to disabled (their FallbackValue). Mirrors Lite, whose "Get Actual Plan" lives on the query-stats grid.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText) && !string.IsNullOrEmpty(QueryHash);
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public double AvgCpuMs => TotalExecutions > 0 ? TotalCpuMs / TotalExecutions : 0;
