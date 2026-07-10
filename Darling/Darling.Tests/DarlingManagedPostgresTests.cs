@@ -85,9 +85,10 @@ public sealed class DarlingManagedPostgresTests
         Assert.Contains("port = 5641", block, StringComparison.Ordinal);
         Assert.Contains("listen_addresses = '127.0.0.1'", block, StringComparison.Ordinal);
 
-        /* Worker sizing lives in the v2 block, never in v1 — pre-v2 clusters heal by gaining the
-           SECOND block, so v1's content must stay stable. */
+        /* Worker sizing lives in the v2 block and memory sizing in the v3 block, never in v1 — pre-v2/v3
+           clusters heal by gaining the LATER blocks, so v1's content must stay stable. */
         Assert.DoesNotContain("max_worker_processes", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("shared_buffers", block, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -110,6 +111,79 @@ public sealed class DarlingManagedPostgresTests
         /* v2 must not restate v1 settings — the blocks compose, they don't compete. */
         Assert.DoesNotContain("shared_preload_libraries", block, StringComparison.Ordinal);
         Assert.DoesNotContain("listen_addresses", block, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// SCALE-READINESS memory tuning (mirrors the worker sizing): the v3 block derives shared_buffers /
+    /// effective_cache_size / maintenance_work_mem / work_mem from the host's physical RAM, injected here so
+    /// the derivation is deterministic and unit-testable. 8 GB is the current DARLING01 box — none of the
+    /// caps engage, so it exercises the raw percentages (and pins work_mem at its 16 MB floor).
+    /// </summary>
+    [Fact]
+    public void MemorySizingConfAppend_PinsV3Marker_AndDerivesFrom8GbRam()
+    {
+        const long eightGb = 8L * 1024 * 1024 * 1024;
+        var block = DarlingManagedPostgres.BuildMemorySizingConfAppend(eightGb);
+
+        Assert.Contains(DarlingManagedPostgres.ConfMarkerV3, block, StringComparison.Ordinal);
+        Assert.Contains("shared_buffers = 2048MB", block, StringComparison.Ordinal);        /* 25% of 8 GB */
+        Assert.Contains("effective_cache_size = 6144MB", block, StringComparison.Ordinal);  /* 75% of 8 GB */
+        Assert.Contains("maintenance_work_mem = 409MB", block, StringComparison.Ordinal);   /* 5% of 8 GB */
+        Assert.Contains("work_mem = 16MB", block, StringComparison.Ordinal);                /* RAM/512, at the 16 MB floor */
+
+        /* The blocks compose, they don't compete — v3 must not restate v1/v2 settings. */
+        Assert.DoesNotContain("shared_preload_libraries", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("max_worker_processes", block, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// On a big box every cap/ceiling engages: shared_buffers pins at 8 GB (not 25% = 16 GB),
+    /// maintenance_work_mem at 1 GB (not 5% = 3.2 GB), work_mem at 64 MB (not RAM/512 = 128 MB);
+    /// effective_cache_size stays the uncapped 75% planner hint.
+    /// </summary>
+    [Fact]
+    public void MemorySizingConfAppend_EngagesCapsOnLargeRam()
+    {
+        const long sixtyFourGb = 64L * 1024 * 1024 * 1024;
+        var block = DarlingManagedPostgres.BuildMemorySizingConfAppend(sixtyFourGb);
+
+        Assert.Contains("shared_buffers = 8192MB", block, StringComparison.Ordinal);          /* capped at 8 GB */
+        Assert.Contains("effective_cache_size = 49152MB", block, StringComparison.Ordinal);   /* 75% of 64 GB, uncapped */
+        Assert.Contains("maintenance_work_mem = 1024MB", block, StringComparison.Ordinal);    /* capped at 1 GB */
+        Assert.Contains("work_mem = 64MB", block, StringComparison.Ordinal);                  /* capped at 64 MB */
+    }
+
+    /// <summary>
+    /// The pure derivation across RAM tiers, pinning each formula and its cap/clamp. work_mem is the
+    /// flagged per-connection setting: it scales RAM/512 and reaches the 64 MB ceiling at 32 GB, so the
+    /// pathological max_connections × sorts × work_mem never grows past the ceiling on a bigger box.
+    /// </summary>
+    [Theory]
+    [InlineData(8, 2048, 6144, 409, 16)]     /* 8 GB: no caps; work_mem at the 16 MB floor */
+    [InlineData(16, 4096, 12288, 819, 32)]   /* 16 GB: work_mem RAM/512 = 32 MB */
+    [InlineData(32, 8192, 24576, 1024, 64)]  /* 32 GB: shared_buffers hits its 8 GB cap, maintenance hits 1 GB, work_mem hits the 64 MB ceiling */
+    [InlineData(64, 8192, 49152, 1024, 64)]  /* 64 GB: shared_buffers/maintenance/work_mem all capped; effective_cache_size keeps scaling */
+    public void DeriveMemorySettings_PerTier(long ramGb, int sharedBuffersMb, int effectiveCacheMb, int maintenanceMb, int workMemMb)
+    {
+        var settings = DarlingManagedPostgres.DeriveMemorySettings(ramGb * 1024 * 1024 * 1024);
+
+        Assert.Equal(sharedBuffersMb, settings.SharedBuffersMb);
+        Assert.Equal(effectiveCacheMb, settings.EffectiveCacheSizeMb);
+        Assert.Equal(maintenanceMb, settings.MaintenanceWorkMemMb);
+        Assert.Equal(workMemMb, settings.WorkMemMb);
+    }
+
+    /// <summary>A zero/garbage RAM reading (the GlobalMemoryStatusEx failure path) falls back to a
+    /// conservative 4 GB derivation rather than emitting a 0 MB / divide-by-nothing setting.</summary>
+    [Fact]
+    public void DeriveMemorySettings_NonPositiveRam_FallsBackToConservative4Gb()
+    {
+        var settings = DarlingManagedPostgres.DeriveMemorySettings(0);
+
+        Assert.Equal(1024, settings.SharedBuffersMb);       /* 25% of the 4 GB fallback */
+        Assert.Equal(3072, settings.EffectiveCacheSizeMb);  /* 75% of 4 GB */
+        Assert.Equal(204, settings.MaintenanceWorkMemMb);   /* 5% of 4 GB */
+        Assert.Equal(16, settings.WorkMemMb);               /* RAM/512 = 8 MB, lifted to the 16 MB floor */
     }
 
     [Fact]
@@ -314,6 +388,12 @@ public sealed class DarlingManagedPostgresTests
             Assert.Contains("listen_addresses = '127.0.0.1'", conf, StringComparison.Ordinal);
             Assert.Contains($"max_worker_processes = {3 + (TimescaleSupport.HypertableTables.Count + 2) + 8}", conf, StringComparison.Ordinal);
 
+            /* v3 memory sizing rode the SAME append path on first run, derived from THIS host's physical RAM
+               (the exact MB depend on the runner, so pin the marker + that the settings are present). */
+            Assert.Contains(DarlingManagedPostgres.ConfMarkerV3, conf, StringComparison.Ordinal);
+            Assert.Contains("shared_buffers = ", conf, StringComparison.Ordinal);
+            Assert.Contains("work_mem = ", conf, StringComparison.Ordinal);
+
             /* The derived credential really authenticates (scram, not trust) into the darling
                database — and the server started with our appended conf, so the timescaledb
                preload line was accepted; the v2 worker sizing was accepted too (the setting is
@@ -321,12 +401,19 @@ public sealed class DarlingManagedPostgresTests
             await using (var connection = new NpgsqlConnection(connectionString))
             {
                 await connection.OpenAsync(timeout.Token);
-                using var current = new NpgsqlCommand("SELECT current_database(), current_user, current_setting('max_worker_processes')", connection);
+                using var current = new NpgsqlCommand(
+                    "SELECT current_database(), current_user, current_setting('max_worker_processes'), current_setting('work_mem'), current_setting('shared_buffers')",
+                    connection);
                 using var reader = await current.ExecuteReaderAsync(timeout.Token);
                 Assert.True(await reader.ReadAsync(timeout.Token));
                 Assert.Equal("darling", reader.GetString(0));
                 Assert.Equal("darling", reader.GetString(1));
                 Assert.Equal("40", reader.GetString(2));
+                /* The v3 memory block is LIVE, not merely written: work_mem and shared_buffers hold our
+                   derived values (>= the 16 MB work_mem floor / 25%-of-RAM shared_buffers on any real host),
+                   never the stock 4 MB / 128 MB defaults. */
+                Assert.NotEqual("4MB", reader.GetString(3));
+                Assert.NotEqual("128MB", reader.GetString(4));
             }
 
             /* Second EnsureRunning against the live server: idempotent — no re-init (credential
@@ -342,6 +429,7 @@ public sealed class DarlingManagedPostgresTests
             var confAfterSecond = File.ReadAllText(Path.Combine(dataDirectory, "postgresql.conf"));
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarker));
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV2));
+            Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV3));
 
             /* Both up/down probes below must bypass Npgsql's pool: OpenAsync on a pooled string
                can hand back an idle socket with no I/O at all, which "succeeds" against a stopped
