@@ -27,12 +27,19 @@ namespace PerformanceMonitor.Darling.Storage;
 /// that grew new collector tables since the last start picks them up on the next.
 ///
 /// Scope: the COLLECTOR tables only (<see cref="HypertableTables"/> = the shared catalog). The
-/// registry/config tables (servers, collection_log, config_alert_log,
-/// config_edge_trigger_watermarks, config_mute_rules, analysis_muted, darling_schema_version)
-/// are deliberately excluded — registries keep their PRIMARY KEYs, which TimescaleDB would
-/// reject or force onto the partition column, and none of them is time-series-shaped growth.
-/// analysis_findings COULD be a hypertable later (it was designed keyless for exactly this, see
-/// the V4 remarks) — deliberately not converted yet; revisit when finding volume warrants it.
+/// registry/config tables (servers, config_alert_log, config_edge_trigger_watermarks,
+/// config_mute_rules, analysis_muted, darling_schema_version) are deliberately excluded —
+/// registries keep their PRIMARY KEYs, which TimescaleDB would reject or force onto the partition
+/// column, and none of them is time-series-shaped growth. analysis_findings COULD be a hypertable
+/// later (it was designed keyless for exactly this, see the V4 remarks) — deliberately not
+/// converted yet; revisit when finding volume warrants it.
+///
+/// <para><c>collection_log</c> IS a hypertable (the per-run observability log — the store's
+/// highest-volume plain table), but it is converted + compressed DIRECTLY by the V23 migration
+/// (<see cref="PgMigrations"/>), NOT here, because it lives OUTSIDE the collector catalog (it has no
+/// <c>ICollectorSchemaInfo</c>), so the catalog-driven loops below never reach it. Its retention is
+/// likewise handled directly by DarlingRetention (<c>drop_chunks</c>). It is counted in
+/// <see cref="HypertableCount"/> so worker sizing reflects its compression policy.</para>
 ///
 /// The collector tables were designed for this conversion: no PRIMARY KEY (see the
 /// <see cref="PgSchemaGenerator"/> remarks) and a NOT NULL prefix time column per table
@@ -78,6 +85,15 @@ public static class TimescaleSupport
     /// class remarks for why those stay plain).
     /// </summary>
     public static IReadOnlyList<ICollectorSchemaInfo> HypertableTables => CollectorCatalog.All;
+
+    /// <summary>
+    /// The TRUE number of TimescaleDB hypertables in the store: the collector catalog
+    /// (<see cref="HypertableTables"/>) PLUS <c>collection_log</c>, which is a hypertable (converted by the
+    /// V23 migration) but lives OUTSIDE the catalog. Worker sizing derives from THIS so it is not under-sized
+    /// by one background-worker slot for collection_log's compression policy. The <c>+ 1</c> must move if
+    /// another non-catalog table is ever converted (pinned by test).
+    /// </summary>
+    public static int HypertableCount => HypertableTables.Count + 1;
 
     /// <summary>
     /// Is the timescaledb extension installed AND created in this database (extensions are
@@ -153,8 +169,17 @@ public static class TimescaleSupport
             throw new ArgumentNullException(nameof(schema));
         }
 
-        return $"SELECT create_hypertable('{schema.TargetTable}', by_range('{schema.PrefixTimeColumnName}', INTERVAL '{ChunkIntervalDays} days'), if_not_exists => true, migrate_data => true)";
+        return CreateHypertableSql(schema.TargetTable, schema.PrefixTimeColumnName);
     }
+
+    /// <summary>
+    /// The raw-name hypertable-conversion overload — the collection_log path (a hypertable since V23 but
+    /// outside the collector catalog, so it has no <see cref="ICollectorSchemaInfo"/>). Identical shape to the
+    /// schema overload; table/column come from compile-time constants, never user input, so interpolation is
+    /// safe (the same reasoning as DarlingRetention.DeleteSqlFor).
+    /// </summary>
+    public static string CreateHypertableSql(string table, string timeColumn)
+        => $"SELECT create_hypertable('{table}', by_range('{timeColumn}', INTERVAL '{ChunkIntervalDays} days'), if_not_exists => true, migrate_data => true)";
 
     /// <summary>
     /// One collector table's compression enablement, segmented by server_id so each server's
@@ -172,8 +197,13 @@ public static class TimescaleSupport
             throw new ArgumentNullException(nameof(schema));
         }
 
-        return $"ALTER TABLE {schema.TargetTable} SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id')";
+        return EnableCompressionSql(schema.TargetTable);
     }
+
+    /// <summary>The raw-name compression-enable overload — the collection_log path (see
+    /// <see cref="CreateHypertableSql(string, string)"/>).</summary>
+    public static string EnableCompressionSql(string table)
+        => $"ALTER TABLE {table} SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id')";
 
     /// <summary>
     /// One collector table's background compression policy — chunks older than
@@ -189,8 +219,13 @@ public static class TimescaleSupport
             throw new ArgumentNullException(nameof(schema));
         }
 
-        return $"SELECT add_compression_policy('{schema.TargetTable}', compress_after => INTERVAL '{CompressAfterDays} days', if_not_exists => true)";
+        return AddCompressionPolicySql(schema.TargetTable);
     }
+
+    /// <summary>The raw-name compression-policy overload — the collection_log path (see
+    /// <see cref="CreateHypertableSql(string, string)"/>).</summary>
+    public static string AddCompressionPolicySql(string table)
+        => $"SELECT add_compression_policy('{table}', compress_after => INTERVAL '{CompressAfterDays} days', if_not_exists => true)";
 
     /// <summary>
     /// Converts every collector table to a hypertable (<see cref="HypertableTables"/> scope;
@@ -268,5 +303,63 @@ public static class TimescaleSupport
         logger?.LogInformation("TimescaleDB: compression policy ({Days}d) in place on {Applied}/{Total} collector table(s)",
             CompressAfterDays, applied, HypertableTables.Count);
         return applied;
+    }
+
+    /// <summary>The V23 non-catalog hypertable: the per-run observability log. Bare name — the connection's
+    /// <c>collect,config,public</c> search path resolves it to <c>collect.collection_log</c>, exactly like the
+    /// collector tables' bare TargetTable names.</summary>
+    public const string CollectionLogTable = "collection_log";
+
+    /// <summary>collection_log's partition (prefix time) column.</summary>
+    public const string CollectionLogTimeColumn = "collection_time";
+
+    /// <summary>
+    /// The AUTHORITATIVE conversion + compression of <c>collection_log</c> — a hypertable since V23, but OUTSIDE
+    /// the collector catalog, so <see cref="ConvertToHypertablesAsync"/>/<see cref="ApplyCompressionPolicyAsync"/>
+    /// (which iterate the catalog) never reach it. Called by the worker in the runtime TimescaleDB block, AFTER
+    /// <see cref="TryEnableAsync"/> has created the extension — which is exactly why this, not the V23 migration,
+    /// is authoritative: migrations run BEFORE <c>CREATE EXTENSION</c>, so a fresh store's V23 guard skips the
+    /// conversion, and this heals it. Same three statements the collector tables get, via the raw-name overloads
+    /// (<see cref="CreateHypertableSql(string, string)"/>: <c>migrate_data</c> moves any existing rows into
+    /// chunks — the proven non-transactional path, so no migration-transaction risk; compression segments by
+    /// <c>server_id</c> at <see cref="CompressAfterDays"/>). Idempotent (<c>if_not_exists</c>), so it re-converges
+    /// every restart and no-ops a store the V23 migration already converted. Failure-isolated: a failure warns and
+    /// collection_log stays a plain table — its DELETE-based retention (DarlingRetention) still honors the horizon.
+    /// The long <see cref="SetupTimeoutSeconds"/> command timeout covers a large first <c>migrate_data</c>.
+    /// </summary>
+    public static async Task<bool> EnsureCollectionLogHypertableAsync(NpgsqlConnection connection, ILogger? logger, CancellationToken cancellationToken = default)
+    {
+        if (connection is null)
+        {
+            throw new ArgumentNullException(nameof(connection));
+        }
+
+        try
+        {
+            using (var convert = new NpgsqlCommand(CreateHypertableSql(CollectionLogTable, CollectionLogTimeColumn), connection) { CommandTimeout = SetupTimeoutSeconds })
+            {
+                await convert.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            using (var enable = new NpgsqlCommand(EnableCompressionSql(CollectionLogTable), connection) { CommandTimeout = SetupTimeoutSeconds })
+            {
+                await enable.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            using (var policy = new NpgsqlCommand(AddCompressionPolicySql(CollectionLogTable), connection) { CommandTimeout = SetupTimeoutSeconds })
+            {
+                await policy.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            logger?.LogInformation("TimescaleDB: collection_log is a hypertable with a {Days}d compression policy", CompressAfterDays);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(
+                "collection_log hypertable setup failed — it stays a plain table (DELETE-based retention still honors its horizon): {Message}",
+                ex.Message);
+            return false;
+        }
     }
 }

@@ -66,6 +66,7 @@ public static class PgMigrations
         new Migration(20, "alert-tuning-knobs", V20Sql),
         new Migration(21, "default-trace-events-collector", V21Sql),
         new Migration(22, "index-object-stats-latest-index", V22Sql),
+        new Migration(23, "collection-log-hypertable", V23Sql),
     };
 
     /// <summary>
@@ -712,6 +713,70 @@ CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON collect.default_trac
     private const string V22Sql = @"
 CREATE INDEX IF NOT EXISTS idx_index_object_stats_latest ON collect.index_object_stats (server_id, database_id, object_id, index_id, collection_time DESC);";
 
+    /// <summary>
+    /// V23 — converts <c>collect.collection_log</c> (the per-collector-run observability log, the store's
+    /// highest-volume plain table) from a heap to a TimescaleDB hypertable, and applies the same compression
+    /// policy the collector hypertables get. As a hypertable its daily retention becomes O(1)
+    /// <c>drop_chunks</c> (no DELETE churn — see <see cref="!:DarlingRetention"/>), the Overview's per-server
+    /// <c>MAX(collection_time)</c> freshness read touches only the newest chunk per server (chunk exclusion on
+    /// the existing <c>idx_collection_log_time (server_id, collection_time)</c> index, kept), and old chunks
+    /// compress — the scale-readiness pass for 500 servers.
+    ///
+    /// <para><b>Engine-plain, GUARDED, and NON-FATAL — a best-effort UPGRADE fast-path, NOT the authoritative
+    /// conversion.</b> The versioned migrations must run on plain PostgreSQL too (the store works with or
+    /// without TimescaleDB — see <see cref="TimescaleSupport"/>), where <c>create_hypertable</c> does not
+    /// exist. So the body is a <c>DO</c> block gated on <c>pg_extension</c> (plain PostgreSQL skips it — plpgsql
+    /// parses the guarded statements lazily, so the missing function is never parsed) AND wrapped in an
+    /// <c>EXCEPTION WHEN OTHERS</c> handler so any failure only RAISEs a WARNING and the migration COMMITS
+    /// regardless. That non-fatality is deliberate and load-bearing: <c>MigrateAsync</c> runs in the service's
+    /// startup-CRITICAL path (a thrown migration aborts startup), and it runs BEFORE the runtime
+    /// <c>CREATE EXTENSION</c> (<see cref="TimescaleSupport.TryEnableAsync"/>) — so on a FRESH managed store the
+    /// guard here is false (the extension is not created yet) and this block no-ops. The AUTHORITATIVE,
+    /// proven-live, self-healing conversion is <see cref="TimescaleSupport.EnsureCollectionLogHypertableAsync"/>,
+    /// applied at runtime AFTER the extension exists (the same non-transactional path validated for every
+    /// collector table). This migration only wins the case where an UPGRADE's store already had the extension
+    /// created by a prior startup — then it converts collection_log's existing rows a step early — and quietly
+    /// yields to the runtime path otherwise. <c>collection_log</c> lives OUTSIDE
+    /// <see cref="CollectorCatalog.All"/> (it is a registry-side table with no <c>ICollectorSchemaInfo</c>), so
+    /// the catalog-driven convert/compress loops never reach it — it must be handled directly, here and at
+    /// runtime.</para>
+    ///
+    /// <para><b>create_hypertable.</b> <c>migrate_data =&gt; true</c> moves existing rows into chunks (the
+    /// migrate connection uses a long command timeout — <see cref="MigrationCommandTimeoutSeconds"/> — so a
+    /// large / many-server backlog is not abandoned at the 30s default); <c>if_not_exists =&gt; true</c> makes
+    /// a re-run or an already-converted table a harmless no-op NOTICE (idempotent, so it composes with the
+    /// runtime path). <c>collection_log</c> has NO PRIMARY KEY / UNIQUE constraint (see V2), so the hypertable
+    /// rule that a unique key must include the partition column cannot conflict — the usual main risk is simply
+    /// absent. <c>collection_time</c> stays a naive <c>timestamp</c> (the product-wide cross-store contract), so
+    /// <c>create_hypertable</c> emits the advisory use-TIMESTAMPTZ WARNING — expected, exactly like the
+    /// collector hypertables.</para>
+    ///
+    /// <para><b>Compression.</b> Enabled + policy added mirroring <see cref="TimescaleSupport"/> for this one
+    /// table: segment by <c>server_id</c> (every read filters it first) and compress chunks older than the same
+    /// <see cref="TimescaleSupport.CompressAfterDays"/>, with the same <see cref="TimescaleSupport.ChunkIntervalDays"/>
+    /// chunk width — the constants are interpolated so the two never drift. <c>if_not_exists</c> on the policy
+    /// keeps it idempotent. Explicitly <c>collect.</c>-qualified like V21/V22.</para>
+    /// </summary>
+    private static string V23Sql =>
+        $@"
+/* V23: best-effort UPGRADE fast-path that converts collect.collection_log to a TimescaleDB hypertable + compresses
+   it, mirroring the collector hypertables. GUARDED on the extension (plain PostgreSQL skips it, keeping the table a
+   heap with batched-DELETE retention) and wrapped in EXCEPTION WHEN OTHERS so it can NEVER abort the startup-critical
+   migration. The AUTHORITATIVE conversion is TimescaleSupport.EnsureCollectionLogHypertableAsync at runtime (after
+   CREATE EXTENSION), which is the proven-live path and self-heals a fresh store this guard skipped. collection_log is
+   NOT in the collector catalog, so the runtime catalog loops never touch it. */
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        PERFORM create_hypertable('collect.collection_log', by_range('collection_time', INTERVAL '{TimescaleSupport.ChunkIntervalDays} days'), if_not_exists => true, migrate_data => true);
+        ALTER TABLE collect.collection_log SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id');
+        PERFORM add_compression_policy('collect.collection_log', compress_after => INTERVAL '{TimescaleSupport.CompressAfterDays} days', if_not_exists => true);
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'V23: deferred collection_log hypertable conversion to the runtime path (%): %', SQLSTATE, SQLERRM;
+END
+$$;";
+
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (
     version integer NOT NULL PRIMARY KEY,
@@ -726,6 +791,15 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
     /// the darling_schema_version primary key. Released explicitly and on connection close.
     /// </summary>
     private const long MigrationLockKey = 0x4441524C_494E47; /* "DARLING" */
+
+    /// <summary>
+    /// Command timeout (seconds) for applying one migration — well above Npgsql's 30s default so a
+    /// data-moving migration is never abandoned half-done. V23 converts collection_log to a hypertable with
+    /// <c>migrate_data =&gt; true</c>, which rewrites every existing row into chunks; on a long-collected /
+    /// many-server store that can exceed 30s. Mirrors <see cref="TimescaleSupport"/>'s runtime-conversion
+    /// budget. Harmless for the DDL-only migrations — they finish in milliseconds regardless.
+    /// </summary>
+    private const int MigrationCommandTimeoutSeconds = 300;
 
     /// <summary>
     /// Applies every migration newer than the store's current version, each in its own
@@ -819,7 +893,7 @@ CREATE TABLE IF NOT EXISTS darling_schema_version (
 
             using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            using (var apply = new NpgsqlCommand(migration.Sql, connection, transaction))
+            using (var apply = new NpgsqlCommand(migration.Sql, connection, transaction) { CommandTimeout = MigrationCommandTimeoutSeconds })
             {
                 await apply.ExecuteNonQueryAsync(cancellationToken);
             }

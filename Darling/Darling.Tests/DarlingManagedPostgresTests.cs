@@ -96,12 +96,18 @@ public sealed class DarlingManagedPostgresTests
     /// policy jobs (live smoke: "failed to start a background worker" storms). Pins the
     /// TimescaleDB-guidance sizing, DERIVED from the hypertable count so it never goes stale as
     /// collectors are added: background workers = hypertables + 2; max_worker_processes = 3 + that + 8.
+    /// The count is <see cref="TimescaleSupport.HypertableCount"/> = the collector catalog PLUS collection_log
+    /// (the V23 hypertable outside the catalog), so the collection_log compression policy is not under-provisioned.
     /// </summary>
     [Fact]
     public void WorkerSizingConfAppend_PinsV2MarkerAndSizing()
     {
+        /* collection_log is a hypertable but lives OUTSIDE the collector catalog, so the true count is
+           collectors + 1 — the worker sizing must derive from that, not HypertableTables.Count alone. */
+        Assert.Equal(TimescaleSupport.HypertableTables.Count + 1, TimescaleSupport.HypertableCount);
+
         var block = DarlingManagedPostgres.BuildWorkerSizingConfAppend();
-        var expectedBackgroundWorkers = TimescaleSupport.HypertableTables.Count + 2;
+        var expectedBackgroundWorkers = TimescaleSupport.HypertableCount + 2;
         var expectedWorkerProcesses = 3 + expectedBackgroundWorkers + 8;
 
         Assert.Contains(DarlingManagedPostgres.ConfMarkerV2, block, StringComparison.Ordinal);

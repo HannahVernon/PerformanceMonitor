@@ -264,19 +264,21 @@ public sealed class DarlingManagedPostgres
     /// fail (caught live: 21 failures vs 7 successes in timescaledb_information.job_stats on a
     /// fresh managed instance). Sizing follows the TimescaleDB guidance
     /// (max_worker_processes = 3 + timescaledb.max_background_workers + max_parallel_workers,
-    /// background workers sized to hypertables + 2): DERIVED from the live hypertable count so it
-    /// never goes stale as collectors are added (26 hypertables -> 28/40, 32 -> 34/45). Idle background workers
+    /// background workers sized to hypertables + 2): DERIVED from the live hypertable count
+    /// (<see cref="TimescaleSupport.HypertableCount"/> = the collector catalog PLUS collection_log, the V23
+    /// non-catalog hypertable) so it never goes stale as collectors are added and is not under-sized by the
+    /// collection_log compression policy (27 hypertables -> 29/40, 33 -> 35/46). Idle background workers
     /// cost a few MB each and no CPU. Both settings need a PostgreSQL restart, so an existing
     /// cluster picks this up on its next service-owned start — an adopted (not-started-by-us)
     /// server heals the conf now and applies it whenever its operator next restarts it.
     /// </summary>
     public static string BuildWorkerSizingConfAppend()
     {
-        /* Derived from the live hypertable count (never stale when a collector is added): one
-           background worker per per-hypertable compression policy that can run concurrently + the
-           scheduler + slack; max_worker_processes = 3 (other bg workers) + bg workers + 8 (default
-           max_parallel_workers). Historical fixed pair was 28/40 at 26 hypertables. */
-        var maxBackgroundWorkers = TimescaleSupport.HypertableTables.Count + 2;
+        /* Derived from the TRUE hypertable count (never stale when a collector is added; includes
+           collection_log, the V23 hypertable outside the collector catalog): one background worker per
+           per-hypertable compression policy that can run concurrently + the scheduler + slack;
+           max_worker_processes = 3 (other bg workers) + bg workers + 8 (default max_parallel_workers). */
+        var maxBackgroundWorkers = TimescaleSupport.HypertableCount + 2;
         var maxWorkerProcesses = 3 + maxBackgroundWorkers + 8;
         var builder = new StringBuilder();
         builder.Append('\n');

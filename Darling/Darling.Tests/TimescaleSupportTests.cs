@@ -22,11 +22,11 @@ namespace Darling.Tests;
 /// collector catalog (the registry/config/analysis tables can never sneak in), every
 /// create_hypertable partitions by_range on the definition's own prefix time column
 /// (collection_time almost everywhere; the config snapshots' capture_time) with if_not_exists +
-/// migrate_data, compression segments by server_id, and the policy is the hardcoded 7-day
+/// migrate_data, compression segments by server_id, and the policy is the hardcoded 1-day
 /// if_not_exists shape. Gated on DARLING_TEST_PG (the dev fixture has the extension): detect →
-/// convert (idempotent) → a 40-day-old wait_stats row is removed by the drop_chunks-based purge
-/// while a fresh row and the DELETE-path collection_log behavior hold → the compression policy
-/// applies idempotently and lands in timescaledb_information.jobs.
+/// convert (idempotent) → a 40-day-old wait_stats row and a 70-day-old collection_log row are removed
+/// by the drop_chunks-based purge (collection_log is a hypertable since V23) while a fresh row holds →
+/// the compression policy applies idempotently and lands in timescaledb_information.jobs.
 /// </summary>
 /* Live-fixture tests share one Postgres store; the collection serializes them so
    cross-test row churn (inserts/purges/deletes/chunk drops) cannot race another class. */
@@ -51,13 +51,22 @@ public sealed class TimescaleSupportTests
         var hypertables = TimescaleSupport.HypertableTables.Select(s => s.TargetTable).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var excluded in new[]
         {
-            "servers", "collection_log",
+            "servers",
             "config_alert_log", "config_edge_trigger_watermarks", "config_mute_rules",
             "analysis_findings", "analysis_muted", "darling_schema_version",
         })
         {
             Assert.False(hypertables.Contains(excluded), $"'{excluded}' must never be converted to a hypertable");
         }
+
+        /* collection_log IS a hypertable (since V23) but is deliberately NOT in the catalog: it is converted +
+           compressed DIRECTLY — authoritatively by EnsureCollectionLogHypertableAsync at runtime, plus a
+           best-effort V23-migration fast-path — and purged directly by DarlingRetention, so the catalog-driven
+           runtime loops (ConvertToHypertables / ApplyCompressionPolicy) must never touch it. Its +1 IS reflected
+           in the worker-sizing count, though (HypertableCount). */
+        Assert.False(hypertables.Contains("collection_log"),
+            "collection_log must stay OUT of the collector catalog — it is converted directly, not via the catalog loop");
+        Assert.Equal(TimescaleSupport.HypertableTables.Count + 1, TimescaleSupport.HypertableCount);
     }
 
     [Fact]
@@ -86,6 +95,12 @@ public sealed class TimescaleSupportTests
             Assert.Contains("if_not_exists => true", sql, StringComparison.Ordinal);
             Assert.Contains("migrate_data => true", sql, StringComparison.Ordinal);
         }
+
+        /* collection_log's runtime conversion (the raw-name overload, since it has no ICollectorSchemaInfo) —
+           the AUTHORITATIVE path EnsureCollectionLogHypertableAsync runs, identical shape to the collectors. */
+        Assert.Equal(
+            "SELECT create_hypertable('collection_log', by_range('collection_time', INTERVAL '1 days'), if_not_exists => true, migrate_data => true)",
+            TimescaleSupport.CreateHypertableSql(TimescaleSupport.CollectionLogTable, TimescaleSupport.CollectionLogTimeColumn));
     }
 
     [Fact]
@@ -111,6 +126,14 @@ public sealed class TimescaleSupportTests
             Assert.Contains("if_not_exists => true",
                 TimescaleSupport.AddCompressionPolicySql(schema), StringComparison.Ordinal);
         }
+
+        /* collection_log gets the identical compression via the raw-name overloads (the runtime path). */
+        Assert.Equal(
+            "ALTER TABLE collection_log SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id')",
+            TimescaleSupport.EnableCompressionSql(TimescaleSupport.CollectionLogTable));
+        Assert.Equal(
+            "SELECT add_compression_policy('collection_log', compress_after => INTERVAL '1 days', if_not_exists => true)",
+            TimescaleSupport.AddCompressionPolicySql(TimescaleSupport.CollectionLogTable));
     }
 
     [Fact]
@@ -142,6 +165,15 @@ public sealed class TimescaleSupportTests
             "SELECT COUNT(*) FROM timescaledb_information.hypertables WHERE hypertable_name = 'wait_stats'", connection))
         {
             Assert.Equal(1L, await isHypertable.ExecuteScalarAsync(ct));
+        }
+
+        /* collection_log is ALSO a hypertable now — converted by the V23 migration (MigrateAsync above), NOT by
+           ConvertToHypertablesAsync (it is outside the collector catalog). So its purge below genuinely exercises
+           drop_chunks too, not the DELETE fallback. */
+        using (var logIsHypertable = new NpgsqlCommand(
+            "SELECT COUNT(*) FROM timescaledb_information.hypertables WHERE hypertable_name = 'collection_log'", connection))
+        {
+            Assert.Equal(1L, await logIsHypertable.ExecuteScalarAsync(ct));
         }
 
         /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
@@ -178,8 +210,10 @@ public sealed class TimescaleSupportTests
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* collection_log is never a hypertable — it must keep purging via DELETE even in
-               Timescale mode. */
+            /* collection_log is a hypertable since V23, so in Timescale mode it purges via drop_chunks too.
+               drop_chunks only drops WHOLE expired chunks, so this row must be past collection_log's own 2x
+               horizon (60 days) for its 1-day chunk to be fully expired: 70 days back. (A row inside the 60-day
+               window would survive — exercised on the plain-PG DELETE path in DarlingRetentionTests.) */
             using (var insert = new NpgsqlCommand(
                 "INSERT INTO collection_log (log_id, server_id, server_name, collector_name, collection_time, status) VALUES ($1, $2, $3, $4, $5, $6)", connection))
             {
@@ -187,16 +221,15 @@ public sealed class TimescaleSupportTests
                 insert.Parameters.AddWithValue(TestServerId);
                 insert.Parameters.AddWithValue("timescale-e2e");
                 insert.Parameters.AddWithValue("wait_stats");
-                insert.Parameters.AddWithValue(utcNow.AddDays(-40));
+                insert.Parameters.AddWithValue(utcNow.AddDays(-70));
                 insert.Parameters.AddWithValue("SUCCESS");
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* The Timescale purge: at least the old wait_stats chunk drops and the old
-               collection_log row DELETEs (the return mixes rows + chunks — a coarse activity
-               count, see PurgeAsync remarks). */
+            /* The Timescale purge: the old wait_stats chunk AND the old collection_log chunk drop (the return
+               mixes rows + chunks — a coarse activity count, see PurgeAsync remarks). */
             var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, null, ct);
-            Assert.True(summary.TotalPurged >= 2, $"expected at least one dropped chunk and one deleted log row, got {summary.TotalPurged}");
+            Assert.True(summary.TotalPurged >= 2, $"expected the two old chunks (wait_stats + collection_log) to drop, got {summary.TotalPurged}");
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))
@@ -209,6 +242,7 @@ public sealed class TimescaleSupportTests
                 Assert.False(await reader.ReadAsync(ct), "the 40-day wait_stats row survived the drop_chunks purge");
             }
 
+            /* The 70-day collection_log row's chunk dropped via drop_chunks (past the 60-day horizon). */
             using (var read = new NpgsqlCommand(
                 "SELECT COUNT(*) FROM collection_log WHERE server_id = $1", connection))
             {

@@ -76,7 +76,8 @@ public sealed class DarlingRetentionTests
             "DELETE FROM trace_flags WHERE capture_time < $1 AND ctid IN (SELECT ctid FROM trace_flags WHERE capture_time < $1 LIMIT 10000)",
             DarlingRetention.DeleteSqlFor(byName["trace_flags"]));
 
-        /* collection_log runs through the same batched builder (never a hypertable, but one uniform path). */
+        /* collection_log's PLAIN-PostgreSQL / conversion-failed FALLBACK still runs through the same batched
+           builder (since V23 it is a hypertable, so on Timescale it purges via drop_chunks — pinned below). */
         Assert.Equal(
             "DELETE FROM collection_log WHERE collection_time < $1 AND ctid IN (SELECT ctid FROM collection_log WHERE collection_time < $1 LIMIT 10000)",
             DarlingRetention.BatchedDeleteSql("collection_log", "collection_time"));
@@ -208,6 +209,13 @@ public sealed class DarlingRetentionTests
             DarlingRetention.DropChunksSqlFor(byName["index_object_stats"], CollectorScheduleDefaults.All["index_object_stats"].RetentionDays));
         Assert.Equal("SELECT drop_chunks('server_properties', older_than => make_interval(days => 365))",
             DarlingRetention.DropChunksSqlFor(byName["server_properties"], CollectorScheduleDefaults.All["server_properties"].RetentionDays));
+
+        /* collection_log is a hypertable since V23 (converted directly by the V23 migration, outside the
+           collector catalog), so with Timescale it purges via drop_chunks at its own 2x horizon — the raw-table
+           overload, since it has no ICollectorSchemaInfo. NOT the batched DELETE (that is the plain-PG fallback). */
+        Assert.Equal(
+            "SELECT drop_chunks('collection_log', older_than => make_interval(days => 60))",
+            DarlingRetention.DropChunksSqlFor("collection_log", DarlingRetention.CollectionLogRetentionDays));
     }
 
     [Fact]
