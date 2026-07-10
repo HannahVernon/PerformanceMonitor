@@ -294,11 +294,12 @@ public static class DarlingRetention
     /// <c>WHERE {col} &lt; $1 AND ctid IN (…)</c> — deliberately: on a plain table it is merely redundant, but
     /// on a TimescaleDB hypertable a ctid is unique only WITHIN a chunk, so a bare <c>ctid IN (…)</c> could
     /// match a same-ctid row in a DIFFERENT chunk; the outer <c>{col} &lt; $1</c> guarantees only
-    /// genuinely-expired rows are ever deleted, so a colliding fresh row is always safe. In production this
-    /// path only ever runs on plain tables anyway (hypertables purge via <c>drop_chunks</c>; collection_log is
-    /// never a hypertable), but the guard keeps the statement correct even against a store where a collector
-    /// table happens to be a hypertable. <c>$1</c> is bound once and referenced by both positions.
-    /// Table/column come from catalog constants (never user input), so interpolation is safe.
+    /// genuinely-expired rows are ever deleted, so a colliding fresh row is always safe. In production the
+    /// hypertables purge via <c>drop_chunks</c>, so this path runs on plain tables (a plain-PostgreSQL store) or
+    /// as the fallback when a hypertable's <c>drop_chunks</c> failed — including collection_log, a hypertable
+    /// since V23 whose plain-PG / conversion-failed fallback lands here, so the per-chunk-ctid guard is load-bearing.
+    /// <c>$1</c> is bound once and referenced by both positions. Table/column come from catalog constants (never
+    /// user input), so interpolation is safe.
     /// </summary>
     internal static string BatchedDeleteSql(string table, string timeColumn)
         => $"DELETE FROM {table} WHERE {timeColumn} < $1 AND ctid IN (SELECT ctid FROM {table} WHERE {timeColumn} < $1 LIMIT {DeleteBatchSize})";
@@ -308,9 +309,9 @@ public static class DarlingRetention
     /// chunk wholly older than the horizon (validated live on TimescaleDB 2.28.1; the partition
     /// column is implicit in the hypertable's dimension, so no time column appears here). An
     /// accepted coarseness: drop_chunks only drops WHOLE chunks, so rows inside a
-    /// partially-expired chunk survive until the entire chunk ages past the horizon (with the
-    /// default 7-day chunk interval, up to ~7 days of grace) — the trade for a metadata-only
-    /// purge that never scans or rewrites rows. RetentionDays comes from the shared
+    /// partially-expired chunk survive until the entire chunk ages past the horizon (with Darling's
+    /// 1-day chunk interval — <see cref="!:TimescaleSupport.ChunkIntervalDays"/> — up to ~1 day of grace) —
+    /// the trade for a metadata-only purge that never scans or rewrites rows. RetentionDays comes from the shared
     /// <see cref="CollectorScheduleDefaults"/> constants, never from user input, so
     /// interpolation is safe here — the same reasoning as <see cref="DeleteSqlFor"/>.
     /// </summary>
