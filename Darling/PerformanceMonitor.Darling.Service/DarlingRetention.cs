@@ -22,9 +22,11 @@ namespace PerformanceMonitor.Darling.Service;
 /// DELETE-based and works on any Postgres; when the worker detected TimescaleDB
 /// (<c>timescaleAvailable</c> — see TimescaleSupport in Darling.Storage) the collector tables
 /// purge via hypertable <c>drop_chunks</c> instead, which detaches whole expired chunks in O(1)
-/// instead of scanning rows. collection_log and config_alert_log stay DELETE-based either way (never
-/// converted — plain registry-side tables, see the TimescaleSupport scope remarks), as do the analysis
-/// tables (PgFindingStore.CleanupOldFindingsAsync owns those). Retention horizons are the shared
+/// instead of scanning rows. collection_log — a hypertable since V23, though converted directly by the
+/// V23 migration rather than the catalog loop — purges the SAME way (drop_chunks with a DELETE fallback for
+/// a plain-PostgreSQL store). config_alert_log stays DELETE-based either way (never converted — a plain
+/// config-side registry table), as do the analysis tables (PgFindingStore.CleanupOldFindingsAsync owns
+/// those). Retention horizons are the shared
 /// per-collector <see cref="CollectorScheduleDefaults"/> (identity-pinned to Lite's
 /// ScheduleManager table), so both SKUs keep the same data horizons out of the box. NOTE: Lite
 /// archives expired rows to parquet before deleting (ArchiveService); Darling deliberately
@@ -167,17 +169,43 @@ public static class DarlingRetention
                 }
             }
 
-            var logDeleted = await PurgeOneAsync(
-                postgres, "collection_log", BatchedDeleteSql("collection_log", "collection_time"),
-                utcNow.AddDays(-CollectionLogRetentionDays), logger, cancellationToken);
-            if (logDeleted is not null)
+            /* collection_log retention. Since V23 it is a TimescaleDB hypertable (converted DIRECTLY by the V23
+               migration — it is NOT in CollectorCatalog.All, so the loop above skips it), so with Timescale it
+               purges via drop_chunks in O(1) — no DELETE churn — at its own 2x horizon (CollectionLogRetentionDays).
+               On plain PostgreSQL, or if its hypertable conversion failed, it falls back to the batched DELETE so
+               the horizon is ALWAYS honored. Failure-isolated like every sibling. The FleetServerId=0 retention
+               run-record sentinel is a genuine collection_log row and lives in a chunk normally. */
+            var logPurged = false;
+            if (timescaleAvailable)
             {
-                tablesPurged++;
-                totalRowsDeleted += logDeleted.Value;
+                var droppedLog = await DropChunksOneAsync(
+                    postgres, "collection_log", DropChunksSqlFor("collection_log", CollectionLogRetentionDays),
+                    logger, cancellationToken);
+                if (droppedLog is not null)
+                {
+                    tablesPurged++;
+                    totalChunksDropped += droppedLog.Value;
+                    logPurged = true;
+                }
+
+                /* drop_chunks failed (warned) — most likely collection_log's conversion failed and it is still
+                   plain. Fall through to the extension-free DELETE so it still honors its horizon. */
             }
-            else
+
+            if (!logPurged)
             {
-                tablesFailed++;
+                var logDeleted = await PurgeOneAsync(
+                    postgres, "collection_log", BatchedDeleteSql("collection_log", "collection_time"),
+                    utcNow.AddDays(-CollectionLogRetentionDays), logger, cancellationToken);
+                if (logDeleted is not null)
+                {
+                    tablesPurged++;
+                    totalRowsDeleted += logDeleted.Value;
+                }
+                else
+                {
+                    tablesFailed++;
+                }
             }
 
             /* config_alert_log (the fired-alert history) is a plain config-schema registry table, never a
@@ -287,7 +315,16 @@ public static class DarlingRetention
     /// interpolation is safe here — the same reasoning as <see cref="DeleteSqlFor"/>.
     /// </summary>
     internal static string DropChunksSqlFor(ICollectorSchemaInfo schema, int retentionDays)
-        => $"SELECT drop_chunks('{schema.TargetTable}', older_than => make_interval(days => {retentionDays}))";
+        => DropChunksSqlFor(schema.TargetTable, retentionDays);
+
+    /// <summary>
+    /// The <c>drop_chunks</c> statement for a hypertable by raw table name — the collection_log path (a
+    /// hypertable since V23 but outside the collector catalog, so it has no <see cref="ICollectorSchemaInfo"/>).
+    /// Same shape as the schema overload; the table name comes from a compile-time constant, never user input,
+    /// so interpolation is safe.
+    /// </summary>
+    internal static string DropChunksSqlFor(string table, int retentionDays)
+        => $"SELECT drop_chunks('{table}', older_than => make_interval(days => {retentionDays}))";
 
     /// <summary>
     /// One table's drop_chunks; returns the number of chunks dropped, or null when it failed

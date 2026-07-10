@@ -348,9 +348,22 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     /// <c>analysis_state</c> table, V18's <c>alert_delivery_mode_override</c> column (the very column whose
     /// absence throws the raw 42703 the finding reproduces on Add/Edit Server), and V17's
     /// <c>config_monitored_servers</c> table (the config control plane). <see cref="MapProbedSchemaVersion"/>
-    /// reduces the six flags to the highest satisfied version. Each sentinel appears only in a store at its
+    /// reduces the flags to the highest satisfied version. Each sentinel appears only in a store at its
     /// migration or later: a fresh store gets them all at once (it runs straight through to the latest
     /// version), an upgraded store gets each exactly at its migration.
+    ///
+    /// <para>The seventh sentinel (V23) is different in kind: V23 makes <c>collection_log</c> a TimescaleDB
+    /// hypertable, and its only schema effect is engine-dependent. So this checks <c>collection_log</c> IS a
+    /// hypertable OR the store has no <c>timescaledb</c> extension — because on plain PostgreSQL V23 is a no-op
+    /// (the guarded migration skips the conversion), so a plain-PG store at V23 is object-identical to V22 and
+    /// must not be gated. <b>Crucially it is written PLAIN-POSTGRESQL-SAFE:</b> it reads the core <c>pg_trigger</c>
+    /// catalog for the hypertable's <c>ts_insert_blocker</c> trigger (present on every hypertable root, even an
+    /// empty one) rather than <c>timescaledb_information.hypertables</c> — that view does not exist without the
+    /// extension, and referencing it here would make the WHOLE probe throw on plain PG (returning null → the
+    /// gate fails open → EVERY plain-PG store, even genuinely-behind ones, loses connect-time gating). This
+    /// composite is only meaningful once V22's index is present (its <c>NOT EXISTS timescaledb</c> arm is true
+    /// for ALL plain-PG stores regardless of version), so <see cref="MapProbedSchemaVersion"/> gates it behind
+    /// the V22 sentinel rather than treating it as a standalone newest-first arm.
     /// </summary>
     public const string StoreSchemaProbeSql = @"
 SELECT
@@ -359,7 +372,12 @@ SELECT
     EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'analysis_state'),
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_alert_settings' AND column_name = 'notify_connection_changes'),
     EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'default_trace_events'),
-    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_index_object_stats_latest')";
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_index_object_stats_latest'),
+    (
+        EXISTS (SELECT 1 FROM pg_trigger tg JOIN pg_class c ON c.oid = tg.tgrelid
+                WHERE c.relname = 'collection_log' AND tg.tgname = 'ts_insert_blocker')
+        OR NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
+    )";
 
     /// <summary>The store schema version this viewer build requires — the highest migration it knows
     /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
@@ -380,7 +398,7 @@ SELECT
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
             {
-                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5));
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5), reader.GetBoolean(6));
             }
 
             return null;
@@ -392,22 +410,29 @@ SELECT
     }
 
     /// <summary>
-    /// Maps the six <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest
-    /// present wins: <paramref name="hasIndexObjectStatsLatestIndex"/> (V22) → 22, else
-    /// <paramref name="hasDefaultTraceEvents"/> (V21) → 21, else
-    /// <paramref name="hasAlertTuningKnobs"/> (V20) → 20, else
-    /// <paramref name="hasAnalysisState"/> (V19) → 19, else
-    /// <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else <paramref name="hasConfigControlPlane"/>
-    /// (V17) → 17, else 16 — the "older than the V17 config control plane" floor (the exact pre-17 version
-    /// isn't probed, but it is below what the viewer needs). Pure, so it is unit-tested without a live store;
-    /// a schema bump past 22 trips the pinning test that keeps this in step with
-    /// <see cref="StorageVersion.SchemaVersion"/>.
+    /// Maps the <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest present
+    /// wins. V23 is folded INTO the V22 arm rather than being a standalone newest-first arm: once the V22 index
+    /// is present, <paramref name="hasCollectionLogHypertableOrPlainPg"/> (collection_log is a hypertable, OR
+    /// the store is plain PostgreSQL where V23 is an object-invisible no-op) → 23, else → 22. It cannot be a
+    /// top arm because its plain-PG side is true for EVERY plain-PG store regardless of version, so it must be
+    /// gated behind V22's engine-agnostic index. Below V22: <paramref name="hasDefaultTraceEvents"/> (V21) → 21,
+    /// else <paramref name="hasAlertTuningKnobs"/> (V20) → 20, else <paramref name="hasAnalysisState"/> (V19) →
+    /// 19, else <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else
+    /// <paramref name="hasConfigControlPlane"/> (V17) → 17, else 16 — the "older than the V17 config control
+    /// plane" floor (the exact pre-17 version isn't probed, but it is below what the viewer needs). Pure, so it
+    /// is unit-tested without a live store; a schema bump past 23 trips the pinning test that keeps this in step
+    /// with <see cref="StorageVersion.SchemaVersion"/>.
     /// </summary>
-    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex)
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg)
     {
         if (hasIndexObjectStatsLatestIndex)
         {
-            return 22;
+            /* V22's index is the newest ENGINE-AGNOSTIC sentinel and the floor for V23. V23's only schema
+               effect — collection_log becoming a hypertable — is visible ONLY on a TimescaleDB store; on plain
+               PostgreSQL V23 is a no-op, so a plain-PG store at V23 is object-identical to V22 and the composite
+               is true via its no-extension arm (correctly reporting 23 — nothing for the viewer to gate on). On
+               a Timescale store the hypertable distinguishes a real V23 from a store still at V22. */
+            return hasCollectionLogHypertableOrPlainPg ? 23 : 22;
         }
 
         if (hasDefaultTraceEvents)

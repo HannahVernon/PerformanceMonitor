@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyTwoVersions_V20AlertTuningKnobs_V21DefaultTraceEvents_V22IndexObjectStatsLatestIndex()
+    public void MigrationScripts_TwentyThreeVersions_V21DefaultTraceEvents_V22IndexObjectStatsLatestIndex_V23CollectionLogHypertable()
     {
-        Assert.Equal(22, PgMigrations.Scripts.Count);
+        Assert.Equal(23, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -57,7 +57,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(20, PgMigrations.Scripts[19].Version);
         Assert.Equal(21, PgMigrations.Scripts[20].Version);
         Assert.Equal(22, PgMigrations.Scripts[21].Version);
-        Assert.Equal(22, StorageVersion.SchemaVersion);
+        Assert.Equal(23, PgMigrations.Scripts[22].Version);
+        Assert.Equal(23, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so
@@ -354,6 +355,30 @@ public sealed class DarlingObservabilityTests
         /* Collector table -> collect schema; a plain index (no config plane, no passthrough view to refresh). */
         Assert.DoesNotContain("config.index_object_stats", v22, StringComparison.Ordinal);
         Assert.DoesNotContain("CREATE OR REPLACE VIEW", v22, StringComparison.Ordinal);
+
+        /* V23 makes collect.collection_log (the highest-volume plain table) a TimescaleDB hypertable and
+           compresses it — so retention becomes O(1) drop_chunks and the freshness read hits only the newest
+           chunk per server. The migration is a best-effort UPGRADE fast-path only: it is GUARDED on pg_extension
+           (a plain-PostgreSQL store skips it, keeping collection_log a heap) AND wrapped in EXCEPTION WHEN OTHERS
+           so it can NEVER abort the startup-critical migration. The AUTHORITATIVE conversion is
+           TimescaleSupport.EnsureCollectionLogHypertableAsync at runtime (after CREATE EXTENSION) — because
+           MigrateAsync runs BEFORE the extension is created, so on a fresh store this guard is false and the
+           runtime path heals it (pinned in TimescaleSupportTests). collection_log is NOT in the collector
+           catalog, so the runtime catalog loops never touch it either. */
+        var v23 = PgMigrations.Scripts[22].Sql;
+        Assert.Equal("collection-log-hypertable", PgMigrations.Scripts[22].Name);
+        /* Guarded on the extension so plain PostgreSQL no-ops (create_hypertable does not exist there). */
+        Assert.Contains("IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')", v23, StringComparison.Ordinal);
+        /* Non-fatal: any failure (e.g. an unexpected migrate_data-in-transaction issue) warns and the migration
+           commits — the runtime path is the guarantee, so a thrown conversion must not brick startup. */
+        Assert.Contains("EXCEPTION WHEN OTHERS THEN", v23, StringComparison.Ordinal);
+        /* create_hypertable with migrate_data (moves existing rows) + if_not_exists (idempotent / already-converted no-op). */
+        Assert.Contains("create_hypertable('collect.collection_log', by_range('collection_time', INTERVAL '1 days')", v23, StringComparison.Ordinal);
+        Assert.Contains("migrate_data => true", v23, StringComparison.Ordinal);
+        Assert.Contains("if_not_exists => true", v23, StringComparison.Ordinal);
+        /* Compression mirrors TimescaleSupport for this one table: segment by server_id, 1-day compress-after. */
+        Assert.Contains("ALTER TABLE collect.collection_log SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id')", v23, StringComparison.Ordinal);
+        Assert.Contains("add_compression_policy('collect.collection_log', compress_after => INTERVAL '1 days', if_not_exists => true)", v23, StringComparison.Ordinal);
 
         var v2 = PgMigrations.Scripts[1].Sql;
         Assert.Contains("CREATE TABLE IF NOT EXISTS servers (", v2, StringComparison.Ordinal);

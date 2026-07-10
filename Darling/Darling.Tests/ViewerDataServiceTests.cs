@@ -344,7 +344,7 @@ public sealed class ViewerReadOnlyTests
 public sealed class ViewerSchemaVersionGateTests
 {
     [Fact]
-    public void StoreSchemaProbeSql_ProbesInformationSchema_ForTheV17ToV22Sentinels()
+    public void StoreSchemaProbeSql_ProbesInformationSchema_ForTheV17ToV23Sentinels()
     {
         var sql = ViewerDataService.StoreSchemaProbeSql;
 
@@ -353,7 +353,7 @@ public sealed class ViewerSchemaVersionGateTests
         Assert.Contains("information_schema.columns", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("darling_schema_version", sql, StringComparison.Ordinal);
 
-        /* The six version sentinels: V17 config control plane, V18 delivery-override column, V19 marker,
+        /* The version sentinels: V17 config control plane, V18 delivery-override column, V19 marker,
            V20 tuning knobs, V21 default_trace_events, V22 idx_index_object_stats_latest. */
         Assert.Contains("config_monitored_servers", sql, StringComparison.Ordinal);
         Assert.Contains("alert_delivery_mode_override", sql, StringComparison.Ordinal);
@@ -365,21 +365,45 @@ public sealed class ViewerSchemaVersionGateTests
            the world-readable pg_indexes catalog for it. */
         Assert.Contains("pg_indexes", sql, StringComparison.Ordinal);
         Assert.Contains("idx_index_object_stats_latest", sql, StringComparison.Ordinal);
+
+        /* V23's sentinel is collection_log-IS-a-hypertable OR no-timescaledb. It MUST stay plain-PostgreSQL-safe:
+           it reads the core pg_trigger catalog for the hypertable's ts_insert_blocker trigger (NOT
+           timescaledb_information.hypertables, which does not exist without the extension and would make the whole
+           probe throw on plain PG), OR'd with a pg_extension check so a plain-PG store at V23 (an object-invisible
+           no-op there) isn't gated. */
+        Assert.Contains("ts_insert_blocker", sql, StringComparison.Ordinal);
+        Assert.Contains("pg_trigger", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_log", sql, StringComparison.Ordinal);
+        Assert.Contains("pg_extension", sql, StringComparison.Ordinal);
+        Assert.Contains("timescaledb", sql, StringComparison.Ordinal);
+        /* Never the extension-only view — that would throw on plain PG and take the whole probe (and gate) down. */
+        Assert.DoesNotContain("timescaledb_information", sql, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(true, true, true, true, true, true, 22)]        // fully migrated (V22 index_object_stats latest index)
-    [InlineData(true, true, true, true, true, false, 21)]       // pre-V22: has default_trace_events, no V22 index
-    [InlineData(true, true, true, true, false, false, 20)]      // pre-V21: no default_trace_events
-    [InlineData(true, true, true, false, false, false, 19)]     // pre-V20: no alert-tuning knobs
-    [InlineData(true, true, false, false, false, false, 18)]    // pre-V19: no analysis_state
-    [InlineData(true, false, false, false, false, false, 17)]   // pre-V18: no delivery-override column
-    [InlineData(false, false, false, false, false, false, 16)]  // pre-V17: no config control plane at all
+    [InlineData(true, true, true, true, true, true, true, 23)]         // fully migrated V23 (collection_log hypertable, or plain-PG at V23)
+    [InlineData(true, true, true, true, true, true, false, 22)]        // Timescale store still at V22 (index present, collection_log not yet a hypertable)
+    [InlineData(true, true, true, true, true, false, false, 21)]       // pre-V22: has default_trace_events, no V22 index
+    [InlineData(true, true, true, true, false, false, false, 20)]      // pre-V21: no default_trace_events
+    [InlineData(true, true, true, false, false, false, false, 19)]     // pre-V20: no alert-tuning knobs
+    [InlineData(true, true, false, false, false, false, false, 18)]    // pre-V19: no analysis_state
+    [InlineData(true, false, false, false, false, false, false, 17)]   // pre-V18: no delivery-override column
+    [InlineData(false, false, false, false, false, false, false, 16)]  // pre-V17: no config control plane at all
     public void MapProbedSchemaVersion_TakesTheHighestSatisfiedSentinel(
-        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, int expected)
+        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, int expected)
     {
         Assert.Equal(expected, ViewerDataService.MapProbedSchemaVersion(
-            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState, hasAlertTuningKnobs, hasDefaultTraceEvents, hasIndexObjectStatsLatestIndex));
+            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState, hasAlertTuningKnobs, hasDefaultTraceEvents, hasIndexObjectStatsLatestIndex, hasCollectionLogHypertableOrPlainPg));
+    }
+
+    [Fact]
+    public void MapProbedSchemaVersion_V23CompositeIsGatedBehindV22_NotAStandaloneTopArm()
+    {
+        /* A plain-PG store BELOW V22 has the no-extension arm TRUE (so hasCollectionLogHypertableOrPlainPg=true)
+           but must NOT be reported as 23 — the composite only counts once the engine-agnostic V22 index is
+           present. Here: pre-V22 (no index) with the composite true still maps to 21 (its real V21 sentinel),
+           proving the composite is gated behind V22 rather than treated as a newest-first arm. */
+        Assert.Equal(21, ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, false, true));
     }
 
     [Fact]
@@ -389,11 +413,11 @@ public sealed class ViewerSchemaVersionGateTests
         Assert.Equal(StorageVersion.SchemaVersion, ViewerDataService.RequiredStoreSchemaVersion);
 
         /* Pin: a fully-migrated store (all sentinels present) must map to exactly the required version. If a
-           future migration bumps StorageVersion past 22, this fails until a matching sentinel + map arm is
+           future migration bumps StorageVersion past 23, this fails until a matching sentinel + map arm is
            added — the guard against the probe silently under-reporting a newer store as skewed. */
         Assert.Equal(
             ViewerDataService.RequiredStoreSchemaVersion,
-            ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, true));
+            ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, true, true));
     }
 }
 

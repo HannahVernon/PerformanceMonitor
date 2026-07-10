@@ -371,10 +371,15 @@ public sealed class DarlingWorker : BackgroundService
         /* Optional TimescaleDB adoption — runtime setup, deliberately NOT a versioned migration
            (the store must work with or without the extension; migrations stay engine-plain).
            Detected once at startup; when present, the collector tables become hypertables with
-           a 7-day compression policy (Darling's archival tier) and the daily retention purge
-           below switches to drop_chunks. All idempotent, so every restart re-converges. In its
-           own try/catch OUTSIDE the critical migrate block: an optional feature failing must
-           degrade to plain-PostgreSQL mode, never kill the service. */
+           a compression policy (Darling's archival tier) and the daily retention purge below
+           switches to drop_chunks. All idempotent, so every restart re-converges. In its own
+           try/catch OUTSIDE the critical migrate block: an optional feature failing must degrade
+           to plain-PostgreSQL mode, never kill the service.
+           This block runs AFTER CREATE EXTENSION (TryEnableAsync), which is why the AUTHORITATIVE
+           collection_log conversion (EnsureCollectionLogHypertableAsync) lives here, not in the V23
+           migration: MigrateAsync above runs BEFORE the extension exists, so a fresh store's V23
+           guard skips the conversion and this heals it (collection_log is outside the collector
+           catalog, so the loop calls above never touch it). */
         try
         {
             await using var timescaleConnection = await postgres.OpenConnectionAsync(stoppingToken);
@@ -383,6 +388,7 @@ public sealed class DarlingWorker : BackgroundService
             {
                 await TimescaleSupport.ConvertToHypertablesAsync(timescaleConnection, _logger, stoppingToken);
                 await TimescaleSupport.ApplyCompressionPolicyAsync(timescaleConnection, _logger, stoppingToken);
+                await TimescaleSupport.EnsureCollectionLogHypertableAsync(timescaleConnection, _logger, stoppingToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
