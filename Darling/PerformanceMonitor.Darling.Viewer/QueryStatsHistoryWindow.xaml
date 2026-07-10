@@ -95,7 +95,7 @@
                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                   ContextMenu="{StaticResource DataGridContextMenu}">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" SortMemberPath="CollectionTime" SortDirection="Descending" Width="130"/>
                 <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
                 <DataGridTextColumn Header="Creation Time" Binding="{Binding CreationTimeLocal}" Width="130"/>
                 <DataGridTextColumn Header="Exec Delta" Binding="{Binding DeltaExecutions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>

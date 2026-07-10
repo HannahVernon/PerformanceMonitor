@@ -79,6 +79,7 @@ public partial class QueryStoreHistoryWindow : Window
         {
             _historyData = await _dataService.GetQueryStoreHistoryAsync(_serverId, _databaseName, _queryId, _startUtc, _endUtc);
             _filterManager.UpdateData(_historyData);
+            ApplyDefaultDescendingByCollectionTime();
 
             if (_historyData.Count > 0)
             {
@@ -101,6 +102,21 @@ public partial class QueryStoreHistoryWindow : Window
         {
             SummaryText.Text = $"Error loading history: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Defaults the history grid to newest-first (Erik's descending-default grid convention). The SQL read stays
+    /// ascending on purpose — the chart re-sorts per plan group and the summary reads <c>First()</c>/<c>Last()</c>
+    /// — so this reorders ONLY the grid's view, mirroring the parent Queries grids'
+    /// <c>SetDefaultSortIfNone(..., ListSortDirection.Descending)</c>. Guarded so a user's later sort survives.
+    /// </summary>
+    private void ApplyDefaultDescendingByCollectionTime()
+    {
+        if (HistoryDataGrid.Items.SortDescriptions.Count != 0)
+            return;
+
+        HistoryDataGrid.Items.SortDescriptions.Add(new System.ComponentModel.SortDescription(
+            nameof(ViewerQueryStoreHistoryRow.CollectionTime), System.ComponentModel.ListSortDirection.Descending));
     }
 
     private void UpdateChart()

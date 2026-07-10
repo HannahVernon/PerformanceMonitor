@@ -75,6 +75,7 @@ public partial class ProcedureHistoryWindow : Window
         {
             _historyData = await _dataService.GetProcedureStatsHistoryAsync(_serverId, _databaseName, _schemaName, _objectName, _startUtc, _endUtc);
             _filterManager.UpdateData(_historyData);
+            ApplyDefaultDescendingByCollectionTime();
 
             if (_historyData.Count > 0)
             {
@@ -96,6 +97,21 @@ public partial class ProcedureHistoryWindow : Window
         {
             SummaryText.Text = $"Error loading history: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Defaults the history grid to newest-first (Erik's descending-default grid convention). The SQL read stays
+    /// ascending on purpose — the chart plots <c>_historyData</c> in reader order and the summary reads
+    /// <c>First()</c>/<c>Last()</c> — so this reorders ONLY the grid's view, mirroring the parent Queries grids'
+    /// <c>SetDefaultSortIfNone(..., ListSortDirection.Descending)</c>. Guarded so a user's later sort survives.
+    /// </summary>
+    private void ApplyDefaultDescendingByCollectionTime()
+    {
+        if (HistoryDataGrid.Items.SortDescriptions.Count != 0)
+            return;
+
+        HistoryDataGrid.Items.SortDescriptions.Add(new System.ComponentModel.SortDescription(
+            nameof(ViewerProcedureStatsHistoryRow.CollectionTime), System.ComponentModel.ListSortDirection.Descending));
     }
 
     private void UpdateChart()
