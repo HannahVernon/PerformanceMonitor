@@ -367,12 +367,13 @@ public sealed class ViewerSchemaVersionGateTests
         Assert.Contains("idx_index_object_stats_latest", sql, StringComparison.Ordinal);
 
         /* V23's sentinel is collection_log-IS-a-hypertable OR no-timescaledb. It MUST stay plain-PostgreSQL-safe:
-           it reads the core pg_trigger catalog for the hypertable's ts_insert_blocker trigger (NOT
-           timescaledb_information.hypertables, which does not exist without the extension and would make the whole
-           probe throw on plain PG), OR'd with a pg_extension check so a plain-PG store at V23 (an object-invisible
-           no-op there) isn't gated. */
-        Assert.Contains("ts_insert_blocker", sql, StringComparison.Ordinal);
-        Assert.Contains("pg_trigger", sql, StringComparison.Ordinal);
+           it reads the core pg_inherits catalog for collection_log's chunk children (TimescaleDB 2.x links chunks
+           to the hypertable root via inheritance; NOT timescaledb_information.hypertables, which does not exist
+           without the extension and would make the whole probe throw on plain PG — and NOT the ts_insert_blocker
+           trigger, which TimescaleDB 2.x no longer creates), OR'd with a pg_extension check so a plain-PG store at
+           V23 (an object-invisible no-op there) isn't gated. */
+        Assert.Contains("pg_inherits", sql, StringComparison.Ordinal);
+        Assert.Contains("inhparent", sql, StringComparison.Ordinal);
         Assert.Contains("collection_log", sql, StringComparison.Ordinal);
         Assert.Contains("pg_extension", sql, StringComparison.Ordinal);
         Assert.Contains("timescaledb", sql, StringComparison.Ordinal);
