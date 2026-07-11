@@ -66,6 +66,9 @@ public sealed class DarlingConfigTests
         /* Plan capture is on by default and the sample documents it explicitly (PG TOAST). */
         Assert.True(config.CapturePlans);
 
+        /* Object-DDL / schema-change collection is on by default and the sample documents the noisy-box opt-out. */
+        Assert.True(config.CollectSchemaChangeEvents);
+
         /* Phase-5 slice D: the alert/delivery sections parse; the sample documents shape without
            enabling delivery (empty SMTP host/from, empty webhook URLs). */
         Assert.True(config.Alerts.Enabled);
@@ -120,6 +123,23 @@ public sealed class DarlingConfigTests
 
         var disabled = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ], ""capturePlans"": false }");
         Assert.False(disabled.CapturePlans);
+    }
+
+    [Fact]
+    public void CollectSchemaChangeEvents_DefaultsTrue_AndParsesOverride()
+    {
+        /* Default true: the default-trace collector records Object:Created/Altered/Deleted schema-change
+           events (today's behavior). A config with no key keeps the default; explicit false suppresses the
+           Object-DDL slice on a noisy/benchmark box — e.g. HammerDB TPC-H Q15's create/drop revenue-view
+           flood — while leaving the file-growth / ErrorLog / audit categories collected. The shared
+           collector's equivalent of the full Dashboard proc's @include_object_events. */
+        Assert.True(new DarlingConfig().CollectSchemaChangeEvents);
+
+        var omitted = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ] }");
+        Assert.True(omitted.CollectSchemaChangeEvents);
+
+        var disabled = DarlingConfig.Parse(@"{ ""postgres"": { ""managed"": true }, ""servers"": [ { ""host"": ""SQL2022"" } ], ""collectSchemaChangeEvents"": false }");
+        Assert.False(disabled.CollectSchemaChangeEvents);
     }
 
     [Fact]
