@@ -526,7 +526,7 @@ public partial class ServerTab : UserControl
         TempDbFileIoChart.Refresh();
     }
 
-    private void UpdateFileIoCharts(List<FileIoTrendPoint> data)
+    private void UpdateFileIoCharts(List<FileIoTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(FileIoReadChart);
         ClearChart(FileIoWriteChart);
@@ -535,7 +535,22 @@ public partial class ServerTab : UserControl
         ApplyTheme(FileIoReadChart);
         ApplyTheme(FileIoWriteChart);
 
-        if (data.Count == 0) { FileIoReadChart.Refresh(); FileIoWriteChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            foreach (var c in new[] { FileIoReadChart, FileIoWriteChart })
+            {
+                c.Plot.Axes.DateTimeTicksBottomDateChange();
+                c.Plot.Axes.SetLimitsX(xMin, xMax);
+                ReapplyAxisColors(c);
+                c.Refresh();
+            }
+            return;
+        }
 
         /* Group by file, limit to top 10 by total stall */
         var databases = data
@@ -607,6 +622,7 @@ public partial class ServerTab : UserControl
         }
 
         FileIoReadChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        FileIoReadChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(FileIoReadChart);
         FileIoReadChart.Plot.YLabel("Read Latency (ms)");
         SetChartYLimitsWithLegendPadding(FileIoReadChart, 0, readMax > 0 ? readMax : 10);
@@ -614,6 +630,7 @@ public partial class ServerTab : UserControl
         FileIoReadChart.Refresh();
 
         FileIoWriteChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        FileIoWriteChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(FileIoWriteChart);
         FileIoWriteChart.Plot.YLabel("Write Latency (ms)");
         SetChartYLimitsWithLegendPadding(FileIoWriteChart, 0, writeMax > 0 ? writeMax : 10);
@@ -621,7 +638,7 @@ public partial class ServerTab : UserControl
         FileIoWriteChart.Refresh();
     }
 
-    private void UpdateFileIoThroughputCharts(List<FileIoThroughputPoint> data)
+    private void UpdateFileIoThroughputCharts(List<FileIoThroughputPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(FileIoReadThroughputChart);
         ClearChart(FileIoWriteThroughputChart);
@@ -630,7 +647,22 @@ public partial class ServerTab : UserControl
         ApplyTheme(FileIoReadThroughputChart);
         ApplyTheme(FileIoWriteThroughputChart);
 
-        if (data.Count == 0) { FileIoReadThroughputChart.Refresh(); FileIoWriteThroughputChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            foreach (var c in new[] { FileIoReadThroughputChart, FileIoWriteThroughputChart })
+            {
+                c.Plot.Axes.DateTimeTicksBottomDateChange();
+                c.Plot.Axes.SetLimitsX(xMin, xMax);
+                ReapplyAxisColors(c);
+                c.Refresh();
+            }
+            return;
+        }
 
         /* Group by file label, limit to top 10 by total throughput */
         var files = data
@@ -673,6 +705,7 @@ public partial class ServerTab : UserControl
         }
 
         FileIoReadThroughputChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        FileIoReadThroughputChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(FileIoReadThroughputChart);
         FileIoReadThroughputChart.Plot.YLabel("Read Throughput (MB/s)");
         SetChartYLimitsWithLegendPadding(FileIoReadThroughputChart, 0, readMax > 0 ? readMax : 1);
@@ -680,6 +713,7 @@ public partial class ServerTab : UserControl
         FileIoReadThroughputChart.Refresh();
 
         FileIoWriteThroughputChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        FileIoWriteThroughputChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(FileIoWriteThroughputChart);
         FileIoWriteThroughputChart.Plot.YLabel("Write Throughput (MB/s)");
         SetChartYLimitsWithLegendPadding(FileIoWriteThroughputChart, 0, writeMax > 0 ? writeMax : 1);
