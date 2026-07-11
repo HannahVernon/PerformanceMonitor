@@ -375,8 +375,8 @@ public partial class ServerTab : UserControl
 
             await System.Threading.Tasks.Task.WhenAll(fileIoTrendTask, fileIoThroughputTask);
 
-            UpdateFileIoCharts(fileIoTrendTask.Result);
-            UpdateFileIoThroughputCharts(fileIoThroughputTask.Result);
+            UpdateFileIoCharts(fileIoTrendTask.Result, hoursBack, fromDate, toDate);
+            UpdateFileIoThroughputCharts(fileIoThroughputTask.Result, hoursBack, fromDate, toDate);
         }
         catch (Exception ex)
         {
