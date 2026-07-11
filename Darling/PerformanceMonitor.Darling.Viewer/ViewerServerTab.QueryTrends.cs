@@ -73,19 +73,21 @@ public partial class ViewerServerTab
 
         await Task.WhenAll(queryDurationTask, procDurationTask, queryStoreDurationTask, executionCountTask);
 
-        UpdateQueryDurationTrendChart(queryDurationTask.Result);
-        UpdateProcDurationTrendChart(procDurationTask.Result);
-        UpdateQueryStoreDurationTrendChart(queryStoreDurationTask.Result);
-        UpdateExecutionCountTrendChart(executionCountTask.Result);
+        UpdateQueryDurationTrendChart(queryDurationTask.Result, startUtc, endUtc);
+        UpdateProcDurationTrendChart(procDurationTask.Result, startUtc, endUtc);
+        UpdateQueryStoreDurationTrendChart(queryStoreDurationTask.Result, startUtc, endUtc);
+        UpdateExecutionCountTrendChart(executionCountTask.Result, startUtc, endUtc);
     }
 
-    private void UpdateQueryDurationTrendChart(List<QueryTrendPoint> data)
+    private void UpdateQueryDurationTrendChart(List<QueryTrendPoint> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(QueryDurationTrendChart);
         ApplyTheme(QueryDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(QueryDurationTrendChart, "Query Duration", "Duration (ms/sec)"); return; }
 
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
         var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
@@ -97,6 +99,7 @@ public partial class ViewerServerTab
         _queryDurationTrendHover?.Add(plot, "Query Duration");
 
         QueryDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        QueryDurationTrendChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(QueryDurationTrendChart);
         QueryDurationTrendChart.Plot.YLabel("Duration (ms/sec)");
         SetChartYLimitsWithLegendPadding(QueryDurationTrendChart, 0, values.Max());
@@ -104,13 +107,15 @@ public partial class ViewerServerTab
         QueryDurationTrendChart.Refresh();
     }
 
-    private void UpdateProcDurationTrendChart(List<QueryTrendPoint> data)
+    private void UpdateProcDurationTrendChart(List<QueryTrendPoint> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(ProcDurationTrendChart);
         ApplyTheme(ProcDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(ProcDurationTrendChart, "Procedure Duration", "Duration (ms/sec)"); return; }
 
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
         var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
@@ -122,6 +127,7 @@ public partial class ViewerServerTab
         _procDurationTrendHover?.Add(plot, "Procedure Duration");
 
         ProcDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        ProcDurationTrendChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(ProcDurationTrendChart);
         ProcDurationTrendChart.Plot.YLabel("Duration (ms/sec)");
         SetChartYLimitsWithLegendPadding(ProcDurationTrendChart, 0, values.Max());
@@ -129,13 +135,15 @@ public partial class ViewerServerTab
         ProcDurationTrendChart.Refresh();
     }
 
-    private void UpdateQueryStoreDurationTrendChart(List<QueryTrendPoint> data)
+    private void UpdateQueryStoreDurationTrendChart(List<QueryTrendPoint> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(QueryStoreDurationTrendChart);
         ApplyTheme(QueryStoreDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(QueryStoreDurationTrendChart, "Query Store Duration", "Duration (ms/sec)"); return; }
 
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
         var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
@@ -147,6 +155,7 @@ public partial class ViewerServerTab
         _queryStoreDurationTrendHover?.Add(plot, "Query Store Duration");
 
         QueryStoreDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        QueryStoreDurationTrendChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(QueryStoreDurationTrendChart);
         QueryStoreDurationTrendChart.Plot.YLabel("Duration (ms/sec)");
         SetChartYLimitsWithLegendPadding(QueryStoreDurationTrendChart, 0, values.Max());
@@ -154,13 +163,15 @@ public partial class ViewerServerTab
         QueryStoreDurationTrendChart.Refresh();
     }
 
-    private void UpdateExecutionCountTrendChart(List<QueryTrendPoint> data)
+    private void UpdateExecutionCountTrendChart(List<QueryTrendPoint> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(ExecutionCountTrendChart);
         ApplyTheme(ExecutionCountTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(ExecutionCountTrendChart, "Executions", "Executions/sec"); return; }
 
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
         var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
 
@@ -172,6 +183,7 @@ public partial class ViewerServerTab
         _executionCountTrendHover?.Add(plot, "Executions");
 
         ExecutionCountTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        ExecutionCountTrendChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(ExecutionCountTrendChart);
         ExecutionCountTrendChart.Plot.YLabel("Executions/sec");
         SetChartYLimitsWithLegendPadding(ExecutionCountTrendChart, 0, values.Max());

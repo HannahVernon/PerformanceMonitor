@@ -108,13 +108,25 @@ public partial class ServerTab : UserControl
         CpuChart.Refresh();
     }
 
-    private void UpdateMemoryChart(List<MemoryTrendPoint> data, List<MemoryTrendPoint> grantData)
+    private void UpdateMemoryChart(List<MemoryTrendPoint> data, List<MemoryTrendPoint> grantData, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(MemoryChart);
         _memoryHover?.Clear();
         ApplyTheme(MemoryChart);
 
-        if (data.Count == 0) { MemoryChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            MemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            MemoryChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            ReapplyAxisColors(MemoryChart);
+            MemoryChart.Refresh();
+            return;
+        }
 
         var times = data.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
         var totalMem = data.Select(d => d.TotalServerMemoryMb / 1024.0).ToArray();
@@ -160,6 +172,7 @@ public partial class ServerTab : UserControl
         _memoryHover?.Add(grantPlot, "Memory Grants");
 
         MemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        MemoryChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(MemoryChart);
         MemoryChart.Plot.YLabel("Memory (GB)");
 
@@ -170,7 +183,7 @@ public partial class ServerTab : UserControl
         MemoryChart.Refresh();
     }
 
-    private void UpdateMemoryGrantCharts(List<MemoryGrantChartPoint> data)
+    private void UpdateMemoryGrantCharts(List<MemoryGrantChartPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(MemoryGrantSizingChart);
         ClearChart(MemoryGrantActivityChart);
@@ -179,10 +192,20 @@ public partial class ServerTab : UserControl
         ApplyTheme(MemoryGrantSizingChart);
         ApplyTheme(MemoryGrantActivityChart);
 
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
         if (data.Count == 0)
         {
-            MemoryGrantSizingChart.Refresh();
-            MemoryGrantActivityChart.Refresh();
+            foreach (var c in new[] { MemoryGrantSizingChart, MemoryGrantActivityChart })
+            {
+                c.Plot.Axes.DateTimeTicksBottomDateChange();
+                c.Plot.Axes.SetLimitsX(xMin, xMax);
+                ReapplyAxisColors(c);
+                c.Refresh();
+            }
             return;
         }
 
@@ -218,6 +241,7 @@ public partial class ServerTab : UserControl
         }
 
         MemoryGrantSizingChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        MemoryGrantSizingChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(MemoryGrantSizingChart);
         MemoryGrantSizingChart.Plot.YLabel("Memory (MB)");
         SetChartYLimitsWithLegendPadding(MemoryGrantSizingChart, 0, sizingMax > 0 ? sizingMax : 100);
@@ -255,6 +279,7 @@ public partial class ServerTab : UserControl
         }
 
         MemoryGrantActivityChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        MemoryGrantActivityChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(MemoryGrantActivityChart);
         MemoryGrantActivityChart.Plot.YLabel("Count");
         SetChartYLimitsWithLegendPadding(MemoryGrantActivityChart, 0, activityMax > 0 ? activityMax : 10);
@@ -1076,12 +1101,17 @@ public partial class ServerTab : UserControl
 
     /* ========== Performance Trend Charts ========== */
 
-    private void UpdateQueryDurationTrendChart(List<QueryTrendPoint> data)
+    private void UpdateQueryDurationTrendChart(List<QueryTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(QueryDurationTrendChart);
         ApplyTheme(QueryDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(QueryDurationTrendChart, "Query Duration", "Duration (ms/sec)"); return; }
+
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
 
         var times = data.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
@@ -1094,6 +1124,7 @@ public partial class ServerTab : UserControl
         _queryDurationTrendHover?.Add(plot, "Query Duration");
 
         QueryDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        QueryDurationTrendChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(QueryDurationTrendChart);
         QueryDurationTrendChart.Plot.YLabel("Duration (ms/sec)");
         SetChartYLimitsWithLegendPadding(QueryDurationTrendChart, 0, values.Max());
@@ -1101,12 +1132,17 @@ public partial class ServerTab : UserControl
         QueryDurationTrendChart.Refresh();
     }
 
-    private void UpdateProcDurationTrendChart(List<QueryTrendPoint> data)
+    private void UpdateProcDurationTrendChart(List<QueryTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(ProcDurationTrendChart);
         ApplyTheme(ProcDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(ProcDurationTrendChart, "Procedure Duration", "Duration (ms/sec)"); return; }
+
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
 
         var times = data.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
@@ -1119,6 +1155,7 @@ public partial class ServerTab : UserControl
         _procDurationTrendHover?.Add(plot, "Procedure Duration");
 
         ProcDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        ProcDurationTrendChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(ProcDurationTrendChart);
         ProcDurationTrendChart.Plot.YLabel("Duration (ms/sec)");
         SetChartYLimitsWithLegendPadding(ProcDurationTrendChart, 0, values.Max());
@@ -1126,12 +1163,17 @@ public partial class ServerTab : UserControl
         ProcDurationTrendChart.Refresh();
     }
 
-    private void UpdateQueryStoreDurationTrendChart(List<QueryTrendPoint> data)
+    private void UpdateQueryStoreDurationTrendChart(List<QueryTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(QueryStoreDurationTrendChart);
         ApplyTheme(QueryStoreDurationTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(QueryStoreDurationTrendChart, "Query Store Duration", "Duration (ms/sec)"); return; }
+
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
 
         var times = data.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
@@ -1144,6 +1186,7 @@ public partial class ServerTab : UserControl
         _queryStoreDurationTrendHover?.Add(plot, "Query Store Duration");
 
         QueryStoreDurationTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        QueryStoreDurationTrendChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(QueryStoreDurationTrendChart);
         QueryStoreDurationTrendChart.Plot.YLabel("Duration (ms/sec)");
         SetChartYLimitsWithLegendPadding(QueryStoreDurationTrendChart, 0, values.Max());
@@ -1151,12 +1194,17 @@ public partial class ServerTab : UserControl
         QueryStoreDurationTrendChart.Refresh();
     }
 
-    private void UpdateExecutionCountTrendChart(List<QueryTrendPoint> data)
+    private void UpdateExecutionCountTrendChart(List<QueryTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(ExecutionCountTrendChart);
         ApplyTheme(ExecutionCountTrendChart);
 
         if (data.Count == 0) { RefreshEmptyChart(ExecutionCountTrendChart, "Executions", "Executions/sec"); return; }
+
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
 
         var times = data.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
         var values = data.Select(d => d.Value).ToArray();
@@ -1169,6 +1217,7 @@ public partial class ServerTab : UserControl
         _executionCountTrendHover?.Add(plot, "Executions");
 
         ExecutionCountTrendChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        ExecutionCountTrendChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(ExecutionCountTrendChart);
         ExecutionCountTrendChart.Plot.YLabel("Executions/sec");
         SetChartYLimitsWithLegendPadding(ExecutionCountTrendChart, 0, values.Max());
