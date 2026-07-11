@@ -556,9 +556,9 @@ public partial class ViewerServerTab
         }
 
         var ordered = data.OrderBy(d => d.Time).ToList();
-        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
-        var maxValues = ordered.Select(d => (double)d.MaxDurationMs).ToArray();
-        var avgValues = ordered.Select(d => d.AvgDurationMs).ToArray();
+        var times = PadEnds(ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray(), rangeStart.ToOADate(), rangeEnd.ToOADate());
+        var maxValues = PadEnds(ordered.Select(d => (double)d.MaxDurationMs).ToArray(), 0, 0);
+        var avgValues = PadEnds(ordered.Select(d => d.AvgDurationMs).ToArray(), 0, 0);
 
         var maxPlot = BlockingDurationChart.Plot.Add.Scatter(times, maxValues);
         maxPlot.LegendText = "Max Block Duration";
@@ -618,8 +618,8 @@ public partial class ViewerServerTab
         }
 
         var ordered = data.OrderBy(d => d.Time).ToList();
-        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
-        var totals = ordered.Select(d => (double)d.TotalDurationMs).ToArray();
+        var times = PadEnds(ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray(), rangeStart.ToOADate(), rangeEnd.ToOADate());
+        var totals = PadEnds(ordered.Select(d => (double)d.TotalDurationMs).ToArray(), 0, 0);
 
         var plot = BlockingTotalDurationChart.Plot.Add.Scatter(times, totals);
         plot.LegendText = "Total Block Duration";
@@ -674,9 +674,9 @@ public partial class ViewerServerTab
         }
 
         var ordered = data.OrderBy(d => d.Time).ToList();
-        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
-        var maxValues = ordered.Select(d => (double)d.MaxWaitMs).ToArray();
-        var avgValues = ordered.Select(d => d.AvgWaitMs).ToArray();
+        var times = PadEnds(ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray(), rangeStart.ToOADate(), rangeEnd.ToOADate());
+        var maxValues = PadEnds(ordered.Select(d => (double)d.MaxWaitMs).ToArray(), 0, 0);
+        var avgValues = PadEnds(ordered.Select(d => d.AvgWaitMs).ToArray(), 0, 0);
 
         var maxPlot = DeadlockWaitChart.Plot.Add.Scatter(times, maxValues);
         maxPlot.LegendText = "Max Deadlock Wait";
@@ -736,8 +736,8 @@ public partial class ViewerServerTab
         }
 
         var ordered = data.OrderBy(d => d.Time).ToList();
-        var times = ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray();
-        var totals = ordered.Select(d => (double)d.TotalWaitMs).ToArray();
+        var times = PadEnds(ordered.Select(d => ViewerTimeHelper.ForDisplay(d.Time).ToOADate()).ToArray(), rangeStart.ToOADate(), rangeEnd.ToOADate());
+        var totals = PadEnds(ordered.Select(d => (double)d.TotalWaitMs).ToArray(), 0, 0);
 
         var plot = DeadlockTotalWaitChart.Plot.Add.Scatter(times, totals);
         plot.LegendText = "Total Deadlock Wait";
@@ -754,6 +754,22 @@ public partial class ViewerServerTab
         SetChartYLimitsWithLegendPadding(DeadlockTotalWaitChart, 0, globalMax > 0 ? globalMax : 1);
         ShowChartLegend(DeadlockTotalWaitChart);
         DeadlockTotalWaitChart.Refresh();
+    }
+
+    /// <summary>
+    /// Prepends <paramref name="lead"/> and appends <paramref name="trail"/> so a sparse connected-scatter
+    /// series spans the whole selected window instead of ending at its last event. Pass the window's
+    /// rangeStart/rangeEnd for the times array and 0/0 for value arrays (no activity = zero duration). The
+    /// window-pinned analog of the Trends charts' zero-baseline expansion — keeps all four Blocking-Stats
+    /// charts aligned to the shared window rather than each ending at its own last data point.
+    /// </summary>
+    private static double[] PadEnds(double[] values, double lead, double trail)
+    {
+        var result = new double[values.Length + 2];
+        result[0] = lead;
+        Array.Copy(values, 0, result, 1, values.Length);
+        result[^1] = trail;
+        return result;
     }
 
     /// <summary>
