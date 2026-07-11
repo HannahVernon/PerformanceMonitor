@@ -103,8 +103,8 @@ public partial class ViewerServerTab
         await Task.WhenAll(latestTask, trendTask, grantTrendTask, clerkTypesTask, grantChartTask, pressureTask);
 
         RenderMemorySummary(latestTask.Result);
-        RenderMemoryChart(trendTask.Result, grantTrendTask.Result);
-        RenderMemoryGrantCharts(grantChartTask.Result);
+        RenderMemoryChart(trendTask.Result, grantTrendTask.Result, startUtc, endUtc);
+        RenderMemoryGrantCharts(grantChartTask.Result, startUtc, endUtc);
         RenderMemoryPressureEventsChart(pressureTask.Result);
         PopulateMemoryClerkPicker(clerkTypesTask.Result);
         await UpdateMemoryClerksChartFromPickerAsync();
@@ -154,13 +154,23 @@ public partial class ViewerServerTab
     /// (dashed), Buffer Pool, and the Memory Grants overlay, all MB→GB. The grant overlay draws a flat
     /// zero line when no grant data exists. Times run through <see cref="ViewerTimeHelper.ForDisplay"/>.
     /// </summary>
-    private void RenderMemoryChart(List<MemoryTrendPoint> data, List<MemoryGrantTrendPoint> grantData)
+    private void RenderMemoryChart(List<MemoryTrendPoint> data, List<MemoryGrantTrendPoint> grantData, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(MemoryChart);
         _memoryHover?.Clear();
         ApplyTheme(MemoryChart);
 
-        if (data.Count == 0) { MemoryChart.Refresh(); return; }
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
+        if (data.Count == 0)
+        {
+            MemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            MemoryChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+            ReapplyAxisColors(MemoryChart);
+            MemoryChart.Refresh();
+            return;
+        }
 
         var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var totalMem = data.Select(d => d.TotalServerMemoryMb / 1024.0).ToArray();
@@ -206,6 +216,7 @@ public partial class ViewerServerTab
         _memoryHover?.Add(grantPlot, "Memory Grants");
 
         MemoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        MemoryChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(MemoryChart);
         MemoryChart.Plot.YLabel("Memory (GB)");
 
@@ -222,7 +233,7 @@ public partial class ViewerServerTab
     /// pool, each pool×metric on a cycling <c>SeriesColors</c> color. Times run through
     /// <see cref="ViewerTimeHelper.ForDisplay"/>.
     /// </summary>
-    private void RenderMemoryGrantCharts(List<MemoryGrantChartPoint> data)
+    private void RenderMemoryGrantCharts(List<MemoryGrantChartPoint> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(MemoryGrantSizingChart);
         ClearChart(MemoryGrantActivityChart);
@@ -231,10 +242,18 @@ public partial class ViewerServerTab
         ApplyTheme(MemoryGrantSizingChart);
         ApplyTheme(MemoryGrantActivityChart);
 
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
         if (data.Count == 0)
         {
-            MemoryGrantSizingChart.Refresh();
-            MemoryGrantActivityChart.Refresh();
+            foreach (var c in new[] { MemoryGrantSizingChart, MemoryGrantActivityChart })
+            {
+                c.Plot.Axes.DateTimeTicksBottomDateChange();
+                c.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+                ReapplyAxisColors(c);
+                c.Refresh();
+            }
             return;
         }
 
@@ -278,6 +297,7 @@ public partial class ViewerServerTab
         }
 
         MemoryGrantSizingChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        MemoryGrantSizingChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(MemoryGrantSizingChart);
         MemoryGrantSizingChart.Plot.YLabel("Memory (MB)");
         SetChartYLimitsWithLegendPadding(MemoryGrantSizingChart, 0, sizingMax > 0 ? sizingMax : 100);
@@ -315,6 +335,7 @@ public partial class ViewerServerTab
         }
 
         MemoryGrantActivityChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        MemoryGrantActivityChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(MemoryGrantActivityChart);
         MemoryGrantActivityChart.Plot.YLabel("Count");
         SetChartYLimitsWithLegendPadding(MemoryGrantActivityChart, 0, activityMax > 0 ? activityMax : 10);
@@ -529,15 +550,20 @@ public partial class ViewerServerTab
             ApplyTheme(MemoryClerksChart);
             _memoryClerksHover?.Clear();
 
+            var (startUtc, endUtc) = GetWindowUtc();
+            double xMin = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+            double xMax = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
             if (selected.Count == 0)
             {
                 MemoryClerksTotalText.Text = "--";
                 MemoryClerksTopText.Text = "--";
+                MemoryClerksChart.Plot.Axes.DateTimeTicksBottomDateChange();
+                MemoryClerksChart.Plot.Axes.SetLimitsX(xMin, xMax);
+                ReapplyAxisColors(MemoryClerksChart);
                 MemoryClerksChart.Refresh();
                 return;
             }
-
-            var (startUtc, endUtc) = GetWindowUtc();
 
             double globalMax = 0;
             double nonBpTotal = 0;
@@ -578,6 +604,7 @@ public partial class ViewerServerTab
             }
 
             MemoryClerksChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            MemoryClerksChart.Plot.Axes.SetLimitsX(xMin, xMax);
             ReapplyAxisColors(MemoryClerksChart);
             MemoryClerksChart.Plot.YLabel("Memory (MB)");
             SetChartYLimitsWithLegendPadding(MemoryClerksChart, 0, globalMax > 0 ? globalMax : 100);

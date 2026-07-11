@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Viewer Memory and Query Performance Trends charts: the last of the trend-chart dead space is gone** ([#1487]) -- finishes the sweep started in [#1483]/[#1484]. The Memory Overview trend, both Memory Grants charts (sizing + activity), the Memory Clerks chart, and the four Query > Performance Trends charts (query / procedure / Query Store duration and execution count) were the remaining trend charts that never pinned the X-axis, so ScottPlot auto-fit with its default margin and left the same empty space at both edges. Each now pins to the selected window with `SetLimitsX` right after `DateTimeTicksBottomDateChange()`, exactly like the CPU/File I/O charts -- in both the populated and empty-data paths for the dense per-interval Memory charts, and in the populated path for the four Query-Trend charts (whose empty state keeps its existing "No Data" placeholder). `ViewerServerTab.Memory.cs` / `ViewerServerTab.QueryTrends.cs` (Darling) and `ServerTab.Charts.cs` / `ServerTab.Pickers.cs` (Lite -- the Memory Clerks chart lives in the picker file). Lite + Darling
+
 - **Viewer File I/O charts: the dead space at the chart edges is gone** ([#1484]) -- the four File I/O charts (read/write latency and read/write throughput, `ViewerServerTab.FileIo.cs` / `ServerTab.Charts.cs`) never pinned the X-axis, so ScottPlot auto-fit with its default margin and left empty space at both edges -- the same root cause as the CPU/tempdb charts in [#1483]. They now pin to the selected window like every other trend chart. Lite + Darling
 
 - **Viewer trend charts: the empty "dead space" at the tempdb, CPU, and Blocking Stats chart edges is gone** ([#1483]) -- the CPU and tempdb charts (`ServerTab.Charts.cs` / `ViewerServerTab.Charts.cs`, the one chart file copied from Lite) never pinned the X-axis, so ScottPlot auto-fit the range with its default margin and left symmetric empty space at both edges -- the only trend charts skipping the `SetLimitsX(rangeStart, rangeEnd)` every other viewer chart applies; they now pin to the selected window like the rest. Separately, the four Blocking-Stats charts (Darling) do pin the window but plot only the per-minute buckets that had a blocking/deadlock event, so when activity stops the connected line ends early while the axis runs on to the window's right edge; each series is now padded with a zero point at `rangeStart`/`rangeEnd` -- the same zero-baseline idiom the sibling Blocking/Deadlock Trend charts already use -- so the line spans the whole window (no activity = 0 ms). Lite + Darling (the Blocking-Stats severity sub-tab is Darling-only)
@@ -253,6 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1481]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1481
 [#1483]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1483
 [#1484]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1484
+[#1487]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1487
 [#1478]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1478
 [#1477]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1477
 [#1476]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1476
