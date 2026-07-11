@@ -300,7 +300,7 @@ public partial class ServerTab : UserControl
         {
             var cpuTask = Task.Run(() => _dataService.GetCpuUtilizationAsync(_serverId, hoursBack, fromDate, toDate));
             await cpuTask;
-            UpdateCpuChart(cpuTask.Result);
+            UpdateCpuChart(cpuTask.Result, hoursBack, fromDate, toDate);
         }
         catch (Exception ex)
         {
@@ -394,9 +394,9 @@ public partial class ServerTab : UserControl
 
             await System.Threading.Tasks.Task.WhenAll(tempDbTask, tempDbFileIoTask);
 
-            UpdateTempDbChart(tempDbTask.Result);
-            UpdateTempDbSizeChart(tempDbTask.Result);
-            UpdateTempDbFileIoChart(tempDbFileIoTask.Result);
+            UpdateTempDbChart(tempDbTask.Result, hoursBack, fromDate, toDate);
+            UpdateTempDbSizeChart(tempDbTask.Result, hoursBack, fromDate, toDate);
+            UpdateTempDbFileIoChart(tempDbFileIoTask.Result, hoursBack, fromDate, toDate);
         }
         catch (Exception ex)
         {

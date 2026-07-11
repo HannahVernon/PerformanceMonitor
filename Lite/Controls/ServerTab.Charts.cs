@@ -62,13 +62,25 @@ public partial class ServerTab : UserControl
     }
 
 
-    private void UpdateCpuChart(List<CpuUtilizationRow> data)
+    private void UpdateCpuChart(List<CpuUtilizationRow> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(CpuChart);
         _cpuHover?.Clear();
         ApplyTheme(CpuChart);
 
-        if (data.Count == 0) { CpuChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            CpuChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            ReapplyAxisColors(CpuChart);
+            CpuChart.Refresh();
+            return;
+        }
 
         var times = data.Select(d => d.SampleTime.ToOADate()).ToArray();
         var sqlCpu = data.Select(d => (double)d.SqlServerCpu).ToArray();
@@ -87,6 +99,7 @@ public partial class ServerTab : UserControl
         _cpuHover?.Add(otherPlot, "Other");
 
         CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        CpuChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(CpuChart);
         CpuChart.Plot.YLabel("CPU %");
         CpuChart.Plot.Axes.SetLimitsY(0, 105);
@@ -362,13 +375,25 @@ public partial class ServerTab : UserControl
         MemoryPressureEventsChart.Refresh();
     }
 
-    private void UpdateTempDbChart(List<TempDbRow> data)
+    private void UpdateTempDbChart(List<TempDbRow> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(TempDbChart);
         _tempDbHover?.Clear();
         ApplyTheme(TempDbChart);
 
-        if (data.Count == 0) { TempDbChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            TempDbChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempDbChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            ReapplyAxisColors(TempDbChart);
+            TempDbChart.Refresh();
+            return;
+        }
 
         var times = data.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
         var userObj = data.Select(d => d.UserObjectReservedMb).ToArray();
@@ -394,6 +419,7 @@ public partial class ServerTab : UserControl
         _tempDbHover?.Add(vsPlot, "Version Store");
 
         TempDbChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        TempDbChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(TempDbChart);
         TempDbChart.Plot.YLabel("MB");
 
@@ -406,13 +432,25 @@ public partial class ServerTab : UserControl
 
     // Dedicated chart for tempdb TOTAL allocated size (used + unallocated free space) over time — the
     // growth trend, on its own scale so it doesn't flatten the usage series above. Mirror of Dashboard.
-    private void UpdateTempDbSizeChart(List<TempDbRow> data)
+    private void UpdateTempDbSizeChart(List<TempDbRow> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(TempDbSizeChart);
         ApplyTheme(TempDbSizeChart);
         _tempDbSizeHover?.Clear();
 
-        if (data.Count == 0) { TempDbSizeChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            TempDbSizeChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempDbSizeChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            ReapplyAxisColors(TempDbSizeChart);
+            TempDbSizeChart.Refresh();
+            return;
+        }
 
         var sorted = data.OrderBy(d => d.CollectionTime).ToList();
         var times = sorted.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
@@ -427,16 +465,29 @@ public partial class ServerTab : UserControl
         ReapplyAxisColors(TempDbSizeChart);
         TempDbSizeChart.Plot.YLabel("Allocated MB");
         TempDbSizeChart.Plot.Axes.AutoScaleY();
+        TempDbSizeChart.Plot.Axes.SetLimitsX(xMin, xMax);
         TempDbSizeChart.Refresh();
     }
 
-    private void UpdateTempDbFileIoChart(List<FileIoTrendPoint> data)
+    private void UpdateTempDbFileIoChart(List<FileIoTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(TempDbFileIoChart);
         _tempDbFileIoHover?.Clear();
         ApplyTheme(TempDbFileIoChart);
 
-        if (data.Count == 0) { TempDbFileIoChart.Refresh(); return; }
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            TempDbFileIoChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempDbFileIoChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            ReapplyAxisColors(TempDbFileIoChart);
+            TempDbFileIoChart.Refresh();
+            return;
+        }
 
         var files = data
             .GroupBy(d => d.DatabaseName)
@@ -467,6 +518,7 @@ public partial class ServerTab : UserControl
         }
 
         TempDbFileIoChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        TempDbFileIoChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ReapplyAxisColors(TempDbFileIoChart);
         TempDbFileIoChart.Plot.YLabel("tempdb File I/O Latency (ms)");
         SetChartYLimitsWithLegendPadding(TempDbFileIoChart, 0, maxLatency > 0 ? maxLatency : 10);

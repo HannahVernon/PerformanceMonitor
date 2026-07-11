@@ -106,7 +106,7 @@ public partial class ViewerServerTab : IDisposable
         {
             samples = samples.Where(s => s.SampleTime <= endUtc).ToList();
         }
-        RenderCpuChart(samples);
+        RenderCpuChart(samples, startUtc, endUtc);
 
         /* The CPU tab is a sub-TabControl (CPU Utilization + CPU Scheduler); load the scheduler sub-tab in
            the same pass — the CPU tab's full-refresh branch, mirroring the Memory tab's all-sub-tabs load. */
@@ -131,18 +131,28 @@ public partial class ViewerServerTab : IDisposable
             fileIo = fileIo.Where(f => f.CollectionTime <= endUtc).ToList();
         }
 
-        RenderTempDbUsageChart(trend);
-        RenderTempDbSizeChart(trend);
-        RenderTempDbFileIoChart(fileIo);
+        RenderTempDbUsageChart(trend, startUtc, endUtc);
+        RenderTempDbSizeChart(trend, startUtc, endUtc);
+        RenderTempDbFileIoChart(fileIo, startUtc, endUtc);
     }
 
-    private void RenderCpuChart(List<CpuUtilizationSample> data)
+    private void RenderCpuChart(List<CpuUtilizationSample> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(CpuChart);
         _cpuHover?.Clear();
         ApplyTheme(CpuChart);
 
-        if (data.Count == 0) { CpuChart.Refresh(); return; }
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
+        if (data.Count == 0)
+        {
+            CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            CpuChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+            ReapplyAxisColors(CpuChart);
+            CpuChart.Refresh();
+            return;
+        }
 
         /* sample_time is the monitored server's LOCAL wall clock in the store, so GetCpuUtilizationAsync
            de-skews it to naive UTC in SQL (#1262); it then runs through ViewerTimeHelper.ForDisplay like
@@ -166,6 +176,7 @@ public partial class ViewerServerTab : IDisposable
         _cpuHover?.Add(otherPlot, "Other");
 
         CpuChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        CpuChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(CpuChart);
         CpuChart.Plot.YLabel("CPU %");
         CpuChart.Plot.Axes.SetLimitsY(0, 105);
@@ -174,13 +185,23 @@ public partial class ViewerServerTab : IDisposable
         CpuChart.Refresh();
     }
 
-    private void RenderTempDbUsageChart(List<TempDbSample> data)
+    private void RenderTempDbUsageChart(List<TempDbSample> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(TempDbChart);
         _tempDbHover?.Clear();
         ApplyTheme(TempDbChart);
 
-        if (data.Count == 0) { TempDbChart.Refresh(); return; }
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
+        if (data.Count == 0)
+        {
+            TempDbChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempDbChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+            ReapplyAxisColors(TempDbChart);
+            TempDbChart.Refresh();
+            return;
+        }
 
         var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
         var userObj = data.Select(d => d.UserObjectReservedMb).ToArray();
@@ -206,6 +227,7 @@ public partial class ViewerServerTab : IDisposable
         _tempDbHover?.Add(vsPlot, "Version Store");
 
         TempDbChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        TempDbChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(TempDbChart);
         TempDbChart.Plot.YLabel("MB");
 
@@ -219,13 +241,23 @@ public partial class ViewerServerTab : IDisposable
     // Dedicated chart for tempdb TOTAL allocated size (used + unallocated free space) over time — the
     // growth trend, on its own scale (AutoScaleY) so it doesn't flatten the usage series above. Mirror
     // of Lite's UpdateTempDbSizeChart (single series, no legend).
-    private void RenderTempDbSizeChart(List<TempDbSample> data)
+    private void RenderTempDbSizeChart(List<TempDbSample> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(TempDbSizeChart);
         ApplyTheme(TempDbSizeChart);
         _tempDbSizeHover?.Clear();
 
-        if (data.Count == 0) { TempDbSizeChart.Refresh(); return; }
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
+        if (data.Count == 0)
+        {
+            TempDbSizeChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempDbSizeChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+            ReapplyAxisColors(TempDbSizeChart);
+            TempDbSizeChart.Refresh();
+            return;
+        }
 
         var sorted = data.OrderBy(d => d.CollectionTime).ToList();
         var times = sorted.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
@@ -240,16 +272,27 @@ public partial class ViewerServerTab : IDisposable
         ReapplyAxisColors(TempDbSizeChart);
         TempDbSizeChart.Plot.YLabel("Allocated MB");
         TempDbSizeChart.Plot.Axes.AutoScaleY();
+        TempDbSizeChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         TempDbSizeChart.Refresh();
     }
 
-    private void RenderTempDbFileIoChart(List<TempDbFileIoSample> data)
+    private void RenderTempDbFileIoChart(List<TempDbFileIoSample> data, DateTime startUtc, DateTime endUtc)
     {
         ClearChart(TempDbFileIoChart);
         _tempDbFileIoHover?.Clear();
         ApplyTheme(TempDbFileIoChart);
 
-        if (data.Count == 0) { TempDbFileIoChart.Refresh(); return; }
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
+        if (data.Count == 0)
+        {
+            TempDbFileIoChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            TempDbFileIoChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+            ReapplyAxisColors(TempDbFileIoChart);
+            TempDbFileIoChart.Refresh();
+            return;
+        }
 
         /* One series per tempdb data file (Lite groups on the file-name column). */
         var files = data
@@ -281,6 +324,7 @@ public partial class ViewerServerTab : IDisposable
         }
 
         TempDbFileIoChart.Plot.Axes.DateTimeTicksBottomDateChange();
+        TempDbFileIoChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ReapplyAxisColors(TempDbFileIoChart);
         TempDbFileIoChart.Plot.YLabel("tempdb File I/O Latency (ms)");
         SetChartYLimitsWithLegendPadding(TempDbFileIoChart, 0, maxLatency > 0 ? maxLatency : 10);
