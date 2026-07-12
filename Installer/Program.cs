@@ -735,25 +735,30 @@ namespace PerformanceMonitorInstaller
                     {
                         Console.WriteLine();
                         Console.WriteLine($"Upgrades complete: {upgradeSuccessCount} succeeded, {upgradeFailureCount} failed");
-
-                        /*Abort if any upgrade scripts failed -- proceeding would reinstall over a partially-upgraded database*/
-                        if (upgradeFailureCount > 0)
-                        {
-                            Console.WriteLine();
-                            Console.WriteLine("================================================================================");
-                            WriteError("Installation aborted: upgrade scripts must succeed before installation can proceed.");
-                            Console.WriteLine("Fix the errors above and re-run the installer.");
-                            Console.WriteLine("================================================================================");
-                            if (!automatedMode)
-                            {
-                                WaitForExit();
-                            }
-                            return (int)InstallationResultCode.UpgradesFailed;
-                        }
                     }
-                    else
+                    else if (upgradeFailureCount == 0)
                     {
                         Console.WriteLine("No pending upgrades found.");
+                    }
+
+                    /*
+                    Abort if any upgrade failed -- proceeding would reinstall over a partially-upgraded
+                    database. Checked outside the upgradeCount block because discovery itself can fail
+                    before any hop runs (an unreadable installed version reports a failure with an
+                    upgrade count of zero), and that must not read as "no pending upgrades".
+                    */
+                    if (upgradeFailureCount > 0)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("================================================================================");
+                        WriteError("Installation aborted: upgrade scripts must succeed before installation can proceed.");
+                        Console.WriteLine("Fix the errors above and re-run the installer.");
+                        Console.WriteLine("================================================================================");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.UpgradesFailed;
                     }
                 }
                 else

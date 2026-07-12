@@ -148,6 +148,36 @@ public class UpgradeOrderingTests
         Assert.Equal("currentVersion", ex.ParamName);
     }
 
+    [Theory]
+    [InlineData("2.2.0-rc1")]
+    [InlineData("2.2.0+abc123")]
+    [InlineData("2.2.0-rc1+abc123")]
+    public void SemVerSuffixOnTargetVersion_IsStripped(string targetVersion)
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql")
+            .WithUpgrade("2.1.0", "2.2.0", "01_compress.sql");
+
+        // A pre-release <InformationalVersion> must not make every upgrade abort. Without the
+        // suffix strip, "2.2.0-rc1" fails to parse and throws.
+        var upgrades = ScriptProvider.FromDirectory(dir.RootPath).GetApplicableUpgrades("2.0.0", targetVersion);
+
+        Assert.Equal(2, upgrades.Count);
+    }
+
+    [Fact]
+    public void TwoPartVersion_IsTreatedAsThreePart()
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql")
+            .WithUpgrade("2.1.0", "2.2.0", "01_compress.sql");
+
+        // Version.TryParse("2.0") leaves Build == -1, which the Version(int,int,int) ctor rejects.
+        var upgrades = ScriptProvider.FromDirectory(dir.RootPath).GetApplicableUpgrades("2.0", "2.2");
+
+        Assert.Equal(2, upgrades.Count);
+    }
+
     [Fact]
     public void UnparseableTargetVersion_Throws()
     {

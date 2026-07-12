@@ -756,6 +756,7 @@ namespace PerformanceMonitorDashboard
                     {
                         await Dispatcher.InvokeAsync(() =>
                         {
+                            InstallProgressBar.Value = 0;
                             InstallStatusText.Text = $"Upgrade aborted: {upgradeFailure} upgrade script(s) failed.";
                             AppendInstallLog(
                                 $"Installation aborted: {upgradeFailure} upgrade script(s) failed. Upgrade scripts must succeed before installation can proceed.",
