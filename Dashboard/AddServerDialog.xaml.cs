@@ -806,6 +806,15 @@ namespace PerformanceMonitorDashboard
 
                 case DialogState.Initial:
                 default:
+                    /*
+                    The cancel and fatal-error paths land here, and both re-enable the form and re-show
+                    the panels -- so a ticked "Clean install (drops existing database)" would survive a
+                    cancelled run, and the server box could then be retargeted and clicked, dropping a
+                    database that was never consented to. Clear the mode flags here as well as at
+                    InstallComplete, so every exit from a run clears them.
+                    */
+                    RepairCheckBox.IsChecked = false;
+                    CleanInstallCheckBox.IsChecked = false;
                     SetFormEnabled(true);
                     SaveButton.IsEnabled = true;
                     SaveButton.Content = "Save";
@@ -869,9 +878,15 @@ namespace PerformanceMonitorDashboard
                         throwOnError: true,
                         cancellationToken: cancellationToken);
                 }
-                catch (OperationCanceledException)
+                catch (Exception) when (cancellationToken.IsCancellationRequested)
                 {
-                    throw;
+                    /*
+                    SqlCommand does NOT surface cancellation as an OperationCanceledException: it cancels
+                    the in-flight command and the task faults with a SqlException ("Operation cancelled by
+                    user."). Without this, the user's own Cancel would be reported as an
+                    unknown-database-state block, hiding the install button until they re-tested.
+                    */
+                    throw new OperationCanceledException(cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -1002,10 +1017,17 @@ namespace PerformanceMonitorDashboard
                 /*
                 A repair reinstalls objects without running migrations, so it must NOT record the
                 target version -- that would strand every pending hop, which is exactly the bug the
-                abort above exists to prevent. Record it at the version the database is actually
-                still at, so the upgrade is still offered afterwards.
+                abort above exists to prevent.
+
+                So a repair writes NO history row at all. It does not change the version, and
+                installation_history is the version ledger -- writing back a version we merely READ is
+                how a guess becomes a fact. Concretely: GetInstalledVersionAsync returns "1.0.0" as a
+                #538 fallback when the database exists but has no SUCCESS row, meaning "unknown, try
+                every upgrade". Echoing that back as a SUCCESS row would persist the guess as truth.
+                Writing nothing leaves the previous row as the version of record, which is exactly
+                right -- the pending upgrade is still offered afterwards.
                 */
-                string historyVersion = repairFromVersion ?? appVersion;
+                bool isRepair = repairFromVersion != null;
 
                 /* Run main installation */
                 AppendInstallLog("Starting main installation...", "Info");
@@ -1031,33 +1053,39 @@ namespace PerformanceMonitorDashboard
                     preValidationAction,
                     cancellationToken);
 
-                /* Log installation history */
-                try
+                /* Log installation history -- but never for a repair, which changes no version (see above). */
+                if (isRepair)
                 {
-                    AppendInstallLog("Recording installation history...", "Info");
-
-                    /*
-                    Fold the upgrade script counts in. InstallationResult only covers the install
-                    files, so passing it alone would under-report files_executed and could record a
-                    SUCCESS at the target version even when a migration had failed.
-
-                    installer_version is what the database is at (historyVersion); installer_info_version
-                    records which binary ran, which on a repair is the newer one.
-                    */
-                    await InstallationService.LogInstallationHistoryAsync(
-                        installerConnStr,
-                        historyVersion,
-                        appVersion,
-                        _installResult.StartTime,
-                        upgradeSuccess + _installResult.FilesSucceeded,
-                        upgradeFailure + _installResult.FilesFailed,
-                        upgradeFailure == 0 && _installResult.Success,
-                        progress);
-                    AppendInstallLog("Installation history recorded", "Success");
+                    AppendInstallLog(
+                        "Repair does not change the recorded version, so no installation history row was written.",
+                        "Info");
                 }
-                catch (Exception ex)
+                else
                 {
-                    AppendInstallLog($"Could not record installation history: {ex.Message}", "Warning");
+                    try
+                    {
+                        AppendInstallLog("Recording installation history...", "Info");
+
+                        /*
+                        Fold the upgrade script counts in. InstallationResult only covers the install
+                        files, so passing it alone would under-report files_executed and could record a
+                        SUCCESS at the target version even when a migration had failed.
+                        */
+                        await InstallationService.LogInstallationHistoryAsync(
+                            installerConnStr,
+                            appVersion,
+                            appVersion,
+                            _installResult.StartTime,
+                            upgradeSuccess + _installResult.FilesSucceeded,
+                            upgradeFailure + _installResult.FilesFailed,
+                            upgradeFailure == 0 && _installResult.Success,
+                            progress);
+                        AppendInstallLog("Installation history recorded", "Success");
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendInstallLog($"Could not record installation history: {ex.Message}", "Warning");
+                    }
                 }
 
                 /* Run validation if requested */
@@ -1082,12 +1110,12 @@ namespace PerformanceMonitorDashboard
                 /* Generate summary report */
                 try
                 {
-                    /* historyVersion, not appVersion: after a repair the database is still at the old version. */
+                    /* This parameter is printed as "Installer Version" -- it names the BINARY that ran, not the database. */
                     _reportPath = InstallationService.GenerateSummaryReport(
                         ServerNameTextBox.Text.Trim(),
                         _coreServerInfo?.SqlServerVersion ?? "",
                         _coreServerInfo?.SqlServerEdition ?? "",
-                        historyVersion,
+                        appVersion,
                         _installResult);
                     AppendInstallLog($"Report saved: {_reportPath}", "Info");
                 }
@@ -1100,13 +1128,37 @@ namespace PerformanceMonitorDashboard
                 await Dispatcher.InvokeAsync(() =>
                 {
                     InstallProgressBar.Value = 100;
-                    if (_installResult.Success && repairFromVersion != null)
+                    if (isRepair)
                     {
-                        /* InstallComplete clears the Repair checkbox on every outcome, so the next click upgrades. */
-                        InstallStatusText.Text = "Repair completed. Run the upgrade to apply pending migrations.";
+                        /*
+                        A repair on a database with pending migrations is EXPECTED to report file errors,
+                        and that is not a failed repair. The install scripts compile against the CURRENT
+                        schema -- e.g. install/23_process_blocked_process_xml.sql reads
+                        collect.blocking_BlockedProcessReport.monitor_loop, a column the 3.0.0-to-3.1.0
+                        migration adds -- and ALTER PROCEDURE binds columns at compile time, so those
+                        procedures cannot compile until the upgrade runs (Msg 207, "Invalid column name").
+                        A failed CREATE OR ALTER leaves the old body intact, so nothing is damaged; the
+                        upgrade's own install pass recompiles them once the schema is current.
+
+                        So the handoff is NOT gated on _installResult.Success: gating it would leave the
+                        user staring at "completed with N error(s)" and no next step, which is how the
+                        half-migrated database this feature exists to escape gets left behind.
+                        */
+                        InstallStatusText.Text = _installResult.Success
+                            ? "Repair completed. Run the upgrade to apply pending migrations."
+                            : "Repair completed with expected errors. Run the upgrade to complete.";
+
                         AppendInstallLog(
-                            $"Repair completed successfully. The server is still at v{NormalizeVersion(repairFromVersion)} -- click Upgrade Now to apply the pending migrations.",
+                            $"Repair complete. The server is still at v{NormalizeVersion(repairFromVersion!)} and no version was recorded -- click Upgrade Now to apply the pending migrations.",
                             "Success");
+
+                        if (!_installResult.Success)
+                        {
+                            AppendInstallLog(
+                                $"{_installResult.FilesFailed} object(s) could not be compiled because the pending upgrade has not run yet. " +
+                                "This is expected -- they reference columns the upgrade adds, and the upgrade will recompile them.",
+                                "Info");
+                        }
                     }
                     else if (_installResult.Success)
                     {
@@ -1128,15 +1180,20 @@ namespace PerformanceMonitorDashboard
                     points at a button that is not on screen and the obvious next click is Save & Connect,
                     leaving exactly the half-migrated database this feature exists to escape.
 
-                    Guarded on _currentState because InstallComplete chains to MonitoringCredentials for
-                    SQL auth; there the credentials step owns the panel and the log still carries the
-                    "upgrade still pending" line.
+                    MonitoringCredentials is included: InstallComplete chains straight into it for SQL
+                    auth, and that state does not re-show the panel either -- so without it, every SQL-auth
+                    user (the ones most likely to hit this) would get the dead end. The three panels live in
+                    separate grid rows and coexist fine.
+
+                    Not gated on _installResult.Success, for the reason above: a repair with expected
+                    compile errors still needs the handoff.
                     */
-                    if (_installResult.Success && repairFromVersion != null &&
-                        _currentState == DialogState.InstallComplete)
+                    if (isRepair &&
+                        (_currentState == DialogState.InstallComplete ||
+                         _currentState == DialogState.MonitoringCredentials))
                     {
                         DatabaseStatusText.Text =
-                            $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion)} " +
+                            $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion!)} " +
                             "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
                         InstallUpgradeButton.Content = "Upgrade Now";
                         InstallUpgradeButton.Visibility = Visibility.Visible;
@@ -1281,6 +1338,13 @@ namespace PerformanceMonitorDashboard
             AlertDeliveryOverrideComboBox.IsEnabled = enabled;
             DescriptionTextBox.IsEnabled = enabled;
             TestConnectionButton.IsEnabled = enabled;
+            /*
+            Check for Updates re-runs DetectDatabaseStatusAsync, which transitions back to a Connected_*
+            state -- re-showing the install button and collapsing the running install's progress panel.
+            Leaving it live during Installing let a second click start a concurrent install against the
+            same database, clobbering _installResult and leaving Cancel pointing at the wrong run.
+            */
+            CheckForUpdatesButton.IsEnabled = enabled;
             SaveButton.IsEnabled = enabled;
         }
 

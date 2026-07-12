@@ -1043,35 +1043,41 @@ namespace PerformanceMonitorInstaller
             /*
             Log installation history to database
             */
-            try
-            {
-                /*
-                A repair reinstalls objects without running migrations, so it must NOT record the
-                target version -- that would strand every pending hop, which is exactly what the
-                upgrade abort above exists to prevent. Record it at the version the database is
-                actually still at, so the upgrade is still offered afterwards.
-                */
-                string historyVersion = repairMode && currentVersion != null ? currentVersion : version;
+            /*
+            A repair reinstalls objects without running migrations, so it must NOT record the target
+            version -- that would strand every pending hop, which is exactly what the upgrade abort
+            above exists to prevent.
 
-                /*
-                installer_info_version records which binary ran, so it passes through unchanged --
-                on a repair that is the newer installer, even though installer_version stays at the
-                version the database is still on. currentVersion came from the installer_version
-                column, so reusing it here would put an assembly-style version in an info-version field.
-                */
-                await InstallationService.LogInstallationHistoryAsync(
-                    connectionString,
-                    historyVersion,
-                    infoVersion,
-                    installationStartTime,
-                    totalSuccessCount,
-                    totalFailureCount,
-                    installationSuccessful
-                ).ConfigureAwait(false);
-            }
-            catch (Exception ex)
+            It writes NO history row at all. A repair changes no version, and installation_history is
+            the version ledger -- echoing back a version we merely READ is how a guess becomes a fact.
+            Concretely: GetInstalledVersionAsync returns "1.0.0" as a #538 fallback when the database
+            exists but has no SUCCESS row, meaning "unknown, try every upgrade". Persisting that as a
+            SUCCESS row would turn the guess into truth. Writing nothing leaves the previous row as the
+            version of record, so the pending upgrade is still offered afterwards.
+            */
+            if (repairMode && currentVersion != null)
             {
-                Console.WriteLine($"Warning: Could not log installation history: {ex.Message}");
+                Console.WriteLine();
+                Console.WriteLine("Repair does not change the recorded version, so no installation history row was written.");
+            }
+            else
+            {
+                try
+                {
+                    await InstallationService.LogInstallationHistoryAsync(
+                        connectionString,
+                        version,
+                        infoVersion,
+                        installationStartTime,
+                        totalSuccessCount,
+                        totalFailureCount,
+                        installationSuccessful
+                    ).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Could not log installation history: {ex.Message}");
+                }
             }
 
             Console.WriteLine();
