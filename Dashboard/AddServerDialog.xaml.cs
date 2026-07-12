@@ -1223,6 +1223,16 @@ namespace PerformanceMonitorDashboard
             */
             _detectEpoch++;
 
+            /*
+            Every run invalidates the previous run's handoff. Without this, the handoff text outlived the
+            repair that produced it: repair, then click the "Upgrade Now" it hands you, and the upgrade
+            succeeds -- but this field still held "PerformanceMonitor is still at v3.0.0, the pending
+            upgrade has not been applied". Any later keystroke in the server box re-rendered that, with a
+            live Upgrade Now button, on a server that had just been upgraded. The completion block below
+            re-sets it only when THIS run was a repair that left an upgrade pending.
+            */
+            _handoffStatusText = null;
+
             if (_installBlockedReason != null)
             {
                 MessageBox.Show(_installBlockedReason, "Install Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
