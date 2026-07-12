@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 
 namespace PerformanceMonitorLite.Database;
 
@@ -109,22 +110,14 @@ public class DuckDbInitializer
     }
 
     /* Tables that have parquet archives — views are created to UNION hot data with archived parquet files.
-       IMPORTANT: Must match ArchiveService.ArchivableTables — every archived table needs an archive view. */
-    private static readonly string[] ArchivableTables =
-    [
-        "wait_stats", "latch_stats", "spinlock_stats", "cpu_scheduler_stats", "plan_cache_stats",
-        "query_stats", "procedure_stats", "query_store_stats",
-        "query_snapshots", "cpu_utilization_stats", "file_io_stats", "memory_stats",
-        "memory_clerks", "memory_pressure_events", "tempdb_stats", "perfmon_stats",
-        "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
-        "dmv_blocking_snapshots",
-        "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
-        "session_stats", "session_summary_stats", "system_health_events", "default_trace_events",
-        "job_history", "agent_status",
-        "server_config", "database_config",
-        "database_scoped_config", "trace_flags", "config_alert_log",
-        "collection_log"
-    ];
+       Catalog-driven: every collector table (from CollectorCatalog) plus the two non-collector time-series
+       tables (config_alert_log, collection_log). Adding a collector to the catalog gives it an archive view
+       for free — no hand-maintained list to keep in sync. Mirrors ArchiveService.ArchivableTables (same set,
+       same derivation); a test pins the two against each other and against the catalog. */
+    internal static readonly string[] ArchivableTables =
+        CollectorCatalog.All.Select(c => c.TargetTable)
+            .Concat(["config_alert_log", "collection_log"])
+            .ToArray();
 
     /* Archive views for these tables must DEDUP the hot∪parquet union on a server-side natural key.
        The 512MB emergency reset (ArchiveService.ArchiveAllAndResetAsync) archives all hot data to parquet
@@ -482,10 +475,13 @@ public class DuckDbInitializer
             /* v5: Added database_scoped_config and trace_flags tables
                    for database-scoped configuration and active trace flag collection. */
             _logger?.LogInformation("Running migration to v5: adding database_scoped_config and trace_flags tables");
-            await ExecuteNonQueryAsync(connection, Schema.CreateDatabaseScopedConfigTable);
-            await ExecuteNonQueryAsync(connection, Schema.CreateDatabaseScopedConfigIndex);
-            await ExecuteNonQueryAsync(connection, Schema.CreateTraceFlagsTable);
-            await ExecuteNonQueryAsync(connection, Schema.CreateTraceFlagsIndex);
+            /* Generated from the catalog (same source as GetAllTableStatements, which also recreates these
+               with IF NOT EXISTS immediately after migrations); byte-equivalent to the former hand-written
+               Schema constants this migration used before the schema was made catalog-driven. */
+            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateTable(DatabaseScopedConfigCollector.Instance));
+            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateIndex(DatabaseScopedConfigCollector.Instance)!);
+            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateTable(TraceFlagsCollector.Instance));
+            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateIndex(TraceFlagsCollector.Instance)!);
         }
 
         if (fromVersion < 6)
