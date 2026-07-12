@@ -79,8 +79,19 @@ namespace PerformanceMonitorDashboard
         title-bar X and Alt+F4 bypass it entirely -- without this the install keeps running against the
         database, history write included, with the dialog already destroyed and nothing left to stop it.
         */
-        private void CancelInstallOnClose(object? sender, System.ComponentModel.CancelEventArgs e) =>
+        private void CancelInstallOnClose(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            _dialogClosed = true;
             _installCts?.Cancel();
+        }
+
+        /*
+        Setting DialogResult on a window that has already closed throws. A save in flight is the way in:
+        press ESC (or Cancel) while its connection test is running -- which is a plain 10-second wait, and
+        unbounded for Entra MFA -- and the close lands first, then the test completes and SaveAsync walks on
+        into DialogResult = true. The re-entrancy flag does not cover this: it is one Save, not two.
+        */
+        private bool _dialogClosed;
 
         public AddServerDialog()
         {
@@ -439,7 +450,7 @@ namespace PerformanceMonitorDashboard
             return true;
         }
 
-        private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage, bool MfaCancelled, string? ServerVersion)> RunConnectionTestAsync(Button triggerButton)
+        private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage, bool MfaCancelled)> RunConnectionTestAsync(Button triggerButton)
         {
             triggerButton.IsEnabled = false;
             SaveButton.IsEnabled = false;
@@ -450,7 +461,15 @@ namespace PerformanceMonitorDashboard
             the ONLY thing on screen after a retarget withdraws the post-run panels. Blanking it in the
             finally below left a dialog with no panels and no explanation whenever the test then failed.
             Borrow it, and give it back.
+
+            Epoch-stamped, because the borrow spans the awaits and the give-back happens after them -- the
+            same read-before / write-after shape this whole branch exists to kill, and giving it back
+            unconditionally resurrected a notice that had already stopped being true. (Retype away, click
+            Test Connection, retype BACK during the connect: the screen correctly restores itself, then the
+            failed test's finally pastes the stale "server name changed" notice back over it.) If anything
+            bumped the epoch while we were away, the label is no longer ours to restore.
             */
+            int statusEpoch = _detectEpoch;
             string priorStatus = StatusText.Text;
             var priorStatusVisibility = StatusText.Visibility;
 
@@ -462,7 +481,6 @@ namespace PerformanceMonitorDashboard
             bool connected = false;
             string? errorMessage = null;
             bool mfaCancelled = false;
-            string? serverVersion = null;
             try
             {
                 /* Connect to master (not PerformanceMonitor) so the test succeeds
@@ -472,9 +490,16 @@ namespace PerformanceMonitorDashboard
                 builder.InitialCatalog = "master";
                 await using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
+
+                /*
+                Kept as a round-trip liveness check -- Open() alone can be satisfied from the pool -- but the
+                version it returns is deliberately DISCARDED. It used to be handed back and assigned straight
+                to _serverVersion, which is one of the four facts that may only be committed together, by
+                PublishProbedServer. DetectDatabaseStatusAsync re-probes and publishes them as a set.
+                */
                 using var cmd = new SqlCommand("SELECT @@VERSION", connection);
-                var version = await cmd.ExecuteScalarAsync() as string;
-                serverVersion = version?.Split('\n')[0]?.Trim();
+                _ = await cmd.ExecuteScalarAsync();
+
                 connected = true;
             }
             catch (Exception ex)
@@ -492,13 +517,20 @@ namespace PerformanceMonitorDashboard
                     triggerButton.IsEnabled = true;
                     SaveButton.IsEnabled = true;
 
-                    /* Give back whatever we borrowed. On success the detection repaints over it anyway. */
-                    StatusText.Text = priorStatus;
-                    StatusText.Visibility = priorStatusVisibility;
+                    /*
+                    Give back what we borrowed -- but only if it is still ours. A retype or a newer detection
+                    during the await means the label has moved on, and restoring it would be pasting a stale
+                    notice over a fresher one. On success the detection repaints it anyway.
+                    */
+                    if (statusEpoch == _detectEpoch)
+                    {
+                        StatusText.Text = priorStatus;
+                        StatusText.Visibility = priorStatusVisibility;
+                    }
                 }
             }
 
-            return (connected, errorMessage, mfaCancelled, serverVersion);
+            return (connected, errorMessage, mfaCancelled);
         }
 
         private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
@@ -527,7 +559,7 @@ namespace PerformanceMonitorDashboard
         {
             if (!ValidateInputs()) return;
 
-            var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync(TestConnectionButton);
+            var (connected, errorMessage, mfaCancelled) = await RunConnectionTestAsync(TestConnectionButton);
 
             if (connected)
             {
@@ -636,11 +668,23 @@ namespace PerformanceMonitorDashboard
 
         A half-replaced set of facts is the one thing the guard cannot catch. Stale-but-consistent it
         catches every time.
+
+        _installedVersion is in here for that reason and no other. It is the FOURTH fact, and leaving it
+        behind at the two block sites -- where we either never read it (unsupported version) or could not
+        (the read threw) -- left them describing the PREVIOUS server. That is sealed today only because a
+        block lands in Connected_StatusUnknown, which happens to collapse both buttons: a rendering
+        accident standing in for an invariant, which is the exact thing this file has been bitten by over
+        and over. A block passes null, because null is the truth there: we do not know.
         */
-        private void PublishProbedServer(ServerInfo info, string serverVersion, string serverName)
+        private void PublishProbedServer(
+            ServerInfo info,
+            string serverVersion,
+            string serverName,
+            string? installedVersion)
         {
             _coreServerInfo = info;
             _serverVersion = serverVersion;
+            _installedVersion = installedVersion;
             RecordVerdictFor(serverName);
         }
 
@@ -983,7 +1027,12 @@ namespace PerformanceMonitorDashboard
                     the previous server's state was -- so an unsupported server could be described using
                     the previous one's facts, under this one's name.
                     */
-                    PublishProbedServer(probedServerInfo, probedServerVersion, probedServerName);
+                    PublishProbedServer(
+                        probedServerInfo,
+                        probedServerVersion,
+                        probedServerName,
+                        /* Never read on this path -- we bail before the version probe. */
+                        installedVersion: null);
 
                     StatusText.Text = string.Empty;
                     StatusText.Visibility = Visibility.Collapsed;
@@ -1012,8 +1061,6 @@ namespace PerformanceMonitorDashboard
                     /* An install started, or a newer detection superseded us: publish nothing. */
                     if (Superseded()) return;
 
-                    _installedVersion = probedVersion;
-
                     /*
                     Cleared HERE, not before the await. Clearing it in the prologue makes the clear
                     unconditional while the publish it belongs to stays guarded: an install that blocked
@@ -1023,14 +1070,27 @@ namespace PerformanceMonitorDashboard
                     */
                     _installBlockedReason = null;
 
-                    PublishProbedServer(probedServerInfo, probedServerVersion, probedServerName);
+                    PublishProbedServer(
+                        probedServerInfo,
+                        probedServerVersion,
+                        probedServerName,
+                        probedVersion);
                 }
                 catch (Exception ex)
                 {
                     if (Superseded()) return;
 
-                    /* A publish: the block names THIS server's failure, so it is stamped with it. */
-                    PublishProbedServer(probedServerInfo, probedServerVersion, probedServerName);
+                    /*
+                    A publish: the block names THIS server's failure, so it is stamped with it -- and the
+                    installed version is null, because that is exactly what just failed to be read. Carrying
+                    the previous server's version through here is how a block ends up describing the wrong
+                    database.
+                    */
+                    PublishProbedServer(
+                        probedServerInfo,
+                        probedServerVersion,
+                        probedServerName,
+                        installedVersion: null);
 
                     BlockInstall(
                         $"Could not determine the installed PerformanceMonitor version: {ex.Message}\n\n" +
@@ -2010,8 +2070,15 @@ namespace PerformanceMonitorDashboard
             this method writes _currentState directly rather than transitioning -- so the detection landed
             afterwards, published its verdict, and put the install panel and the install button straight
             back on screen, silently undoing the skip the user had just chosen.
+
+            Clearing StatusText is part of superseding, not decoration: the detection painted "Checking
+            database status..." before it awaited, and its Superseded() early-outs return without clearing
+            it. Every other epoch-bumper does this; this one didn't, so the label sat there for the rest of
+            the dialog's life announcing a check nobody was running.
             */
             _detectEpoch++;
+            StatusText.Text = string.Empty;
+            StatusText.Visibility = Visibility.Collapsed;
 
             /* This bypasses TransitionToState, so it is the one exit that never cleared these. */
             RepairCheckBox.IsChecked = false;
@@ -2096,13 +2163,17 @@ namespace PerformanceMonitorDashboard
         private async void Save_Click(object sender, RoutedEventArgs e)
         {
             /*
-            Save is re-enterable, and the second one CRASHES. RunConnectionTestAsync(SaveButton) disables
-            Save for the duration -- but Test Connection stays live, and ITS finally re-enables Save (it
-            re-enables the form wholesale, not just the button it took). Click Save, click Test Connection,
-            click Save again: both tests complete, the first sets DialogResult and closes the window, and
-            the second sets DialogResult on a CLOSED window -- an InvalidOperationException on an async void
-            handler, which is an unhandled exception, which takes the app down. Pre-existing; the epoch guard
+            Save is re-enterable. RunConnectionTestAsync(SaveButton) disables Save for the duration -- but
+            Test Connection stays live, and ITS finally re-enables Save (it re-enables the form wholesale,
+            not just the button it took). Click Save, click Test Connection, click Save again: both tests
+            complete, the first sets DialogResult and closes the window, and the second assigns DialogResult
+            to a CLOSED window, which throws.
+
+            It does NOT take the app down -- App.OnDispatcherUnhandledException handles it (App.xaml.cs:173)
+            -- so an earlier version of this comment overstated it. What the user gets is an alarming
+            "An error occurred" box and a server that was silently not saved. Pre-existing; the epoch guard
             below happens to close every variant where a detect or install intervenes, but not this one.
+            (The close-during-save variant is handled separately, by _dialogClosed.)
             */
             if (_saveInProgress) return;
             _saveInProgress = true;
@@ -2152,7 +2223,7 @@ namespace PerformanceMonitorDashboard
                 */
                 int epoch = _detectEpoch;
 
-                var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync(SaveButton);
+                var (connected, errorMessage, mfaCancelled) = await RunConnectionTestAsync(SaveButton);
 
                 if (InstallInProgress) return;
 
@@ -2308,6 +2379,12 @@ namespace PerformanceMonitorDashboard
                     AlertDeliveryModeOverride = GetSelectedDeliveryOverride()
                 };
             }
+
+            /*
+            The user closed the dialog while this save's connection test was still running -- ESC, Cancel,
+            the X, Alt+F4. The window is gone; assigning DialogResult to it throws. Nothing to save to.
+            */
+            if (_dialogClosed) return;
 
             DialogResult = true;
             Close();

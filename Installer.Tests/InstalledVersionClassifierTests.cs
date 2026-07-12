@@ -70,6 +70,26 @@ public class InstalledVersionClassifierTests
                 databaseExists: true, historyTableExists: true, collectTableCount: 62, latestSuccessVersion: null));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void LedgerPresentButVersionIsBlank_IsUnknown_NotAnAnswer(string blank)
+    {
+        /*
+        installer_version is NOT NULL, so a row hand-edited to '' comes back as "" rather than null -- and
+        the "unreadable version" message we show an operator invites exactly that edit. "" is not a version:
+        FilterUpgrades resolves it to ZERO applicable hops, which reads as "already current" and strands
+        every pending migration, silently and permanently. Blank is absence of an answer, not an answer.
+
+        InstallGuard rejects "" on every path today, so this is the second lock on the same door. The ledger
+        is where a second lock earns its keep.
+        */
+        Assert.Equal(
+            InstallationService.UnknownVersionSentinel,
+            InstalledVersionClassifier.Classify(
+                databaseExists: true, historyTableExists: true, collectTableCount: 62, latestSuccessVersion: blank));
+    }
+
     [Fact]
     public void TheSentinelSortsBelowEveryRealVersion_SoEveryHopIsOffered()
     {

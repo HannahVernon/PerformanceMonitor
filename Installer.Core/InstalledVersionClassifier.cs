@@ -62,7 +62,15 @@ public static class InstalledVersionClassifier
         The ledger exists. A SUCCESS row is the answer; without one we know something was installed but
         not what, so fall back to "attempt every upgrade" rather than treating it as a fresh install and
         dropping the database (#538).
+
+        Blank counts as absent, not as an answer. installer_version is NOT NULL, so a row hand-edited to ''
+        -- and the block message we show an operator literally invites them to edit that row -- came back as
+        "" rather than null, and "" is not a version: FilterUpgrades turns it into ZERO hops, which reads as
+        "nothing to do" and strands every migration. InstallGuard rejects "" on every path today, so this is
+        the second lock on the same door, and the ledger is exactly where a second lock is worth having.
         */
-        return latestSuccessVersion ?? InstallationService.UnknownVersionSentinel;
+        return string.IsNullOrWhiteSpace(latestSuccessVersion)
+            ? InstallationService.UnknownVersionSentinel
+            : latestSuccessVersion;
     }
 }
