@@ -9,6 +9,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Windows;
@@ -461,10 +462,14 @@ namespace PerformanceMonitorDashboard
             }
             finally
             {
-                triggerButton.IsEnabled = true;
-                SaveButton.IsEnabled = true;
-                StatusText.Text = string.Empty;
-                StatusText.Visibility = System.Windows.Visibility.Collapsed;
+                /* Do not re-arm over a running install: SetFormEnabled(false) disabled these deliberately. */
+                if (!InstallInProgress)
+                {
+                    triggerButton.IsEnabled = true;
+                    SaveButton.IsEnabled = true;
+                    StatusText.Text = string.Empty;
+                    StatusText.Visibility = System.Windows.Visibility.Collapsed;
+                }
             }
 
             return (connected, errorMessage, mfaCancelled, serverVersion);
@@ -483,8 +488,12 @@ namespace PerformanceMonitorDashboard
             }
             finally
             {
-                CheckForUpdatesButton.IsEnabled = true;
                 CheckForUpdatesButton.Content = "Check for Updates";
+                /* Do not re-arm over a running install: SetFormEnabled(false) disabled this deliberately. */
+                if (!InstallInProgress)
+                {
+                    CheckForUpdatesButton.IsEnabled = true;
+                }
             }
         }
 
@@ -527,8 +536,20 @@ namespace PerformanceMonitorDashboard
             }
         }
 
+        /*
+        True once an install has started. Detection runs are async and can still be in flight when the
+        user starts an install, and their continuation would otherwise transition back to a Connected_*
+        state -- un-collapsing the panel over a RUNNING install, re-showing the install button, and
+        re-enabling Advanced Options. From there a second click starts a concurrent install (and a
+        newly-reachable "Clean install" tick drops the database out from under the first one).
+        Disabling the buttons is not enough: the detection paths re-enable them in their finally blocks.
+        */
+        private bool InstallInProgress => _currentState == DialogState.Installing;
+
         private async System.Threading.Tasks.Task DetectDatabaseStatusAsync()
         {
+            if (InstallInProgress) return;
+
             try
             {
                 StatusText.Text = "Checking database status...";
@@ -546,6 +567,9 @@ namespace PerformanceMonitorDashboard
 
                 /* Test connection via Installer.Core to get ServerInfo */
                 _coreServerInfo = await InstallationService.TestConnectionAsync(installerConnStr);
+
+                /* An install started while we were connecting: do not touch the UI it now owns. */
+                if (InstallInProgress) return;
 
                 if (_coreServerInfo == null || !_coreServerInfo.IsConnected)
                 {
@@ -585,9 +609,14 @@ namespace PerformanceMonitorDashboard
                     _installedVersion = await InstallationService.GetInstalledVersionAsync(
                         installerConnStr,
                         throwOnError: true);
+
+                    /* An install started while we were probing: do not touch the UI it now owns. */
+                    if (InstallInProgress) return;
                 }
                 catch (Exception ex)
                 {
+                    if (InstallInProgress) return;
+
                     BlockInstall(
                         $"Could not determine the installed PerformanceMonitor version: {ex.Message}\n\n" +
                         "Install and upgrade are blocked until this resolves. Proceeding could reinstall over an " +
@@ -642,7 +671,7 @@ namespace PerformanceMonitorDashboard
         would silently revert a newer database to this binary's older object definitions and record
         the lower version as SUCCESS.
         */
-        private static string? GetInstallBlockReason(string? installedVersion, string appVersion)
+        internal static string? GetInstallBlockReason(string? installedVersion, string appVersion)
         {
             if (installedVersion == null)
             {
@@ -652,11 +681,21 @@ namespace PerformanceMonitorDashboard
             var installedCore = ScriptProvider.TryParseVersionCore(installedVersion);
             var appCore = ScriptProvider.TryParseVersionCore(appVersion);
 
-            if (installedCore == null || appCore == null)
+            /* Distinct causes, distinct messages: nothing the user does to the database fixes a bad build version. */
+            if (appCore == null)
+            {
+                return $"This Dashboard reports its own version as '{appVersion}', which is not a valid version.\n\n" +
+                    "Install and upgrade are blocked: without a comparable version we cannot tell which " +
+                    "migrations still need to run. This is a build problem, not a problem with the server.";
+            }
+
+            if (installedCore == null)
             {
                 return $"Could not interpret the installed PerformanceMonitor version ('{installedVersion}').\n\n" +
                     "Install and upgrade are blocked: without a comparable version we cannot tell which " +
-                    "migrations still need to run.";
+                    "migrations still need to run. Correct the most recent SUCCESS row in " +
+                    "PerformanceMonitor.config.installation_history, or rebuild the database with the " +
+                    "CLI installer's --reinstall (destructive).";
             }
 
             if (installedCore > appCore)
@@ -687,6 +726,8 @@ namespace PerformanceMonitorDashboard
             checkboxes were ticked inside it with no way to untick them.
             */
             AdvancedOptionsExpander.IsEnabled = true;
+            /* Only the Installing state arms Cancel; otherwise it paints "Cancelling..." over nothing. */
+            CancelInstallButton.IsEnabled = false;
             StatusText.Text = string.Empty;
             StatusText.Visibility = Visibility.Collapsed;
             ConnectionInfoText.Text = string.Empty;
@@ -829,6 +870,9 @@ namespace PerformanceMonitorDashboard
             from an existing one we simply could not read, and guessing "absent" reinstalls over it with
             the migrations skipped and then records it as up to date.
             */
+            /* Structural backstop: never start a second install over a running one. */
+            if (InstallInProgress) return;
+
             if (_installBlockedReason != null)
             {
                 MessageBox.Show(_installBlockedReason, "Install Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1124,11 +1168,19 @@ namespace PerformanceMonitorDashboard
                     AppendInstallLog($"Could not generate report: {ex.Message}", "Warning");
                 }
 
+                /*
+                Did a CRITICAL file (01_/02_/03_) fail? ExecuteInstallationAsync aborts the whole pass on
+                those, so the repair reinstalled almost nothing. That is NOT the expected Msg 207 outcome
+                below, and must not be dressed up as one.
+                */
+                bool criticalFileFailed = _installResult.Errors.Any(e => Patterns.IsCriticalFile(e.FileName));
+                bool repairUsable = isRepair && !criticalFileFailed;
+
                 /* Update final status */
                 await Dispatcher.InvokeAsync(() =>
                 {
                     InstallProgressBar.Value = 100;
-                    if (isRepair)
+                    if (repairUsable)
                     {
                         /*
                         A repair on a database with pending migrations is EXPECTED to report file errors,
@@ -1185,10 +1237,11 @@ namespace PerformanceMonitorDashboard
                     user (the ones most likely to hit this) would get the dead end. The three panels live in
                     separate grid rows and coexist fine.
 
-                    Not gated on _installResult.Success, for the reason above: a repair with expected
-                    compile errors still needs the handoff.
+                    Not gated on _installResult.Success, for the reason above: a repair with the expected
+                    compile errors still needs the handoff. It IS gated on no critical file having failed,
+                    because that repair reinstalled nothing.
                     */
-                    if (isRepair &&
+                    if (repairUsable &&
                         (_currentState == DialogState.InstallComplete ||
                          _currentState == DialogState.MonitoringCredentials))
                     {
@@ -1198,6 +1251,13 @@ namespace PerformanceMonitorDashboard
                         InstallUpgradeButton.Content = "Upgrade Now";
                         InstallUpgradeButton.Visibility = Visibility.Visible;
                         DatabaseStatusPanel.Visibility = Visibility.Visible;
+                        /*
+                        That Border also holds the "Skip, just add server" link. In MonitoringCredentials it
+                        would otherwise become clickable for the first time, and SkipInstall_Click flips
+                        _currentState to Initial -- after which Save_Click silently saves the INSTALLER
+                        credentials instead of the monitoring credentials the user just typed.
+                        */
+                        SkipInstallText.Visibility = Visibility.Collapsed;
                     }
                 });
             }

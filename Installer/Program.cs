@@ -1038,7 +1038,27 @@ namespace PerformanceMonitorInstaller
             */
             totalSuccessCount = upgradeSuccessCount + installSuccessCount;
             totalFailureCount = upgradeFailureCount + installFailureCount;
-            installationSuccessful = totalFailureCount == 0;
+
+            /*
+            A repair on a database with pending migrations is EXPECTED to fail some install files, and
+            that is not a failed repair. The install scripts compile against the CURRENT schema -- e.g.
+            install/23_process_blocked_process_xml.sql reads collect.blocking_BlockedProcessReport.monitor_loop,
+            a column the 3.0.0-to-3.1.0 migration adds -- and ALTER PROCEDURE binds columns at compile
+            time, so those procedures cannot compile until the upgrade runs (Msg 207). A failed
+            CREATE OR ALTER leaves the old body intact, so nothing is damaged, and the upgrade's own
+            install pass recompiles them.
+
+            Reporting that as PartialInstallation (exit 4) is actively dangerous: a script gating on
+            %ERRORLEVEL% treats a good repair as a failure, and the operator reading "repair failed"
+            reaches for --reinstall, which DROPS the database -- the exact destructive outcome this
+            feature exists to avoid. A critical file (01_/02_/03_) failing is different: that aborts the
+            whole pass, so the repair reinstalled nothing and really did fail.
+            */
+            bool repairRan = repairMode && currentVersion != null;
+            bool criticalFileFailed = installationErrors.Any(e => Patterns.IsCriticalFile(e.FileName));
+            bool repairUsable = repairRan && !criticalFileFailed;
+
+            installationSuccessful = totalFailureCount == 0 || repairUsable;
 
             /*
             Log installation history to database
@@ -1109,6 +1129,26 @@ namespace PerformanceMonitorInstaller
             {
                 WriteWarning($"Installation completed with {totalFailureCount} error(s).");
                 Console.WriteLine("Review errors above and check PerformanceMonitor.config.collection_log for details.");
+            }
+
+            /*
+            The repair handoff. Without it the operator is told "N error(s), review errors above" with no
+            next step and reaches for --reinstall, which drops the database.
+            */
+            if (repairUsable)
+            {
+                Console.WriteLine();
+                Console.WriteLine("================================================================================");
+                Console.WriteLine($"Repair complete. This server is still at v{currentVersion} and no version was recorded.");
+                if (totalFailureCount > 0)
+                {
+                    Console.WriteLine($"{totalFailureCount} object(s) could not be compiled because the pending upgrade has not");
+                    Console.WriteLine("run yet. This is expected -- they reference columns the upgrade adds, and the");
+                    Console.WriteLine("upgrade will recompile them.");
+                }
+                Console.WriteLine();
+                Console.WriteLine("Next: re-run WITHOUT --repair to apply the pending upgrade.");
+                Console.WriteLine("================================================================================");
             }
 
             /*
