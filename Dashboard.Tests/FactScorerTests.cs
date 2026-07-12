@@ -171,9 +171,134 @@ public class FactScorerTests
 
         var cx = facts.First(f => f.Key == "CXPACKET");
 
-        // base 1.0 * (1.0 + 0.3 SOS + 0.4 THREADPOOL + 0.3 CTFP + 0.2 MAXDOP) = 2.2 → capped at 2.0
+        // base 1.0 * (1.0 + 0.3 SOS + 0.4 THREADPOOL + 0.3 CTFP + 0.2 MAXDOP) = 2.2 → capped at 2.0.
+        // (SOS + THREADPOOL are impact peers, so the Layer-3 tuning cap is released here.)
         Assert.True(cx.Severity <= 2.0, "Severity should never exceed 2.0");
         Assert.Equal(2.0, cx.Severity);
+    }
+
+    /* ── Layer 3: tuning-class severity cap + impact escalation (change 4) ── */
+
+    // Parallelism is a tuning opportunity, not an outage. CXPACKET saturates its base to 1.0 and
+    // non-impact amplifiers (CTFP + MAXDOP + high-DOP queries) push the Layer-2 product to 1.7, which
+    // WOULD land in the CRITICAL band (>= 1.5). With no impact peer co-firing, Layer 3 caps it at the
+    // 1.49 WARNING ceiling. Same shared FactScorer as Lite — pinned here for parity.
+    [Fact]
+    public void Score_CxPacketAlone_CappedAtWarningCeiling()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },        // base 1.0
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },       // +0.3 (not an impact peer)
+            new() { Source = "config", Key = "CONFIG_MAXDOP", Value = 0 },     // +0.2 (not an impact peer)
+            new() { Source = "queries", Key = "QUERY_HIGH_DOP", Value = 10 },  // +0.2 (not an impact peer)
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var cx = facts.First(f => f.Key == "CXPACKET");
+        // Layer-2 product = 1.0 * (1 + 0.3 + 0.2 + 0.2) = 1.7; Layer 3 caps it to 1.49.
+        Assert.Equal(1.49, cx.Severity, precision: 4);
+        Assert.True(cx.Severity < 1.5, "parallelism alone must stay in the WARNING band, never CRITICAL");
+    }
+
+    // Escape hatch: when an impact-bearing peer co-fires (THREADPOOL = real thread exhaustion) the cap
+    // is released and CXPACKET keeps its full amplified severity into the CRITICAL band.
+    [Fact]
+    public void Score_CxPacketWithThreadpool_CapReleased()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },        // base 1.0
+            new() { Source = "waits", Key = "THREADPOOL", Value = 0.05,        // real thread exhaustion (+0.4 on CXPACKET)
+                Metadata = new() { ["wait_time_ms"] = 7_200_000, ["avg_ms_per_wait"] = 3_600 } },
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },       // +0.3
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var cx = facts.First(f => f.Key == "CXPACKET");
+        // 1.0 * (1 + 0.4 THREADPOOL + 0.3 CTFP) = 1.7, uncapped because an impact peer co-fired.
+        Assert.Equal(1.7, cx.Severity, precision: 4);
+        Assert.True(cx.Severity >= 1.5, "an impact peer co-firing releases the cap into CRITICAL");
+    }
+
+    // THREADPOOL is the impact-bearing escalation path and is NEVER capped. The raised CXPACKET
+    // amplifier (+0.5) and the new runnable-queue amplifier (+0.5, off the RUNNABLE_TASKS context fact)
+    // drive a genuine parallelism -> thread-exhaustion meltdown to CRITICAL through THREADPOOL.
+    [Fact]
+    public void Score_Threadpool_ReachesCritical_ViaCxPacketAndRunnableQueue()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "THREADPOOL", Value = 0.05,        // base 1.0
+                Metadata = new() { ["wait_time_ms"] = 7_200_000, ["avg_ms_per_wait"] = 3_600 } },
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.40 },        // >= 0.10 -> raised amp +0.5
+            new() { Source = "cpu", Key = "RUNNABLE_TASKS", Value = 48,        // runnable_tasks_warning set -> amp +0.5
+                Metadata = new() { ["total_runnable_tasks"] = 48, ["runnable_tasks_warning"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var tp = facts.First(f => f.Key == "THREADPOOL");
+        // 1.0 * (1 + 0.5 CXPACKET + 0.5 runnable-queue) = 2.0, uncapped (THREADPOOL is an impact key).
+        Assert.Equal(2.0, tp.Severity, precision: 4);
+        Assert.True(tp.Severity >= 1.5, "THREADPOOL must reach CRITICAL on a real meltdown");
+
+        var cxAmp = tp.AmplifierResults.First(a => a.Description.Contains("CXPACKET"));
+        Assert.True(cxAmp.Matched);
+        Assert.Equal(0.5, cxAmp.Boost);
+
+        var rqAmp = tp.AmplifierResults.First(a => a.Description.Contains("Runnable-task queue"));
+        Assert.True(rqAmp.Matched);
+        Assert.Equal(0.5, rqAmp.Boost);
+    }
+
+    // The runnable-queue amplifier only fires on genuine scheduler pressure: a shallow runnable queue
+    // (below the trip level) does not boost THREADPOOL.
+    [Fact]
+    public void Score_Threadpool_RunnableQueueAmplifier_DoesNotFireBelowThreshold()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "THREADPOOL", Value = 0.05,
+                Metadata = new() { ["wait_time_ms"] = 7_200_000, ["avg_ms_per_wait"] = 3_600 } },
+            new() { Source = "cpu", Key = "RUNNABLE_TASKS", Value = 4,         // warning clear -> no boost
+                Metadata = new() { ["total_runnable_tasks"] = 4, ["runnable_tasks_warning"] = 0 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var tp = facts.First(f => f.Key == "THREADPOOL");
+        var rqAmp = tp.AmplifierResults.First(a => a.Description.Contains("Runnable-task queue"));
+        Assert.False(rqAmp.Matched);
+    }
+
+    // Confidence-hardening: the low-quality fallback floors at 0.5 AFTER the confidence multiply, so a
+    // fired thin-baseline anomaly stays >= InferenceEngine's 0.5 root entry-point even if confidence
+    // ever drops below 1.0 (it is a hardcoded 1.0 today; this guards the future). Same shared scorer.
+    [Theory]
+    [InlineData(1.0, 0.8, 0.5)]   // at the bar, conf 0.8: 0.5*0.8 = 0.4 -> floored to 0.5
+    [InlineData(1.5, 0.6, 0.5)]   // 0.75*0.6 = 0.45 -> floored to 0.5
+    [InlineData(2.0, 0.6, 0.6)]   // 1.0*0.6 = 0.6 -> above the floor, kept
+    [InlineData(2.0, 1.0, 1.0)]   // conf 1.0 unchanged
+    public void Score_LowQualityFallback_FloorsAtHalf_EvenWithSubUnitConfidence(
+        double exceedance, double confidence, double expected)
+    {
+        var fact = new Fact
+        {
+            Source = "anomaly",
+            Key = "ANOMALY_CPU_SPIKE",
+            Metadata = new()
+            {
+                ["deviation_sigma"] = 0.5,
+                ["baseline_low_quality"] = 1.0,
+                ["fallback_exceedance"] = exceedance,
+                ["confidence"] = confidence
+            }
+        };
+        new FactScorer().ScoreAll(new List<Fact> { fact });
+        Assert.Equal(expected, fact.BaseSeverity, precision: 4);
     }
 
     /* ── Regression: duplicate fact keys must not crash scoring ── */

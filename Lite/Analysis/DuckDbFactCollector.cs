@@ -37,6 +37,7 @@ public partial class DuckDbFactCollector : IFactCollector
         await CollectDatabaseSizeFactAsync(context, facts);
         await CollectServerMetadataFactsAsync(context, facts);
         await CollectCpuUtilizationFactsAsync(context, facts);
+        await CollectRunnableTaskFactsAsync(context, facts);
         await CollectIoLatencyFactsAsync(context, facts);
         await CollectTempDbFactsAsync(context, facts);
         await CollectMemoryGrantFactsAsync(context, facts);
