@@ -223,6 +223,100 @@ public class FactScorerTests
         Assert.True(cx.Severity >= 1.5, "an impact peer co-firing releases the cap into CRITICAL");
     }
 
+    // REGRESSION (escape-hatch significance gate): the cap-release peers SOS_SCHEDULER_YIELD and
+    // RESOURCE_SEMAPHORE must be SIGNIFICANT to release the cap, not merely present. Neither has a
+    // minimum guard in ScoreWaitFact, so BaseSeverity > 0 fires on any trace of the wait — and SOS
+    // physically co-occurs with high CXPACKET (parallel workers yield -> SOS). A trivial SOS used to
+    // release the cap on exactly the busy servers the cap targets, re-admitting CXPACKET=CRITICAL
+    // noise. These pin the significance bars (SOS 0.25, RS 0.10) the escape hatch now uses. Same shared
+    // FactScorer as Lite — pinned here for parity.
+
+    // A TRIVIAL SOS (0.1% of period, far below the 0.25 bar) must NOT release the cap: CXPACKET stays
+    // capped at the WARNING ceiling even though a sub-threshold SOS wait is present.
+    [Fact]
+    public void Score_CxPacketWithTrivialSos_CapHolds()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },           // base 1.0
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },          // +0.3
+            new() { Source = "config", Key = "CONFIG_MAXDOP", Value = 0 },        // +0.2
+            new() { Source = "queries", Key = "QUERY_HIGH_DOP", Value = 10 },     // +0.2
+            new() { Source = "waits", Key = "SOS_SCHEDULER_YIELD", Value = 0.001 }, // TRIVIAL — 0.1%, < 0.25 bar
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var cx = facts.First(f => f.Key == "CXPACKET");
+        // Trivial SOS neither amplifies CXPACKET (amp bar is 0.25) nor releases the cap: 1.7 -> 1.49.
+        Assert.Equal(1.49, cx.Severity, precision: 4);
+        Assert.True(cx.Severity <= 1.49, "a trivial SOS must NOT release the tuning cap");
+    }
+
+    // A SIGNIFICANT SOS (30% of period, >= the 0.25 bar) DOES release the cap: CXPACKET reaches CRITICAL.
+    [Fact]
+    public void Score_CxPacketWithSignificantSos_CapReleased()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },           // base 1.0
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },          // +0.3
+            new() { Source = "config", Key = "CONFIG_MAXDOP", Value = 0 },        // +0.2
+            new() { Source = "queries", Key = "QUERY_HIGH_DOP", Value = 10 },     // +0.2
+            new() { Source = "waits", Key = "SOS_SCHEDULER_YIELD", Value = 0.30 }, // SIGNIFICANT — >= 0.25 bar
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var cx = facts.First(f => f.Key == "CXPACKET");
+        // Significant SOS also fires the CXPACKET SOS amplifier (+0.3): 1.0*(1+0.3+0.3+0.2+0.2)=2.0, uncapped.
+        Assert.Equal(2.0, cx.Severity, precision: 4);
+        Assert.True(cx.Severity >= 1.5, "a significant SOS releases the cap into CRITICAL");
+    }
+
+    // A TRIVIAL RESOURCE_SEMAPHORE (0.1% of period, below the 0.10 bar) must NOT release the cap. RS
+    // never amplifies CXPACKET, so pre-cap CXPACKET is 1.7 either way — this isolates the escape hatch.
+    [Fact]
+    public void Score_CxPacketWithTrivialResourceSemaphore_CapHolds()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },            // base 1.0
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },           // +0.3
+            new() { Source = "config", Key = "CONFIG_MAXDOP", Value = 0 },         // +0.2
+            new() { Source = "queries", Key = "QUERY_HIGH_DOP", Value = 10 },      // +0.2
+            new() { Source = "waits", Key = "RESOURCE_SEMAPHORE", Value = 0.001 }, // TRIVIAL — 0.1%, < 0.10 bar
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var cx = facts.First(f => f.Key == "CXPACKET");
+        Assert.Equal(1.49, cx.Severity, precision: 4);
+        Assert.True(cx.Severity <= 1.49, "a trivial RESOURCE_SEMAPHORE must NOT release the tuning cap");
+    }
+
+    // A SIGNIFICANT RESOURCE_SEMAPHORE (15% of period, >= the 0.10 bar) DOES release the cap. RS does
+    // not amplify CXPACKET, so the pre-cap 1.7 passes through uncapped — the escape hatch in isolation.
+    [Fact]
+    public void Score_CxPacketWithSignificantResourceSemaphore_CapReleased()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "CXPACKET", Value = 0.80 },           // base 1.0
+            new() { Source = "config", Key = "CONFIG_CTFP", Value = 5 },          // +0.3
+            new() { Source = "config", Key = "CONFIG_MAXDOP", Value = 0 },        // +0.2
+            new() { Source = "queries", Key = "QUERY_HIGH_DOP", Value = 10 },     // +0.2
+            new() { Source = "waits", Key = "RESOURCE_SEMAPHORE", Value = 0.15 }, // SIGNIFICANT — >= 0.10 bar
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var cx = facts.First(f => f.Key == "CXPACKET");
+        // RS does not amplify CXPACKET; the pre-cap 1.7 is released unchanged.
+        Assert.Equal(1.7, cx.Severity, precision: 4);
+        Assert.True(cx.Severity >= 1.5, "a significant RESOURCE_SEMAPHORE releases the cap into CRITICAL");
+    }
+
     // THREADPOOL is the impact-bearing escalation path and is NEVER capped. The raised CXPACKET
     // amplifier (+0.5) and the new runnable-queue amplifier (+0.5, off the RUNNABLE_TASKS context fact)
     // drive a genuine parallelism -> thread-exhaustion meltdown to CRITICAL through THREADPOOL.

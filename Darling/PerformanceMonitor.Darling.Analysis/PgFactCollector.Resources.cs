@@ -59,7 +59,8 @@ LIMIT 1";
 SELECT total_runnable_tasks_count, runnable_tasks_warning
 FROM cpu_scheduler_stats
 WHERE server_id = $1
-AND   collection_time <= $2
+AND   collection_time >= $2
+AND   collection_time <= $3
 ORDER BY collection_time DESC
 LIMIT 1";
 
@@ -71,7 +72,10 @@ LIMIT 1";
     /// Source="cpu" key besides CPU_SQL_PERCENT/CPU_SPIKE). The THREADPOOL runnable-queue amplifier
     /// reads the warning flag to confirm real scheduler CPU pressure behind a thread exhaustion. No new
     /// collector — reuses the data cpu_scheduler_stats already stores (not collected on Azure SQL DB,
-    /// where the fact is simply absent and the amplifier no-ops). Ported byte-identically from Lite's
+    /// where the fact is simply absent and the amplifier no-ops). The read is window-bounded to
+    /// [TimeRangeStart, TimeRangeEnd] (a lower bound, not just <= end, matching CpuUtilizationSql) so a
+    /// lapsed collection surfaces no stale snapshot from outside the window — the fact is then absent
+    /// and the amplifier no-ops. Ported byte-identically from Lite's
     /// DuckDbFactCollector.CollectRunnableTaskFactsAsync.
     /// </summary>
     private async Task CollectRunnableTaskFactsAsync(AnalysisContext context, List<Fact> facts)
@@ -82,6 +86,7 @@ LIMIT 1";
 
             using var cmd = new NpgsqlCommand(RunnableTaskStatsSql, connection);
             cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
             cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
 
             using var reader = await cmd.ExecuteReaderAsync();

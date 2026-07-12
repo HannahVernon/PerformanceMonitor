@@ -85,14 +85,24 @@ public class FactScorer
         // ESCAPE HATCH: release the cap entirely when an impact-bearing peer co-fired — THREADPOOL
         // (thread exhaustion), SOS_SCHEDULER_YIELD (CPU starvation), or RESOURCE_SEMAPHORE (grant
         // starvation) — because then the parallelism genuinely IS driving an outage and CRITICAL is
-        // earned. Those peers are Source="waits", so they appear in factsByKey only when they scored
-        // (BaseSeverity > 0); the explicit check is belt-and-suspenders. Caps numeric Severity only —
-        // SeverityBand is derived from it downstream, so a capped fact stays in WARNING without a
-        // separate band edit and Lite parity is preserved.
+        // earned. "Co-fired" must mean SIGNIFICANT, not merely present. Only THREADPOOL's base is
+        // self-gating: ScoreWaitFact requires >= 1hr total AND >= 1s avg before THREADPOOL scores at
+        // all, so BaseSeverity > 0 there already means real exhaustion — keep the presence check.
+        // SOS_SCHEDULER_YIELD (0.75, null) and RESOURCE_SEMAPHORE (0.01, null) have NO minimum guard,
+        // so their BaseSeverity > 0 fires on ANY trace of the wait; and SOS physically co-occurs with
+        // high CXPACKET (parallel workers yield -> SOS) and is emitted for any delta_wait_time_ms > 0,
+        // so a trivial SOS (e.g. 500ms over an hour) would release the cap on exactly the busy servers
+        // the cap targets — re-admitting the CXPACKET=CRITICAL noise the cap exists to kill. Gate
+        // SOS/RS on SIGNIFICANCE (fraction of period) via the same HasSignificantWait helper the
+        // amplifiers use, not on mere presence: SOS at 0.25 (matches the CXPACKET SOS amplifier bar);
+        // RS at 0.10 (RESOURCE_SEMAPHORE has no HasSignificantWait amplifier bar, so pick a bar here —
+        // 0.10 of period is meaningful grant starvation). Caps numeric Severity only — SeverityBand is
+        // derived from it downstream, so a capped fact stays in WARNING without a separate band edit
+        // and Lite parity is preserved.
         var impactPeerCoFired =
             (factsByKey.TryGetValue("THREADPOOL", out var tpPeer) && tpPeer.BaseSeverity > 0)
-            || (factsByKey.TryGetValue("SOS_SCHEDULER_YIELD", out var sosPeer) && sosPeer.BaseSeverity > 0)
-            || (factsByKey.TryGetValue("RESOURCE_SEMAPHORE", out var rsPeer) && rsPeer.BaseSeverity > 0);
+            || HasSignificantWait(factsByKey, "SOS_SCHEDULER_YIELD", 0.25)
+            || HasSignificantWait(factsByKey, "RESOURCE_SEMAPHORE", 0.10);
 
         if (!impactPeerCoFired)
         {

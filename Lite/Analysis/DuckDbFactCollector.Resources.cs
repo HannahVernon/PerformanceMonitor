@@ -62,7 +62,9 @@ LIMIT 1";
     /// CPU_SQL_PERCENT/CPU_SPIKE). The THREADPOOL runnable-queue amplifier reads the warning flag to
     /// confirm real scheduler CPU pressure behind a thread exhaustion. No new collector — reuses the
     /// data cpu_scheduler_stats already stores (not collected on Azure SQL DB, where the fact is simply
-    /// absent and the amplifier no-ops).
+    /// absent and the amplifier no-ops). The read is window-bounded to [TimeRangeStart, TimeRangeEnd]
+    /// (a lower bound, not just &lt;= end, matching CpuUtilizationSql) so a lapsed collection surfaces
+    /// no stale snapshot from outside the window — the fact is then absent and the amplifier no-ops.
     /// </summary>
     private async Task CollectRunnableTaskFactsAsync(AnalysisContext context, List<Fact> facts)
     {
@@ -77,11 +79,13 @@ LIMIT 1";
 SELECT total_runnable_tasks_count, runnable_tasks_warning
 FROM cpu_scheduler_stats
 WHERE server_id = $1
-AND   collection_time <= $2
+AND   collection_time >= $2
+AND   collection_time <= $3
 ORDER BY collection_time DESC
 LIMIT 1";
 
             cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
             cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
 
             using var reader = await cmd.ExecuteReaderAsync();
