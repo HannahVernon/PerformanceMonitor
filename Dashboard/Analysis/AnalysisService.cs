@@ -197,6 +197,13 @@ public class AnalysisService
             var incidents = _engine.ClusterIntoIncidents(stories, facts);
             IncidentId.StampClusters(context.ServerName, incidents);
 
+            // 3.7. Fold each ANOMALY_* story into the REGULAR finding that describes the same symptom
+            // (same run, same database) by rewriting its stamped incident id onto that parent's — so
+            // the anomaly stops rendering as its own card / its own email. No-parent anomalies stay
+            // solo; db-scoped object anomalies never cross databases. Presentation-only: nothing is
+            // dropped, only the incident tag is reconciled.
+            AnomalyIncidentReconciler.Reconcile(stories);
+
             // 4. Mute-filter the stories into the surviving findings (P2 reorder) — WITHOUT
             //    inserting yet, so enrichment + action-build happen on the survivors first
             //    and the BUILT RemediationAction is persisted on each row (D2). Muted/

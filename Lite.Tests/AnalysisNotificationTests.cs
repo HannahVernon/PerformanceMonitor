@@ -63,7 +63,8 @@ public class AnalysisNotificationTests : IDisposable
         double? rootValue = 92.5,
         Dictionary<string, double>? metadata = null,
         Dictionary<string, object>? drillDown = null,
-        string rootFactKey = "CPU_SPIKE")
+        string rootFactKey = "CPU_SPIKE",
+        string incidentId = "")
     {
         return new AnalysisFinding
         {
@@ -72,6 +73,7 @@ public class AnalysisNotificationTests : IDisposable
             Category = category,
             StoryPath = "CPU_SPIKE → PLAN_REGRESSION",
             StoryPathHash = hash,
+            IncidentId = incidentId,
             Severity = severity,
             Confidence = 0.67,
             FactCount = 2,
@@ -82,6 +84,30 @@ public class AnalysisNotificationTests : IDisposable
             RootFactMetadata = metadata,
             DrillDown = drillDown
         };
+    }
+
+    /// <summary>
+    /// Captures dispatched <see cref="FindingAlert"/>s so the incident-dedup tests can assert on how
+    /// many alerts fired and what each one carried, without going through the DuckDB alert store.
+    /// </summary>
+    private sealed class CapturingSender : IFindingAlertSender
+    {
+        public List<FindingAlert> Sent { get; } = new();
+        public Task<DateTime?> GetLastAlertTimeAsync(string serverId, string metricName) =>
+            Task.FromResult<DateTime?>(null);
+        public Task SendFindingAlertAsync(FindingAlert alert)
+        {
+            Sent.Add(alert);
+            return Task.CompletedTask;
+        }
+    }
+
+    private (AnalysisNotificationService Notifier, CapturingSender Sender) MakeCapturingNotifier()
+    {
+        var sender = new CapturingSender();
+        var notifier = new AnalysisNotificationService(
+            sender, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>());
+        return (notifier, sender);
     }
 
     /* ── #1140: finding-path dedup incidents (BuildContext derives them from the drill-down) ── */
@@ -511,6 +537,80 @@ public class AnalysisNotificationTests : IDisposable
         });
 
         Assert.Equal(1, await CountAlertLogRowsAsync());
+    }
+
+    /* ── Stage B change 3: incident-level e-mail dedup ── */
+
+    [Fact]
+    public async Task NotifyAsync_FindingsSharingIncident_SendOneAlert_NamingCoFired()
+    {
+        // Two findings in the SAME incident collapse to ONE alert led by the higher-severity primary;
+        // the other is named in the co-fired line of that one message.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        var primary = MakeFinding("aaaa000000000001", severity: 2.0, rootFactKey: "CPU_SPIKE",
+            category: "cpu_pressure", incidentId: "incident-1");
+        var secondary = MakeFinding("bbbb000000000002", severity: 1.6, rootFactKey: "BLOCKING_EVENTS",
+            category: "blocking", incidentId: "incident-1");
+
+        // Deliberately pass the lower-severity finding first — primary selection is by severity, not order.
+        await notifier.NotifyAsync(new[] { secondary, primary });
+
+        var alert = Assert.Single(sender.Sent);
+        Assert.Equal(2.0, alert.Severity);            // the CPU_SPIKE primary leads the incident
+        Assert.Contains("aaaa0000", alert.MetricName); // metric name embeds the primary's hash
+        var coFired = alert.Context.Details.Single(d => d.Heading == "Co-fired in this incident");
+        Assert.NotNull(coFired.Body);
+        Assert.StartsWith("Also surfaced in this analysis window:", coFired.Body);
+    }
+
+    [Fact]
+    public async Task NotifyAsync_LoneFinding_HasNoCoFiredItem()
+    {
+        // A single-finding incident sends the same message as before — no co-fired item appended.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[] { MakeFinding("solo000000000001", severity: 2.0, incidentId: "incident-1") });
+
+        var alert = Assert.Single(sender.Sent);
+        Assert.DoesNotContain(alert.Context.Details, d => d.Heading == "Co-fired in this incident");
+    }
+
+    [Fact]
+    public async Task NotifyAsync_CooldownKeyedByIncident_SuppressesSecondFindingOfSameIncident()
+    {
+        // A DIFFERENT finding of the SAME incident in a later cycle is suppressed by the incident
+        // cooldown — the old per-finding-hash cooldown would have let it re-notify.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[] { MakeFinding("aaaa000000000001", severity: 2.0, incidentId: "inc-9") });
+        await notifier.NotifyAsync(new[] { MakeFinding("bbbb000000000002", severity: 2.0, incidentId: "inc-9") });
+
+        Assert.Single(sender.Sent); // one alert for the incident; the second finding is cooled down
+    }
+
+    [Fact]
+    public async Task NotifyAsync_LegacyEmptyIncidentId_KeepsPerHashBuckets()
+    {
+        // Regression guard: findings with NO incident id must NOT collapse into one bucket — each keys
+        // by its StoryPathHash, so two distinct empty-id findings still send two alerts.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 2.0),  // empty IncidentId
+            MakeFinding("bbbb000000000002", severity: 2.0)   // empty IncidentId, different hash
+        });
+
+        Assert.Equal(2, sender.Sent.Count);
     }
 
     /* ── WS2: always raise a tray balloon for a notify-worthy finding ── */

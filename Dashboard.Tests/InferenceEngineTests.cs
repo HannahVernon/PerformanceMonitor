@@ -344,4 +344,67 @@ public class InferenceEngineTests
         // THREADPOOL->LCK bridge (LCK severity >= 0.5) merges it with the blocking story.
         Assert.Single(engine.ClusterIntoIncidents(stories, facts));
     }
+
+    // ── correlate-and-focus: DB-aware incident clustering (Stage B change 3, option i) ──
+
+    // A CPU_SQL_PERCENT->PLAN_REGRESSION edge fires, but the two stories name DIFFERENT databases —
+    // the DB-aware union refuses to merge them, so a db1 problem and a db2 problem stay two incidents
+    // (was one cross-database incident before the fix).
+    [Fact]
+    public void ClusterIntoIncidents_DifferentDatabases_DoNotMerge()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"], DatabaseName = "db1" },
+            new() { RootFactKey = "PLAN_REGRESSION", Severity = 0.6, Path = ["PLAN_REGRESSION"], DatabaseName = "db2" },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "PLAN_REGRESSION", Source = "queries", Value = 1, Severity = 0.6, BaseSeverity = 0.6 },
+        };
+
+        Assert.Equal(2, engine.ClusterIntoIncidents(stories, facts).Count);
+    }
+
+    // The same active edge, but the two stories name the SAME database -> still one incident. Guards
+    // against over-fragmentation: DB-awareness must not split a genuine same-database incident.
+    [Fact]
+    public void ClusterIntoIncidents_SameDatabase_StillMerge()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"], DatabaseName = "db1" },
+            new() { RootFactKey = "PLAN_REGRESSION", Severity = 0.6, Path = ["PLAN_REGRESSION"], DatabaseName = "db1" },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "PLAN_REGRESSION", Source = "queries", Value = 1, Severity = 0.6, BaseSeverity = 0.6 },
+        };
+
+        Assert.Single(engine.ClusterIntoIncidents(stories, facts));
+    }
+
+    // A server-scoped story (no DatabaseName) still bridges freely to a db-scoped one, so a server-wide
+    // symptom (CPU) correlates with a db-scoped cause (a regressed plan on db1) -> one incident.
+    [Fact]
+    public void ClusterIntoIncidents_ServerScopedStory_BridgesToDbScoped()
+    {
+        var engine = new InferenceEngine(new RelationshipGraph());
+        var stories = new List<AnalysisStory>
+        {
+            new() { RootFactKey = "CPU_SQL_PERCENT", Severity = 1.6, Path = ["CPU_SQL_PERCENT"], DatabaseName = null },
+            new() { RootFactKey = "PLAN_REGRESSION", Severity = 0.6, Path = ["PLAN_REGRESSION"], DatabaseName = "db1" },
+        };
+        var facts = new List<Fact>
+        {
+            new() { Key = "CPU_SQL_PERCENT", Source = "cpu", Value = 90, Severity = 1.6 },
+            new() { Key = "PLAN_REGRESSION", Source = "queries", Value = 1, Severity = 0.6, BaseSeverity = 0.6 },
+        };
+
+        Assert.Single(engine.ClusterIntoIncidents(stories, facts));
+    }
 }

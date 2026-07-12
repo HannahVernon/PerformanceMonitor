@@ -44,11 +44,13 @@ public sealed class AnalysisNotificationService
     private readonly Action<string, string>? _showTrayNotification;
 
     /// <summary>
-    /// Per-finding re-notification cooldown, keyed "{serverId}:{StoryPathHash}".
-    /// Seeded lazily from the alert log on first lookup per key so a finding
-    /// that just fired and entered its cooldown stays suppressed across an
-    /// app restart. Pruned on each notify cycle to entries within
-    /// 2 × AnalysisNotifyCooldownMinutes.
+    /// Per-INCIDENT re-notification cooldown, keyed "{serverId}:{IncidentId}" — falling back to the
+    /// finding's StoryPathHash when it has no incident id (legacy rows / absolution findings), so
+    /// those never collapse into one shared bucket. Keying by incident (not per finding) is what
+    /// stops one incident from fanning into N e-mails as its constituent findings each fire.
+    /// Seeded lazily from the alert log on first lookup per key so an incident that just fired and
+    /// entered its cooldown stays suppressed across an app restart. Pruned on each notify cycle to
+    /// entries within 2 × AnalysisNotifyCooldownMinutes.
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
 
@@ -90,8 +92,10 @@ public sealed class AnalysisNotificationService
     }
 
     /// <summary>
-    /// Notifies on every finding at or above the configured severity that is not
-    /// inside its re-notification cooldown. Never throws.
+    /// Notifies once per INCIDENT (not once per finding) at or above the configured severity, when the
+    /// incident is not inside its re-notification cooldown. Findings sharing an incident id in this
+    /// batch are collapsed to a single alert led by the highest-severity primary; the rest are named
+    /// as co-fired in that one message. Never throws.
     /// </summary>
     public async Task NotifyAsync(IReadOnlyList<AnalysisFinding> findings)
     {
@@ -107,7 +111,7 @@ public sealed class AnalysisNotificationService
 
         /* Drop entries past 2× cooldown so the dict stays bounded — any entry
            past 1× is already re-fire-eligible, doubling gives clock-skew margin.
-           If a key here also matches a finding in this batch, the per-finding
+           If a key here also matches an incident in this batch, the per-incident
            seed below will re-add it from history; that's a wash, not a bug. */
         var pruneBefore = now - TimeSpan.FromTicks(cooldown.Ticks * 2);
         foreach (var stale in _cooldowns)
@@ -116,15 +120,29 @@ public sealed class AnalysisNotificationService
                 _cooldowns.TryRemove(stale.Key, out _);
         }
 
-        foreach (var finding in findings)
-        {
-            if (finding.Severity < threshold)
-                continue;
+        /* Group the notify-worthy findings by incident so one incident yields one alert. The group
+           token is the finding's IncidentId, falling back to its StoryPathHash when empty — a legacy
+           or absolution finding has no incident id, and without the fallback every empty-id finding
+           would collapse into a single bucket. ServerId is part of the key so two servers never
+           share a bucket. GroupBy preserves first-seen order, keeping alert ordering stable. */
+        var incidents = findings
+            .Where(f => f is not null && f.Severity >= threshold)
+            .GroupBy(f => $"{f.ServerId}:{IncidentToken(f)}");
 
-            /* Cooldown key uses the finding's stable int id (matches both apps' prior
-               behaviour); the resolved serverId below is only the persistence shape. */
-            var key = $"{finding.ServerId}:{finding.StoryPathHash}";
-            var serverId = _resolveServerId(finding);
+        foreach (var incident in incidents)
+        {
+            /* The PRIMARY finding leads the alert; the rest are named as co-fired in its message.
+               Highest severity wins, root-key- then hash-tiebroken for a deterministic primary
+               (mirrors IncidentId.Compute's severity-desc, ordinal-root-key tiebreak). */
+            var members = incident
+                .OrderByDescending(f => f.Severity)
+                .ThenBy(f => f.RootFactKey, StringComparer.Ordinal)
+                .ThenBy(f => f.StoryPathHash, StringComparer.Ordinal)
+                .ToList();
+            var primary = members[0];
+
+            var key = incident.Key;
+            var serverId = _resolveServerId(primary);
 
             /* Honor per-server silencing (Dashboard "Silence All Alerts"). Checked after
                resolving serverId but before the cooldown seed/stamp, so a silenced server
@@ -132,12 +150,12 @@ public sealed class AnalysisNotificationService
             if (_isServerSilenced is not null && _isServerSilenced(serverId))
                 continue;
 
-            var metricName = FindingMessageFormatter.MetricName(finding);
+            var metricName = FindingMessageFormatter.MetricName(primary);
 
             /* Seed the in-memory cooldown from the alert log on first lookup per key so an
-               analysis finding that fired shortly before an app restart is not re-fired
-               afterward. No channel/error filter — the cooldown is stamped unconditionally
-               below, so the persisted equivalent is the latest row for that metric_name. */
+               incident that fired shortly before an app restart is not re-fired afterward. No
+               channel/error filter — the cooldown is stamped unconditionally below, so the
+               persisted equivalent is the latest row for the primary's metric_name. */
             if (!_cooldowns.ContainsKey(key))
             {
                 var lastPersisted = await _sender.GetLastAlertTimeAsync(serverId, metricName);
@@ -152,28 +170,40 @@ public sealed class AnalysisNotificationService
 
             try
             {
+                var context = FindingMessageFormatter.BuildContext(primary, threshold);
+
+                /* Name the other findings that co-fired in THIS incident, in the one message, so the
+                   single alert still accounts for everything the incident surfaced. Reuses the shared
+                   CoFiredSummary the viewer/MCP surfaces use; null (and so no item) for a lone
+                   finding, leaving the message byte-identical to the pre-dedup single-finding path. */
+                var coFired = CoFiredSummary.Line(
+                    CoFiredSummary.OtherTitles(FindingTitle(primary),
+                        members.Select(m => (FindingTitle(m), m.Severity))));
+                if (coFired is not null)
+                    context.Details.Add(new AlertDetailItem { Heading = "Co-fired in this incident", Body = coFired });
+
                 /* SendFindingAlertAsync fans out to email + Slack + Teams and records the
                    alert per this app's cadence. It returns no success/failure signal, so the
-                   cooldown is stamped regardless — a finding whose delivery failed is
+                   cooldown is stamped regardless — an incident whose delivery failed is
                    suppressed for the full cooldown (accepted best-effort behavior). */
                 await _sender.SendFindingAlertAsync(new FindingAlert(
                     metricName,
-                    finding.ServerName,
-                    FindingMessageFormatter.CurrentValue(finding),
+                    primary.ServerName,
+                    FindingMessageFormatter.CurrentValue(primary),
                     threshold.ToString("F1"),
                     serverId,
-                    FindingMessageFormatter.BuildContext(finding, threshold),
-                    finding.Severity,
+                    context,
+                    primary.Severity,
                     threshold,
-                    FindingMessageFormatter.DetailText(finding, threshold)));
+                    FindingMessageFormatter.DetailText(primary, threshold)));
 
-                /* Always raise the tray balloon for a notify-worthy finding (user choice), the
+                /* Always raise the tray balloon for a notify-worthy incident (user choice), the
                    same visible signal threshold alerts already pop — so a local-only user with no
                    email/webhook still sees it. No-op when the host wired no sink (Lite) or tray
                    notifications are disabled (the sink checks the pref). */
                 if (_showTrayNotification is not null)
                 {
-                    var (title, message) = FindingMessageFormatter.BalloonText(finding);
+                    var (title, message) = FindingMessageFormatter.BalloonText(primary);
                     _showTrayNotification(title, message);
                 }
 
@@ -182,12 +212,29 @@ public sealed class AnalysisNotificationService
             catch (Exception ex)
             {
                 /* SendFindingAlertAsync is documented never to throw; this guards a
-                   formatter defect so one bad finding cannot abort the rest. */
+                   formatter defect so one bad incident cannot abort the rest. */
                 _logger.LogError(
-                    $"AnalysisNotificationService: failed to notify on finding {finding.StoryPathHash}: {ex.GetType().Name}: {ex.Message}");
+                    $"AnalysisNotificationService: failed to notify on incident {key}: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
+
+    /// <summary>
+    /// The batch/cooldown grouping token for a finding: its incident id, or its StoryPathHash when the
+    /// incident id is empty (legacy / absolution findings) so those stay one-bucket-per-finding rather
+    /// than collapsing together.
+    /// </summary>
+    private static string IncidentToken(AnalysisFinding f) =>
+        string.IsNullOrEmpty(f.IncidentId) ? f.StoryPathHash : f.IncidentId;
+
+    /// <summary>
+    /// A finding's human-readable title for the co-fired cross-reference — its advice headline when the
+    /// shared library has one, else its root fact key (finally its category), matching the title the
+    /// viewer/MCP co-fired surfaces use.
+    /// </summary>
+    private static string FindingTitle(AnalysisFinding f) =>
+        FactAdvice.GetForFinding(f)?.Headline
+            ?? (string.IsNullOrEmpty(f.RootFactKey) ? f.Category : f.RootFactKey);
 }
 
 /// <summary>
