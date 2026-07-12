@@ -691,6 +691,16 @@ namespace PerformanceMonitorDashboard
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
                 bool cleanInstall = CleanInstallCheckBox.IsChecked == true;
+
+                /*
+                Repair only means anything for an existing installation we are not about to drop.
+                Resolving it to the version we repair FROM (rather than a bare bool) keeps the
+                history write below from ever recording the old version after a clean install.
+                */
+                string? repairFromVersion = RepairCheckBox.IsChecked == true && !cleanInstall
+                    ? _installedVersion
+                    : null;
+
                 bool resetSchedule = ResetScheduleCheckBox.IsChecked == true;
                 bool runValidation = ValidationCheckBox.IsChecked == true;
                 bool installDeps = InstallDepsCheckBox.IsChecked == true;
@@ -723,7 +733,18 @@ namespace PerformanceMonitorDashboard
                 int upgradeSuccess = 0;
                 int upgradeFailure = 0;
 
-                if (!cleanInstall && _installedVersion != null)
+                if (repairFromVersion != null)
+                {
+                    /*
+                    Repair reinstalls the schema objects (install scripts are idempotent) without
+                    running migrations, so a hop that failed on a missing or damaged object can be
+                    recovered without dropping the database. The pending upgrade runs afterwards.
+                    */
+                    AppendInstallLog(
+                        "Repair mode: skipping upgrade scripts. Objects will be reinstalled at their current definitions; the pending upgrade still needs to run afterwards.",
+                        "Warning");
+                }
+                else if (!cleanInstall && _installedVersion != null)
                 {
                     AppendInstallLog($"Checking for upgrades from v{NormalizeVersion(_installedVersion)} to v{appVersion}...", "Info");
 
@@ -763,6 +784,9 @@ namespace PerformanceMonitorDashboard
                                 "Error");
                             AppendInstallLog(
                                 "Fix the errors above and run the upgrade again. The server remains at its current version.",
+                                "Info");
+                            AppendInstallLog(
+                                "If the failure is a missing or damaged object, tick 'Repair' in Advanced Options to reinstall the schema objects without running migrations, then run the upgrade again.",
                                 "Info");
                             TransitionToState(DialogState.Initial);
                             DatabaseStatusPanel.Visibility = Visibility.Visible;
@@ -804,14 +828,22 @@ namespace PerformanceMonitorDashboard
                     AppendInstallLog("Recording installation history...", "Info");
 
                     /*
+                    A repair reinstalls objects without running migrations, so it must NOT record the
+                    target version -- that would strand every pending hop, which is exactly the bug
+                    the abort above exists to prevent. Record it at the version the database is
+                    actually still at, so the upgrade is still offered afterwards.
+                    */
+                    string historyVersion = repairFromVersion ?? appVersion;
+
+                    /*
                     Fold the upgrade script counts in. InstallationResult only covers the install
                     files, so passing it alone would under-report files_executed and could record a
                     SUCCESS at the target version even when a migration had failed.
                     */
                     await InstallationService.LogInstallationHistoryAsync(
                         installerConnStr,
-                        appVersion,
-                        appVersion,
+                        historyVersion,
+                        historyVersion,
                         _installResult.StartTime,
                         upgradeSuccess + _installResult.FilesSucceeded,
                         upgradeFailure + _installResult.FilesFailed,
@@ -863,7 +895,14 @@ namespace PerformanceMonitorDashboard
                 await Dispatcher.InvokeAsync(() =>
                 {
                     InstallProgressBar.Value = 100;
-                    if (_installResult.Success)
+                    if (_installResult.Success && repairFromVersion != null)
+                    {
+                        InstallStatusText.Text = "Repair completed. Run the upgrade to apply pending migrations.";
+                        AppendInstallLog(
+                            $"Repair completed successfully. The server is still at v{NormalizeVersion(repairFromVersion)} -- clear 'Repair' in Advanced Options and run the upgrade to apply the pending migrations.",
+                            "Success");
+                    }
+                    else if (_installResult.Success)
                     {
                         InstallStatusText.Text = "Installation completed successfully!";
                         AppendInstallLog("Installation completed successfully!", "Success");
@@ -915,6 +954,14 @@ namespace PerformanceMonitorDashboard
             CancelInstallButton.IsEnabled = false;
             InstallStatusText.Text = "Cancelling...";
         }
+
+        /* A clean install drops and recreates the database, so there is nothing left to repair. */
+        private void CleanInstallCheckBox_Checked(object sender, RoutedEventArgs e) =>
+            RepairCheckBox.IsChecked = false;
+
+        /* Repair is the non-destructive recovery path, so it cannot mean "drop the database". */
+        private void RepairCheckBox_Checked(object sender, RoutedEventArgs e) =>
+            CleanInstallCheckBox.IsChecked = false;
 
         private void AppendInstallLog(string message, string status)
         {

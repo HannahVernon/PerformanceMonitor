@@ -218,6 +218,12 @@
                     <StackPanel Margin="16,8,0,0">
                         <CheckBox x:Name="CleanInstallCheckBox"
                                   Content="Perform clean install (drops existing database)"
+                                  Checked="CleanInstallCheckBox_Checked"
+                                  Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="RepairCheckBox"
+                                  Content="Repair: reinstall objects, skip upgrade scripts"
+                                  Checked="RepairCheckBox_Checked"
+                                  ToolTip="Use when an upgrade fails because a table or object is missing or damaged. Reinstalls the schema objects without running migrations and without dropping the database. The pending upgrade still needs to run afterwards."
                                   Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
                         <CheckBox x:Name="ResetScheduleCheckBox"
                                   Content="Reset collection schedule to defaults"

@@ -44,6 +44,9 @@ namespace PerformanceMonitorInstaller
 
             Options:
               --reinstall       Drop existing database and perform clean install
+              --repair          Reinstall schema objects without running upgrade scripts. Use when an
+                                upgrade fails on a missing or damaged object; non-destructive, and the
+                                pending upgrade still needs to run afterwards
               --encrypt=X       Connection encryption: mandatory (default), optional, strict
               --trust-cert      Trust server certificate without validation (default: require valid cert)
               --data-path DIR   Server-side directory for the data (.mdf) file (first install only)
@@ -64,6 +67,7 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("Options:");
                 Console.WriteLine("  -h, --help           Show this help message");
                 Console.WriteLine("  --reinstall          Drop existing database and perform clean install");
+                Console.WriteLine("  --repair             Reinstall schema objects, skipping upgrade scripts (non-destructive)");
                 Console.WriteLine("  --uninstall          Remove database, Agent jobs, and XE sessions");
                 Console.WriteLine("  --reset-schedule     Reset collection schedule to recommended defaults");
                 Console.WriteLine("  --troubleshoot       Run installation diagnostics (99_installer_troubleshooting.sql)");
@@ -96,6 +100,13 @@ namespace PerformanceMonitorInstaller
 
             bool automatedMode = args.Length > 0;
             bool reinstallMode = args.Any(a => a.Equals("--reinstall", StringComparison.OrdinalIgnoreCase));
+            bool repairMode = args.Any(a => a.Equals("--repair", StringComparison.OrdinalIgnoreCase));
+
+            if (repairMode && reinstallMode)
+            {
+                WriteError("--repair and --reinstall are mutually exclusive: --reinstall drops the database, leaving nothing to repair.");
+                return (int)InstallationResultCode.InvalidArguments;
+            }
             bool uninstallMode = args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase));
             bool resetSchedule = args.Any(a => a.Equals("--reset-schedule", StringComparison.OrdinalIgnoreCase));
             bool troubleshootMode = args.Any(a => a.Equals("--troubleshoot", StringComparison.OrdinalIgnoreCase));
@@ -612,6 +623,8 @@ namespace PerformanceMonitorInstaller
             bool installationSuccessful = false;
             bool retry;
             DateTime installationStartTime = DateTime.Now;
+            /* Declared out here so the history write below can tell what version the database is still at. */
+            string? currentVersion = null;
             do
             {
                 retry = false;
@@ -682,7 +695,7 @@ namespace PerformanceMonitorInstaller
                 /*
                 Upgrade mode - check for existing installation and apply upgrades
                 */
-                string? currentVersion = null;
+                currentVersion = null;
                 try
                 {
                     currentVersion = await InstallationService.GetInstalledVersionAsync(connectionString, throwOnError: true).ConfigureAwait(false);
@@ -714,7 +727,19 @@ namespace PerformanceMonitorInstaller
                     return (int)InstallationResultCode.VersionCheckFailed;
                 }
 
-                if (currentVersion != null)
+                if (currentVersion != null && repairMode)
+                {
+                    /*
+                    Repair reinstalls the schema objects (install scripts are idempotent) without
+                    running migrations, so a hop that failed on a missing or damaged object can be
+                    recovered without dropping the database. The pending upgrade runs afterwards.
+                    */
+                    Console.WriteLine();
+                    Console.WriteLine($"Existing installation detected: v{currentVersion}");
+                    Console.WriteLine("Repair mode: skipping upgrade scripts. Objects will be reinstalled at their");
+                    Console.WriteLine("current definitions; the pending upgrade still needs to run afterwards.");
+                }
+                else if (currentVersion != null)
                 {
                     Console.WriteLine();
                     Console.WriteLine($"Existing installation detected: v{currentVersion}");
@@ -976,10 +1001,19 @@ namespace PerformanceMonitorInstaller
             */
             try
             {
+                /*
+                A repair reinstalls objects without running migrations, so it must NOT record the
+                target version -- that would strand every pending hop, which is exactly what the
+                upgrade abort above exists to prevent. Record it at the version the database is
+                actually still at, so the upgrade is still offered afterwards.
+                */
+                string historyVersion = repairMode && currentVersion != null ? currentVersion : version;
+                string historyInfoVersion = repairMode && currentVersion != null ? currentVersion : infoVersion;
+
                 await InstallationService.LogInstallationHistoryAsync(
                     connectionString,
-                    version,
-                    infoVersion,
+                    historyVersion,
+                    historyInfoVersion,
                     installationStartTime,
                     totalSuccessCount,
                     totalFailureCount,
