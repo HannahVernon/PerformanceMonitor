@@ -58,7 +58,7 @@ public sealed class CollectorContext
     /// which <c>v_default_trace_events</c> UNIONs without dedup) tell a TRUE first run (no prior success →
     /// collect all history) from a hot store merely emptied by retention/archival (prior success → a
     /// BOUNDED recent window, never all-history). False in the common case — the host computes it only when
-    /// the watermark is null, and only default_trace_events consults it.
+    /// the watermark is null, and only default_trace_events and job_history consult it.
     /// </summary>
     public bool HasCollectedBefore { get; init; }
 

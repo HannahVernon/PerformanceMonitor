@@ -425,7 +425,7 @@ SELECT
     /// 19, else <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else
     /// <paramref name="hasConfigControlPlane"/> (V17) → 17, else 16 — the "older than the V17 config control
     /// plane" floor (the exact pre-17 version isn't probed, but it is below what the viewer needs). Pure, so it
-    /// is unit-tested without a live store; a schema bump past 23 trips the pinning test that keeps this in step
+    /// is unit-tested without a live store; a schema bump past 25 trips the pinning test that keeps this in step
     /// with <see cref="StorageVersion.SchemaVersion"/>.
     /// </summary>
     internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus)
