@@ -36,4 +36,18 @@ public sealed class CollectorTargetInfo
     /// the original collector).
     /// </summary>
     public int SqlMajorVersion { get; init; }
+
+    /// <summary>
+    /// True when the monitored login can read msdb (<c>HAS_DBACCESS('msdb') = 1</c>). The SQL-Agent
+    /// collectors — running_jobs, job_history, agent_status — read <c>msdb.dbo.sysjobs</c>,
+    /// <c>sysjobhistory</c>, <c>sysjobschedules</c>, etc., so each gates off via <see cref="AppliesTo"/>
+    /// when this is false; a login without msdb access would otherwise fail every cycle (error 229/916)
+    /// and pollute collection-health. Both hosts probe this (Lite's ServerManager and Darling's
+    /// DarlingServerConnector, verbatim <c>HAS_DBACCESS(N'msdb')</c>) and wire it in here.
+    /// <para>Defaults to <c>true</c> so a target the probe never classified (the SqlMajorVersion == 0 /
+    /// unknown path, and every bare <c>new CollectorTargetInfo()</c>) still attempts the Agent
+    /// collectors — matching the probe's own NULL-means-assume-access default, so "unknown" never
+    /// silently gates collection off.</para>
+    /// </summary>
+    public bool HasMsdbAccess { get; init; } = true;
 }

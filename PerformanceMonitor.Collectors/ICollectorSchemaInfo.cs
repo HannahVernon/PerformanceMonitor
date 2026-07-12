@@ -48,4 +48,17 @@ public interface ICollectorSchemaInfo
 
     /// <summary>Payload columns in exactly the order the definition emits them.</summary>
     IReadOnlyList<CollectorColumn> PayloadColumns { get; }
+
+    /// <summary>
+    /// Whether this collector applies to the target at all — the single authoritative target gate
+    /// both SKUs share. e.g. memory_pressure_events returns false for Azure SQL DB (no
+    /// <c>sys.dm_os_ring_buffers</c>); the SQL-Agent collectors return false without msdb access.
+    /// Hosts skip the cycle entirely (no query, zero rows) when false: Darling's runner calls this
+    /// directly, and Lite consults it (via <see cref="CollectorCatalog.AppliesTo(string, CollectorTargetInfo)"/>)
+    /// for its pre-dispatch SKIPPED log. Declared here — on the non-generic surface
+    /// <see cref="CollectorCatalog.All"/> exposes — so the gate can be evaluated by name without the
+    /// row type, keeping the gate CONDITION in one place (each definition's override) rather than
+    /// re-encoded per host.
+    /// </summary>
+    bool AppliesTo(CollectorTargetInfo target);
 }

@@ -186,10 +186,12 @@ AND   DATEADD
 
     /// <summary>
     /// Collects on SQL Server, Azure SQL Managed Instance, and AWS RDS — everywhere SQL Agent exists. NOT
-    /// Azure SQL Database (edition 5): there is no Agent / <c>msdb.dbo.sysjobhistory</c> there. A verified
-    /// platform gap gated here (mirrors <see cref="RunningJobsCollector"/>), not a scope-down.
+    /// Azure SQL Database (edition 5): there is no Agent / <c>msdb.dbo.sysjobhistory</c> there. NOT a login
+    /// without msdb access: every table this reads (sysjobhistory, sysjobs) lives in msdb. It is NOT gated on
+    /// AWS RDS — unlike <see cref="RunningJobsCollector"/> it never touches <c>syssessions</c>, so retained
+    /// history reads fine there. Gated here in the shared AppliesTo so Lite and Darling skip identically.
     /// </summary>
-    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb && target.HasMsdbAccess;
 
     public override CollectorQuery BuildQuery(CollectorContext context)
     {

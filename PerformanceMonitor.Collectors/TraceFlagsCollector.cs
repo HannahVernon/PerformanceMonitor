@@ -69,6 +69,15 @@ OPTION(RECOMPILE);";
 
     public override string PrefixTimeColumnName => "capture_time";
 
+    /// <summary>
+    /// NOT Azure SQL Database (edition 5): <c>DBCC TRACESTATUS</c> is not supported there. Azure SQL
+    /// Managed Instance (edition 8) and on-prem both support it, so they collect. Gated here in the shared
+    /// AppliesTo so Lite and Darling skip identically — before this the gate lived only in Lite's
+    /// IsCollectorSupported, and Darling relied on <c>RunTraceFlagsTolerantAsync</c> swallowing the error to
+    /// a 0-row SUCCESS (this makes the skip explicit, matching Lite's SKIPPED record).
+    /// </summary>
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]

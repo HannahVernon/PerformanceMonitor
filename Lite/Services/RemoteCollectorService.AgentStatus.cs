@@ -19,9 +19,9 @@ public partial class RemoteCollectorService
     /// Collects the SQL Agent service status snapshot (Running/Stopped from sys.dm_server_services + next
     /// scheduled run from msdb.dbo.sysjobschedules) via the shared <see cref="AgentStatusCollector"/> —
     /// issue #1433 Phase 2, the current-state facts behind the Job History tab header and the "Agent Not
-    /// Running" alert. Read-only. Not collected on Azure SQL DB nor AWS RDS (the shared AppliesTo skips both;
-    /// sys.dm_server_services is unavailable on RDS, so Lite's IsCollectorSupported also short-circuits it),
-    /// and gated off when the login lacks msdb access.
+    /// Running" alert. Read-only. Not collected on Azure SQL DB, AWS RDS, nor when the login lacks msdb
+    /// access — the shared AppliesTo (<c>!IsAzureSqlDb &amp;&amp; !IsAwsRds &amp;&amp; HasMsdbAccess</c>) is the
+    /// single gate, which RunCollectorAsync consults pre-dispatch for the clean SKIPPED log.
     /// </summary>
     private Task<int> CollectAgentStatusAsync(ServerConnection server, CancellationToken cancellationToken)
         => RunCollectorDefinitionAsync(AgentStatusCollector.Instance, server, cancellationToken);

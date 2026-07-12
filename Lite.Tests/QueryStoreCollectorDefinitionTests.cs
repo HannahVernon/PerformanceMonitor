@@ -54,6 +54,20 @@ public sealed class QueryStoreCollectorDefinitionTests
     }
 
     [Fact]
+    public void AppliesTo_VersionGate_SkipsPreSql2016OnPrem_ButNotAzureOrUnknown()
+    {
+        /* Query Store first shipped in SQL 2016 (v13). Gate collapsed from Lite's IsCollectorSupported into
+           the shared AppliesTo (so Darling gates too); a pre-2016 box has no Query Store at all. */
+        Assert.False(QueryStoreCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 12 }));
+        Assert.True(QueryStoreCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 13 }));
+        Assert.True(QueryStoreCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 16 }));
+        /* Unknown (0) assumes newest; Azure SQL DB / MI report a low ProductMajorVersion but ship Query Store. */
+        Assert.True(QueryStoreCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 0 }));
+        Assert.True(QueryStoreCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true, SqlMajorVersion = 12 }));
+        Assert.True(QueryStoreCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true, SqlMajorVersion = 12 }));
+    }
+
+    [Fact]
     public void BuildEnumerationQuery_OnPrem_AgAware_ProbesActualState_WithExclusions()
     {
         var plan = QueryStoreCollector.Instance.BuildEnumerationQuery(new CollectorContext

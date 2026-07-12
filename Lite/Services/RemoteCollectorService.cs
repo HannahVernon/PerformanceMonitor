@@ -18,6 +18,7 @@ using Microsoft.Extensions.Logging;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Common;
 
 
@@ -410,16 +411,26 @@ public partial class RemoteCollectorService
 
         try
         {
-            // Version-gate and edition-gate collectors
+            /* Target-gate collectors through the shared AppliesTo — the single authoritative gate surface
+               both SKUs consult. Darling's collector runner calls definition.AppliesTo(target) directly;
+               here it drives Lite's clean pre-dispatch SKIPPED log (a genuine skip with no collection_log
+               row, vs. the SUCCESS/0-rows a gated collector would otherwise record). The gate CONDITION
+               lives ONLY in each definition's AppliesTo override — never re-encoded in the host — so Lite
+               and Darling can't drift on it again (the RDS/msdb/Azure gating-drift class). */
             var serverStatus = _serverManager.GetConnectionStatus(server.Id);
-            var majorVersion = serverStatus.SqlMajorVersion;
             var engineEdition = serverStatus.SqlEngineEdition;
-            var isAwsRds = serverStatus.IsAwsRds;
-            var hasMsdbAccess = serverStatus.HasMsdbAccess;
-
-            if (!IsCollectorSupported(collectorName, majorVersion, engineEdition, isAwsRds, hasMsdbAccess))
+            var target = new CollectorTargetInfo
             {
-                AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED (version {majorVersion}, edition {engineEdition})");
+                IsAzureSqlDb = engineEdition == 5,
+                IsAzureManagedInstance = engineEdition == 8,
+                IsAwsRds = serverStatus.IsAwsRds,
+                SqlMajorVersion = serverStatus.SqlMajorVersion,
+                HasMsdbAccess = serverStatus.HasMsdbAccess,
+            };
+
+            if (!CollectorCatalog.AppliesTo(collectorName, target))
+            {
+                AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED (edition {engineEdition}, version {serverStatus.SqlMajorVersion})");
                 return;
             }
 
@@ -1009,74 +1020,10 @@ WHERE server_id = $3";
     internal static int GetDeterministicHashCode(string value) =>
         PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode(value);
 
-    /// <summary>
-    /// Checks if a collector is supported on the given SQL Server version and engine edition.
-    /// Version 13 = SQL Server 2016, 14 = 2017, 15 = 2019, 16 = 2022, 17 = 2025.
-    /// Engine edition 5 = Azure SQL DB, 8 = Azure MI.
-    /// </summary>
-    private static bool IsCollectorSupported(string collectorName, int majorVersion, int engineEdition, bool isAwsRds = false, bool hasMsdbAccess = true)
-    {
-        bool isAzureSqlDb = engineEdition == 5;
-        bool isAzureMi = engineEdition == 8;
-
-        /* Version gates — only for on-prem/RDS.
-           Azure SQL DB reports ProductMajorVersion=12 and Azure MI may report similar values,
-           but both fully support dm_exec_query_stats, Query Store, etc. */
-        if (majorVersion > 0 && !isAzureSqlDb && !isAzureMi)
-        {
-            switch (collectorName)
-            {
-                case "query_store":
-                case "query_stats":
-                    if (majorVersion < 13) return false;
-                    break;
-            }
-        }
-
-        /* Azure SQL DB edition gates — skip collectors that use unsupported DMVs */
-        if (isAzureSqlDb)
-        {
-            switch (collectorName)
-            {
-                case "server_config":     /* sys.configurations not available */
-                case "trace_flags":       /* DBCC TRACESTATUS not available */
-                case "running_jobs":      /* msdb.dbo.sysjobs not available */
-                case "job_history":       /* msdb.dbo.sysjobhistory not available (no Agent on Azure SQL DB) */
-                case "agent_status":      /* no SQL Agent / sys.dm_server_services on Azure SQL DB */
-                    return false;
-            }
-        }
-
-        /* AWS RDS gates — limited msdb permissions (syssessions not accessible) + restricted server DMVs.
-           The cross-host source of truth for these two is now the shared definition AppliesTo
-           (RunningJobsCollector / AgentStatusCollector both check !IsAwsRds), so Darling skips them too;
-           this block is Lite's earlier host-side short-circuit (same belt-and-suspenders as the Azure gate).
-           job_history is NOT gated: it reads only sysjobhistory/sysjobs/syscategories (never syssessions),
-           which RDS exposes, so retained job history collects on RDS just fine.
-           agent_status IS gated: sys.dm_server_services reads OS/service-control state RDS does not expose.
-           running_jobs IS gated: it joins msdb.dbo.syssessions, which RDS blocks even for the master login. */
-        if (isAwsRds)
-        {
-            switch (collectorName)
-            {
-                case "running_jobs":      /* msdb.dbo.syssessions not accessible */
-                case "agent_status":      /* sys.dm_server_services not exposed on RDS */
-                    return false;
-            }
-        }
-
-        /* msdb access gate — login may not have access to msdb on any edition */
-        if (!hasMsdbAccess)
-        {
-            switch (collectorName)
-            {
-                case "running_jobs":      /* requires msdb.dbo.sysjobs, sysjobactivity, etc. */
-                case "job_history":       /* requires msdb.dbo.sysjobhistory, sysjobs */
-                case "agent_status":      /* requires msdb.dbo.sysjobschedules for the next-run decode */
-                    return false;
-            }
-        }
-
-        return true;
-    }
+    /* IsCollectorSupported was deleted in the gate-surface collapse: every target gate it re-encoded
+       (query_stats/query_store version, server_config/trace_flags on Azure SQL DB, and the
+       running_jobs/job_history/agent_status Azure/RDS/msdb gates) now lives ONLY in each definition's
+       shared AppliesTo override. RunCollectorAsync consults CollectorCatalog.AppliesTo(name, target)
+       pre-dispatch for the clean SKIPPED log; Darling's runner calls the same AppliesTo. One gate
+       surface, compiler-shared — no second layer to drift. */
 }
