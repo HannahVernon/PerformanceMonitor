@@ -134,7 +134,7 @@ public partial class ViewerServerTab
         {
             case BlockingTrendsSubTabIndex:
                 var lockWaitTask = _dataService.GetLockWaitTrendAsync(_server.ServerId, startUtc, endUtc);
-                var blockingTask = _dataService.GetBlockingTrendAsync(_server.ServerId, startUtc, endUtc);
+                var blockingTask = _dataService.GetBlockingTrendAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
                 var deadlockTask = _dataService.GetDeadlockTrendAsync(_server.ServerId, startUtc, endUtc);
                 var lockWaits = await lockWaitTask;
                 var blocking = await blockingTask;
@@ -163,7 +163,7 @@ public partial class ViewerServerTab
                 break;
             case BlockingCurrentWaitsSubTabIndex:
                 var durationTask = _dataService.GetWaitingTaskTrendAsync(_server.ServerId, startUtc, endUtc);
-                var blockedTask = _dataService.GetBlockedSessionTrendAsync(_server.ServerId, startUtc, endUtc);
+                var blockedTask = _dataService.GetBlockedSessionTrendAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
                 var duration = await durationTask;
                 var blocked = await blockedTask;
                 RenderCurrentWaitsDurationChart(duration);
@@ -188,7 +188,7 @@ public partial class ViewerServerTab
     /// </summary>
     private async Task LoadBlockedProcessReportsAsync(DateTime startUtc, DateTime endUtc)
     {
-        var rows = await _dataService.GetRecentBlockedProcessReportsAsync(_server.ServerId, startUtc, endUtc);
+        var rows = await _dataService.GetRecentBlockedProcessReportsAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _blockedProcessFilterMgr!.UpdateData(rows);
         await LoadBlockingSlicerAsync(startUtc, endUtc);
     }
@@ -214,7 +214,7 @@ public partial class ViewerServerTab
 
     private async Task LoadBlockingSlicerAsync(DateTime startUtc, DateTime endUtc)
     {
-        var data = await _dataService.GetBlockingSlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetBlockingSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _blockingSlicerData = data;
         _blockingSlicerMetric = "Events";
         if (data.Count > 0)
@@ -234,7 +234,7 @@ public partial class ViewerServerTab
     {
         try
         {
-            var rows = await _dataService.GetRecentBlockedProcessReportsAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            var rows = await _dataService.GetRecentBlockedProcessReportsAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
             _blockedProcessFilterMgr!.UpdateData(rows);
         }
         catch (Exception ex)
@@ -299,8 +299,22 @@ public partial class ViewerServerTab
 
     /* Parse each deadlock graph into its per-process rows on the thread pool — CPU-bound XML work that
        would hitch the dispatcher on the Blocking tab (Lite's #1193 fix). Only the grid bind stays on the UI. */
-    private static Task<List<DeadlockProcessDetail>> ParseDeadlocksOffUiThreadAsync(List<ViewerDeadlockRow> rows)
-        => Task.Run(() => DeadlockProcessDetail.ParseFromRows(rows));
+    private Task<List<DeadlockProcessDetail>> ParseDeadlocksOffUiThreadAsync(List<ViewerDeadlockRow> rows)
+    {
+        /* #1319: deadlocks have no database_name column (the per-process DB is inside the graph XML), so
+           the global database filter is applied client-side on the parsed per-process rows. Snapshot the
+           selection on the UI thread; empty = All (unfiltered). */
+        var selected = _selectedDatabases.Count == 0
+            ? null
+            : new HashSet<string>(_selectedDatabases, StringComparer.OrdinalIgnoreCase);
+        return Task.Run(() =>
+        {
+            var details = DeadlockProcessDetail.ParseFromRows(rows);
+            return selected == null
+                ? details
+                : details.Where(d => selected.Contains(d.DatabaseName)).ToList();
+        });
+    }
 
     /// <summary>
     /// "View Blocked Query Plan" / "View Blocking Query Plan" for a blocked-process report row: opens the

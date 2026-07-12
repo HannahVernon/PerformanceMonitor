@@ -227,6 +227,29 @@ public class ServerManager
     }
 
     /// <summary>
+    /// Persists an in-place change to an existing server's NON-credential settings (e.g. the #1319
+    /// per-server view database filter) by re-serializing servers.json. Unlike <see cref="UpdateServer"/>
+    /// this NEVER touches Windows Credential Manager, so it is safe to call for settings unrelated to
+    /// auth (calling UpdateServer with no username/password would delete an EntraMFA server's stored
+    /// username). The passed instance is normally the same reference already in the list, mutated in place.
+    /// </summary>
+    public void UpdateServerSettings(ServerConnection server)
+    {
+        lock (_serversLock)
+        {
+            var existing = _servers.FirstOrDefault(s => s.Id == server.Id);
+            if (existing == null)
+            {
+                return;
+            }
+
+            var index = _servers.IndexOf(existing);
+            _servers[index] = server;
+            SaveServers();
+        }
+    }
+
+    /// <summary>
     /// Deletes a server by its ID.
     /// </summary>
     public void DeleteServer(string id)

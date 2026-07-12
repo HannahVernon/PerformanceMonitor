@@ -56,6 +56,7 @@ public sealed partial class ViewerDataService
             WHERE server_id = $1
             AND   collection_time >= $2
             AND   collection_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY collection_time
         )
         SELECT
@@ -79,6 +80,7 @@ public sealed partial class ViewerDataService
             WHERE server_id = $1
             AND   collection_time >= $2
             AND   collection_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY collection_time
         )
         SELECT
@@ -102,6 +104,7 @@ public sealed partial class ViewerDataService
             WHERE server_id = $1
             AND   collection_time >= $2
             AND   collection_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY collection_time
         )
         SELECT
@@ -124,6 +127,7 @@ public sealed partial class ViewerDataService
             WHERE server_id = $1
             AND   collection_time >= $2
             AND   collection_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY collection_time
         )
         SELECT
@@ -135,18 +139,18 @@ public sealed partial class ViewerDataService
 
     /// <summary>Query-stats duration trend over [<paramref name="startUtc"/>, <paramref name="endUtc"/>].</summary>
     public Task<List<QueryTrendPoint>> GetQueryDurationTrendAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => ReadDurationTrendAsync(QueryDurationTrendSql, serverId, startUtc, endUtc, cancellationToken);
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
+        => ReadDurationTrendAsync(QueryDurationTrendSql, serverId, startUtc, endUtc, databaseNames, cancellationToken);
 
     /// <summary>Procedure-stats duration trend over the window.</summary>
     public Task<List<QueryTrendPoint>> GetProcedureDurationTrendAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => ReadDurationTrendAsync(ProcedureDurationTrendSql, serverId, startUtc, endUtc, cancellationToken);
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
+        => ReadDurationTrendAsync(ProcedureDurationTrendSql, serverId, startUtc, endUtc, databaseNames, cancellationToken);
 
     /// <summary>Query Store duration trend over the window.</summary>
     public Task<List<QueryTrendPoint>> GetQueryStoreDurationTrendAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => ReadDurationTrendAsync(QueryStoreDurationTrendSql, serverId, startUtc, endUtc, cancellationToken);
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
+        => ReadDurationTrendAsync(QueryStoreDurationTrendSql, serverId, startUtc, endUtc, databaseNames, cancellationToken);
 
     /// <summary>
     /// Shared reader for the three duration trends (same column shape: collection_time,
@@ -154,12 +158,13 @@ public sealed partial class ViewerDataService
     /// (Lite's <c>(long)ToDouble(…)</c>).
     /// </summary>
     private async Task<List<QueryTrendPoint>> ReadDurationTrendAsync(
-        string sql, int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+        string sql, int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames, CancellationToken cancellationToken)
     {
         var items = new List<QueryTrendPoint>();
 
         await using var command = _dataSource.CreateCommand(sql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -176,12 +181,13 @@ public sealed partial class ViewerDataService
 
     /// <summary>Execution-count trend over the window (single value column; no ExecutionCount).</summary>
     public async Task<List<QueryTrendPoint>> GetExecutionCountTrendAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<QueryTrendPoint>();
 
         await using var command = _dataSource.CreateCommand(ExecutionCountTrendSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

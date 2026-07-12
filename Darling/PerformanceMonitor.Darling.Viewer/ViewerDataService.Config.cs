@@ -50,6 +50,7 @@ public sealed partial class ViewerDataService
         FROM v_database_config
         WHERE server_id = $1
         AND   capture_time = (SELECT MAX(capture_time) FROM v_database_config WHERE server_id = $1)
+        AND   ($2::text[] IS NULL OR database_name = ANY($2))
         ORDER BY database_name
         """;
 
@@ -58,6 +59,7 @@ public sealed partial class ViewerDataService
         FROM v_database_scoped_config
         WHERE server_id = $1
         AND   capture_time = (SELECT MAX(capture_time) FROM v_database_scoped_config WHERE server_id = $1)
+        AND   ($2::text[] IS NULL OR database_name = ANY($2))
         ORDER BY database_name, configuration_name
         """;
 
@@ -93,12 +95,13 @@ public sealed partial class ViewerDataService
     }
 
     /// <summary>Latest sys.databases snapshot for one server (Database Configuration grid).</summary>
-    public async Task<List<DatabaseConfigRow>> GetLatestDatabaseConfigAsync(int serverId, CancellationToken cancellationToken = default)
+    public async Task<List<DatabaseConfigRow>> GetLatestDatabaseConfigAsync(int serverId, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<DatabaseConfigRow>();
 
         await using var command = _dataSource.CreateCommand(DatabaseConfigSql);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -142,12 +145,13 @@ public sealed partial class ViewerDataService
     }
 
     /// <summary>Latest database-scoped configuration snapshot for one server (Scoped Configuration grid).</summary>
-    public async Task<List<DatabaseScopedConfigRow>> GetLatestDatabaseScopedConfigAsync(int serverId, CancellationToken cancellationToken = default)
+    public async Task<List<DatabaseScopedConfigRow>> GetLatestDatabaseScopedConfigAsync(int serverId, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<DatabaseScopedConfigRow>();
 
         await using var command = _dataSource.CreateCommand(DatabaseScopedConfigSql);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

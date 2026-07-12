@@ -104,6 +104,7 @@ public sealed partial class ViewerDataService
                 WHERE server_id = $1
                 AND   collection_time >= $2
                 AND   collection_time <= $3
+                AND   ($4::text[] IS NULL OR database_name = ANY($4))
                 AND   delta_execution_count > 0
                 AND   {metricExpr} IS NOT NULL
             ),
@@ -156,12 +157,13 @@ public sealed partial class ViewerDataService
     /// post-processing verbatim.
     /// </summary>
     public async Task<HeatmapResult> GetQueryHeatmapAsync(
-        int serverId, HeatmapMetric metric, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, HeatmapMetric metric, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var rawCells = new List<HeatmapCell>();
 
         await using var command = _dataSource.CreateCommand(BuildQueryHeatmapSql(metric));
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

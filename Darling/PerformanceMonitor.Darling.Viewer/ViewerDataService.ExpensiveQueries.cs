@@ -198,6 +198,7 @@ public sealed partial class ViewerDataService
                 WHERE server_id = $1
                 AND   collection_time >= $2
                 AND   collection_time <= $3
+                AND   ($6::text[] IS NULL OR database_name = ANY($6))
                 GROUP BY database_name, query_hash
                 HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
                 ORDER BY SUM(delta_worker_time)::double precision / NULLIF(SUM(delta_execution_count), 0) DESC
@@ -259,6 +260,7 @@ public sealed partial class ViewerDataService
                 WHERE server_id = $1
                 AND   collection_time >= $2
                 AND   collection_time <= $3
+                AND   ($6::text[] IS NULL OR database_name = ANY($6))
                 GROUP BY database_name, schema_name, object_name, object_type
                 HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
                 ORDER BY SUM(delta_worker_time)::double precision / NULLIF(SUM(delta_execution_count), 0) DESC
@@ -316,6 +318,7 @@ public sealed partial class ViewerDataService
                 WHERE server_id = $1
                 AND   collection_time >= $2
                 AND   collection_time <= $3
+                AND   ($6::text[] IS NULL OR database_name = ANY($6))
                 GROUP BY database_name, query_id, module_name
                 HAVING SUM(execution_count) > 0
                 ORDER BY SUM(avg_cpu_time_us * execution_count)::double precision / NULLIF(SUM(execution_count), 0) DESC
@@ -367,6 +370,7 @@ public sealed partial class ViewerDataService
     public async Task<List<ViewerExpensiveQueryRow>> GetUnifiedExpensiveQueriesAsync(
         int serverId, DateTime startUtc, DateTime endUtc,
         int topPerSource = UnifiedExpensiveQueriesTopPerSource, int finalTop = UnifiedExpensiveQueriesFinalTop,
+        IReadOnlyList<string>? databaseNames = null,
         CancellationToken cancellationToken = default)
     {
         var rows = new List<ViewerExpensiveQueryRow>();
@@ -375,6 +379,7 @@ public sealed partial class ViewerDataService
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = topPerSource });
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = finalTop });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

@@ -724,6 +724,9 @@ public partial class MainWindow : Window
         serverTab.AlertCountsChanged += alertHandler;
         serverTab.ApplyTimeRangeRequested += timeRangeHandler;
         serverTab.ManualRefreshRequested += refreshHandler;
+        /* #1319: persist the per-server view database filter (no credential side effects). The handler
+           captures only the long-lived _serverManager, so it needs no explicit unsubscribe. */
+        serverTab.PersistServerRequested += s => _serverManager.UpdateServerSettings(s);
         _tabEventHandlers[server.Id] = (alertHandler, timeRangeHandler, refreshHandler);
 
         _openServerTabs[server.Id] = tabItem;

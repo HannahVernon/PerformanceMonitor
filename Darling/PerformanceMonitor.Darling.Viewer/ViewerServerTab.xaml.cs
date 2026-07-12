@@ -67,9 +67,20 @@ public partial class ViewerServerTab : UserControl
 
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
+    private readonly ViewerServerStore? _serverStore;
 
     private bool _refreshInFlight;
     private bool _refreshRequested;
+
+    /* #1319: per-server global database filter (display-only). Empty set = "All" (unfiltered). */
+    private readonly HashSet<string> _selectedDatabases = new(StringComparer.OrdinalIgnoreCase);
+    private List<SelectableItem> _databaseFilterItems = new();
+    private bool _isUpdatingDatabaseFilterSelection;
+    private int _databaseFilterTotalCount;
+    private bool _databaseFilterDirty;
+
+    /// <summary>The database filter as a reader argument: null (= All, unfiltered) when nothing is selected.</summary>
+    private IReadOnlyList<string>? SelectedDatabaseFilter => _selectedDatabases.Count == 0 ? null : _selectedDatabases.ToList();
 
     /// <summary>Raised after a load so MainWindow can surface progress/errors in its status bar.</summary>
     public event Action<string>? StatusChanged;
@@ -80,16 +91,26 @@ public partial class ViewerServerTab : UserControl
     /// <see cref="ViewerPreferences"/>, which reproduces the toolbar's historical XAML defaults (24h / on / 1m)
     /// exactly, so the tab is unchanged when no settings are supplied.
     /// </param>
-    public ViewerServerTab(ViewerDataService dataService, DarlingServer server, ViewerPreferences? preferences = null)
+    public ViewerServerTab(ViewerDataService dataService, DarlingServer server, ViewerPreferences? preferences = null, ViewerServerStore? serverStore = null)
     {
         _dataService = dataService;
         _server = server;
+        _serverStore = serverStore;
+        /* #1319: seed the per-server database filter from the viewer registry (viewer-servers.json). */
+        if (_serverStore != null)
+        {
+            foreach (var db in _serverStore.GetViewFilterDatabases(_server.ServerName))
+            {
+                _selectedDatabases.Add(db);
+            }
+        }
         InitializeComponent();
 
         /* Per-server toolbar identity label: the display name is static (it also heads the tab), while the
            freshness readout to its right is filled on the first (and every) refresh from the shared
            collection-time read (UpdateServerFreshnessLabelAsync). */
         ServerNameText.Text = _server.DisplayName;
+        UpdateDatabaseFilterLabel();
 
         /* Column-filter managers for the Configuration sub-grids (copied from Lite's ServerTab filter
            wiring) — after InitializeComponent so the named grids exist. */

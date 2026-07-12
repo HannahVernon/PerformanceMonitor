@@ -45,6 +45,7 @@ public sealed partial class ViewerDataService
                 COUNT(DISTINCT database_name) AS distinct_databases
             FROM v_blocked_process_reports
             WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY date_trunc('hour', collection_time)
         ),
         dmv AS (
@@ -57,6 +58,7 @@ public sealed partial class ViewerDataService
                 COUNT(DISTINCT database_name) AS distinct_databases
             FROM v_dmv_blocking_snapshots
             WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY date_trunc('hour', collection_time)
         )
         SELECT bucket, event_count, total_wait_sec, distinct_blockers, distinct_blocked, distinct_databases FROM bpr
@@ -67,12 +69,13 @@ public sealed partial class ViewerDataService
         """;
 
     public async Task<List<TimeSliceBucket>> GetBlockingSlicerDataAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<TimeSliceBucket>();
 
         await using var command = _dataSource.CreateCommand(BlockingSlicerSql);
         AddBlockingParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
