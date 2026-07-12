@@ -7,6 +7,7 @@
  */
 
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Analysis.Baselines;
 using PerformanceMonitorLite.Analysis;
 
 namespace PerformanceMonitorLite.Services;
