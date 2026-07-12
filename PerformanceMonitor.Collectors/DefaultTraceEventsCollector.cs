@@ -176,9 +176,10 @@ AND
     /*ErrorLog writes (severity gating happens in the significant-set layer, not here)*/
     (te.name = N'ErrorLog')
     OR
-    /*Schema DDL (exclude tempdb and auto-created _WA_ statistics)*/
+    /*Schema DDL (@include_object_ddl gates the whole slice; exclude tempdb and auto-created _WA_ statistics)*/
     (
-        ISNULL(ft.DatabaseID, 0) <> 2
+        @include_object_ddl = 1
+        AND ISNULL(ft.DatabaseID, 0) <> 2
         AND ISNULL(ft.ObjectName, N'') NOT LIKE N'[_]WA[_]%'
         AND te.name IN (N'Object:Created', N'Object:Altered', N'Object:Deleted')
     )
@@ -233,9 +234,12 @@ OPTION(RECOMPILE);";
                 ? context.CollectionTime.AddHours(-ArchivalEmptyFallbackHours)
                 : FirstRunCutoff);
 
-        var parameters = new List<CollectorParameter>(exclusionParameters.Count + 1)
+        var parameters = new List<CollectorParameter>(exclusionParameters.Count + 2)
         {
             new("@cutoff_time", cutoffTime, CollectorParameterType.DateTime2),
+            /* Operator toggle mirroring the Dashboard proc's @include_object_events: 1 keeps the Object DDL
+               slice (today's behavior), 0 drops it so a create/drop-happy workload can't flood the tab. */
+            new("@include_object_ddl", context.CollectSchemaChangeEvents ? 1 : 0, CollectorParameterType.Int32),
         };
         parameters.AddRange(exclusionParameters);
 

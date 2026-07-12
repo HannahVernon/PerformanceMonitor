@@ -111,6 +111,15 @@
   // skip plan capture (e.g. to shave storage across a very large fleet).
   "capturePlans": true,
 
+  // Record Object:Created / Object:Altered / Object:Deleted schema-change (DDL) events in the built-in
+  // default-trace collector (default true = today's behavior). Set false on a NOISY or BENCHMARK box where
+  // a create/drop-happy workload floods the viewer's System Events > Default Trace tab -- e.g. HammerDB's
+  // TPC-H Query 15 creates and drops a "revenue" view thousands of times, and the collector faithfully
+  // records every create/delete. Only the Object DDL slice is suppressed; file auto-grow/shrink, ErrorLog,
+  // and security-audit events are still collected. This is the shared collector's equivalent of the full
+  // Dashboard's @include_object_events. A file-only knob (not stored in the control plane): edit + restart.
+  "collectSchemaChangeEvents": true,
+
   // The alert engine (optional section). Every default mirrors Performance Monitor Lite's:
   // cpu 80% (total mode), blocking 1, deadlock 1, poison wait 500 ms, long-running query
   // 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,

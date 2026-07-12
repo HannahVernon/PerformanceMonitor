@@ -53,6 +53,20 @@ public sealed class DarlingConfig
     public bool CapturePlans { get; set; } = true;
 
     /// <summary>
+    /// Whether the default_trace_events collector records Object:Created/Altered/Deleted schema-change
+    /// (DDL) events. Default TRUE (today's behavior). Set false on a noisy or benchmark box where a
+    /// create/drop-happy workload floods the viewer's System Events &gt; Default Trace tab — e.g. HammerDB's
+    /// TPC-H Query 15 creates and drops a <c>revenue</c> view thousands of times, and the collector
+    /// faithfully records every create/delete. Only the Object DDL slice is suppressed; the file-growth,
+    /// ErrorLog, and security-audit categories are still collected. Feeds
+    /// <see cref="CollectorContext.CollectSchemaChangeEvents"/> — the shared collector's equivalent of the
+    /// full Dashboard proc's <c>@include_object_events</c>. A file-only knob (not seeded into the
+    /// control-plane store), so an edit takes effect on the next restart.
+    /// </summary>
+    [JsonPropertyName("collectSchemaChangeEvents")]
+    public bool CollectSchemaChangeEvents { get; set; } = true;
+
+    /// <summary>
     /// The shared alert engine's enabled flags and thresholds (Phase-5 slice D). Every default
     /// mirrors Lite's <c>App.*</c> alert defaults exactly, so an empty section alerts like a
     /// fresh Lite install. Optional — omit it entirely for the defaults.

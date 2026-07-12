@@ -209,6 +209,12 @@ Two mutually exclusive modes — setting both `managed: true` and `connectionStr
 |---|---|---|
 | `capturePlans` | `true` | Capture execution plans into `query_stats.query_plan_xml` and `query_store_stats.query_plan_text`. PostgreSQL TOAST compresses the plan text transparently (LZ4 on the managed store) and TimescaleDB chunk compression squeezes it further, so plans are cheap to keep — unlike Lite, which stores to DuckDB/Parquet and deliberately never captures them. Set `false` to skip plan capture (e.g. to shave storage across a very large fleet). |
 
+### collectSchemaChangeEvents (boolean, optional)
+
+| Key | Default | Notes |
+|---|---|---|
+| `collectSchemaChangeEvents` | `true` | Record `Object:Created` / `Object:Altered` / `Object:Deleted` schema-change (DDL) events in the built-in default-trace collector. Set `false` on a noisy or benchmark box where a create/drop-happy workload floods the viewer's **System Events > Default Trace** tab — e.g. HammerDB's TPC-H Query 15 creates and drops a `revenue` view thousands of times, and the collector faithfully records every create/delete. Only the Object DDL slice is suppressed; file auto-grow/shrink, ErrorLog, and security-audit events are still collected. The shared collector's equivalent of the full Dashboard's `@include_object_events`. A file-only knob (not stored in the control plane): edit and restart. |
+
 ### alerts
 
 The shared alert engine's switches and thresholds. Every default mirrors Lite's alert defaults exactly, so an empty section alerts like a fresh Lite install. `enabled: false` turns off all alert evaluation **and** scheduled-analysis finding notifications (the analysis itself still runs and persists findings).
