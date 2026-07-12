@@ -120,6 +120,10 @@ FROM sys.dm_os_sys_info";
                 IsAzureManagedInstance = engineEdition == 8,
                 IsAwsRds = isAwsRds,
                 SqlMajorVersion = majorVersion,
+                /* Already probed above via HAS_DBACCESS(N'msdb'); wiring it into the gate is the fix —
+                   before this it rode only on ServerRuntime and never reached the collectors' AppliesTo,
+                   so Darling attempted running_jobs/job_history/agent_status every cycle on a no-msdb login. */
+                HasMsdbAccess = hasMsdbAccess,
             },
             StorageName = storageName,
             ServerId = ServerIdHelper.GetDeterministicHashCode(storageName),

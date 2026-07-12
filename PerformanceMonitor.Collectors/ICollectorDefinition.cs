@@ -32,12 +32,8 @@ public interface ICollectorDefinition<TRow> : ICollectorSchemaInfo
     /// </summary>
     int? CommandTimeoutSecondsOverride { get; }
 
-    /// <summary>
-    /// Whether this collector applies to the target at all — e.g. memory_pressure_events returns
-    /// false for Azure SQL DB because sys.dm_os_ring_buffers is not exposed there. Hosts skip the
-    /// cycle entirely (no query, zero rows) when false.
-    /// </summary>
-    bool AppliesTo(CollectorTargetInfo target);
+    /* AppliesTo(CollectorTargetInfo) is declared on the base ICollectorSchemaInfo — the single
+       authoritative target gate, evaluable by name off CollectorCatalog.All without the row type. */
 
     /// <summary>
     /// True when the query must run once per database with a per-database connection (Azure SQL

@@ -57,6 +57,20 @@ public sealed class QueryStatsCollectorDefinitionTests
     }
 
     [Fact]
+    public void AppliesTo_VersionGate_SkipsPreSql2016OnPrem_ButNotAzureOrUnknown()
+    {
+        /* Version gate collapsed from Lite's IsCollectorSupported into the shared AppliesTo (so Darling gates
+           too). On-prem/RDS require v13+ (2016); a 2014 box lacks columns this reads. */
+        Assert.False(QueryStatsCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 12 }));
+        Assert.True(QueryStatsCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 13 }));
+        Assert.True(QueryStatsCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 16 }));
+        /* Unknown (0) assumes newest; Azure SQL DB / MI report a low ProductMajorVersion but support the DMV. */
+        Assert.True(QueryStatsCollector.Instance.AppliesTo(new CollectorTargetInfo { SqlMajorVersion = 0 }));
+        Assert.True(QueryStatsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true, SqlMajorVersion = 12 }));
+        Assert.True(QueryStatsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true, SqlMajorVersion = 12 }));
+    }
+
+    [Fact]
     public void BuildQuery_PlanCaptureOffByDefault_NoPlanClauses_LiteParity()
     {
         /* Lite never sets CapturePlanXml: the flag defaults false, so neither the plan SELECT column

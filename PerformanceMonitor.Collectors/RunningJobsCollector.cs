@@ -151,10 +151,12 @@ OPTION(RECOMPILE);";
     /// so it collects there; on-prem collects too. AWS RDS is skipped: this query joins
     /// <c>msdb.dbo.syssessions</c>, which RDS blocks with "SELECT permission was denied" even for the
     /// master login (the table requires sysadmin, which RDS never grants), so it would ERROR every cycle.
-    /// Both gates live here in the shared AppliesTo so Lite and Darling skip identically (Lite also
-    /// short-circuits earlier in IsCollectorSupported); mirrors the failed-jobs alert path's Azure skip.
+    /// A login without msdb access is also skipped: every table this reads lives in msdb. All three gates
+    /// live here in the shared AppliesTo — the single authoritative gate both SKUs consult (mirrors the
+    /// failed-jobs alert path's Azure/msdb skip).
     /// </summary>
-    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb && !target.IsAwsRds;
+    public override bool AppliesTo(CollectorTargetInfo target) =>
+        !target.IsAzureSqlDb && !target.IsAwsRds && target.HasMsdbAccess;
 
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 

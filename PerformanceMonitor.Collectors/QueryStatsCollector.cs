@@ -201,6 +201,16 @@ OUTER APPLY
 
     public override string TargetTable => "query_stats";
 
+    /// <summary>
+    /// On-prem/RDS require SQL Server 2016 (v13) or newer; older boxes lack columns this query reads.
+    /// Azure SQL DB / Managed Instance report a low ProductMajorVersion yet fully support the DMV, so they
+    /// are never version-gated, and an unknown version (0) is assumed newest — matching the exact condition
+    /// Lite used in IsCollectorSupported. Gated here in the shared AppliesTo so Lite and Darling skip
+    /// identically on a pre-2016 target.
+    /// </summary>
+    public override bool AppliesTo(CollectorTargetInfo target) =>
+        target.SqlMajorVersion == 0 || target.SqlMajorVersion >= 13 || target.IsAzureSqlDb || target.IsAzureManagedInstance;
+
     /// <summary>Azure SQL DB scopes dm_exec_query_stats to the connected database.</summary>
     public override bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
 

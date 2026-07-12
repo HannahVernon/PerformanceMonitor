@@ -6,7 +6,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace PerformanceMonitor.Collectors;
 
@@ -55,4 +57,20 @@ public static class CollectorCatalog
         JobHistoryCollector.Instance,
         AgentStatusCollector.Instance,
     };
+
+    /// <summary>Name → definition, for the by-name target-gate lookup. Built once from <see cref="All"/>.</summary>
+    private static readonly Dictionary<string, ICollectorSchemaInfo> s_byName =
+        All.ToDictionary(c => c.Name, StringComparer.Ordinal);
+
+    /// <summary>
+    /// The single authoritative target-gate check both SKUs share: whether <paramref name="collectorName"/>
+    /// applies to <paramref name="target"/>. Delegates to the definition's
+    /// <see cref="ICollectorSchemaInfo.AppliesTo"/> override — the gate CONDITION lives there and nowhere
+    /// else. Darling's collector runner calls <c>definition.AppliesTo(target)</c> directly; Lite consults
+    /// this by name for its pre-dispatch SKIPPED log (a genuine skip with no collection_log row, vs. the
+    /// SUCCESS/0-rows a gated collector would otherwise record). An unknown name returns <c>true</c> (not
+    /// gated) so a typo surfaces as the dispatch switch's "Unknown collector" rather than a silent skip.
+    /// </summary>
+    public static bool AppliesTo(string collectorName, CollectorTargetInfo target) =>
+        s_byName.TryGetValue(collectorName, out var definition) ? definition.AppliesTo(target) : true;
 }
