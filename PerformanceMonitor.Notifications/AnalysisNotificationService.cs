@@ -174,11 +174,15 @@ public sealed class AnalysisNotificationService
 
                 /* Name the other findings that co-fired in THIS incident, in the one message, so the
                    single alert still accounts for everything the incident surfaced. Reuses the shared
-                   CoFiredSummary the viewer/MCP surfaces use; null (and so no item) for a lone
-                   finding, leaving the message byte-identical to the pre-dedup single-finding path. */
+                   CoFiredSummary the viewer/MCP surfaces use, but with the INCIDENT-scoped lead-in so the
+                   body matches the "Co-fired in this incident" heading (the default window wording would
+                   be inaccurate here — these siblings are incident-scoped, not the whole run). Null (and
+                   so no item) for a lone finding, leaving the message byte-identical to the pre-dedup
+                   single-finding path. */
                 var coFired = CoFiredSummary.Line(
                     CoFiredSummary.OtherTitles(FindingTitle(primary),
-                        members.Select(m => (FindingTitle(m), m.Severity))));
+                        members.Select(m => (FindingTitle(m), m.Severity))),
+                    leadIn: CoFiredSummary.IncidentLeadIn);
                 if (coFired is not null)
                     context.Details.Add(new AlertDetailItem { Heading = "Co-fired in this incident", Body = coFired });
 

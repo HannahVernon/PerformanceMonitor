@@ -563,7 +563,8 @@ public class AnalysisNotificationTests : IDisposable
         Assert.Contains("aaaa0000", alert.MetricName); // metric name embeds the primary's hash
         var coFired = alert.Context.Details.Single(d => d.Heading == "Co-fired in this incident");
         Assert.NotNull(coFired.Body);
-        Assert.StartsWith("Also surfaced in this analysis window:", coFired.Body);
+        // Incident-scoped wording (matches the heading) — NOT the window-scoped reader wording.
+        Assert.StartsWith("Also fired in this incident:", coFired.Body);
     }
 
     [Fact]

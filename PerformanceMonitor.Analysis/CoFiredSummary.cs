@@ -18,6 +18,19 @@ public static class CoFiredSummary
     public const int DefaultCap = 3;
 
     /// <summary>
+    /// Default lead-in for the analysis-WINDOW surfaces (viewer / Dashboard reader / Lite reader), which
+    /// cross-reference every card in the run. The incident-scoped alert path passes
+    /// <see cref="IncidentLeadIn"/> instead so its wording matches its "Co-fired in this incident" heading.
+    /// </summary>
+    public const string WindowLeadIn = "Also surfaced in this analysis window:";
+
+    /// <summary>
+    /// Incident-scoped lead-in for <c>AnalysisNotificationService</c>'s per-incident alert, where the
+    /// named siblings are the OTHER findings in the same incident (not the whole window).
+    /// </summary>
+    public const string IncidentLeadIn = "Also fired in this incident:";
+
+    /// <summary>
     /// The distinct OTHER finding titles in the same analysis window, highest-severity first,
     /// excluding the caller's own title. <paramref name="windowTitles"/> is every finding/card title in
     /// the window paired with its raw severity; the caller passes its own title as <paramref name="ownTitle"/>.
@@ -38,10 +51,13 @@ public static class CoFiredSummary
     }
 
     /// <summary>
-    /// A demarcated one-line cross-reference ("Also surfaced in this analysis window: A; B; C (+N more).")
-    /// for appending to a card's advice text, or null when nothing else fired in the window.
+    /// A demarcated one-line cross-reference ("{leadIn} A; B; C (+N more).") for appending to a card's
+    /// advice text or an alert detail, or null when there is nothing else to name. <paramref name="leadIn"/>
+    /// defaults to the window-scoped wording (<see cref="WindowLeadIn"/>); the incident-scoped alert path
+    /// passes <see cref="IncidentLeadIn"/>. A trailing space and the joined list follow the lead-in, so
+    /// callers pass the label WITHOUT a trailing space.
     /// </summary>
-    public static string? Line(IReadOnlyList<string> others, int cap = DefaultCap)
+    public static string? Line(IReadOnlyList<string> others, int cap = DefaultCap, string leadIn = WindowLeadIn)
     {
         if (others is null || others.Count == 0)
             return null;
@@ -51,6 +67,6 @@ public static class CoFiredSummary
         var list = string.Join("; ", shown);
         if (extra > 0)
             list += $" (+{extra} more)";
-        return "Also surfaced in this analysis window: " + list + ".";
+        return leadIn + " " + list + ".";
     }
 }
