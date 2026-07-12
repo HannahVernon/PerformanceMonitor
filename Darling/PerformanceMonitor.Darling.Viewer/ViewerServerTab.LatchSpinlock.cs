@@ -17,16 +17,17 @@ namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// The Latches &amp; Spinlocks inner tab — the Dashboard-parity port of ResourceMetricsContent's Latch
-/// Stats / Spinlock Stats sub-tabs into the Darling viewer. Each sub-tab pairs a per-second trend chart
-/// for the TOP 5 contenders (latch classes by delta wait time, spinlocks by delta collisions) with a
-/// latest-snapshot grid of the most recent collection in the settable window. The Darling cumulative-delta
-/// tables carry no stored <c>sample_interval_seconds</c> (unlike the Dashboard's), so the ms/sec and
-/// collisions/sec rates are computed in SQL from the per-contender <c>LAG</c> interval — the same idiom
-/// the Wait Stats trend uses. Both sub-tabs (re)load on the parent tab's activation (mirroring the Memory
-/// tab's full-refresh branch), so the sub-TabControl needs no SelectionChanged handler. Chart chrome /
-/// legend / line polish flow through the shared <see cref="ChartStyle"/> / <see cref="ChartPalette"/> and
-/// the <c>ViewerServerTab.ChartHelpers.cs</c> bridge, so the Y-floor-at-0 fix applies; series ride the
-/// cycling <c>SeriesColors</c> (declared in ViewerServerTab.Charts.cs).
+/// Stats / Spinlock Stats into the Darling viewer, consolidated into ONE tab: the latch and spinlock
+/// per-second trend charts for the TOP 5 contenders (latch classes by delta wait time, spinlocks by delta
+/// collisions) stack vertically, each above a collapsed Expander holding its latest-snapshot grid of the
+/// most recent collection in the settable window. The Darling cumulative-delta tables carry no stored
+/// <c>sample_interval_seconds</c> (unlike the Dashboard's), so the ms/sec and collisions/sec rates are
+/// computed in SQL from the per-contender <c>LAG</c> interval — the same idiom the Wait Stats trend uses.
+/// Both charts and grids (re)load together on the parent tab's activation (mirroring the Memory tab's
+/// full-refresh branch), so the tab needs no SelectionChanged handler. Chart chrome / legend / line polish
+/// flow through the shared <see cref="ChartStyle"/> / <see cref="ChartPalette"/> and the
+/// <c>ViewerServerTab.ChartHelpers.cs</c> bridge, so the Y-floor-at-0 fix applies; series ride the cycling
+/// <c>SeriesColors</c> (declared in ViewerServerTab.Charts.cs).
 /// </summary>
 public partial class ViewerServerTab
 {
@@ -47,9 +48,9 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
-    /// Loads both sub-tabs (Latch Stats + Spinlock Stats) over the toolbar's settable window: the four
-    /// reads (two trends, two snapshots) fire concurrently — NpgsqlDataSource pools a connection each —
-    /// then the charts and grids render.
+    /// Loads the consolidated tab (latch trend + snapshot, spinlock trend + snapshot) over the toolbar's
+    /// settable window: the four reads (two trends, two snapshots) fire concurrently — NpgsqlDataSource
+    /// pools a connection each — then the two charts and their two Expander grids render.
     /// </summary>
     private async Task LoadLatchSpinlockAsync()
     {

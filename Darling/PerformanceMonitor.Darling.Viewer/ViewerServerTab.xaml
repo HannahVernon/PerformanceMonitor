@@ -3027,53 +3027,54 @@
         </TabItem>
 
         <!-- Latches & Spinlocks Tab — the Dashboard-parity port of ResourceMetricsContent's Latch Stats /
-             Spinlock Stats sub-tabs. Two sub-tabs, each a per-second trend chart (top 5 by delta) over the
-             settable window + a latest-snapshot grid. Grouped into the diagnostics tail (after System Events,
-             before Collection Health) rather than the main resource run. Both sub-tabs load on parent-tab
-             activation, so this sub-TabControl needs no SelectionChanged handler (mirrors the Memory tab). -->
+             Spinlock Stats. CONSOLIDATED from two sub-tabs into ONE tab (Erik's "consolidation, not
+             removal"): the latch wait-time trend and the spinlock collisions trend stack vertically
+             (full-width so the time axis reads), each with its per-class latest-snapshot grid tucked into a
+             collapsed Expander directly beneath it — decluttered by default, the per-class detail one click
+             away. Every grid column / binding is preserved verbatim from the former sub-tabs. Grouped into
+             the diagnostics tail (after System Events, before Collection Health). Loads on parent-tab
+             activation (mirrors the Memory tab), so no SelectionChanged handler is needed. -->
         <TabItem Header="Latches &amp; Spinlocks">
-            <TabControl x:Name="LatchSpinlockSubTabControl" Background="Transparent" BorderThickness="0" ItemContainerStyle="{DynamicResource SubTabItemStyle}">
-                <TabItem Header="Latch Stats">
-                    <Grid Margin="8">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="2*"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <scottplot:WpfPlot Grid.Row="0" x:Name="LatchStatsChart"/>
-                        <DataGrid Grid.Row="1" x:Name="LatchStatsGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Latch Class" Binding="{Binding LatchClass}" Width="*"/>
-                                <DataGridTextColumn Header="Δ Wait (ms)" Binding="{Binding DeltaWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
-                                <DataGridTextColumn Header="Δ Waiting Reqs" Binding="{Binding DeltaWaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
-                                <DataGridTextColumn Header="Wait Time (ms)" Binding="{Binding WaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
-                                <DataGridTextColumn Header="Max Wait (ms)" Binding="{Binding MaxWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
-                                <DataGridTextColumn Header="Waiting Reqs (total)" Binding="{Binding WaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="140"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
-                    </Grid>
-                </TabItem>
-                <TabItem Header="Spinlock Stats">
-                    <Grid Margin="8">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="2*"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <scottplot:WpfPlot Grid.Row="0" x:Name="SpinlockStatsChart"/>
-                        <DataGrid Grid.Row="1" x:Name="SpinlockStatsGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Spinlock" Binding="{Binding SpinlockName}" Width="*"/>
-                                <DataGridTextColumn Header="Δ Collisions" Binding="{Binding DeltaCollisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
-                                <DataGridTextColumn Header="Δ Spins" Binding="{Binding DeltaSpins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
-                                <DataGridTextColumn Header="Spins/Collision" Binding="{Binding SpinsPerCollision, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
-                                <DataGridTextColumn Header="Collisions (total)" Binding="{Binding Collisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
-                                <DataGridTextColumn Header="Spins (total)" Binding="{Binding Spins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
-                                <DataGridTextColumn Header="Sleep Time" Binding="{Binding SleepTime, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
-                                <DataGridTextColumn Header="Backoffs" Binding="{Binding Backoffs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
-                    </Grid>
-                </TabItem>
-            </TabControl>
+            <Grid Margin="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Latch wait-time trend (top 5 classes by delta wait) + per-class latest-snapshot grid. -->
+                <scottplot:WpfPlot Grid.Row="0" x:Name="LatchStatsChart"/>
+                <Expander Grid.Row="1" Header="Latch classes (latest snapshot)" IsExpanded="False" Margin="0,4,0,0">
+                    <DataGrid x:Name="LatchStatsGrid" Style="{StaticResource DarkGrid}" MaxHeight="220" Margin="0,4,0,0">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Latch Class" Binding="{Binding LatchClass}" Width="*"/>
+                            <DataGridTextColumn Header="Δ Wait (ms)" Binding="{Binding DeltaWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                            <DataGridTextColumn Header="Δ Waiting Reqs" Binding="{Binding DeltaWaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                            <DataGridTextColumn Header="Wait Time (ms)" Binding="{Binding WaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                            <DataGridTextColumn Header="Max Wait (ms)" Binding="{Binding MaxWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                            <DataGridTextColumn Header="Waiting Reqs (total)" Binding="{Binding WaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="140"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Expander>
+
+                <!-- Spinlock collisions trend (top 5 spinlocks by delta collisions) + per-spinlock snapshot grid. -->
+                <scottplot:WpfPlot Grid.Row="2" x:Name="SpinlockStatsChart" Margin="0,8,0,0"/>
+                <Expander Grid.Row="3" Header="Spinlocks (latest snapshot)" IsExpanded="False" Margin="0,4,0,0">
+                    <DataGrid x:Name="SpinlockStatsGrid" Style="{StaticResource DarkGrid}" MaxHeight="220" Margin="0,4,0,0">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Spinlock" Binding="{Binding SpinlockName}" Width="*"/>
+                            <DataGridTextColumn Header="Δ Collisions" Binding="{Binding DeltaCollisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                            <DataGridTextColumn Header="Δ Spins" Binding="{Binding DeltaSpins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                            <DataGridTextColumn Header="Spins/Collision" Binding="{Binding SpinsPerCollision, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                            <DataGridTextColumn Header="Collisions (total)" Binding="{Binding Collisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                            <DataGridTextColumn Header="Spins (total)" Binding="{Binding Spins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                            <DataGridTextColumn Header="Sleep Time" Binding="{Binding SleepTime, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                            <DataGridTextColumn Header="Backoffs" Binding="{Binding Backoffs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Expander>
+            </Grid>
         </TabItem>
 
         <!-- Collection Health Tab — upgraded from the shell's single latest-run grid to Lite's rich
