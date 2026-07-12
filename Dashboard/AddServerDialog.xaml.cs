@@ -12,6 +12,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -50,6 +51,15 @@ namespace PerformanceMonitorDashboard
         Guards the install path structurally rather than relying on the button being hidden.
         */
         private string? _installBlockedReason;
+
+        /*
+        Said in one voice from every place that can withdraw something: the demotion in TransitionToState,
+        the post-run claims, and a real block whose server is no longer in the box. It was three
+        hand-copied strings that had already drifted apart.
+        */
+        private const string StaleServerNotice =
+            "The server name changed after this server's status was checked, so what is on screen may " +
+            "describe a different server.\n\nClick Test Connection to check the server now in the box.";
 
         public ServerConnection ServerConnection { get; private set; }
         public string? Username { get; private set; }
@@ -677,19 +687,43 @@ namespace PerformanceMonitorDashboard
                 return;
             }
 
-            /*
-            Undo a stale-name demotion when the name comes back. The verdict was never WRONG -- it was
-            mis-addressed -- and _demotedFromState is set only by that demotion, so a real block cannot be
-            typed away. Without this, one keystroke and a backspace left "Upgrade Now" gone for good under
-            a notice ("the server name changed") that was no longer even true.
-            */
-            if (_currentState == DialogState.Connected_StatusUnknown &&
-                _demotedFromState != null &&
-                VerdictMatchesServerBox())
+            if (_currentState == DialogState.Connected_StatusUnknown)
             {
-                DialogState restored = _demotedFromState.Value;
-                _installBlockedReason = null;
-                TransitionToState(restored);
+                /*
+                Connected_StatusUnknown is where a demotion LANDS, so the guard in TransitionToState -- which
+                only demotes -- can never cover it. It is also where a real block sits, and a real block is a
+                fact about a specific server: "SQL Server 2014 is not supported" is not true of the instance
+                now in the box, and we have not looked at it.
+                */
+                if (VerdictMatchesServerBox())
+                {
+                    /*
+                    Undo a stale-name demotion when the name comes back. The verdict was never WRONG, only
+                    mis-addressed. _demotedFromState is set ONLY by that demotion, so a real block -- an
+                    unsupported version, an unreadable version, a database newer than the binary -- cannot be
+                    typed away here.
+                    */
+                    if (_demotedFromState != null)
+                    {
+                        DialogState restored = _demotedFromState.Value;
+                        _installBlockedReason = null;
+                        TransitionToState(restored);
+                    }
+
+                    return;
+                }
+
+                /*
+                The box names someone else. A demotion's message already says exactly that, and its
+                _demotedFromState must survive so typing the name back can still undo it -- so only a REAL
+                block needs restating, and it must lose the previous server's specifics.
+                */
+                if (_demotedFromState == null && _installBlockedReason != null)
+                {
+                    _installBlockedReason = StaleServerNotice;
+                    DatabaseStatusText.Text = StaleServerNotice;
+                }
+
                 return;
             }
 
@@ -733,9 +767,7 @@ namespace PerformanceMonitorDashboard
             }
 
             /* The panels are gone; without this the dialog would simply look empty for no stated reason. */
-            StatusText.Text =
-                "The server name changed after this server's status was checked, so what is on screen may " +
-                "describe a different server.\n\nClick Test Connection to check the server now in the box.";
+            StatusText.Text = StaleServerNotice;
             StatusText.Visibility = Visibility.Visible;
         }
 
@@ -898,6 +930,16 @@ namespace PerformanceMonitorDashboard
                 unsupported-version branch below reports the version it actually just read.
                 */
                 _serverVersion = _coreServerInfo.SqlServerVersion.Split('\n')[0].Trim();
+
+                /*
+                Stamp as soon as the connection facts land, not only on the success path below. Everything
+                from here on -- including the two BlockInstall branches -- is a statement ABOUT the server
+                we just probed, and the stamp is what lets the dialog notice when the box stops naming it.
+                Stamped only at the end, a block was an unattributed fact: retype past an unsupported 2014
+                instance to a 2022 one and the panel still read "SQL Server 2014 is not supported", with no
+                stamp to catch it. Re-stamped on the success path with the same value; harmless.
+                */
+                RecordVerdictFor(probedServerName);
 
                 if (!_coreServerInfo.IsSupportedVersion)
                 {
@@ -1073,9 +1115,7 @@ namespace PerformanceMonitorDashboard
                 */
                 _demotedFromState = newState;
 
-                _installBlockedReason =
-                    "The server name changed after this server's status was checked, so what is on screen may " +
-                    "describe a different server.\n\nClick Test Connection to re-check the server now in the box.";
+                _installBlockedReason = StaleServerNotice;
                 newState = DialogState.Connected_StatusUnknown;
             }
             else
@@ -1921,6 +1961,14 @@ namespace PerformanceMonitorDashboard
 
         private void SkipInstall_Click(object sender, MouseButtonEventArgs e)
         {
+            /*
+            Supersede any detection in flight. "Skip, just add server" is live while one is running, and
+            this method writes _currentState directly rather than transitioning -- so the detection landed
+            afterwards, published its verdict, and put the install panel and the install button straight
+            back on screen, silently undoing the skip the user had just chosen.
+            */
+            _detectEpoch++;
+
             /* This bypasses TransitionToState, so it is the one exit that never cleared these. */
             RepairCheckBox.IsChecked = false;
             CleanInstallCheckBox.IsChecked = false;
@@ -2003,6 +2051,32 @@ namespace PerformanceMonitorDashboard
 
         private async void Save_Click(object sender, RoutedEventArgs e)
         {
+            /*
+            Save is re-enterable, and the second one CRASHES. RunConnectionTestAsync(SaveButton) disables
+            Save for the duration -- but Test Connection stays live, and ITS finally re-enables Save (it
+            re-enables the form wholesale, not just the button it took). Click Save, click Test Connection,
+            click Save again: both tests complete, the first sets DialogResult and closes the window, and
+            the second sets DialogResult on a CLOSED window -- an InvalidOperationException on an async void
+            handler, which is an unhandled exception, which takes the app down. Pre-existing; the epoch guard
+            below happens to close every variant where a detect or install intervenes, but not this one.
+            */
+            if (_saveInProgress) return;
+            _saveInProgress = true;
+
+            try
+            {
+                await SaveAsync();
+            }
+            finally
+            {
+                _saveInProgress = false;
+            }
+        }
+
+        private bool _saveInProgress;
+
+        private async Task SaveAsync()
+        {
             if (!ValidateInputs()) return;
 
             /*
@@ -2030,15 +2104,29 @@ namespace PerformanceMonitorDashboard
 
                 It also covers the retype: TextChanged bumps the epoch too, so a box edited while this test
                 was in flight abandons the save rather than persisting the new name on the strength of a
-                connection proven against the old one. Every bump has a visible cause on screen -- an
-                install panel, a re-detect, or the "server name changed" notice -- so the abandoned save is
-                never silent, and Save re-enables.
+                connection proven against the old one.
                 */
                 int epoch = _detectEpoch;
 
                 var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync(SaveButton);
 
-                if (epoch != _detectEpoch || InstallInProgress) return;
+                if (InstallInProgress) return;
+
+                if (epoch != _detectEpoch)
+                {
+                    /*
+                    SAY SO. An earlier version of this comment claimed every epoch bump has a visible cause,
+                    so the abandoned save could not be silent. That was wrong: from Initial -- a fresh dialog,
+                    which is the most common way to reach Save -- a retype renders nothing at all, and this
+                    return then swallowed the click. The user fixes a typo while the 10-second connection test
+                    is running, clicks nothing else, and believes the server was added.
+                    */
+                    StatusText.Text =
+                        "The server details changed while the connection was being tested, so nothing was " +
+                        "saved. Click Save again.";
+                    StatusText.Visibility = Visibility.Visible;
+                    return;
+                }
 
                 if (!connected)
                 {
