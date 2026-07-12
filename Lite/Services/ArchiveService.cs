@@ -16,6 +16,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
@@ -52,49 +53,16 @@ public class ArchiveService
         "dismissed_archive_alerts"
     ];
 
-    /* Tables eligible for archival with their time column.
-       IMPORTANT: Every table with time-series data must be listed here,
-       or it will grow unbounded and push the DB past the 512 MB reset threshold. */
+    /* Tables eligible for archival with their time column. Catalog-driven: every collector table
+       (from CollectorCatalog, with its prefix time column — collection_time everywhere except the
+       four config snapshots' capture_time) plus the two non-collector time-series tables. Adding a
+       collector gives it archival for free; the former hand-maintained list could silently omit a
+       new table and let it grow unbounded past the 512 MB reset threshold. Mirrors
+       DuckDbInitializer.ArchivableTables (same table set); a test pins the two together. */
     internal static readonly (string Table, string TimeColumn)[] ArchivableTables =
-    [
-        ("wait_stats", "collection_time"),
-        ("latch_stats", "collection_time"),
-        ("spinlock_stats", "collection_time"),
-        ("cpu_scheduler_stats", "collection_time"),
-        ("plan_cache_stats", "collection_time"),
-        ("query_stats", "collection_time"),
-        ("procedure_stats", "collection_time"),
-        ("query_store_stats", "collection_time"),
-        ("query_snapshots", "collection_time"),
-        ("cpu_utilization_stats", "collection_time"),
-        ("file_io_stats", "collection_time"),
-        ("memory_stats", "collection_time"),
-        ("memory_clerks", "collection_time"),
-        ("memory_pressure_events", "collection_time"),
-        ("tempdb_stats", "collection_time"),
-        ("perfmon_stats", "collection_time"),
-        ("deadlocks", "collection_time"),
-        ("blocked_process_reports", "collection_time"),
-        ("memory_grant_stats", "collection_time"),
-        ("waiting_tasks", "collection_time"),
-        ("dmv_blocking_snapshots", "collection_time"),
-        ("running_jobs", "collection_time"),
-        ("database_size_stats", "collection_time"),
-        ("index_object_stats", "collection_time"),
-        ("server_properties", "collection_time"),
-        ("session_stats", "collection_time"),
-        ("session_summary_stats", "collection_time"),
-        ("system_health_events", "collection_time"),
-        ("default_trace_events", "collection_time"),
-        ("job_history", "collection_time"),
-        ("agent_status", "collection_time"),
-        ("server_config", "capture_time"),
-        ("database_config", "capture_time"),
-        ("database_scoped_config", "capture_time"),
-        ("trace_flags", "capture_time"),
-        ("config_alert_log", "alert_time"),
-        ("collection_log", "collection_time")
-    ];
+        CollectorCatalog.All.Select(c => (c.TargetTable, c.PrefixTimeColumnName))
+            .Concat([("config_alert_log", "alert_time"), ("collection_log", "collection_time")])
+            .ToArray();
 
     public ArchiveService(DuckDbInitializer duckDb, string archivePath, ILogger<ArchiveService>? logger = null)
     {
