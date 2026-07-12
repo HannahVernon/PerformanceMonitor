@@ -47,6 +47,37 @@ public class FactScorerTests
         Assert.Equal(0.0, facts[0].BaseSeverity);
     }
 
+    /* ── Wait-profile anomaly scoring (change 1) ── */
+
+    // The shared ANOMALY_WAIT_PROFILE arm scores on the HONEST per-second ratio: below 4x → 0, 4x →
+    // 0.5, saturating to 1.0 at 12x. Same shared FactScorer as Lite — pinned here for parity.
+    [Theory]
+    [InlineData(3.0, 0.0)]
+    [InlineData(4.0, 0.5)]
+    [InlineData(12.0, 1.0)]
+    [InlineData(100.0, 1.0)]
+    public void Score_WaitProfile_RampsFromHonestRatio(double ratio, double expected)
+    {
+        var fact = new Fact
+        {
+            Source = "anomaly",
+            Key = "ANOMALY_WAIT_PROFILE",
+            Metadata = new() { ["ratio"] = ratio }
+        };
+        new FactScorer().ScoreAll(new List<Fact> { fact });
+        Assert.Equal(expected, fact.BaseSeverity, precision: 4);
+    }
+
+    [Fact]
+    public void WaitProfile_HasAdviceBlock()
+    {
+        var advice = FactAdvice.GetForFactKey("ANOMALY_WAIT_PROFILE");
+        Assert.NotNull(advice);
+        Assert.False(string.IsNullOrWhiteSpace(advice!.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+    }
+
     /* ── Layer 2: Amplifier tests ── */
 
     [Fact]

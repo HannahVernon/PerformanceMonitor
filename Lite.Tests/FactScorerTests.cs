@@ -150,6 +150,40 @@ public class FactScorerTests : IDisposable
         Assert.Equal(0.0, facts[0].BaseSeverity);
     }
 
+    /* ── Wait-profile anomaly scoring (change 1) ── */
+
+    // The ANOMALY_WAIT_PROFILE arm scores on the HONEST per-second ratio: below 4x → 0, 4x → 0.5
+    // (floor), saturating to 1.0 at 12x. (Precedes the legacy ANOMALY_WAIT_ branch it prefix-matches.)
+    [Theory]
+    [InlineData(3.0, 0.0)]    // below the floor
+    [InlineData(4.0, 0.5)]    // at the floor
+    [InlineData(8.0, 0.75)]   // midway up the ramp
+    [InlineData(12.0, 1.0)]   // saturated
+    [InlineData(100.0, 1.0)]  // is_new sentinel — clamped to 1.0
+    public void Score_WaitProfile_RampsFromHonestRatio(double ratio, double expected)
+    {
+        var fact = new Fact
+        {
+            Source = "anomaly",
+            Key = "ANOMALY_WAIT_PROFILE",
+            Metadata = new() { ["ratio"] = ratio }
+        };
+        new FactScorer().ScoreAll(new List<Fact> { fact });
+        Assert.Equal(expected, fact.BaseSeverity, precision: 4);
+    }
+
+    // Dead-fact guard: ANOMALY_WAIT_PROFILE must resolve to an advice block (a root fact that renders
+    // no advice is the P1 dead-fact bug class).
+    [Fact]
+    public void WaitProfile_HasAdviceBlock()
+    {
+        var advice = FactAdvice.GetForFactKey("ANOMALY_WAIT_PROFILE");
+        Assert.NotNull(advice);
+        Assert.False(string.IsNullOrWhiteSpace(advice!.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Investigation));
+        Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
+    }
+
     /* ── Layer 2: Amplifier tests ── */
 
     [Fact]

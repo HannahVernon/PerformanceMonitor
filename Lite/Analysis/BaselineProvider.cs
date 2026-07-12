@@ -137,6 +137,7 @@ public class BaselineProvider
         var query = GetBaselineQuery(metricName);
         if (query == null) return null;
 
+        var absStdDevFloor = AbsStdDevFloorFor(metricName);
         var windowStart = analysisTime.AddDays(-BaselineWindowDays);
 
         try
@@ -161,6 +162,7 @@ public class BaselineProvider
                 var mean = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2));
                 var stddev = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3));
                 var count = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4));
+                var distinctDays = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5));
 
                 buckets[(hour, dow)] = new BaselineBucket
                 {
@@ -169,6 +171,8 @@ public class BaselineProvider
                     Mean = mean,
                     StdDev = stddev,
                     SampleCount = count,
+                    DistinctDays = distinctDays,
+                    AbsStdDevFloor = absStdDevFloor,
                     // Every bucket here is a full (hour, day-of-week) bucket; the HourOnly/Flat
                     // tiers are assigned only on the collapse/flat paths below. A sparse full
                     // bucket is still Full, just low-sample. (Was a copy-paste of two identical
@@ -202,7 +206,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(sqlserver_cpu_utilization) AS mean_val,
        STDDEV_SAMP(sqlserver_cpu_utilization) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM v_cpu_utilization_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
 GROUP BY hour_of_day, day_of_week",
@@ -215,7 +220,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(delta_cntr_value) AS mean_val,
        STDDEV_SAMP(delta_cntr_value) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM (
     SELECT collection_time, delta_cntr_value
     FROM v_perfmon_stats
@@ -244,7 +250,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(total_wait_ms) AS mean_val,
        STDDEV_SAMP(total_wait_ms) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM per_collection
 GROUP BY hour_of_day, day_of_week",
 
@@ -262,7 +269,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(total_connections) AS mean_val,
        STDDEV_SAMP(total_connections) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM per_collection
 GROUP BY hour_of_day, day_of_week",
 
@@ -284,7 +292,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(total_elapsed) AS mean_val,
        STDDEV_SAMP(total_elapsed) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM per_collection
 GROUP BY hour_of_day, day_of_week",
 
@@ -294,7 +303,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(delta_stall_read_ms * 1.0 / NULLIF(delta_reads, 0)) AS mean_val,
        STDDEV_SAMP(delta_stall_read_ms * 1.0 / NULLIF(delta_reads, 0)) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM v_file_io_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
 AND   (delta_reads > 0 OR delta_writes > 0)
@@ -307,7 +317,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        COUNT(*)::DOUBLE PRECISION / GREATEST(COUNT(DISTINCT collection_time::DATE), 1) AS mean_val,
        0::DOUBLE PRECISION AS stddev_val,
-       COUNT(DISTINCT collection_time::DATE) AS sample_count
+       COUNT(DISTINCT collection_time::DATE) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM v_blocked_process_reports
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
 GROUP BY hour_of_day, day_of_week",
@@ -318,7 +329,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        COUNT(*)::DOUBLE PRECISION / GREATEST(COUNT(DISTINCT collection_time::DATE), 1) AS mean_val,
        0::DOUBLE PRECISION AS stddev_val,
-       COUNT(DISTINCT collection_time::DATE) AS sample_count
+       COUNT(DISTINCT collection_time::DATE) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM v_deadlocks
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
 GROUP BY hour_of_day, day_of_week",
@@ -329,7 +341,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS mean_val,
        STDDEV_SAMP(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM v_memory_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
 AND   target_server_memory_mb > 0
@@ -360,7 +373,8 @@ SELECT EXTRACT(HOUR FROM collection_time)::INT AS hour_of_day,
        EXTRACT(DOW FROM collection_time)::INT AS day_of_week,
        AVG(ms_per_sec) AS mean_val,
        STDDEV_SAMP(ms_per_sec) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT collection_time::DATE) AS distinct_days
 FROM with_rate
 GROUP BY hour_of_day, day_of_week",
 
@@ -377,13 +391,26 @@ SELECT EXTRACT(HOUR FROM minute_bucket)::INT AS hour_of_day,
        EXTRACT(DOW FROM minute_bucket)::INT AS day_of_week,
        AVG(event_count) AS mean_val,
        STDDEV_SAMP(event_count) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT minute_bucket::DATE) AS distinct_days
 FROM per_minute
 GROUP BY hour_of_day, day_of_week",
 
             _ => null
         };
     }
+
+    /// <summary>
+    /// Bounded-metric absolute dispersion floor (see BaselineBucket.AbsStdDevFloor). Server-relative
+    /// metrics have no universal floor and return 0. Tunable — calibrate on the SQL2025/HammerDB box.
+    /// </summary>
+    private static double AbsStdDevFloorFor(string metricName) => metricName switch
+    {
+        MetricNames.Cpu => 5.0,        // CPU utilization %
+        MetricNames.Memory => 4.0,     // memory pressure %
+        MetricNames.IoLatency => 2.5,  // I/O latency ms
+        _ => 0.0,                       // batch/query-duration/sessions/waits/blocking/deadlock — server-relative
+    };
 
     /// <summary>
     /// Collapses multiple day-of-week buckets for the same hour into a single
@@ -408,6 +435,10 @@ GROUP BY hour_of_day, day_of_week",
             Mean = weightedMean,
             StdDev = Math.Sqrt(pooledVariance),
             SampleCount = totalSamples,
+            // Each calendar day lands in exactly one day-of-week bucket, so summing distinct-days
+            // across the dow buckets for this hour is exact (no double-count).
+            DistinctDays = hourBuckets.Sum(b => b.DistinctDays),
+            AbsStdDevFloor = hourBuckets[0].AbsStdDevFloor,
             Tier = BaselineTier.HourOnly
         };
     }
@@ -431,6 +462,10 @@ GROUP BY hour_of_day, day_of_week",
             Mean = weightedMean,
             StdDev = Math.Sqrt(pooledVariance),
             SampleCount = totalSamples,
+            // A calendar day recurs across the 24 hour buckets, so summing would double-count;
+            // MAX is a conservative lower bound (avoids an extra global DISTINCT-days query).
+            DistinctDays = allBuckets.Max(b => b.DistinctDays),
+            AbsStdDevFloor = allBuckets[0].AbsStdDevFloor,
             Tier = BaselineTier.Flat
         };
     }
@@ -477,23 +512,76 @@ public class BaselineBucket
     public long SampleCount { get; init; }
     public BaselineTier Tier { get; init; }
 
+    /// <summary>
+    /// Distinct calendar days observed in this bucket — the baseline-QUALITY signal the old
+    /// quantity-only warmup gate lacked (a bucket with many samples but few distinct days is one
+    /// busy day, not a trend). Carried through collapse by CollapseToHourOnly (SUM — each calendar
+    /// day lands in exactly one day-of-week bucket, so the sum is exact) and CollapseToFlat (MAX —
+    /// a calendar day recurs across the 24 hour buckets, so MAX is a conservative lower bound that
+    /// avoids a second global query).
+    /// </summary>
+    public long DistinctDays { get; init; }
+
+    /// <summary>
+    /// Absolute dispersion floor for BOUNDED metrics (CPU %, memory %, I/O ms) so a
+    /// variance-collapsed baseline can't manufacture a giant z-score. 0 for server-relative
+    /// metrics (batch/query-duration/sessions/waits/blocking), which have no universal floor and
+    /// rely on the detector magnitude floors + the quality gate instead. Set per metric by the provider.
+    /// </summary>
+    public double AbsStdDevFloor { get; init; }
+
+    // Baseline-quality tier gates (see IsTrustworthy). Day-mins are tier-aware: a Full (hour × dow)
+    // bucket only sees ~4 same-weekday occurrences in a 30-day window, so a flat >=15 would collapse
+    // every Full bucket; a Flat bucket pools every day and can demand more. Sample-mins mirror the
+    // provider's per-tier selection floors.
+    private const long FullSampleMin = 10;
+    private const long FullDayMin = 3;
+    private const long HourOnlySampleMin = 10;
+    private const long HourOnlyDayMin = 10;
+    private const long FlatSampleMin = 3;
+    private const long FlatDayMin = 15;
+
     public static BaselineBucket Empty => new()
     {
         HourOfDay = -1, DayOfWeek = -1, Mean = 0, StdDev = 0,
-        SampleCount = 0, Tier = BaselineTier.Flat
+        SampleCount = 0, DistinctDays = 0, Tier = BaselineTier.Flat
     };
 
     /// <summary>
-    /// Returns the effective stddev with a proportional minimum floor to prevent
-    /// division-by-zero in z-score calculations. When both mean and stddev are 0
-    /// (zero activity), returns 0 — callers should skip scoring.
+    /// Returns the effective stddev with a proportional minimum floor plus, for bounded metrics,
+    /// an absolute floor — both prevent division-by-zero AND a variance-collapsed baseline from
+    /// producing a giant z-score. When both mean and stddev are 0 (zero activity), returns 0 —
+    /// callers should skip scoring (or fall back to the absolute-threshold path).
     /// </summary>
     public double EffectiveStdDev
     {
         get
         {
             if (Mean == 0 && StdDev <= 0) return 0; // Zero activity — skip scoring
-            return Math.Max(StdDev, Mean * 0.01);
+            return Math.Max(Math.Max(StdDev, Mean * 0.01), AbsStdDevFloor);
+        }
+    }
+
+    /// <summary>
+    /// Whether this baseline is dense enough to trust a z-score / ratio against. Requires real
+    /// dispersion, the tier's sample floor, AND enough DISTINCT days. A low-quality baseline is NOT
+    /// silenced — the detector falls back to an absolute-threshold bar instead. This gate and the
+    /// #1486 magnitude floors are COMPLEMENTARY, not both-mandatory: a trustworthy baseline trusts z
+    /// with the magnitude floor as a sanity ceiling; an untrustworthy one fires only on the higher
+    /// absolute bar — they must never AND into blindness on a young store.
+    /// </summary>
+    public bool IsTrustworthy
+    {
+        get
+        {
+            if (EffectiveStdDev <= 0) return false;
+            var (sampleMin, dayMin) = Tier switch
+            {
+                BaselineTier.Full => (FullSampleMin, FullDayMin),
+                BaselineTier.HourOnly => (HourOnlySampleMin, HourOnlyDayMin),
+                _ => (FlatSampleMin, FlatDayMin),
+            };
+            return SampleCount >= sampleMin && DistinctDays >= dayMin;
         }
     }
 }
