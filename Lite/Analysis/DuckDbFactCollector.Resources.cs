@@ -54,6 +54,63 @@ LIMIT 1";
     }
 
     /// <summary>
+    /// Collects the runnable-task-queue pressure signal from the EXISTING cpu_scheduler_stats snapshot
+    /// (its total_runnable_tasks_count = SUM(runnable_tasks_count) and its runnable_tasks_warning =
+    /// SUM(runnable_tasks_count) >= cpu_count heuristic, both already computed by the shared
+    /// CpuSchedulerStatsCollector) as one RUNNABLE_TASKS context fact (Source "cpu" — carried into the
+    /// FactScorer amplifier lookup but never scored/rooted, like every Source="cpu" key besides
+    /// CPU_SQL_PERCENT/CPU_SPIKE). The THREADPOOL runnable-queue amplifier reads the warning flag to
+    /// confirm real scheduler CPU pressure behind a thread exhaustion. No new collector — reuses the
+    /// data cpu_scheduler_stats already stores (not collected on Azure SQL DB, where the fact is simply
+    /// absent and the amplifier no-ops). The read is window-bounded to [TimeRangeStart, TimeRangeEnd]
+    /// (a lower bound, not just &lt;= end, matching CpuUtilizationSql) so a lapsed collection surfaces
+    /// no stale snapshot from outside the window — the fact is then absent and the amplifier no-ops.
+    /// </summary>
+    private async Task CollectRunnableTaskFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var readLock = _duckDb.AcquireReadLock();
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SELECT total_runnable_tasks_count, runnable_tasks_warning
+FROM cpu_scheduler_stats
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3
+ORDER BY collection_time DESC
+LIMIT 1";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var totalRunnable = reader.IsDBNull(0) ? 0.0 : Convert.ToDouble(reader.GetValue(0));
+            var runnableWarning = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+
+            facts.Add(new Fact
+            {
+                Source = "cpu",
+                Key = "RUNNABLE_TASKS",
+                Value = totalRunnable,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["total_runnable_tasks"] = totalRunnable,
+                    ["runnable_tasks_warning"] = runnableWarning
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
+    }
+
+    /// <summary>
     /// Collects memory grant facts from the resource semaphore view.
     /// Detects grant waiters (sessions waiting for memory) and grant pressure.
     /// </summary>

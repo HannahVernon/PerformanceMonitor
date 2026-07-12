@@ -77,6 +77,41 @@ public class FactScorer
 
             fact.Severity = Math.Min(fact.BaseSeverity * (1.0 + totalBoost), 2.0);
         }
+
+        // Layer 3: tuning-class severity cap. Parallelism (CXPACKET) saturates its base to 1.0 at 25%
+        // of period and then amplifiers multiply it past 1.5 into the CRITICAL band on stacking alone —
+        // but parallelism is a TUNING opportunity, not an outage. Cap the FINAL severity of the
+        // tuning-class keys at the WARNING ceiling so they can't reach CRITICAL by amplifier count.
+        // ESCAPE HATCH: release the cap entirely when an impact-bearing peer co-fired — THREADPOOL
+        // (thread exhaustion), SOS_SCHEDULER_YIELD (CPU starvation), or RESOURCE_SEMAPHORE (grant
+        // starvation) — because then the parallelism genuinely IS driving an outage and CRITICAL is
+        // earned. "Co-fired" must mean SIGNIFICANT, not merely present. Only THREADPOOL's base is
+        // self-gating: ScoreWaitFact requires >= 1hr total AND >= 1s avg before THREADPOOL scores at
+        // all, so BaseSeverity > 0 there already means real exhaustion — keep the presence check.
+        // SOS_SCHEDULER_YIELD (0.75, null) and RESOURCE_SEMAPHORE (0.01, null) have NO minimum guard,
+        // so their BaseSeverity > 0 fires on ANY trace of the wait; and SOS physically co-occurs with
+        // high CXPACKET (parallel workers yield -> SOS) and is emitted for any delta_wait_time_ms > 0,
+        // so a trivial SOS (e.g. 500ms over an hour) would release the cap on exactly the busy servers
+        // the cap targets — re-admitting the CXPACKET=CRITICAL noise the cap exists to kill. Gate
+        // SOS/RS on SIGNIFICANCE (fraction of period) via the same HasSignificantWait helper the
+        // amplifiers use, not on mere presence: SOS at 0.25 (matches the CXPACKET SOS amplifier bar);
+        // RS at 0.10 (RESOURCE_SEMAPHORE has no HasSignificantWait amplifier bar, so pick a bar here —
+        // 0.10 of period is meaningful grant starvation). Caps numeric Severity only — SeverityBand is
+        // derived from it downstream, so a capped fact stays in WARNING without a separate band edit
+        // and Lite parity is preserved.
+        var impactPeerCoFired =
+            (factsByKey.TryGetValue("THREADPOOL", out var tpPeer) && tpPeer.BaseSeverity > 0)
+            || HasSignificantWait(factsByKey, "SOS_SCHEDULER_YIELD", 0.25)
+            || HasSignificantWait(factsByKey, "RESOURCE_SEMAPHORE", 0.10);
+
+        if (!impactPeerCoFired)
+        {
+            foreach (var fact in facts)
+            {
+                if (IsTuningClassKey(fact.Key))
+                    fact.Severity = Math.Min(fact.Severity, TuningClassSeverityCeiling);
+            }
+        }
     }
 
     /// <summary>
@@ -387,6 +422,21 @@ public class FactScorer
     // to 1.0 at 2× the bar. Sensible default — CALIBRATE ON SQL2025/HAMMERDB.
     private const double LowQualityFallbackSpan = 1.0;
 
+    // Layer-3 tuning-class severity ceiling (see ScoreAll). Parallelism/anomaly signals describe a tuning
+    // opportunity, not an outage — their FINAL severity is capped here (bands are >= 1.5 CRITICAL) unless an
+    // impact peer co-fired. 1.49 keeps a capped fact in the WARNING band without touching SeverityBand.
+    private const double TuningClassSeverityCeiling = 1.49;
+
+    /// <summary>
+    /// Tuning-class keys whose FINAL severity is capped at the WARNING ceiling (Layer 3) unless an
+    /// impact peer co-fired: parallelism (CXPACKET/CXCONSUMER), excessive-DOP queries, and every
+    /// anomaly fact. Today only CXPACKET can exceed the ceiling on amplifiers (ANOMALY_* and
+    /// QUERY_HIGH_DOP already max at 1.0) — the rest is forward-safety as those ramps evolve.
+    /// </summary>
+    private static bool IsTuningClassKey(string key) =>
+        key is "CXPACKET" or "CXCONSUMER" or "QUERY_HIGH_DOP"
+        || key.StartsWith("ANOMALY_", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Scores anomaly facts based on deviation from baseline.
     /// At 2σ → 0.5, at 4σ → 1.0. Higher deviations are more severe.
@@ -415,7 +465,13 @@ public class FactScorer
             if (fact.Metadata.GetValueOrDefault("baseline_low_quality") >= 1.0)
             {
                 var over = Math.Max(0.0, fact.Metadata.GetValueOrDefault("fallback_exceedance") - 1.0);
-                return (0.5 + 0.5 * Math.Min(over / LowQualityFallbackSpan, 1.0)) * confidence;
+                // Floor AFTER the confidence multiply, not before it. confidence is a hardcoded 1.0
+                // everywhere today so the ramp already lands >= 0.5 at the bar, but if confidence ever
+                // drops sub-1.0 the un-floored product would fall below InferenceEngine's 0.5 root
+                // entry-point and silently drop the finding — re-breaking the "fire on the absolute bar,
+                // not silence" guarantee. Math.Max(0.5, ...) keeps a fired low-quality anomaly rootable
+                // regardless of confidence. Behaviorally identical at confidence == 1.0.
+                return Math.Max(0.5, (0.5 + 0.5 * Math.Min(over / LowQualityFallbackSpan, 1.0)) * confidence);
             }
 
             if (deviation < 2.0) return 0.0;
@@ -660,16 +716,28 @@ public class FactScorer
     ];
 
     /// <summary>
-    /// THREADPOOL: thread exhaustion confirmed by parallelism pressure.
-    /// Blocking and config amplifiers added later.
+    /// THREADPOOL: thread exhaustion — the impact-bearing escalation path for a parallelism →
+    /// worker-exhaustion meltdown. The CXPACKET amplifier is deliberately heavy (+0.5): CXPACKET
+    /// itself is capped at the WARNING ceiling (see the Layer-3 cap in ScoreAll), so a genuine
+    /// meltdown must reach CRITICAL through THREADPOOL (an impact key, never capped), not through
+    /// parallelism alone. The runnable-queue amplifier corroborates real scheduler CPU pressure from
+    /// the RUNNABLE_TASKS context fact's runnable_tasks_warning flag (the collector's own
+    /// SUM(runnable_tasks_count) >= cpu_count heuristic, read from cpu_scheduler_stats).
     /// </summary>
     private static List<AmplifierDefinition> ThreadpoolAmplifiers() =>
     [
         new()
         {
             Description = "CXPACKET significant — parallel queries consuming thread pool",
-            Boost = 0.2,
+            Boost = 0.5,
             Predicate = facts => HasSignificantWait(facts, "CXPACKET", 0.10)
+        },
+        new()
+        {
+            Description = "Runnable-task queue backed up — schedulers under real CPU pressure",
+            Boost = 0.5,
+            Predicate = facts => facts.TryGetValue("RUNNABLE_TASKS", out var rt)
+                              && rt.Metadata.GetValueOrDefault("runnable_tasks_warning") >= 1.0
         },
         new()
         {
