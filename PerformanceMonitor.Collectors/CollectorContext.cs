@@ -39,6 +39,18 @@ public sealed class CollectorContext
     public DateTime? Watermark { get; init; }
 
     /// <summary>
+    /// The most recent already-collected value of the definition's <c>NumericWatermarkColumn</c>,
+    /// fetched by the host from ITS store (Lite: DuckDB; Darling: Postgres) before the query is
+    /// built — the numeric (bigint) twin of <see cref="Watermark"/>, for collectors that dedup on a
+    /// monotonic identity/sequence column rather than a timestamp (job_history's
+    /// <c>sysjobhistory.instance_id</c>, a unique monotonic IDENTITY bigint that survives server-side
+    /// purges). Null when the definition declares no numeric watermark or nothing was collected yet.
+    /// Purely additive: the timestamp <see cref="Watermark"/> path is unchanged and every existing
+    /// collector leaves this null.
+    /// </summary>
+    public long? NumericWatermark { get; init; }
+
+    /// <summary>
     /// Set by the host ONLY when the definition's <c>WatermarkColumn</c> came back null (the hot store is
     /// empty): true when a prior SUCCESS row for this collector+server exists in the host's collection_log.
     /// Lets a definition whose all-history first-run fallback would re-scan source data already aged out of

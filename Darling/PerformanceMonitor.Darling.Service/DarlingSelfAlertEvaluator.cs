@@ -102,6 +102,8 @@ internal sealed class DarlingSelfAlertEvaluator
     private readonly ConcurrentDictionary<string, DateTime> _lastCollectionStoppedAlert = new();
     private readonly ConcurrentDictionary<string, bool> _activeCaptureDown = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastCaptureDownAlert = new();
+    private readonly ConcurrentDictionary<string, bool> _activeAgentDown = new();
+    private readonly ConcurrentDictionary<string, DateTime> _lastAgentDownAlert = new();
     private readonly ConcurrentDictionary<string, ConnectionState> _connectionState = new();
 
     /* Store Disk Pressure edge state. FLEET-level (one shared store, not per server), so it is keyed by a
@@ -208,6 +210,28 @@ internal sealed class DarlingSelfAlertEvaluator
         {
             _logger?.LogError("[{Server}] Capture-down self-alert failed: {Message}", serverName, ex.Message);
         }
+
+        try
+        {
+            /* Agent Not Running (#1433 Phase 2): the collected agent_status snapshot says the target's SQL
+               Agent service is stopped. Only a FRESH reading judges — a stale row (collection lagging) yields
+               null, so the collection-stopped alert owns staleness and this never false-alarms on old data. */
+            var (agentCollectionTimeUtc, agentRunning) = await ReadLatestAgentStatusAsync(postgres, serverId, cancellationToken);
+            bool? freshRunning = agentRunning.HasValue
+                && agentCollectionTimeUtc.HasValue
+                && _utcNow() - agentCollectionTimeUtc.Value < StaleWindow
+                    ? agentRunning
+                    : null;
+            await ApplyAgentNotRunningAsync(serverId, serverName, freshRunning, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("[{Server}] Agent-not-running self-alert failed: {Message}", serverName, ex.Message);
+        }
     }
 
     /// <summary>
@@ -313,6 +337,56 @@ internal sealed class DarlingSelfAlertEvaluator
             await RecordResolutionAsync(new AlertResolution(
                 key, serverName, "Capture Down",
                 "Capture Restored", $"{serverName}: Blocking/deadlock capture is running again"), cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Edge-applies "Agent Not Running" (#1433 Phase 2) from the target's latest FRESH agent_status snapshot
+    /// (mirrors the sibling per-server conditions' edge shape): fire once on entry, re-fire only after the
+    /// alert cooldown while the Agent stays stopped, and write ONE "Agent Restarted" history row on recovery.
+    /// <paramref name="agentRunningFresh"/> is null when there is no fresh reading (never collected, or the
+    /// snapshot is stale — the collection-stopped alert owns staleness), in which case the standing state is
+    /// left untouched so a lagging feed neither fires nor spuriously clears. Gated on the master alerts switch.
+    /// Testable directly with a recording deliverer + a controllable clock.
+    /// </summary>
+    internal async Task ApplyAgentNotRunningAsync(
+        int serverId, string serverName, bool? agentRunningFresh, CancellationToken cancellationToken)
+    {
+        if (!_settings.AlertsEnabled)
+        {
+            return;
+        }
+
+        /* No fresh reading — don't judge (neither fire nor clear a standing alert). */
+        if (agentRunningFresh is not bool running)
+        {
+            return;
+        }
+
+        var key = Key(serverId);
+        var now = _utcNow();
+
+        if (!running)
+        {
+            _activeAgentDown[key] = true;
+            if (CooldownElapsed(_lastAgentDownAlert, key, now))
+            {
+                _lastAgentDownAlert[key] = now;
+                await FireAsync(
+                    key, serverName, "Agent Not Running", "Stopped", "Running",
+                    detail: "The SQL Server Agent service on this server is stopped. Scheduled jobs — backups, " +
+                        "index and statistics maintenance, integrity checks, log shipping — will NOT run until it " +
+                        "is restarted, and a headless service has no dashboard to warn you. Start the SQL Server " +
+                        "Agent service and set its startup type to Automatic so it survives a host reboot.",
+                    severity: AlertSeverityLevel.Critical,
+                    shortMessage: "SQL Server Agent service is stopped — scheduled jobs will not run", cancellationToken);
+            }
+        }
+        else if (_activeAgentDown.TryRemove(key, out var was) && was)
+        {
+            await RecordResolutionAsync(new AlertResolution(
+                key, serverName, "Agent Not Running",
+                "Agent Restarted", $"{serverName}: SQL Server Agent service is running again"), cancellationToken);
         }
     }
 
@@ -509,6 +583,8 @@ internal sealed class DarlingSelfAlertEvaluator
         _lastCollectionStoppedAlert.TryRemove(key, out _);
         _activeCaptureDown.TryRemove(key, out _);
         _lastCaptureDownAlert.TryRemove(key, out _);
+        _activeAgentDown.TryRemove(key, out _);
+        _lastAgentDownAlert.TryRemove(key, out _);
         _connectionState.TryRemove(key, out _);
         _hasBeenOnline.TryRemove(key, out _);
     }
@@ -591,6 +667,38 @@ ORDER BY x.collector_name", connection);
         }
 
         return missing;
+    }
+
+    /// <summary>
+    /// The target's latest collected SQL Agent status (#1433 Phase 2): the newest <c>agent_status</c> row's
+    /// collection time (UTC) and its <c>agent_running</c> flag. Returns (null, null) when the collector has
+    /// never landed a row for the server (Azure SQL DB, msdb denied, or not yet collected) — the caller reads
+    /// that as "no signal" and does not judge. Static + parameterized so the gated live test can seed a row
+    /// and assert the raw signal.
+    /// </summary>
+    internal static async Task<(DateTime? CollectionTimeUtc, bool? AgentRunning)> ReadLatestAgentStatusAsync(
+        NpgsqlDataSource postgres, int serverId, CancellationToken cancellationToken)
+    {
+        await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
+        using var command = new NpgsqlCommand(@"
+SELECT agent_running, collection_time
+FROM agent_status
+WHERE server_id = $1
+ORDER BY collection_time DESC
+LIMIT 1", connection);
+        command.Parameters.AddWithValue(serverId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return (null, null);
+        }
+
+        bool? running = reader.IsDBNull(0) ? null : reader.GetBoolean(0);
+        DateTime? collectionTime = reader.IsDBNull(1)
+            ? null
+            : DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
+        return (collectionTime, running);
     }
 
     /* ---------------- shared helpers ---------------- */

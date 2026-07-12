@@ -998,6 +998,56 @@ CREATE TABLE IF NOT EXISTS default_trace_events (
     public const string CreateDefaultTraceEventsIndex = @"
 CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON default_trace_events(server_id, collection_time)";
 
+    /* Retained SQL Agent job-run history (issue #1433) — every step row AND the job-outcome (step_id 0)
+       row from msdb.dbo.sysjobhistory, snapshotted incrementally and deduped on the monotonic instance_id
+       high-water mark (survives sp_purge_jobhistory). Column order mirrors the shared JobHistoryCollector
+       payload exactly (the DuckDB appender writes by position). run_datetime is the server-local decoded
+       run time and the collector's archival-emptied fallback watermark; instance_id is the numeric dedup
+       watermark. 365-day retention (the longest of any collector — a year of runs is the feature). */
+    public const string CreateJobHistoryTable = @"
+CREATE TABLE IF NOT EXISTS job_history (
+    job_history_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    instance_id BIGINT NOT NULL,
+    job_id VARCHAR NOT NULL,
+    job_name VARCHAR NOT NULL,
+    job_enabled BOOLEAN NOT NULL,
+    category_name VARCHAR,
+    step_id INTEGER NOT NULL,
+    step_name VARCHAR,
+    run_status INTEGER NOT NULL,
+    run_status_desc VARCHAR,
+    run_datetime TIMESTAMP,
+    run_duration_seconds BIGINT NOT NULL,
+    retries_attempted INTEGER NOT NULL,
+    message VARCHAR
+)";
+
+    public const string CreateJobHistoryIndex = @"
+CREATE INDEX IF NOT EXISTS idx_job_history_time ON job_history(server_id, collection_time)";
+
+    /* SQL Agent service status snapshot (issue #1433 Phase 2) — current-state facts job history can't hold:
+       Agent service Running/Stopped (sys.dm_server_services), startup type, and the next scheduled run across
+       enabled jobs. One row per collection; the Job History tab reads the latest for its header and the alert
+       path reads it for the "Agent Not Running" condition. Column order mirrors the shared AgentStatusCollector
+       payload exactly (the DuckDB appender writes by position). */
+    public const string CreateAgentStatusTable = @"
+CREATE TABLE IF NOT EXISTS agent_status (
+    collection_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    agent_running BOOLEAN NOT NULL,
+    agent_status_desc VARCHAR,
+    agent_startup_desc VARCHAR,
+    next_scheduled_run TIMESTAMP
+)";
+
+    public const string CreateAgentStatusIndex = @"
+CREATE INDEX IF NOT EXISTS idx_agent_status_time ON agent_status(server_id, collection_time)";
+
     public const string CreateAlertLogTable = @"
 CREATE TABLE IF NOT EXISTS config_alert_log (
     alert_time TIMESTAMP NOT NULL,
@@ -1101,6 +1151,8 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateSessionSummaryStatsTable;
         yield return CreateSystemHealthEventsTable;
         yield return CreateDefaultTraceEventsTable;
+        yield return CreateJobHistoryTable;
+        yield return CreateAgentStatusTable;
         yield return CreateAlertLogTable;
         yield return CreateEdgeTriggerWatermarksTable;
         yield return CreateMuteRulesTable;
@@ -1144,6 +1196,8 @@ ON dismissed_archive_alerts (alert_time, server_id, metric_name)";
         yield return CreateSessionSummaryStatsIndex;
         yield return CreateSystemHealthEventsIndex;
         yield return CreateDefaultTraceEventsIndex;
+        yield return CreateJobHistoryIndex;
+        yield return CreateAgentStatusIndex;
         yield return CreateDismissedArchiveAlertsIndex;
     }
 }

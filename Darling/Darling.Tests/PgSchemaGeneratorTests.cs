@@ -16,7 +16,7 @@ namespace Darling.Tests;
 
 /// <summary>
 /// Pins Darling's generated Postgres schema against the collector definitions: the catalog covers
-/// all 32 collectors, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
+/// every collector, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
 /// the prefix names vary exactly where Lite's schema varies (deadlock_id / blocked_report_id /
 /// system_health_event_id / config_id+capture_time / running_jobs' no-id), and the index shapes
 /// mirror Lite's columns.
@@ -24,11 +24,12 @@ namespace Darling.Tests;
 public sealed class PgSchemaGeneratorTests
 {
     [Fact]
-    public void Catalog_CoversAll32Collectors_WithUniqueTablesAndNames()
+    public void Catalog_CoversAllCollectors_WithUniqueTablesAndNames()
     {
-        Assert.Equal(33, CollectorCatalog.All.Count);
-        Assert.Equal(33, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
-        Assert.Equal(33, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+        /* 33 through default_trace_events + job_history + agent_status (#1433 Job History tab) = 35. */
+        Assert.Equal(35, CollectorCatalog.All.Count);
+        Assert.Equal(35, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(35, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
     }
 
     [Fact]
@@ -333,6 +334,86 @@ public sealed class PgSchemaGeneratorTests
     }
 
     [Fact]
+    public void CreateTable_JobHistory_UsesJobHistoryIdPrefix_AndMirrorsPayloadOrder()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(JobHistoryCollector.Instance);
+
+        /* The job_history_id bigint prefix (mirroring Lite's DuckDB PRIMARY KEY column), then the retained
+           sysjobhistory payload in emission order (instance_id dedup key first). This generated V1 shape MUST
+           equal the hardcoded V24 upgrade migration body (minus the collect. qualification) so a fresh store
+           (V1) and an upgraded store (V24) land an identical table for the positional binary COPY (#1433). */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS job_history (\n" +
+            "    job_history_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    instance_id bigint,\n" +
+            "    job_id text,\n" +
+            "    job_name text,\n" +
+            "    job_enabled boolean,\n" +
+            "    category_name text,\n" +
+            "    step_id integer,\n" +
+            "    step_name text,\n" +
+            "    run_status integer,\n" +
+            "    run_status_desc text,\n" +
+            "    run_datetime timestamp,\n" +
+            "    run_duration_seconds bigint,\n" +
+            "    retries_attempted integer,\n" +
+            "    message text\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_AgentStatus_MirrorsPayloadOrder()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(AgentStatusCollector.Instance);
+
+        /* Agent status snapshot (collection_id prefix), matching the V25 upgrade migration body (#1433 Phase 2). */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS agent_status (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    agent_running boolean,\n" +
+            "    agent_status_desc text,\n" +
+            "    agent_startup_desc text,\n" +
+            "    next_scheduled_run timestamp\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void Migrations_JobHistoryAndAgentStatus_MatchGeneratedFreshShape()
+    {
+        /* The additive V24/V25 upgrade bodies MUST be the collect.-qualified twin of the fresh (V1
+           GenerateFullSchema) table, or a fresh store and an upgraded store would drift and the positional
+           binary COPY would mis-bind. Pin each migration's CREATE TABLE against the generator's output. */
+        /* Normalize line endings: CreateTable emits '\n'; the verbatim-string V##Sql consts carry the
+           source file's CRLF, so compare on a common newline. */
+        static string Lf(string s) => s.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        static string CollectQualified(ICollectorSchemaInfo schema)
+        {
+            var fresh = Lf(PgSchemaGenerator.CreateTable(schema));
+            return fresh.Replace(
+                $"CREATE TABLE IF NOT EXISTS {schema.TargetTable} (",
+                $"CREATE TABLE IF NOT EXISTS collect.{schema.TargetTable} (",
+                StringComparison.Ordinal);
+        }
+
+        var v24 = Lf(PgMigrations.Scripts.Single(m => m.Version == 24).Sql);
+        var v25 = Lf(PgMigrations.Scripts.Single(m => m.Version == 25).Sql);
+
+        Assert.Contains(CollectQualified(JobHistoryCollector.Instance), v24, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_job_history_time ON collect.job_history(server_id, collection_time);", v24, StringComparison.Ordinal);
+        Assert.Contains(CollectQualified(AgentStatusCollector.Instance), v25, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_agent_status_time ON collect.agent_status(server_id, collection_time);", v25, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CreateIndex_MirrorsLiteIndexColumns()
     {
         Assert.Equal(
@@ -357,11 +438,11 @@ public sealed class PgSchemaGeneratorTests
         var script = PgSchemaGenerator.GenerateFullSchema();
 
         var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
-        Assert.Equal(33, tableCount);
+        Assert.Equal(35, tableCount);
 
-        /* 33 tables minus the two index-less config tables = 31 indexes. */
+        /* 35 tables minus the two index-less config tables (server_config, database_config) = 33 indexes. */
         var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
-        Assert.Equal(31, indexCount);
+        Assert.Equal(33, indexCount);
 
         /* The precision guard can never regress silently. */
         Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);

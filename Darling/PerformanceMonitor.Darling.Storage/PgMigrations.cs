@@ -67,6 +67,8 @@ public static class PgMigrations
         new Migration(21, "default-trace-events-collector", V21Sql),
         new Migration(22, "index-object-stats-latest-index", V22Sql),
         new Migration(23, "collection-log-hypertable", V23Sql),
+        new Migration(24, "job-history-collector", V24Sql),
+        new Migration(25, "agent-status-collector", V25Sql),
     };
 
     /// <summary>
@@ -776,6 +778,75 @@ EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'V23: deferred collection_log hypertable conversion to the runtime path (%): %', SQLSTATE, SQLERRM;
 END
 $$;";
+
+    /// <summary>
+    /// V24 — the <c>job_history</c> collector table (retained SQL Agent job-run history from
+    /// <c>msdb.dbo.sysjobhistory</c>: every step row + the job-outcome row, deduped on the monotonic
+    /// instance_id high-water mark, 365-day retention) for the fleet-wide Job History tab (issue #1433). A
+    /// NEW collector table added additively for a store built before this collector existed; a FRESH store
+    /// already has it (V1's <see cref="PgSchemaGenerator.GenerateFullSchema"/> walks the collector — which
+    /// now includes job_history — and V8 moved it to <c>collect</c>), so <c>CREATE TABLE IF NOT EXISTS</c>
+    /// is a harmless no-op on fresh and the real create on upgrade, with an identical
+    /// <c>collect.job_history</c> shape either way. EXPLICITLY <c>collect.</c>-qualified (mirroring
+    /// V21's default_trace_events): this runs after V8, whose <c>search_path</c> resolves a bare name to
+    /// <c>collect</c>, but the explicit schema is defensive.
+    /// <para>Column order/types are exactly <see cref="PgSchemaGenerator.CreateTable"/>'s output for the
+    /// <see cref="JobHistoryCollector"/> catalog entry (prefix columns NOT NULL, payload columns nullable —
+    /// the generator's convention). Like default_trace_events it has NO <c>v_*</c> passthrough view (a
+    /// collector added after V14 cannot join the V14 view refresh; the viewer reads the base table directly,
+    /// exactly like server_properties), so the <see cref="PgSchemaGenerator.AllPassthroughViews"/> cross-check
+    /// is unaffected. TimescaleDB hypertable conversion + compression + 365-day retention all flow from the
+    /// catalog at runtime (DarlingRetention / TimescaleSupport iterate CollectorCatalog.All), so none is
+    /// emitted here.</para>
+    /// </summary>
+    private const string V24Sql = @"
+CREATE TABLE IF NOT EXISTS collect.job_history (
+    job_history_id bigint NOT NULL,
+    collection_time timestamp NOT NULL,
+    server_id integer NOT NULL,
+    server_name text NOT NULL,
+    instance_id bigint,
+    job_id text,
+    job_name text,
+    job_enabled boolean,
+    category_name text,
+    step_id integer,
+    step_name text,
+    run_status integer,
+    run_status_desc text,
+    run_datetime timestamp,
+    run_duration_seconds bigint,
+    retries_attempted integer,
+    message text
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_history_time ON collect.job_history(server_id, collection_time);";
+
+    /// <summary>
+    /// V25 — the <c>agent_status</c> collector table (SQL Agent service Running/Stopped from
+    /// <c>sys.dm_server_services</c> + next scheduled run from <c>msdb.dbo.sysjobschedules</c>): the
+    /// current-state snapshot behind the Job History tab header and the "Agent Not Running" self-alert
+    /// (issue #1433 Phase 2). Added additively exactly like V21/V24 — a fresh store already has it (V1's
+    /// <see cref="PgSchemaGenerator.GenerateFullSchema"/> walks the collector, V8 moved it to
+    /// <c>collect</c>), so <c>CREATE TABLE IF NOT EXISTS</c> is a no-op on fresh and the real create on
+    /// upgrade. Column order/types are exactly <see cref="PgSchemaGenerator.CreateTable"/>'s output for the
+    /// <see cref="AgentStatusCollector"/> catalog entry (prefix NOT NULL, payload nullable). No <c>v_*</c>
+    /// passthrough view (a post-V14 collector); the viewer reads the base table directly. Hypertable /
+    /// compression / 7-day retention flow from the catalog at runtime.
+    /// </summary>
+    private const string V25Sql = @"
+CREATE TABLE IF NOT EXISTS collect.agent_status (
+    collection_id bigint NOT NULL,
+    collection_time timestamp NOT NULL,
+    server_id integer NOT NULL,
+    server_name text NOT NULL,
+    agent_running boolean,
+    agent_status_desc text,
+    agent_startup_desc text,
+    next_scheduled_run timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_status_time ON collect.agent_status(server_id, collection_time);";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

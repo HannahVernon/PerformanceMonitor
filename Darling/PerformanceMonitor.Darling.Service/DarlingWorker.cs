@@ -2058,6 +2058,8 @@ LIMIT 1";
         ["blocked_process_report"] = (r, s, ct) => RunXeTolerantAsync(BlockedProcessReportCollector.Instance, r, s, ct),
         ["system_health_events"] = (r, s, ct) => r.RunAsync(SystemHealthEventsCollector.Instance, s, ct),
         ["default_trace_events"] = (r, s, ct) => r.RunAsync(DefaultTraceEventsCollector.Instance, s, ct),
+        ["job_history"] = (r, s, ct) => r.RunAsync(JobHistoryCollector.Instance, s, ct),
+        ["agent_status"] = (r, s, ct) => r.RunAsync(AgentStatusCollector.Instance, s, ct),
     };
 
     /// <summary>

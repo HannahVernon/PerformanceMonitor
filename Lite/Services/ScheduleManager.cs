@@ -48,7 +48,7 @@ public class ScheduleManager
             ["dmv_blocking_snapshot"] = 1,
             ["blocked_process_report"] = 1, ["running_jobs"] = 2,
             ["session_summary_stats"] = 2, ["system_health_events"] = 2,
-            ["default_trace_events"] = 2
+            ["default_trace_events"] = 2, ["job_history"] = 2, ["agent_status"] = 2
         },
         ["Balanced"] = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -63,7 +63,7 @@ public class ScheduleManager
             ["dmv_blocking_snapshot"] = 1,
             ["blocked_process_report"] = 1, ["running_jobs"] = 5,
             ["session_summary_stats"] = 5, ["system_health_events"] = 5,
-            ["default_trace_events"] = 5
+            ["default_trace_events"] = 5, ["job_history"] = 5, ["agent_status"] = 5
         },
         ["Low-Impact"] = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -78,7 +78,7 @@ public class ScheduleManager
             ["dmv_blocking_snapshot"] = 5,
             ["blocked_process_report"] = 5, ["running_jobs"] = 30,
             ["session_summary_stats"] = 15, ["system_health_events"] = 15,
-            ["default_trace_events"] = 15
+            ["default_trace_events"] = 15, ["job_history"] = 15, ["agent_status"] = 15
         }
     };
 
@@ -632,7 +632,9 @@ public class ScheduleManager
             new() { Name = "session_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Per-application session counts from sys.dm_exec_sessions" },
             new() { Name = "session_summary_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Server-wide session summary (idle/leak signal): total/running/sleeping/idle-over-30min counts, memory waits, top app/host from sys.dm_exec_sessions + sys.dm_exec_requests" },
             new() { Name = "system_health_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Raw system_health Extended Events (memory broker/OOM, scheduler monitor, sp_server_diagnostics, severe errors, significant waits) captured as XML for health-parser analysis (not collected on Azure SQL DB)" },
-            new() { Name = "default_trace_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Built-in Default Trace events via sys.fn_trace_gettable: file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits, and Server Memory Change (not collected on Azure SQL DB)" }
+            new() { Name = "default_trace_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Built-in Default Trace events via sys.fn_trace_gettable: file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits, and Server Memory Change (not collected on Azure SQL DB)" },
+            new() { Name = "job_history", Enabled = true, FrequencyMinutes = 5, RetentionDays = 365, Description = "Retained SQL Agent job-run history from msdb.dbo.sysjobhistory (per-step results, retries, durations, failures) deduped on the instance_id high-water mark; up to a year retained for the Job History tab (not collected on Azure SQL DB)" },
+            new() { Name = "agent_status", Enabled = true, FrequencyMinutes = 5, RetentionDays = 7, Description = "SQL Agent service status (Running/Stopped from sys.dm_server_services) and next scheduled run from msdb; drives the Job History tab header and the Agent Not Running alert (not collected on Azure SQL DB)" }
         };
     }
 

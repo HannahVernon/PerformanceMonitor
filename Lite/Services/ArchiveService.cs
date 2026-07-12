@@ -86,6 +86,8 @@ public class ArchiveService
         ("session_summary_stats", "collection_time"),
         ("system_health_events", "collection_time"),
         ("default_trace_events", "collection_time"),
+        ("job_history", "collection_time"),
+        ("agent_status", "collection_time"),
         ("server_config", "capture_time"),
         ("database_config", "capture_time"),
         ("database_scoped_config", "capture_time"),

@@ -99,6 +99,14 @@ public sealed class DarlingCollectorRunner
             ? null
             : await GetLastCollectedTimeAsync(server.ServerId, definition.TargetTable, definition.WatermarkColumn, cancellationToken);
 
+        /* Numeric (bigint) watermark = the newest already-collected value of the definition's monotonic
+           identity column (job_history's instance_id), read from Postgres — the bigint twin of the timestamp
+           watermark above. Null for every collector that declares no numeric watermark (the common case),
+           so no extra query runs for them. */
+        long? numericWatermark = definition.NumericWatermarkColumn is null
+            ? null
+            : await GetLastCollectedInstanceIdAsync(server.ServerId, definition.TargetTable, definition.NumericWatermarkColumn, cancellationToken);
+
         /* Only when the watermark came back null: tell a TRUE first run from a store merely emptied by
            retention, so default_trace_events uses a bounded window instead of re-scanning all .trc history
            (CollectorContext.HasCollectedBefore). Skipped in the common (non-null watermark) path. */
@@ -114,6 +122,7 @@ public sealed class DarlingCollectorRunner
             Deltas = _deltas,
             Target = server.Target,
             Watermark = watermark,
+            NumericWatermark = numericWatermark,
             HasCollectedBefore = hasCollectedBefore,
             IgnoredWaitTypes = IgnoredWaitDefaults.All,
             ExcludedDatabases = server.Config.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
@@ -312,6 +321,34 @@ public sealed class DarlingCollectorRunner
     }
 
     /// <summary>
+    /// Gets the most recent value of a monotonic bigint identity column from Postgres for incremental
+    /// collection — the numeric twin of <see cref="GetLastCollectedTimeAsync"/> (job_history dedups on
+    /// <c>instance_id</c>, sysjobhistory's IDENTITY bigint). Returns null on first run or if the query
+    /// fails (caller uses its documented first-run/fallback path).
+    /// </summary>
+    public async Task<long?> GetLastCollectedInstanceIdAsync(
+        int serverId, string tableName, string columnName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(
+                $"SELECT MAX({columnName}) FROM {tableName} WHERE server_id = $1", connection);
+            command.Parameters.AddWithValue(serverId);
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            if (result is not null && result != DBNull.Value)
+            {
+                return Convert.ToInt64(result);
+            }
+        }
+        catch
+        {
+            /* If the Postgres query fails, caller uses fallback window */
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Whether a prior SUCCESS row exists in collection_log for this collector+server — the "has collected
     /// before" signal (<see cref="CollectorContext.HasCollectedBefore"/>), consulted only when the watermark
     /// is null. Returns false on any failure, which errs toward the all-history first run (correct for a
@@ -454,6 +491,7 @@ public sealed class DarlingCollectorRunner
         CollectorParameterType.DateTime2 => new SqlParameter(parameter.Name, SqlDbType.DateTime2) { Value = parameter.Value ?? DBNull.Value },
         CollectorParameterType.NVarChar128 => new SqlParameter(parameter.Name, SqlDbType.NVarChar, 128) { Value = parameter.Value ?? DBNull.Value },
         CollectorParameterType.Int32 => new SqlParameter(parameter.Name, SqlDbType.Int) { Value = parameter.Value ?? DBNull.Value },
+        CollectorParameterType.BigInt => new SqlParameter(parameter.Name, SqlDbType.BigInt) { Value = parameter.Value ?? DBNull.Value },
         _ => throw new ArgumentOutOfRangeException(nameof(parameter), parameter.Type, "Unmapped collector parameter type"),
     };
 }

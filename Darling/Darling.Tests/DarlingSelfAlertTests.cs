@@ -293,6 +293,88 @@ public sealed class DarlingSelfAlertTests
         Assert.Empty(h.Deliverer.Outcomes);
     }
 
+    /* ---------------- agent-not-running edge (#1433 Phase 2) ---------------- */
+
+    [Fact]
+    public async Task AgentNotRunning_FiresOnce_ThenCooldownSuppresses_ThenReFires()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Agent Not Running", fired.MetricName);
+        Assert.Equal("Stopped", fired.CurrentValue);
+        Assert.Equal("Running", fired.ThresholdValue);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+        Assert.Equal(Key, fired.ServerKey);
+
+        /* Still stopped inside the cooldown — the EDGE: no re-fire. */
+        h.Now = h.Now.AddMinutes(1);
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* After the cooldown the standing condition re-fires. */
+        h.Now = h.Now.AddMinutes(5);
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task AgentNotRunning_Recovery_WritesOneRestartedHistoryRow()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        Assert.Empty(h.History.Records);
+
+        /* Agent back up: exactly one "Agent Restarted" audit row, no email/webhook. */
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: true, Ct);
+        var restarted = Assert.Single(h.History.Records);
+        Assert.Equal("Agent Restarted", restarted.MetricName);
+        Assert.True(restarted.AlertSent);
+        Assert.Equal("tray", restarted.NotificationType);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* Still running on the next sweep — no duplicate resolution (edge-triggered). */
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: true, Ct);
+        Assert.Single(h.History.Records);
+    }
+
+    [Fact]
+    public async Task AgentNotRunning_NoFreshReading_DoesNotFireOrClearStandingAlert()
+    {
+        var h = new Harness();
+        var e = h.Build();
+
+        /* Fire on a fresh stopped reading. */
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        Assert.Single(h.Deliverer.Outcomes);
+
+        /* No fresh reading (stale snapshot / never collected) — must NEITHER clear the standing alert (no
+           resolution row) NOR fire. The collection-stopped alert owns staleness. */
+        h.Now = h.Now.AddMinutes(10);
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: null, Ct);
+        Assert.Empty(h.History.Records);
+
+        /* The active flag persisted through the null gap: a fresh stopped reading after the cooldown re-fires
+           (it would have been cleared to a first-fire if null had wrongly reset the state). */
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task AgentNotRunning_AlertsDisabled_DoesNotFire()
+    {
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        var e = h.Build();
+
+        await e.ApplyAgentNotRunningAsync(ServerId, Name, agentRunningFresh: false, Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
     /* ---------------- connection lost / restored edge ---------------- */
 
     [Fact]

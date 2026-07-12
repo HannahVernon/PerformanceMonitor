@@ -57,6 +57,16 @@ public interface ICollectorDefinition<TRow> : ICollectorSchemaInfo
     string? WatermarkColumn { get; }
 
     /// <summary>
+    /// Numeric (bigint) column the host should read its latest already-collected value of (from the
+    /// host's own store) before building the query — exposed to the definition as
+    /// <see cref="CollectorContext.NumericWatermark"/> for server-side filters and client-side dedup
+    /// on a monotonic identity/sequence column (job_history's <c>instance_id</c>). The bigint twin of
+    /// <see cref="WatermarkColumn"/>. Null when the collector needs no numeric watermark (the common
+    /// case — every existing collector).
+    /// </summary>
+    string? NumericWatermarkColumn { get; }
+
+    /// <summary>
     /// Builds the T-SQL (and any bound parameters) for this cycle. Constant for most collectors;
     /// target-aware definitions branch on <see cref="CollectorContext.Target"/> and
     /// <see cref="CollectorContext.Watermark"/>.

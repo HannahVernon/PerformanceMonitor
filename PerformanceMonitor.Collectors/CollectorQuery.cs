@@ -17,6 +17,7 @@ public enum CollectorParameterType
     DateTime2,
     NVarChar128,
     Int32,
+    BigInt,
 }
 
 /// <summary>One bound parameter of a collector query.</summary>

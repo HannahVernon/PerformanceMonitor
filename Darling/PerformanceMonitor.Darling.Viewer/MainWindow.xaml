@@ -822,6 +822,14 @@
                     <local:AlertsHistoryTab x:Name="AlertsHistoryContent" Margin="0,8,0,0"/>
                 </TabItem>
 
+                <!-- Job History: the fleet-wide retained SQL Agent job-run history (issue #1433), a copy of
+                     Lite's JobHistoryTab. All-servers by default with Server / Status / Category filters,
+                     per-step rows, failure + long-runtime + retry color-coding, and CSV export. Self-loading
+                     (not scoped by the sidebar selection), ordered right after Alert History to match Lite. -->
+                <TabItem x:Name="JobHistoryTabItem" Header="Job History">
+                    <local:JobHistoryTab x:Name="JobHistoryContent" Margin="0,8,0,0"/>
+                </TabItem>
+
                 <!-- FinOps: the top-level cross-server aggregate tab (restored to Lite's shape from the earlier
                      per-server inner tab, which had duplicated the fleet-wide Server Inventory inside every
                      server's tab). Its OWN server selector (synced to the sidebar selection on a single-click,

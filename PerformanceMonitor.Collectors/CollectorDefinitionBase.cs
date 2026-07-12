@@ -37,6 +37,8 @@ public abstract class CollectorDefinitionBase<TRow> : ICollectorDefinition<TRow>
 
     public virtual string? WatermarkColumn => null;
 
+    public virtual string? NumericWatermarkColumn => null;
+
     public virtual bool AppliesTo(CollectorTargetInfo target) => true;
 
     public virtual bool RunsPerDatabase(CollectorTargetInfo target) => false;
