@@ -36,7 +36,8 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
         DateTime? watermark = null,
         DateTime? collectionTime = null,
         string[]? excludedDatabases = null,
-        bool hasCollectedBefore = false)
+        bool hasCollectedBefore = false,
+        bool collectSchemaChanges = true)
         => new()
         {
             ServerId = 42,
@@ -47,6 +48,7 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
             Watermark = watermark,
             HasCollectedBefore = hasCollectedBefore,
             ExcludedDatabases = excludedDatabases ?? Array.Empty<string>(),
+            CollectSchemaChangeEvents = collectSchemaChanges,
         };
 
     [Fact]
@@ -149,7 +151,7 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
     {
         var noExclusion = DefaultTraceEventsCollector.Instance.BuildQuery(MakeContext());
         Assert.DoesNotContain("@excl_db_0", noExclusion.Text, StringComparison.Ordinal);
-        Assert.Single(noExclusion.Parameters); /* just @cutoff_time */
+        Assert.Equal(2, noExclusion.Parameters.Count); /* @cutoff_time + @include_object_ddl */
 
         var withExclusion = DefaultTraceEventsCollector.Instance.BuildQuery(
             MakeContext(excludedDatabases: new[] { "ReportingDB", "ScratchDB" }));
@@ -161,9 +163,29 @@ public sealed class DefaultTraceEventsCollectorDefinitionTests
             "AND (ft.DatabaseName IS NULL OR ft.DatabaseName NOT IN (@excl_db_0, @excl_db_1))",
             withExclusion.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("AND ft.DatabaseName NOT IN", withExclusion.Text, StringComparison.Ordinal); /* never the bare form */
-        Assert.Equal(3, withExclusion.Parameters.Count); /* @cutoff_time + two excluded names */
+        Assert.Equal(4, withExclusion.Parameters.Count); /* @cutoff_time + @include_object_ddl + two excluded names */
         Assert.Contains(withExclusion.Parameters, p => p.Name == "@excl_db_0" && (string?)p.Value == "ReportingDB");
         Assert.Contains(withExclusion.Parameters, p => p.Name == "@excl_db_1" && (string?)p.Value == "ScratchDB");
+    }
+
+    [Fact]
+    public void BuildQuery_ObjectDdlGate_OnByDefault_SuppressedWhenFlagOff()
+    {
+        /* Default (CollectSchemaChangeEvents = true — Lite's unchanged behavior): the Object DDL slice is
+           gated ON via a bound @include_object_ddl = 1, so Object:Created/Altered/Deleted events are collected. */
+        var on = DefaultTraceEventsCollector.Instance.BuildQuery(MakeContext());
+        Assert.Contains("@include_object_ddl = 1", on.Text, StringComparison.Ordinal);
+        var onParameter = on.Parameters.Single(p => p.Name == "@include_object_ddl");
+        Assert.Equal(1, onParameter.Value);
+        Assert.Equal(CollectorParameterType.Int32, onParameter.Type);
+
+        /* Flag off (Darling's darling.json collectSchemaChangeEvents = false on a noisy/benchmark box, the
+           shared collector's equivalent of the Dashboard proc's @include_object_events): the SAME gate binds
+           0, dropping the schema-DDL category. It is a bound parameter, not a text fork — so the generated SQL
+           is byte-identical either way and the other curated categories are untouched. */
+        var off = DefaultTraceEventsCollector.Instance.BuildQuery(MakeContext(collectSchemaChanges: false));
+        Assert.Equal(0, off.Parameters.Single(p => p.Name == "@include_object_ddl").Value);
+        Assert.Equal(on.Text, off.Text);
     }
 
     [Fact]

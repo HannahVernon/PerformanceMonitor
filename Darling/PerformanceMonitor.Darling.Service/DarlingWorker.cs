@@ -438,8 +438,10 @@ public sealed class DarlingWorker : BackgroundService
         }
 
         /* Capture-plans is read live (() => config.CapturePlans) so a store reload of
-           config_service.capture_plans is honored on the next collector cycle without rebuilding. */
-        var runner = new DarlingCollectorRunner(postgres, deltas, _logger, () => config.CapturePlans);
+           config_service.capture_plans is honored on the next collector cycle without rebuilding.
+           CollectSchemaChangeEvents is a file-only knob (darling.json), read the same way for symmetry —
+           default true keeps every SKU collecting Object DDL; set false to silence a benchmark box's flood. */
+        var runner = new DarlingCollectorRunner(postgres, deltas, _logger, () => config.CapturePlans, () => config.CollectSchemaChangeEvents);
         var servers = new List<ServerLoopState>();
         foreach (var server in initialServers)
         {

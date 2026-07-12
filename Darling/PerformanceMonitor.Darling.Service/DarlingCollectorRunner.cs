@@ -47,6 +47,13 @@ public sealed class DarlingCollectorRunner
        capture_plans is honored on the NEXT cycle without reconstructing the runner. */
     private readonly Func<bool> _capturePlans;
 
+    /* Feeds CollectorContext.CollectSchemaChangeEvents on every cycle — the default_trace_events
+       collector drops its Object:Created/Altered/Deleted (schema DDL) slice when false (darling.json
+       "collectSchemaChangeEvents", default true). Lite never sets the context flag, so it keeps
+       collecting Object DDL. Read through a provider (not a captured bool) for symmetry with
+       _capturePlans, so a future live reload is honored on the NEXT cycle without rebuilding. */
+    private readonly Func<bool> _collectSchemaChanges;
+
     /* Azure SQL DB logins without master access fall back to single-database mode, cached per
        server so master isn't retried every cycle (#857 — mirrors Lite). */
     private readonly ConcurrentDictionary<int, bool> _azureMasterInaccessible = new();
@@ -58,12 +65,18 @@ public sealed class DarlingCollectorRunner
     /// The worker passes <c>() =&gt; config.CapturePlans</c> so a store reload takes effect next cycle;
     /// tests pass a constant lambda.
     /// </param>
-    public DarlingCollectorRunner(NpgsqlDataSource postgres, CollectorDeltaCalculator deltas, ILogger? logger = null, Func<bool>? capturePlans = null)
+    /// <param name="collectSchemaChanges">
+    /// Live provider for the schema-change (Object DDL) collection flag; null defaults to on (today's
+    /// behavior). The worker passes <c>() =&gt; config.CollectSchemaChangeEvents</c> so a noisy/benchmark box
+    /// can suppress the default-trace Object:Created/Deleted flood; tests pass a constant lambda.
+    /// </param>
+    public DarlingCollectorRunner(NpgsqlDataSource postgres, CollectorDeltaCalculator deltas, ILogger? logger = null, Func<bool>? capturePlans = null, Func<bool>? collectSchemaChanges = null)
     {
         _postgres = postgres ?? throw new ArgumentNullException(nameof(postgres));
         _deltas = deltas ?? throw new ArgumentNullException(nameof(deltas));
         _logger = logger;
         _capturePlans = capturePlans ?? (() => true);
+        _collectSchemaChanges = collectSchemaChanges ?? (() => true);
     }
 
     public async Task<CollectorRunResult> RunAsync<TRow>(
@@ -106,6 +119,7 @@ public sealed class DarlingCollectorRunner
             ExcludedDatabases = server.Config.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
             PerfmonCounterOverride = null,
             CapturePlanXml = _capturePlans(),
+            CollectSchemaChangeEvents = _collectSchemaChanges(),
         };
 
         var sqlSw = Stopwatch.StartNew();
@@ -439,6 +453,7 @@ public sealed class DarlingCollectorRunner
     {
         CollectorParameterType.DateTime2 => new SqlParameter(parameter.Name, SqlDbType.DateTime2) { Value = parameter.Value ?? DBNull.Value },
         CollectorParameterType.NVarChar128 => new SqlParameter(parameter.Name, SqlDbType.NVarChar, 128) { Value = parameter.Value ?? DBNull.Value },
+        CollectorParameterType.Int32 => new SqlParameter(parameter.Name, SqlDbType.Int) { Value = parameter.Value ?? DBNull.Value },
         _ => throw new ArgumentOutOfRangeException(nameof(parameter), parameter.Type, "Unmapped collector parameter type"),
     };
 }

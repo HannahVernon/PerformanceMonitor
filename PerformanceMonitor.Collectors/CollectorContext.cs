@@ -69,6 +69,20 @@ public sealed class CollectorContext
     public bool CapturePlanXml { get; init; }
 
     /// <summary>
+    /// When true (the default — today's behavior), the default_trace_events collector records
+    /// Object:Created/Altered/Deleted schema-change (DDL) events; when false its
+    /// <c>@include_object_ddl</c> gate drops that entire slice while leaving every other curated
+    /// category (file auto-grow/shrink stalls, ErrorLog, security audits, Server Memory Change)
+    /// untouched. The shared-collector equivalent of the full Dashboard proc's
+    /// <c>@include_object_events</c> (install/29_collect_default_trace.sql). Default true so Lite is
+    /// unchanged — it never sets this flag; Darling sets it from darling.json's
+    /// <c>collectSchemaChangeEvents</c> to silence the flood a create/drop-happy workload produces
+    /// (e.g. HammerDB's TPC-H Query 15 creates and drops a <c>revenue</c> view thousands of times,
+    /// and the collector faithfully records every Object:Created/Object:Deleted).
+    /// </summary>
+    public bool CollectSchemaChangeEvents { get; init; } = true;
+
+    /// <summary>
     /// Host-configured perfmon counter override (Lite: perfmon_counters.json). Null means the
     /// definition's curated default list applies.
     /// </summary>
