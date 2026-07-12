@@ -397,12 +397,32 @@ END;";
             StartTime = DateTime.Now
         };
 
+        /* Cancelled before we have touched anything: a plain cancel, not a failure. */
+        cancellationToken.ThrowIfCancellationRequested();
+
         /*Perform clean install if requested*/
         if (cleanInstall)
         {
             try
             {
                 await CleanInstallAsync(connectionString, progress, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                /*
+                A CANCEL, surfaced as one. SqlCommand does not fault with OperationCanceledException when its
+                token trips -- it throws SqlException -- so the catch below used to swallow a cancelled clean
+                install as an ordinary "failure" and return NORMALLY. The caller's cancellation path never
+                ran. What the user got instead was "Installation completed with 1 error(s)" over a database
+                that CleanInstallAsync may have already dropped (it drops the Agent jobs, the XE sessions,
+                then SET SINGLE_USER WITH ROLLBACK IMMEDIATE and DROP DATABASE, all before a single install
+                file runs) -- and the dialog then re-stamped the verdict it had deliberately discarded and
+                armed a Save that skips the connection test entirely.
+
+                The first ThrowIfCancellationRequested in this method is AFTER the clean install, which is
+                exactly the window where cancelling is most destructive and least recoverable.
+                */
+                throw new OperationCanceledException(cancellationToken);
             }
             catch (Exception ex)
             {

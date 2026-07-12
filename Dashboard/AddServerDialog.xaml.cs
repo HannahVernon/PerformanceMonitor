@@ -741,6 +741,26 @@ namespace PerformanceMonitorDashboard
         }
 
         /*
+        The previous run's install log is discarded WITH the verdict that replaces it, never ahead of it.
+
+        Clearing it in the detection's prologue looked equivalent and was not: a probe that publishes NOTHING
+        -- superseded, or the not-connected branch that deliberately refuses to move the four facts -- left
+        the screen still in InstallComplete with the panel visible, now showing a blank log, an empty status
+        line and a 0% bar. On a FAILED install that destroys the only on-screen copy of the SQL error text,
+        and nothing repopulates it: RenderPostRunClaims only shows and hides the panel.
+
+        Same rule as _installBlockedReason, for the same reason: state that describes a verdict is committed
+        with the verdict. Called only from the detection -- the install path clears the log itself, at the
+        top of the run, and must not have it wiped from under the run it is recording.
+        */
+        private void DiscardPreviousRunLog()
+        {
+            InstallLogTextBox.Clear();
+            InstallStatusText.Text = string.Empty;
+            InstallProgressBar.Value = 0;
+        }
+
+        /*
         The repair handoff's version claim, kept so the handoff can be RE-RENDERED rather than painted
         once. Painting it once made withdrawing it one-way: a retarget correctly hid the claim and the
         "Upgrade Now" button, but typing the server name back -- or typing one character and deleting it --
@@ -1072,6 +1092,9 @@ namespace PerformanceMonitorDashboard
             The finally re-arms only if an install did not start meanwhile -- SetFormEnabled(false) disabled
             them deliberately in that case, and every non-Installing state re-arms them on the way out.
             */
+            DialogState stateBeforeProbe = _currentState;
+            bool saveWasEnabled = SaveButton.IsEnabled;
+
             TestConnectionButton.IsEnabled = false;
             SaveButton.IsEnabled = false;
             CheckForUpdatesButton.IsEnabled = false;
@@ -1084,9 +1107,28 @@ namespace PerformanceMonitorDashboard
             {
                 if (!InstallInProgress)
                 {
+                    /* Nothing owns these two: they are always available whenever the form is live. */
                     TestConnectionButton.IsEnabled = true;
-                    SaveButton.IsEnabled = true;
                     CheckForUpdatesButton.IsEnabled = true;
+
+                    /*
+                    Save is OWNED BY THE STATE, and this finally must not overrule it. Connected_NoDatabase
+                    turns Save OFF on purpose -- the user has to click Install Now, or take the explicit
+                    "Skip, just add server" link, which is the CONSENTED way to add a server with no
+                    PerformanceMonitor database (SkipInstall_Click re-enables Save and relabels it). Blindly
+                    re-arming it here handed that consent away on the most ordinary path in the dialog: point
+                    at a bare instance, click Check for Updates, read "No PerformanceMonitor database found"
+                    -- and Save is live, and it is IsDefault, so ENTER commits a server the Dashboard can
+                    read nothing from.
+
+                    If the probe published a verdict, the state it landed in has already set Save correctly.
+                    Only put back what we borrowed when the probe changed nothing -- superseded, or one that
+                    deliberately published nothing.
+                    */
+                    if (_currentState == stateBeforeProbe)
+                    {
+                        SaveButton.IsEnabled = saveWasEnabled;
+                    }
                 }
             }
         }
@@ -1094,21 +1136,6 @@ namespace PerformanceMonitorDashboard
         private async System.Threading.Tasks.Task DetectDatabaseStatusCoreAsync()
         {
             int epoch = ++_detectEpoch;
-
-            /*
-            The install log belongs to the run that produced it, and this is a fresh look at a server.
-            TransitionToState resets the panels but never these three, and Connected_NoDatabase /
-            Connected_NeedsUpgrade both RE-SHOW InstallationPanel -- so after installing to PROD01,
-            retyping the box to TEST99 and clicking Test Connection, PROD01's entire log, its
-            "Installation completed successfully!" and a 100% progress bar came back on screen, sitting
-            directly underneath "No PerformanceMonitor database found on this server."
-
-            Safe to clear up front even if this detection is then superseded: superseded by an install start
-            clears them again anyway, and superseded by a retype withdraws or demotes the panel entirely.
-            */
-            InstallLogTextBox.Clear();
-            InstallStatusText.Text = string.Empty;
-            InstallProgressBar.Value = 0;
 
             /*
             _dialogClosed belongs in here, not at the call sites. "The dialog is gone" is just another reason
@@ -1203,6 +1230,9 @@ namespace PerformanceMonitorDashboard
                     the previous server's state was -- so an unsupported server could be described using
                     the previous one's facts, under this one's name.
                     */
+                    /* The verdict that replaces the previous run's log arrives WITH it, not before it. */
+                    DiscardPreviousRunLog();
+
                     PublishProbedServer(
                         probedServerInfo,
                         probedServerVersion,
@@ -1247,6 +1277,9 @@ namespace PerformanceMonitorDashboard
                     _installBlockedReason = null;
                     _serverBlockReason = null;
 
+                    /* The verdict that replaces the previous run's log arrives WITH it, not before it. */
+                    DiscardPreviousRunLog();
+
                     PublishProbedServer(
                         probedServerInfo,
                         probedServerVersion,
@@ -1263,6 +1296,9 @@ namespace PerformanceMonitorDashboard
                     the previous server's version through here is how a block ends up describing the wrong
                     database.
                     */
+                    /* The verdict that replaces the previous run's log arrives WITH it, not before it. */
+                    DiscardPreviousRunLog();
+
                     PublishProbedServer(
                         probedServerInfo,
                         probedServerVersion,
@@ -1676,6 +1712,15 @@ namespace PerformanceMonitorDashboard
             /* Per-run, like _handoffStatusText. A stale one would misexplain the NEXT run's failure. */
             _verdictDiscardedByCleanInstall = false;
 
+            /*
+            Per-run too, and it was the one that got missed. GenerateSummaryReport is inside a try whose
+            catch only logs -- so if it throws on THIS run (long path, disk full, permissions), _reportPath
+            still holds the LAST run's file, for what may be a different server, and InstallComplete shows
+            "View Report" because it only tests for null. RenderPostRunClaims will even bring the link back
+            on a retype-and-back.
+            */
+            _reportPath = null;
+
             TransitionToState(DialogState.Installing);
             InstallLogTextBox.Clear();
             InstallProgressBar.Value = 0;
@@ -2032,6 +2077,29 @@ namespace PerformanceMonitorDashboard
                     preValidationAction,
                     cancellationToken);
 
+                /*
+                A clean install that failed is not "completed with N error(s)". CleanInstallAsync drops the
+                Agent jobs, the XE sessions and then the DATABASE before a single install file runs -- so if
+                it failed, the database may be gone, half-gone, or stuck in SINGLE_USER, and we do not know
+                which. ExecuteInstallationAsync returns early in that case with no files attempted.
+
+                Route it exactly where a cancel goes: no history row, no verdict, the log left on screen, and
+                install blocked until the server is re-checked. The completion path below would instead have
+                announced a completion, restored the discarded verdict, and armed a Save that skips the
+                connection test -- on a server whose database we may have just destroyed.
+                */
+                if (cleanInstall && !_installResult.Success && _installResult.FilesSucceeded == 0)
+                {
+                    string cleanInstallError =
+                        _installResult.Errors.Count > 0
+                            ? _installResult.Errors[0].ErrorMessage
+                            : "the database could not be recreated.";
+
+                    await Dispatcher.InvokeAsync(() =>
+                        RestoreAfterInstall($"Clean install failed: {cleanInstallError}"));
+                    return;
+                }
+
                 /* Log installation history -- but never for a repair, which changes no version (see above). */
                 if (isRepair)
                 {
@@ -2197,15 +2265,38 @@ namespace PerformanceMonitorDashboard
                     }
 
                     /*
-                    Re-stamp the verdict with the server the run actually went to. A clean install forgets
-                    it on the way in (it is about to DROP the database, so a cancel must not restore a
-                    verdict describing it) -- but the run SUCCEEDED, so we now know exactly which server
-                    this screen describes: the one we just wrote to. Without this the stamp stays null,
-                    and everything keyed on it treats a completed clean install as un-addressed: Save
-                    re-runs the connection test (a second interactive MFA prompt on Entra), and the first
-                    keystroke in the server box withdraws a success message that was perfectly true.
+                    Re-publish the four facts for the server the run actually went to. A clean install forgets
+                    the verdict on the way in (it is about to DROP the database, so a cancel must not restore
+                    a verdict describing it) -- and if the run SUCCEEDED we now know exactly which server this
+                    screen describes: the one we just wrote to. Without this the stamp stays null and
+                    everything keyed on it treats a completed clean install as un-addressed: Save re-runs the
+                    connection test (a second interactive MFA prompt on Entra), and the first keystroke in the
+                    server box withdraws a success message that was perfectly true.
+
+                    GATED on success, which it was not. The comment used to assert "but the run SUCCEEDED"
+                    while the code never checked -- so a clean install that FAILED restored the very verdict
+                    it had thrown away for safety, over a database DROP DATABASE may have already taken. And
+                    skipConnectionTest keys on this stamp: Save would then have persisted that server without
+                    ever reconnecting to it. A failed run knows nothing. Leave the stamp null and make Save
+                    prove the connection.
+
+                    A PUBLISH, not a lone re-stamp. Moving the stamp by itself put it back while
+                    _installedVersion still held the version read BEFORE the run -- the pre-drop version, on
+                    the clean-install path -- so VerdictMatchesServerBox() went true over a half-replaced fact
+                    set, which is the one shape the guard structurally cannot catch. It is unexploitable today
+                    only because nothing reads _installedVersion from InstallComplete, and reader-absence
+                    standing in for an invariant is exactly the substitution that produced the worst bug in
+                    this file. The database now holds appVersion -- except after a repair, which changes no
+                    version at all.
                     */
-                    RecordVerdictFor(installTimeServerName);
+                    if (_installResult.Success && _coreServerInfo != null)
+                    {
+                        PublishProbedServer(
+                            _coreServerInfo,
+                            _serverVersion ?? string.Empty,
+                            installTimeServerName,
+                            isRepair ? _installedVersion : appVersion);
+                    }
 
                     TransitionToState(DialogState.InstallComplete);
 
@@ -2616,10 +2707,14 @@ namespace PerformanceMonitorDashboard
             There is one further up, straight after the await, and it is not enough -- because "await is the
             only place this method yields" is FALSE. MessageBox.Show pumps a nested Win32 message loop, and
             the "Do you still want to save this connection?" box above sits between that guard and these
-            assignments. The dialog can be closed while that box is standing (its owner is whatever
-            GetActiveWindow() returned -- and this file passes an owner to exactly none of its eleven
-            MessageBox calls, while four other windows in this app pass one), so the user can answer "Yes"
-            to a box belonging to a dialog they already dismissed.
+            assignments.
+
+            Every box in this file now passes `this` as its owner, so Win32 disables the dialog while one is
+            up -- which is what closes the concrete route. This guard stays anyway, and not out of caution:
+            a dispatcher work item or an application shutdown can still close a window during a nested pump,
+            and an already-closed window has no HWND to own the next box with. The whole reason the previous
+            fix was wrong is that it reasoned about which re-entrancy windows exist instead of guarding where
+            the damage happens. Do not repeat that by deleting this.
 
             And these are not writes to a copy. In edit mode ServerConnection IS the object ServerManager
             holds -- MainWindow hands us item.Server -- so they rename the user's live, monitored server in
