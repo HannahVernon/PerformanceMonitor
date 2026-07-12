@@ -34,6 +34,18 @@ public sealed class ServerConfigCollectorDefinitionTests
     }
 
     [Fact]
+    public void AppliesTo_SkipsAzureSqlDb_CollectsElsewhere()
+    {
+        /* sys.configurations is not exposed on Azure SQL DB (edition 5). Gate collapsed from Lite's
+           IsCollectorSupported into the shared AppliesTo so Darling skips it too (before, Darling threw
+           on connect). Managed Instance and on-prem have the view. */
+        Assert.False(ServerConfigCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true }));
+        Assert.True(ServerConfigCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true }));
+        Assert.True(ServerConfigCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAwsRds = true }));
+        Assert.True(ServerConfigCollector.Instance.AppliesTo(new CollectorTargetInfo()));
+    }
+
+    [Fact]
     public async Task ReadAndWrite_RoundTrip()
     {
         using var reader = new FakeCollectorDataReader(
@@ -61,6 +73,18 @@ public sealed class TraceFlagsCollectorDefinitionTests
         Assert.Equal(
             new[] { "trace_flag", "status", "is_global", "is_session" },
             TraceFlagsCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray());
+    }
+
+    [Fact]
+    public void AppliesTo_SkipsAzureSqlDb_CollectsElsewhere()
+    {
+        /* DBCC TRACESTATUS is unsupported on Azure SQL DB (edition 5). Gate collapsed from Lite's
+           IsCollectorSupported into the shared AppliesTo so Darling records an explicit skip rather than a
+           tolerated 0-row SUCCESS. Managed Instance and on-prem support DBCC. */
+        Assert.False(TraceFlagsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true }));
+        Assert.True(TraceFlagsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true }));
+        Assert.True(TraceFlagsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAwsRds = true }));
+        Assert.True(TraceFlagsCollector.Instance.AppliesTo(new CollectorTargetInfo()));
     }
 
     [Fact]

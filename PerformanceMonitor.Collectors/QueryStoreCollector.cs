@@ -238,6 +238,17 @@ ORDER BY
 
     public override string TargetTable => "query_store_stats";
 
+    /// <summary>
+    /// Query Store first shipped in SQL Server 2016 (v13), so on-prem/RDS require v13+; a pre-2016 box has no
+    /// Query Store at all. Azure SQL DB / Managed Instance report a low ProductMajorVersion yet ship Query
+    /// Store, so they are never version-gated, and an unknown version (0) is assumed newest — the exact
+    /// condition Lite used in IsCollectorSupported. Gated here in the shared AppliesTo so Lite and Darling
+    /// skip identically on a pre-2016 target. (The per-cycle PRODUCTVERSION probe still refines which
+    /// version-gated columns are selected; this gate decides whether the collector runs at all.)
+    /// </summary>
+    public override bool AppliesTo(CollectorTargetInfo target) =>
+        target.SqlMajorVersion == 0 || target.SqlMajorVersion >= 13 || target.IsAzureSqlDb || target.IsAzureManagedInstance;
+
     /// <summary>Incremental: only intervals with newer last_execution_time are fetched per cycle.</summary>
     public override string? WatermarkColumn => "last_execution_time";
 

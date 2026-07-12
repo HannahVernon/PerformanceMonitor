@@ -49,6 +49,14 @@ OPTION(RECOMPILE);";
 
     public override string PrefixTimeColumnName => "capture_time";
 
+    /// <summary>
+    /// NOT Azure SQL Database (edition 5): <c>sys.configurations</c> is not exposed there, so the query
+    /// errors once per connect. Azure SQL Managed Instance (edition 8) and on-prem both have it, so they
+    /// collect. Gated here in the shared AppliesTo so Lite and Darling skip identically — before this the
+    /// gate lived only in Lite's IsCollectorSupported and Darling threw on connect.
+    /// </summary>
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
     public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]

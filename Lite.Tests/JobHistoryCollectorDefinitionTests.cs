@@ -118,10 +118,15 @@ public sealed class JobHistoryCollectorDefinitionTests
     }
 
     [Fact]
-    public void AppliesTo_CollectsEverywhereExceptAzureSqlDb()
+    public void AppliesTo_CollectsEverywhereExceptAzureSqlDbAndNoMsdb()
     {
         /* No SQL Agent / sysjobhistory on Azure SQL DB; Managed Instance and on-prem / RDS have it. */
         Assert.False(JobHistoryCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true }));
+        /* No msdb access → every table this reads lives in msdb; skip (gate collapsed from
+           IsCollectorSupported into the shared AppliesTo). */
+        Assert.False(JobHistoryCollector.Instance.AppliesTo(new CollectorTargetInfo { HasMsdbAccess = false }));
+        /* NOT gated on AWS RDS — unlike running_jobs it never touches syssessions, so history reads fine. */
+        Assert.True(JobHistoryCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAwsRds = true }));
         Assert.True(JobHistoryCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true }));
         Assert.True(JobHistoryCollector.Instance.AppliesTo(new CollectorTargetInfo()));
     }

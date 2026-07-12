@@ -31,11 +31,12 @@ namespace PerformanceMonitor.Collectors;
 /// running-jobs AWS RDS gate); the MIN over enabled jobs' future runs is the fleet-relevant "next thing
 /// that will happen".</para>
 ///
-/// <para><b>Azure SQL Database (edition 5) and AWS RDS: do NOT apply</b> — Azure SQL DB has no SQL Agent
-/// and no <c>sys.dm_server_services</c>; AWS RDS is a managed service that does not expose the OS/service-control
-/// state <c>sys.dm_server_services</c> reads. <see cref="AppliesTo"/> = <c>!IsAzureSqlDb &amp;&amp; !IsAwsRds</c>
-/// so both hosts skip identically (Lite also short-circuits earlier in IsCollectorSupported), mirroring
-/// <see cref="RunningJobsCollector"/>. On-prem and Managed Instance collect normally.</para>
+/// <para><b>Azure SQL Database (edition 5), AWS RDS, and no-msdb-access logins: do NOT apply</b> — Azure SQL DB
+/// has no SQL Agent and no <c>sys.dm_server_services</c>; AWS RDS is a managed service that does not expose the
+/// OS/service-control state <c>sys.dm_server_services</c> reads; a login without msdb access can't read the
+/// <c>sysjobschedules</c> next-run decode. <see cref="AppliesTo"/> =
+/// <c>!IsAzureSqlDb &amp;&amp; !IsAwsRds &amp;&amp; HasMsdbAccess</c>, the single authoritative gate both hosts
+/// consult, mirroring <see cref="RunningJobsCollector"/>. On-prem and Managed Instance collect normally.</para>
 /// </summary>
 public sealed class AgentStatusCollector : CollectorDefinitionBase<AgentStatusCollector.Row>
 {
@@ -105,11 +106,12 @@ OPTION(RECOMPILE);";
     /// Collects on SQL Server and Azure SQL Managed Instance. NOT Azure SQL Database (edition 5): no Agent
     /// and no sys.dm_server_services there. NOT AWS RDS either: sys.dm_server_services reads OS/service-control
     /// state that RDS (a managed service with no OS access) does not expose, so the query returns nothing
-    /// useful and would drive a false "Agent Not Running" alert. Both are gated here in the shared AppliesTo so
-    /// Lite and Darling skip identically; Lite additionally short-circuits in its host-side IsCollectorSupported
-    /// (the same belt-and-suspenders it uses for the Azure gate).
+    /// useful and would drive a false "Agent Not Running" alert. NOT a login without msdb access either: the
+    /// next-run decode reads <c>msdb.dbo.sysjobschedules</c>. All three gates live here in the shared
+    /// AppliesTo — the single authoritative gate both SKUs consult.
     /// </summary>
-    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb && !target.IsAwsRds;
+    public override bool AppliesTo(CollectorTargetInfo target) =>
+        !target.IsAzureSqlDb && !target.IsAwsRds && target.HasMsdbAccess;
 
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 

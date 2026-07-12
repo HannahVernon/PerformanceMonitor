@@ -46,6 +46,7 @@ public partial class RemoteCollectorService
             IsAzureManagedInstance = status.SqlEngineEdition == 8,
             IsAwsRds = status.IsAwsRds,
             SqlMajorVersion = status.SqlMajorVersion,
+            HasMsdbAccess = status.HasMsdbAccess,
         };
 
         /* Some collectors don't exist on some targets (e.g. ring buffers on Azure SQL DB) —
