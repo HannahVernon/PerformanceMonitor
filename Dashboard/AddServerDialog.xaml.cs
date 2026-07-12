@@ -53,6 +53,14 @@ namespace PerformanceMonitorDashboard
         private string? _installBlockedReason;
 
         /*
+        The block's REAL reason, as it applies to the stamped server -- kept so a retarget can substitute the
+        generic notice and a retarget BACK can put the truth in again. Without it, typing a character into
+        the server box and deleting it replaced "SQL Server 2014 is not supported" with "the server name
+        changed" permanently, and only Test Connection could ever get the real answer back.
+        */
+        private string? _serverBlockReason;
+
+        /*
         Said in one voice from every place that can withdraw something: the demotion in TransitionToState,
         the post-run claims, and a real block whose server is no longer in the box. It was three
         hand-copied strings that had already drifted apart.
@@ -403,6 +411,7 @@ namespace PerformanceMonitorDashboard
             if (string.IsNullOrWhiteSpace(ServerNameTextBox.Text))
             {
                 MessageBox.Show(
+                    this,
                     "Please enter a server name or address.",
                     "Validation Error",
                     MessageBoxButton.OK,
@@ -414,6 +423,7 @@ namespace PerformanceMonitorDashboard
             if (SqlAuthRadio.IsChecked == true && string.IsNullOrWhiteSpace(UsernameTextBox.Text))
             {
                 MessageBox.Show(
+                    this,
                     "Please enter a username for SQL Server authentication.",
                     "Validation Error",
                     MessageBoxButton.OK,
@@ -427,6 +437,7 @@ namespace PerformanceMonitorDashboard
                 if (string.IsNullOrWhiteSpace(ServicePrincipalClientIdBox.Text))
                 {
                     MessageBox.Show(
+                        this,
                         "Please enter the Application (Client) ID for service principal authentication.",
                         "Validation Error",
                         MessageBoxButton.OK,
@@ -438,6 +449,7 @@ namespace PerformanceMonitorDashboard
                 if (string.IsNullOrEmpty(ServicePrincipalSecretBox.Password))
                 {
                     MessageBox.Show(
+                        this,
                         "Please enter the client secret for service principal authentication.",
                         "Validation Error",
                         MessageBoxButton.OK,
@@ -463,6 +475,7 @@ namespace PerformanceMonitorDashboard
             triggerButton.IsEnabled = false;
             SaveButton.IsEnabled = false;
             TestConnectionButton.IsEnabled = false;
+            CheckForUpdatesButton.IsEnabled = false;
 
             /*
             StatusText may already be carrying something the user still needs -- most importantly the
@@ -526,6 +539,7 @@ namespace PerformanceMonitorDashboard
                     triggerButton.IsEnabled = true;
                     SaveButton.IsEnabled = true;
                     TestConnectionButton.IsEnabled = true;
+                    CheckForUpdatesButton.IsEnabled = true;
 
                     /*
                     Give back what we borrowed -- but only if it is still ours. A retype or a newer detection
@@ -604,6 +618,7 @@ namespace PerformanceMonitorDashboard
             else if (mfaCancelled)
             {
                 MessageBox.Show(
+                    this,
                     "Authentication was cancelled. Click Test to try again.",
                     "Authentication Cancelled",
                     MessageBoxButton.OK,
@@ -614,6 +629,7 @@ namespace PerformanceMonitorDashboard
             {
                 var detail = errorMessage != null ? $"\n\nError: {errorMessage}" : string.Empty;
                 MessageBox.Show(
+                    this,
                     $"Could not connect to {testedServerName}.{detail}\n\nPlease check:\n" +
                     "• Server name/address is correct\n" +
                     "• Server is accessible from this machine\n" +
@@ -828,7 +844,21 @@ namespace PerformanceMonitorDashboard
                     {
                         DialogState restored = _demotedFromState.Value;
                         _installBlockedReason = null;
+                        _serverBlockReason = null;
                         TransitionToState(restored);
+                        return;
+                    }
+
+                    /*
+                    A real block, about the server now back in the box. Put its ACTUAL reason back. A retype
+                    and a retype-back had swapped it for the generic notice below and never swapped it
+                    return -- so "SQL Server 2014 is not supported" became "the server name changed", which by
+                    then was not even true, and only Test Connection could get the real answer back.
+                    */
+                    if (_serverBlockReason != null && _installBlockedReason != _serverBlockReason)
+                    {
+                        _installBlockedReason = _serverBlockReason;
+                        DatabaseStatusText.Text = _serverBlockReason;
                     }
 
                     return;
@@ -838,8 +868,19 @@ namespace PerformanceMonitorDashboard
                 The box names someone else. A demotion's message already says exactly that, and its
                 _demotedFromState must survive so typing the name back can still undo it -- so only a REAL
                 block needs restating, and it must lose the previous server's specifics.
+
+                _verdictServerName != null is what makes this correct rather than merely plausible. A clean
+                install deliberately forgets the stamp (it is about to drop the database), so
+                VerdictMatchesServerBox() is false for the rest of that dialog's life -- and without this
+                test, the FIRST keystroke in the box, including one that changes nothing, replaced "a clean
+                install was requested, which drops the database" with "the server name changed after this
+                server's status was checked". That is the one sentence telling the user their database is
+                gone, and it was being overwritten with a sentence that is not even true. No stamp means
+                nothing to compare the box against, so there is nothing to restate.
                 */
-                if (_demotedFromState == null && _installBlockedReason != null)
+                if (_demotedFromState == null &&
+                    _installBlockedReason != null &&
+                    _verdictServerName != null)
                 {
                     _installBlockedReason = StaleServerNotice;
                     DatabaseStatusText.Text = StaleServerNotice;
@@ -1020,7 +1061,54 @@ namespace PerformanceMonitorDashboard
         {
             if (InstallInProgress) return;
 
+            /*
+            One probe at a time. A detection left Test Connection and Save armed, so a connection test could
+            start on top of a running detection -- and that test captured the DETECTION's "Checking database
+            status..." label as the thing to restore when it finished, then faithfully put it back over a
+            screen where no detection was running. The epoch does not catch it: a detection bumps the epoch
+            when it STARTS, not when it finishes, so the borrow still looked current. If the test then failed
+            it showed a MessageBox and never repainted, and the label stayed there for good.
+
+            The finally re-arms only if an install did not start meanwhile -- SetFormEnabled(false) disabled
+            them deliberately in that case, and every non-Installing state re-arms them on the way out.
+            */
+            TestConnectionButton.IsEnabled = false;
+            SaveButton.IsEnabled = false;
+            CheckForUpdatesButton.IsEnabled = false;
+
+            try
+            {
+                await DetectDatabaseStatusCoreAsync();
+            }
+            finally
+            {
+                if (!InstallInProgress)
+                {
+                    TestConnectionButton.IsEnabled = true;
+                    SaveButton.IsEnabled = true;
+                    CheckForUpdatesButton.IsEnabled = true;
+                }
+            }
+        }
+
+        private async System.Threading.Tasks.Task DetectDatabaseStatusCoreAsync()
+        {
             int epoch = ++_detectEpoch;
+
+            /*
+            The install log belongs to the run that produced it, and this is a fresh look at a server.
+            TransitionToState resets the panels but never these three, and Connected_NoDatabase /
+            Connected_NeedsUpgrade both RE-SHOW InstallationPanel -- so after installing to PROD01,
+            retyping the box to TEST99 and clicking Test Connection, PROD01's entire log, its
+            "Installation completed successfully!" and a 100% progress bar came back on screen, sitting
+            directly underneath "No PerformanceMonitor database found on this server."
+
+            Safe to clear up front even if this detection is then superseded: superseded by an install start
+            clears them again anyway, and superseded by a retype withdraws or demotes the panel entirely.
+            */
+            InstallLogTextBox.Clear();
+            InstallStatusText.Text = string.Empty;
+            InstallProgressBar.Value = 0;
 
             /*
             _dialogClosed belongs in here, not at the call sites. "The dialog is gone" is just another reason
@@ -1070,12 +1158,28 @@ namespace PerformanceMonitorDashboard
                 if (probedServerInfo == null || !probedServerInfo.IsConnected)
                 {
                     /*
-                    Nothing was established, so publish nothing. The previous server's facts and its stamp
-                    stay together and stale -- which the guard catches -- rather than half-replaced, which
-                    is the one thing it cannot catch.
+                    Publish NOTHING -- deliberately. We established no facts, so the previous server's four
+                    facts and its stamp stay together and stale, which the guard catches. Stamping this
+                    server's NAME here without the facts to go with it is the half-replaced state the guard
+                    structurally cannot catch, and it is what made it affirm a lie once already.
+
+                    But SAY something. This used to blank the label and return, which turned the one
+                    instruction on screen after a demotion -- "Click Test Connection to check the server now
+                    in the box" -- into a dead end: the installer-side probe can fail where the plain
+                    connection test just succeeded (different connection string, different database), and
+                    the user clicked, and nothing happened. No message, no state change. Forever.
                     */
+                    string detail =
+                        string.IsNullOrWhiteSpace(probedServerInfo?.ErrorMessage)
+                            ? "."
+                            : $": {probedServerInfo.ErrorMessage}";
+
                     StatusText.Text = string.Empty;
                     StatusText.Visibility = Visibility.Collapsed;
+
+                    BlockInstall(
+                        $"Could not read this server's PerformanceMonitor status{detail}\n\n" +
+                        "Install and upgrade are blocked until this resolves.");
                     return;
                 }
 
@@ -1137,6 +1241,7 @@ namespace PerformanceMonitorDashboard
                     "Blocked" dialog. State that describes a verdict is committed with the verdict.
                     */
                     _installBlockedReason = null;
+                    _serverBlockReason = null;
 
                     PublishProbedServer(
                         probedServerInfo,
@@ -1194,6 +1299,9 @@ namespace PerformanceMonitorDashboard
         private void BlockInstall(string reason)
         {
             _installBlockedReason = reason;
+
+            /* Kept so a retarget can swap in the generic notice and a retarget BACK can restore the truth. */
+            _serverBlockReason = reason;
 
             /*
             The destructive/mode ticks are cleared by TransitionToState, for every state but Installing --
@@ -1536,7 +1644,8 @@ namespace PerformanceMonitorDashboard
 
             if (_installBlockedReason != null)
             {
-                MessageBox.Show(_installBlockedReason, "Install Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(
+                        this,_installBlockedReason, "Install Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -1569,8 +1678,17 @@ namespace PerformanceMonitorDashboard
             InstallStatusText.Text = "Checking installed version...";
 
             _installCts?.Dispose();
-            _installCts = new CancellationTokenSource();
-            var cancellationToken = _installCts.Token;
+
+            /*
+            Held locally as well as in the field, so the finally can tear down the token IT created and
+            nothing else. Disposing the field unconditionally meant a run that unwound LATE could dispose
+            and null a token belonging to a run that had started since -- leaving that one uncancellable by
+            the Cancel button, by Cancel_Click, and by CancelInstallOnClose, so closing the dialog would no
+            longer stop an install running against the database.
+            */
+            var installCts = new CancellationTokenSource();
+            _installCts = installCts;
+            var cancellationToken = installCts.Token;
 
             try
             {
@@ -1688,14 +1806,33 @@ namespace PerformanceMonitorDashboard
                         CleanInstallCheckBox.IsChecked = false;
                         ResetScheduleCheckBox.IsChecked = false;
                         InstallStatusText.Text = string.Empty;
-                        TransitionToState(DialogState.Connected_NoDatabase);
+
+                        /*
+                        The box goes up BEFORE the state is unfrozen, and the order is load-bearing.
+
+                        MessageBox.Show pumps a nested message loop. TransitionToState(Connected_NoDatabase)
+                        re-enables the form and puts a live "Install Now" back on screen, and it clears
+                        Installing -- so with the transition first, the user could click Install Now while
+                        this box was still standing, and the InstallInProgress backstop was already false and
+                        would not stop them. That starts a SECOND install, which allocates its own
+                        CancellationTokenSource -- and then this run unwinds into its finally, which used to
+                        dispose and null _installCts unconditionally: the second install's token. It would
+                        then be uncancellable by anything, including CLOSING THE DIALOG, which is the exact
+                        hazard CancelInstallOnClose exists to prevent.
+
+                        Modal first, while the form is still frozen. The transition happens after it is
+                        dismissed, when nothing can be clicked underneath.
+                        */
                         MessageBox.Show(
+                            this,
                             "There is no existing PerformanceMonitor installation on this server to reinstall.\n\n" +
                             "Repair, Upgrade and Reinstall Objects restore or update the objects of an EXISTING " +
                             "installation; none of them creates one. Click Install Now to perform a fresh install instead.",
                             "Nothing to Reinstall",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
+
+                        TransitionToState(DialogState.Connected_NoDatabase);
                     });
                     return;
                 }
@@ -1949,8 +2086,15 @@ namespace PerformanceMonitorDashboard
                 try
                 {
                     /* This parameter is printed as "Installer Version" -- it names the BINARY that ran, not the database. */
+                    /*
+                    installTimeServerName, not the live box. This was the last read-the-box-after-the-await
+                    in the file: the report names the server the install actually went to, and it is written
+                    after every await in the run. Un-exploitable today only because the box is disabled for
+                    the duration -- which is enablement standing in for an invariant, and the report would
+                    have carried the wrong server's name the moment that stopped being true.
+                    */
                     _reportPath = InstallationService.GenerateSummaryReport(
-                        ServerNameTextBox.Text.Trim(),
+                        installTimeServerName.Trim(),
                         _coreServerInfo?.SqlServerVersion ?? "",
                         _coreServerInfo?.SqlServerEdition ?? "",
                         appVersion,
@@ -2112,8 +2256,13 @@ namespace PerformanceMonitorDashboard
             }
             finally
             {
-                _installCts?.Dispose();
-                _installCts = null;
+                /* Only clear the field if it still points at OUR token -- see where it was created. */
+                if (ReferenceEquals(_installCts, installCts))
+                {
+                    _installCts = null;
+                }
+
+                installCts.Dispose();
             }
         }
 
@@ -2199,6 +2348,7 @@ namespace PerformanceMonitorDashboard
                 catch (Exception ex)
                 {
                     MessageBox.Show(
+                        this,
                         $"Could not open report: {ex.Message}",
                         "Error",
                         MessageBoxButton.OK,
@@ -2365,6 +2515,7 @@ namespace PerformanceMonitorDashboard
                     if (mfaCancelled)
                     {
                         MessageBox.Show(
+                            this,
                             "Authentication was cancelled. Click Save to try again, or Cancel to abort.",
                             "Authentication Cancelled",
                             MessageBoxButton.OK,
@@ -2375,6 +2526,7 @@ namespace PerformanceMonitorDashboard
 
                     var detail = errorMessage != null ? $"\n\nError: {errorMessage}" : string.Empty;
                     var result = MessageBox.Show(
+                        this,
                         $"Could not connect to {ServerNameTextBox.Text}.{detail}\n\n" +
                         "Do you still want to save this connection?",
                         "Connection Failed",
@@ -2453,6 +2605,28 @@ namespace PerformanceMonitorDashboard
             var displayName = string.IsNullOrWhiteSpace(DisplayNameTextBox.Text)
                 ? ServerNameTextBox.Text.Trim()
                 : DisplayNameTextBox.Text.Trim();
+
+            /*
+            THE guard, immediately before the commit, with nothing between.
+
+            There is one further up, straight after the await, and it is not enough -- because "await is the
+            only place this method yields" is FALSE. MessageBox.Show pumps a nested Win32 message loop, and
+            the "Do you still want to save this connection?" box above sits between that guard and these
+            assignments. The dialog can be closed while that box is standing (its owner is whatever
+            GetActiveWindow() returned -- and this file passes an owner to exactly none of its eleven
+            MessageBox calls, while four other windows in this app pass one), so the user can answer "Yes"
+            to a box belonging to a dialog they already dismissed.
+
+            And these are not writes to a copy. In edit mode ServerConnection IS the object ServerManager
+            holds -- MainWindow hands us item.Server -- so they rename the user's live, monitored server in
+            place, and it reaches disk on its own the next time UpdateLastConnected fires for anyone.
+
+            The previous fix put the guard after the await and reasoned that nothing could re-enter before
+            the commit. That reasoning leaned on a modal box happening to disable the window, which is the
+            same "unreachable because something else happens to be disabled" substitution this file has been
+            bitten by over and over. Do not reason about re-entrancy windows. Guard where the damage is.
+            */
+            if (_dialogClosed) return;
 
             if (_isEditMode)
             {
