@@ -517,17 +517,25 @@ public class ScenarioTests : IDisposable
         var (stories, facts) = await RunFullPipelineWithAnomaliesAsync(s => s.SeedWaitSpikeAnomalyAsync());
         PrintStories("WAIT SPIKE ANOMALY", stories);
 
-        Assert.True(facts.ContainsKey("ANOMALY_WAIT_PAGEIOLATCH_SH"), "Should detect PAGEIOLATCH spike");
-        Assert.True(facts["ANOMALY_WAIT_PAGEIOLATCH_SH"].Severity >= 0.5, "PAGEIOLATCH anomaly should be significant");
+        // Change 1: the per-type ANOMALY_WAIT_<type> facts are replaced by ONE ANOMALY_WAIT_PROFILE,
+        // with the top wait types named as contrib_<TYPE> metadata.
+        Assert.True(facts.ContainsKey("ANOMALY_WAIT_PROFILE"), "Should detect a wait-profile shift");
+        Assert.True(facts["ANOMALY_WAIT_PROFILE"].Severity >= 0.5, "Wait-profile anomaly should be significant");
+        Assert.True(facts["ANOMALY_WAIT_PROFILE"].Metadata.ContainsKey("contrib_PAGEIOLATCH_SH"),
+            "PAGEIOLATCH_SH should be named as a wait-profile contributor");
     }
 
     [Fact]
-    public async Task WaitSpikeAnomaly_HighRatio()
+    public async Task WaitSpikeAnomaly_NamesPageiolatchAsDominantContributor()
     {
         var (_, facts) = await RunFullPipelineWithAnomaliesAsync(s => s.SeedWaitSpikeAnomalyAsync());
 
-        var ratio = facts["ANOMALY_WAIT_PAGEIOLATCH_SH"].Metadata["ratio"];
-        Assert.True(ratio >= 5.0, $"Expected >= 5x increase, got {ratio:F1}x");
+        var profile = facts["ANOMALY_WAIT_PROFILE"];
+        var contribs = profile.Metadata.Where(kvp => kvp.Key.StartsWith("contrib_", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(contribs);
+        // The flood is PAGEIOLATCH_SH — it must be the largest contributor in the profile.
+        var top = contribs.OrderByDescending(kvp => kvp.Value).First();
+        Assert.Equal("contrib_PAGEIOLATCH_SH", top.Key);
     }
 
     /* ── Helpers ── */

@@ -375,6 +375,18 @@ public class FactScorer
         return tierBase * impact;
     }
 
+    // Wait-profile severity ramp (see the ANOMALY_WAIT_PROFILE arm). Floor matches the detectors'
+    // DefaultRatioThreshold; these are HONEST per-second-scale starting values — CALIBRATE ON SQL2025/HAMMERDB.
+    private const double WaitProfileRatioFloor = 4.0;
+    private const double WaitProfileRatioSpan = 8.0;
+
+    // Bounded-metric low-quality fallback ramp (see the z-score anomaly arm). When the quality gate fires
+    // on a thin baseline (baseline_low_quality=1) the stored deviation_sigma is the real (small) z that the
+    // 2σ gate would zero out — so grade off the absolute exceedance (peak ÷ the absolute-fallback bar, which
+    // is >= 1.0 on a fire) instead: floor 0.5 AT the bar (clears InferenceEngine's 0.5 entry-point), ramping
+    // to 1.0 at 2× the bar. Sensible default — CALIBRATE ON SQL2025/HAMMERDB.
+    private const double LowQualityFallbackSpan = 1.0;
+
     /// <summary>
     /// Scores anomaly facts based on deviation from baseline.
     /// At 2σ → 0.5, at 4σ → 1.0. Higher deviations are more severe.
@@ -393,14 +405,41 @@ public class FactScorer
             // Deviation-based scoring: 2σ = 0.5, 4σ = 1.0
             var deviation = fact.Metadata.GetValueOrDefault("deviation_sigma");
             var confidence = fact.Metadata.GetValueOrDefault("confidence", 1.0);
+
+            // Thin/untrustworthy baseline: the detector's quality gate fired on the absolute-fallback bar,
+            // NOT the z-score, so deviation_sigma is the real (small) z. Applying the 2σ gate below would
+            // zero it and InferenceEngine would silently drop the finding (Severity must clear 0.5 to root)
+            // — defeating the "fire on the absolute bar, not silence" guarantee (e.g. memory 96% on a young
+            // store). Grade off the absolute exceedance instead: the fire already cleared the bar so
+            // exceedance >= 1.0 → floor 0.5, ramping to 1.0 at 2× the bar.
+            if (fact.Metadata.GetValueOrDefault("baseline_low_quality") >= 1.0)
+            {
+                var over = Math.Max(0.0, fact.Metadata.GetValueOrDefault("fallback_exceedance") - 1.0);
+                return (0.5 + 0.5 * Math.Min(over / LowQualityFallbackSpan, 1.0)) * confidence;
+            }
+
             if (deviation < 2.0) return 0.0;
             var base_score = 0.5 + 0.5 * Math.Min((deviation - 2.0) / 2.0, 1.0);
             return base_score * confidence;
         }
 
+        // Wait-profile (the one ANOMALY_WAIT_PROFILE fact) — must precede the generic ANOMALY_WAIT_
+        // branch below, which it also prefix-matches. The ratio is now the HONEST per-second scale
+        // (peak window all-types ms/sec ÷ baseline mean), so the ramp is far smaller than the old
+        // 5×/20× that was calibrated to a ~240×-inflated per-hour-vs-per-interval input: 4× → 0.5,
+        // saturating to 1.0 at 12×. Starting values matching the detectors' DefaultRatioThreshold;
+        // CALIBRATE ON THE SQL2025/HAMMERDB BOX.
+        if (fact.Key.StartsWith("ANOMALY_WAIT_PROFILE", StringComparison.OrdinalIgnoreCase))
+        {
+            var ratio = fact.Metadata.GetValueOrDefault("ratio");
+            if (ratio < WaitProfileRatioFloor) return 0.0;
+            return 0.5 + 0.5 * Math.Min((ratio - WaitProfileRatioFloor) / WaitProfileRatioSpan, 1.0);
+        }
+
         if (fact.Key.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
         {
-            // Ratio-based scoring: 5x = 0.5, 20x = 1.0
+            // Legacy per-type wait anomaly (detectors now emit ANOMALY_WAIT_PROFILE instead; kept for
+            // any pre-upgrade persisted facts). Ratio-based scoring: 5x = 0.5, 20x = 1.0.
             var ratio = fact.Metadata.GetValueOrDefault("ratio");
             if (ratio < 5) return 0.0;
             return 0.5 + 0.5 * Math.Min((ratio - 5.0) / 15.0, 1.0);

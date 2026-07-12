@@ -34,9 +34,11 @@ namespace Darling.Tests;
 /// read_parquet, $N positional only) with every FROM/JOIN target resolving to a V4 view or
 /// collector table; the worker's hardcoded cadence/budget mirror Lite's App defaults
 /// (30 min / 120 s), and the settings adapter carries Lite's notify defaults (1.5 / 360).
-/// Gated on DARLING_TEST_PG: migrate, plant a >24h wait_stats history containing an anomalous
-/// recent window (the AN2b recipe), run the FULL DarlingAnalysisService.AnalyzeAsync, and
-/// prove findings persist to analysis_findings (severity &gt; 0, story fields populated, the
+/// Gated on DARLING_TEST_PG: migrate, plant a >24h wait_stats history containing a thin-baseline
+/// wait spike (the AN2b recipe — one distinct day, so change 1's detector fires ONE
+/// ANOMALY_WAIT_PROFILE via the is_new absolute-bar fallback), run the FULL
+/// DarlingAnalysisService.AnalyzeAsync, and prove findings persist to analysis_findings
+/// (severity &gt; 0, story fields populated, the
 /// remediation_action_json column round-tripping), the shared AnalysisNotificationService
 /// dispatches them to a recording IFindingAlertSender when above threshold, a second run
 /// respects MuteFindingAsync, and the insufficient-data gate no-ops an empty server.
@@ -332,14 +334,18 @@ public sealed class DarlingAnalysisPipelineTests
                 await InsertWaitAsync(connection, (long)(i + 1), historyStart.AddMinutes(5 * i), 10L, delta);
             }
 
-            /* The FOLLOWING Monday 10:00 UTC — same (hour, dow) baseline bucket, 1-7 days
-               back, still in the past. The anomalous current window: 200000ms of the same
-               wait in 30 minutes → 400000 ms/hour vs the 54545 ms/collection baseline =
-               ratio 7.33, past the 5x wait-spike threshold → ANOMALY_WAIT severity ≈ 0.58
-               (ratio-based scoring: 5x → 0.5, 20x → 1.0), enough to root a story. */
+            /* The FOLLOWING Monday 10:00 UTC — same (hour, dow) baseline bucket, 1-7 days back,
+               still in the past. The history is ONE distinct Monday, so under the change-2 quality
+               gate the WaitMsPerSec baseline (Full tier) is UNtrustworthy (Full needs >= 3 distinct
+               days), and change 1's wait detector falls back to the absolute peak-rate bar (is_new)
+               rather than a ratio. Three 5-minute-spaced collections at 200000ms each: the first is
+               dropped (no prior in-window interval), the second and third rate at 200000/300s ≈ 666.7
+               ms/sec — past the 250 ms/sec WaitProfileFallbackMsPerSec bar → ONE ANOMALY_WAIT_PROFILE
+               fact (ratio = the is_new sentinel 100 → severity saturates to 1.0), enough to root a story. */
             var analysisTime = historyStart.AddDays(7);
-            await InsertWaitAsync(connection, 100L, analysisTime.AddMinutes(5), 50L, 100000L);
-            await InsertWaitAsync(connection, 101L, analysisTime.AddMinutes(15), 50L, 100000L);
+            await InsertWaitAsync(connection, 100L, analysisTime.AddMinutes(5), 50L, 200000L);
+            await InsertWaitAsync(connection, 101L, analysisTime.AddMinutes(10), 50L, 200000L);
+            await InsertWaitAsync(connection, 102L, analysisTime.AddMinutes(15), 50L, 200000L);
 
             var context = new AnalysisContext
             {
@@ -361,7 +367,7 @@ public sealed class DarlingAnalysisPipelineTests
             Assert.False(service.IsAnalyzing);
 
             var anomaly = Assert.Single(findings,
-                f => f.StoryPath.Contains($"ANOMALY_WAIT_{TestWaitType}", StringComparison.Ordinal));
+                f => f.StoryPath.Contains("ANOMALY_WAIT_PROFILE", StringComparison.Ordinal));
             Assert.True(anomaly.Severity > 0, "the persisted finding must carry positive severity");
             Assert.True(anomaly.Confidence > 0);
             Assert.False(string.IsNullOrEmpty(anomaly.StoryPathHash));

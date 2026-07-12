@@ -31,8 +31,9 @@ namespace Darling.Tests;
 /// migrate, plant an hour×dow wait_stats history containing a counter-reset (restart) row plus
 /// a genuine-idle zero row, and prove against live Postgres that BOTH rewritten wait baselines
 /// (wait_stats and wait_ms_per_sec) exclude exactly the poisoned sample — sample count AND
-/// mean — then plant an anomalous current window and watch the ported detector emit the
-/// ANOMALY_WAIT fact with Lite's metadata.
+/// mean — then plant an anomalous current window and watch the ported detector emit ONE
+/// ANOMALY_WAIT_PROFILE fact (change 1) via the thin-baseline is_new fallback, with the planted
+/// wait type named as a contrib_&lt;TYPE&gt; contributor.
 /// </summary>
 [Collection("live-postgres")]
 public sealed class DarlingAnomalyBaselineTests
@@ -82,7 +83,8 @@ public sealed class DarlingAnomalyBaselineTests
     {
         PgAnomalyDetector.HasBaselineDataSql,
         PgAnomalyDetector.CpuWindowSql,
-        PgAnomalyDetector.WaitWindowSql,
+        PgAnomalyDetector.WaitRateWindowSql,
+        PgAnomalyDetector.WaitContribWindowSql,
         PgAnomalyDetector.BlockingWindowSql,
         PgAnomalyDetector.IoWindowSql,
         PgAnomalyDetector.BatchRequestWindowSql,
@@ -386,15 +388,22 @@ public sealed class DarlingAnomalyBaselineTests
             Assert.Equal(600000.0 / 11.0, waitBaseline.Mean, 0.01);
             Assert.Equal(BaselineTier.Full, waitBaseline.Tier);
 
-            /* ---- plant the anomalous current window: 200000ms of the same wait type in a
-                    30-minute window one week after the history → 400000 ms/hour against the
-                    54545 ms/collection baseline = ratio 7.33, past the 5x spike threshold. */
+            /* ---- plant the anomalous current window: a heavy wait profile one week after the
+                    history. The history is ONE distinct Monday, so under the change-2 quality gate the
+                    WaitMsPerSec baseline (Full tier) is UNtrustworthy (Full needs >= 3 distinct days),
+                    and change 1's wait detector falls back to the absolute peak-rate bar (is_new)
+                    rather than a ratio. Three 5-minute-spaced collections at 200000ms each: the first
+                    is dropped (no prior in-window interval), the second and third rate at
+                    200000/300s ≈ 666.7 ms/sec — past the 250 ms/sec WaitProfileFallbackMsPerSec bar. */
             await InsertAsync(connection,
                 "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                100L, analysisTime.AddMinutes(5), TestServerId, TestServerName, TestWaitType, 50L, 100000L);
+                100L, analysisTime.AddMinutes(5), TestServerId, TestServerName, TestWaitType, 50L, 200000L);
             await InsertAsync(connection,
                 "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                101L, analysisTime.AddMinutes(15), TestServerId, TestServerName, TestWaitType, 50L, 100000L);
+                101L, analysisTime.AddMinutes(10), TestServerId, TestServerName, TestWaitType, 50L, 200000L);
+            await InsertAsync(connection,
+                "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                102L, analysisTime.AddMinutes(15), TestServerId, TestServerName, TestWaitType, 50L, 200000L);
 
             var detector = new PgAnomalyDetector(postgres, provider);
             var context = new AnalysisContext
@@ -406,23 +415,22 @@ public sealed class DarlingAnomalyBaselineTests
                 ServerUtcOffset = TimeSpan.Zero
             };
 
-            /* Full public-surface run: the HasBaselineData gate passes on the planted waits,
-               every other detector no-ops on its empty tables, and the wait detector emits
-               exactly one fact with Lite's key/value/metadata shape. */
+            /* Full public-surface run: the HasBaselineData gate passes on the planted waits, every
+               other detector no-ops on its empty tables, and the wait detector emits exactly one
+               ANOMALY_WAIT_PROFILE fact with the top wait type named as contrib_<TYPE>. */
             var anomalies = await detector.DetectAnomaliesAsync(context);
 
             var fact = Assert.Single(anomalies);
-            Assert.Equal($"ANOMALY_WAIT_{TestWaitType}", fact.Key);
+            Assert.Equal("ANOMALY_WAIT_PROFILE", fact.Key);
             Assert.Equal("anomaly", fact.Source);
             Assert.Equal(TestServerId, fact.ServerId);
-            Assert.Equal(200000.0, fact.Value);
-            Assert.Equal(0.0, fact.Metadata["is_new"]);
-            Assert.Equal(200000.0, fact.Metadata["current_ms"]);
-            Assert.Equal(600000.0 / 11.0, fact.Metadata["baseline_mean"], 0.01);
-            /* ratio = (200000ms / 0.5h) / (600000/11 per collection) = 22/3 ≈ 7.333 — the
-               poisoned row's exclusion is visible here too (no exclusion → 8.0; idle zero
-               wrongly dropped → 6.67). */
-            Assert.Equal(22.0 / 3.0, fact.Metadata["ratio"], 0.001);
+            Assert.Equal(600000.0, fact.Value);               // total all-types wait ms in the window
+            Assert.Equal(1.0, fact.Metadata["is_new"]);       // thin baseline → absolute-bar fallback
+            Assert.Equal(100.0, fact.Metadata["ratio"]);      // NoBaselineRatio sentinel (is_new)
+            Assert.True(fact.Metadata.ContainsKey($"contrib_{TestWaitType}"), "the planted wait type must be named as a contributor");
+            Assert.Equal(600000.0, fact.Metadata[$"contrib_{TestWaitType}"]);
+            /* The Full-tier baseline still resolved (10 samples ≥ collapse threshold) — only its
+               DISTINCT-day count (1) disqualifies it from being trusted; its bucket coordinates carry through. */
             Assert.Equal((double)BaselineTier.Full, fact.Metadata["baseline_tier"]);
             Assert.Equal(10.0, fact.Metadata["baseline_hour"]);
             Assert.Equal((double)DayOfWeek.Monday, fact.Metadata["baseline_dow"]);

@@ -695,10 +695,11 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
 
     /// <summary>
     /// Wait spike anomaly: normally low waits, then sudden PAGEIOLATCH flood.
-    /// Baseline: 24h with minimal PAGEIOLATCH.
+    /// Baseline: 24h with minimal PAGEIOLATCH (one distinct day → untrustworthy WaitMsPerSec baseline).
     /// Analysis window: 4h with massive PAGEIOLATCH.
     ///
-    /// Expected: ANOMALY_WAIT_PAGEIOLATCH_SH with high ratio.
+    /// Expected: one ANOMALY_WAIT_PROFILE (is_new fallback, since the thin baseline can't be trusted)
+    /// with PAGEIOLATCH_SH as the dominant contrib_&lt;TYPE&gt;.
     /// </summary>
     public async Task SeedWaitSpikeAnomalyAsync()
     {

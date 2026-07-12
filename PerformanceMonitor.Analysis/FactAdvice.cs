@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 
@@ -50,6 +51,12 @@ public static class FactAdvice
 
         if (factKey.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase))
             return _byKey.GetValueOrDefault("BAD_ACTOR");
+
+        // ANOMALY_WAIT_PROFILE is the one all-types wait-profile fact (change 1). It prefix-matches
+        // ANOMALY_WAIT_ below, so special-case it FIRST — the generic per-type composer would render
+        // "Anomalous spike in PROFILE" otherwise.
+        if (factKey.Equals("ANOMALY_WAIT_PROFILE", StringComparison.OrdinalIgnoreCase))
+            return _byKey.GetValueOrDefault("ANOMALY_WAIT_PROFILE");
 
         if (factKey.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
         {
@@ -195,6 +202,7 @@ public static class FactAdvice
             "ANOMALY_SESSION_SPIKE" => ComposeAnomaly(factsByKey, "ANOMALY_SESSION_SPIKE", "peak_connections", "Connection count", Num, "Far more sessions connected than this hour-of-week normally sees — often a connection-pool leak or a retry storm."),
             "ANOMALY_QUERY_DURATION" => ComposeAnomaly(factsByKey, "ANOMALY_QUERY_DURATION", "peak_total_elapsed_us", "Total query duration", Micros, "Queries ran far longer in aggregate than this hour-of-week normally does."),
             "ANOMALY_MEMORY_PRESSURE" => ComposeAnomalyMemoryPressure(factsByKey),
+            "ANOMALY_WAIT_PROFILE" => ComposeAnomalyWaitProfile(factsByKey),
             "ANOMALY_BLOCKING_SPIKE" => ComposeAnomalyRatio(factsByKey, "ANOMALY_BLOCKING_SPIKE", "blocking event"),
             "ANOMALY_DEADLOCK_SPIKE" => ComposeAnomalyRatio(factsByKey, "ANOMALY_DEADLOCK_SPIKE", "deadlock"),
             "ANOMALY_OBJECT_GROWTH" => ComposeAnomalyObjectGrowth(factsByKey),
@@ -1340,6 +1348,27 @@ public static class FactAdvice
         if (current is null || ratio is null)
             return fallback;
 
+        // is_new = the baseline was too thin to trust a ratio (the detector fell back to the absolute
+        // count). Render it as a first occurrence — never the dishonest "spiked to 100×" the sentinel
+        // ratio would otherwise print.
+        var isNew = (FactMeta(facts, key, "is_new") ?? 0) >= 1;
+        if (isNew)
+        {
+            var invNew =
+                $"{Plural(current.Value, noun)} this window — a first occurrence, with no established baseline for this " +
+                "hour-of-week yet to compare against. Treat it as a new event, not a proven regression: check whether it " +
+                "coincides with a workload change, a deploy, or a one-off before treating it as chronic.";
+            var remNew =
+                $"If it recurs or sustains, it will cross the standard {noun} threshold and surface as a first-class finding " +
+                "with its chain or graph detail on a later window; treat it then. A one-time event that matches a known cause needs only awareness.";
+            return fallback with
+            {
+                Headline = $"{Plural(current.Value, noun)} this window — first occurrence, no baseline yet",
+                Investigation = invNew,
+                Remediation = remNew
+            };
+        }
+
         var baseRate = FactMeta(facts, key, "baseline_rate");
         var inv = new StringBuilder($"{Plural(current.Value, noun)} this window — about {ratio.Value:0.#}× the normal rate for this hour-of-week");
         if (baseRate is not null)
@@ -1354,6 +1383,68 @@ public static class FactAdvice
         {
             Headline = $"{noun} rate spiked to {ratio.Value:0.#}× its baseline for this time of week",
             Investigation = inv.ToString(),
+            Remediation = rem
+        };
+    }
+
+    /// <summary>
+    /// ANOMALY_WAIT_PROFILE composed (change 1): the whole-server wait rate shifted above its baseline.
+    /// Names the top contributing wait types (from the contrib_&lt;TYPE&gt; metadata keys — the type
+    /// name lives in the KEY since the metadata dictionary values are doubles), and states the current
+    /// vs baseline per-second rate. When is_new (thin baseline), renders it as a first occurrence.
+    /// </summary>
+    private static AdviceBlock ComposeAnomalyWaitProfile(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["ANOMALY_WAIT_PROFILE"];
+        if (!facts.TryGetValue("ANOMALY_WAIT_PROFILE", out var f))
+            return fallback;
+
+        // Top contributors: metadata keys "contrib_<TYPE>" → value = the type's total wait ms; name
+        // them in descending order.
+        var contributors = f.Metadata
+            .Where(kvp => kvp.Key.StartsWith("contrib_", StringComparison.Ordinal))
+            .OrderByDescending(kvp => kvp.Value)
+            .Select(kvp => kvp.Key.Substring("contrib_".Length))
+            .ToList();
+        var topList = contributors.Count == 0
+            ? "the collected wait types"
+            : string.Join(", ", contributors.Take(3));
+
+        var isNew = (f.Metadata.GetValueOrDefault("is_new")) >= 1;
+        var current = f.Metadata.GetValueOrDefault("current_ms_per_sec");
+        var mean = f.Metadata.GetValueOrDefault("baseline_mean");
+        var ratio = f.Metadata.GetValueOrDefault("ratio");
+
+        string inv;
+        string headline;
+        if (isNew)
+        {
+            headline = "The server's wait profile is heavy, with no baseline yet to compare against";
+            inv =
+                $"The all-types wait rate peaked at about {current:0.#} ms/sec this window, led by {topList}. There is no " +
+                "established wait-rate baseline for this hour-of-week yet, so this is flagged on its absolute level, not a " +
+                "proven deviation — treat it as a first look at where the server spends its wait time, and check whether it " +
+                "lines up with a workload change or a one-off job.";
+        }
+        else
+        {
+            headline = $"The server's wait profile shifted to about {ratio:0.#}× its baseline for this time of week";
+            inv =
+                $"The all-types wait rate peaked at about {current:0.#} ms/sec this window — roughly {ratio:0.#}× the " +
+                $"{mean:0.#} ms/sec normal for this hour-of-week — led by {topList}. This is a shift in the overall wait " +
+                "profile, not necessarily a sustained problem: check whether it coincides with a workload change, a deploy, " +
+                "or a one-off event before treating it as chronic.";
+        }
+
+        var rem =
+            "Open the Wait Stats tab and zoom to this window to see which of the named types drove the shift, then chase " +
+            "the dominant one with its normal playbook. If the elevated profile persists across windows, the threshold-based " +
+            "finding for the leading wait type will fire and the standard advice applies.";
+
+        return fallback with
+        {
+            Headline = headline,
+            Investigation = inv,
             Remediation = rem
         };
     }
@@ -2298,6 +2389,14 @@ public static class FactAdvice
                 "This anomaly compares the ratio of `Total Server Memory` to `Target Server Memory` (the two memory counters the collectors store) against its hour-of-week baseline. A spike usually means the OS forced SQL's target down under external memory pressure, or the buffer pool grew unusually fast. Open Memory → Overview to see total vs. target and the buffer pool across the window, and Memory → Memory Clerks to see where the bytes went. If MEMORY_GRANT_PENDING co-fired, grant pressure is part of the story. QUERY_SPILLS co-elevation means queries are running with grants too small and spilling to tempdb.",
             Remediation:
                 "Match the fix to the shape. If total server memory dropped below target, the OS is reclaiming memory from SQL — check whether `max server memory` is capped too low and whether another process on the host is the aggressor; on a dedicated box, Lock Pages in Memory (the CONFIG_LPIM_DISABLED finding) prevents the paging. If the buffer pool grew fast and grants are pending, an offender is consuming a too-large grant from a bad cardinality estimate — its plan shows the estimate-vs-actual divergence, and FULLSCAN statistics or a filtered index fixes it. Anomalies that resolve on their own are typically one-time reporting queries; sustained ones become standard RESOURCE_SEMAPHORE or memory-grant findings on the next window.");
+
+        t["ANOMALY_WAIT_PROFILE"] = new AdviceBlock(
+            Headline:
+                "The server's wait profile shifted — its overall wait rate is anomalously elevated vs. baseline for this time bucket",
+            Investigation:
+                "This anomaly compares the whole-server all-types wait rate (ms of wait per second) against its hour-of-week baseline, rather than any single wait type — so a shift driven by a minority-but-real wait (RESOURCE_SEMAPHORE, a lock mode, ASYNC_NETWORK_IO) surfaces even while CXPACKET or SOS dominate the raw totals. The named contributors are the wait types that made up most of the window's wait time. Open the Wait Stats tab and zoom to the window to see the full breakdown and each type's trajectory.",
+            Remediation:
+                "Chase the leading contributor with its normal playbook — the profile shift only tells you the server spent unusually long waiting this window, not what to do about it. If the elevated profile persists across analysis windows, the threshold-based finding for the dominant wait type fires and the standard advice for that wait applies.");
 
         t["ANOMALY_OBJECT_GROWTH"] = new AdviceBlock(
             Headline:
