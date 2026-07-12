@@ -125,13 +125,25 @@ namespace PerformanceMonitorInstaller
             bool automatedMode = args.Length > 0;
             bool reinstallMode = args.Any(a => a.Equals("--reinstall", StringComparison.OrdinalIgnoreCase));
             bool repairMode = args.Any(a => a.Equals("--repair", StringComparison.OrdinalIgnoreCase));
+            bool uninstallMode = args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase));
 
+            /*
+            --repair means "restore the objects, destroy nothing". Pairing it with a mode that drops the
+            database is a contradiction, and the destructive mode would otherwise win silently: --uninstall
+            is dispatched further down BEFORE any repair logic, and in automated mode it skips its own
+            confirmation. So both destructive companions are rejected here, not just --reinstall -- the
+            --uninstall gap was the parity hole in only guarding one of them.
+            */
             if (repairMode && reinstallMode)
             {
                 WriteError("--repair and --reinstall are mutually exclusive: --reinstall drops the database, leaving nothing to repair.");
                 return (int)InstallationResultCode.InvalidArguments;
             }
-            bool uninstallMode = args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase));
+            if (repairMode && uninstallMode)
+            {
+                WriteError("--repair and --uninstall are mutually exclusive: --uninstall drops the database, leaving nothing to repair.");
+                return (int)InstallationResultCode.InvalidArguments;
+            }
             bool resetSchedule = args.Any(a => a.Equals("--reset-schedule", StringComparison.OrdinalIgnoreCase));
             bool troubleshootMode = args.Any(a => a.Equals("--troubleshoot", StringComparison.OrdinalIgnoreCase));
             bool trustCert = args.Any(a => a.Equals("--trust-cert", StringComparison.OrdinalIgnoreCase));

@@ -874,6 +874,23 @@ END;";
     /// Generate installation summary report file.
     /// </summary>
     /// <param name="outputDirectory">Directory to write the report. Null defaults to user profile.</param>
+    /*
+    Every character Windows forbids in a filename -> underscore, including the separators and ".." pieces
+    that a path-traversal string is built from. Mirrors Program.SanitizeFilename; Installer.Core cannot
+    reach that private CLI helper, and this is the shared writer both front ends call.
+    */
+    private static string SanitizeForFileName(string value)
+    {
+        char[] invalid = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(value.Length);
+        foreach (char c in value)
+        {
+            sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+        }
+
+        return sb.ToString();
+    }
+
     public static string GenerateSummaryReport(
         string serverName,
         string sqlServerVersion,
@@ -888,9 +905,33 @@ END;";
         var duration = result.EndTime - result.StartTime;
 
         string timestamp = result.StartTime.ToString("yyyyMMdd_HHmmss");
-        string fileName = $"PerformanceMonitor_Install_{serverName.Replace("\\", "_", StringComparison.Ordinal)}_{timestamp}.txt";
+
+        /*
+        Strip EVERY invalid filename char, not just the backslash. The server name is user-typed, and a
+        value like "x/../../Users/Public/foo" turned this Path.Combine into a write OUTSIDE reportDir --
+        forward slash is a separator, ".." is parent, ":" opens an NTFS alternate data stream, all of which
+        the old .Replace("\\","_") let straight through. The "PerformanceMonitor_Install_" prefix does not
+        contain it; ".." just escapes past it. The CLI's own error-log writer already sanitizes the same
+        input with GetInvalidFileNameChars (Program.SanitizeFilename); this report writer -- called by BOTH
+        the CLI and the Dashboard -- was the one that was missed.
+        */
+        string fileName = $"PerformanceMonitor_Install_{SanitizeForFileName(serverName)}_{timestamp}.txt";
         string reportDir = outputDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string reportPath = Path.Combine(reportDir, fileName);
+
+        /*
+        Belt and braces: even sanitized, refuse to write outside the intended directory. A future change to
+        the filename builder cannot turn this into an arbitrary-write without tripping here first.
+        */
+        string fullReportDir = Path.GetFullPath(reportDir);
+        string fullReportPath = Path.GetFullPath(reportPath);
+        if (!fullReportPath.StartsWith(
+                fullReportDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Refusing to write the installation report outside the report directory.");
+        }
 
         var sb = new StringBuilder();
 
