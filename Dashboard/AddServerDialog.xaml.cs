@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
  * This file is part of the SQL Server Performance Monitor.
@@ -590,6 +590,25 @@ namespace PerformanceMonitorDashboard
 
         private void RecordVerdictFor(string serverName) => _verdictServerName = serverName.Trim();
 
+        /*
+        Editing the server name invalidates everything on screen: the verdict, the connection info, and any
+        detection still in flight all describe the server that WAS in the box. Bumping the epoch makes an
+        in-flight detection discard itself instead of publishing a verdict for the old server under the new
+        name, and re-entering the current state lets the stamp guard demote a now-stale verdict to
+        "re-check me". Without this the box could be retyped mid-detect and the guard would never notice.
+        */
+        private void ServerNameTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (InstallInProgress) return;
+
+            _detectEpoch++;
+
+            if (IsServerVerdictState(_currentState) && !VerdictMatchesServerBox())
+            {
+                TransitionToState(_currentState);
+            }
+        }
+
         private bool VerdictMatchesServerBox() =>
             _verdictServerName != null &&
             string.Equals(_verdictServerName, ServerNameTextBox.Text.Trim(), StringComparison.OrdinalIgnoreCase);
@@ -711,6 +730,13 @@ namespace PerformanceMonitorDashboard
                    so a tick left over from another server would wipe this one's tuned intervals with no consent. */
                 ResetScheduleCheckBox.IsChecked = false;
 
+                /*
+                Capture the server name HERE, alongside the connection string built from it -- not after
+                the awaits below. The box stays editable throughout, so re-reading it later would stamp
+                the verdict with whatever is in the box NOW rather than the server we actually read, and
+                the guard would then be comparing the box to itself: it could never fail.
+                */
+                string probedServerName = ServerNameTextBox.Text;
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
 
@@ -736,16 +762,18 @@ namespace PerformanceMonitorDashboard
 
                 if (!_coreServerInfo.IsSupportedVersion)
                 {
-                    string serverName = ServerNameTextBox.Text;
-                    ConnectionInfoText.Text = _serverVersion != null
-                        ? $"Connected to {serverName} ({_serverVersion})"
-                        : $"Connected to {serverName}";
-                    DatabaseStatusText.Text = $"Warning: {_coreServerInfo.ProductMajorVersionName} is not supported. SQL Server 2016+ is required.";
-                    DatabaseStatusPanel.Visibility = Visibility.Visible;
-                    InstallUpgradeButton.Visibility = Visibility.Collapsed;
-                    SkipInstallText.Visibility = Visibility.Collapsed;
+                    /*
+                    Routed through BlockInstall rather than hand-poked. Writing the panels directly here
+                    bypassed the stale-verdict guard entirely and left _currentState pointing at whatever
+                    the previous server's state was -- so an unsupported server could be described using
+                    the previous one's facts, under this one's name. BlockInstall hides the install button,
+                    re-enables the form and states the reason, which is all this branch ever wanted.
+                    */
                     StatusText.Text = string.Empty;
                     StatusText.Visibility = Visibility.Collapsed;
+                    BlockInstall(
+                        $"{_coreServerInfo.ProductMajorVersionName} is not supported.\n\n" +
+                        "PerformanceMonitor requires SQL Server 2016 or later.");
                     return;
                 }
 
@@ -771,8 +799,8 @@ namespace PerformanceMonitorDashboard
                     if (Superseded()) return;
 
                     _installedVersion = probedVersion;
-                    /* Stamp the verdict with the server it was read from. */
-                    RecordVerdictFor(ServerNameTextBox.Text);
+                    /* Stamp with the server we ACTUALLY read, captured before the awaits. */
+                    RecordVerdictFor(probedServerName);
                 }
                 catch (Exception ex)
                 {
@@ -1110,6 +1138,9 @@ namespace PerformanceMonitorDashboard
             try
             {
                 var provider = ScriptProvider.FromEmbeddedResources();
+                /* Captured with the connection string built from it -- the box is frozen here, but stamp
+                   what we read, never what the box happens to say later. */
+                string installTimeServerName = ServerNameTextBox.Text;
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
 
@@ -1134,13 +1165,30 @@ namespace PerformanceMonitorDashboard
                         installerConnStr,
                         cancellationToken: cancellationToken);
 
+                    /*
+                    And ACT on those facts. The SQL-2016+ gate was detect-time only, so retargeting the box
+                    to an older server and clicking through installed 2016+ syntax onto it -- creating a
+                    junk database and a FAILED history row on a server the gate exists to refuse. Re-reading
+                    the fact and then not using it was the whole hole.
+                    */
+                    if (_coreServerInfo is not { IsConnected: true })
+                    {
+                        throw new InvalidOperationException("Could not connect to this server.");
+                    }
+
+                    if (!_coreServerInfo.IsSupportedVersion)
+                    {
+                        throw new InvalidOperationException(
+                            $"{_coreServerInfo.ProductMajorVersionName} is not supported. PerformanceMonitor requires SQL Server 2016 or later.");
+                    }
+
                     _installedVersion = await InstallationService.GetInstalledVersionAsync(
                         installerConnStr,
                         throwOnError: true,
                         cancellationToken: cancellationToken);
 
-                    /* Stamp the verdict with the server we just read -- this is the connection we will write to. */
-                    RecordVerdictFor(ServerNameTextBox.Text);
+                    /* Stamp with the server we just read -- this is the connection we will write to. */
+                    RecordVerdictFor(installTimeServerName);
                 }
                 catch (Exception) when (cancellationToken.IsCancellationRequested)
                 {
@@ -1353,6 +1401,18 @@ namespace PerformanceMonitorDashboard
                         using var depInstaller = new DependencyInstaller(communityDir);
                         await depInstaller.InstallDependenciesAsync(installerConnStr, progress, cancellationToken);
                     };
+                }
+
+                if (cleanInstall)
+                {
+                    /*
+                    A clean install DROPS the database. From here the version we read is about to stop being
+                    true, so a cancel or a failure must not restore a verdict describing it -- that renders
+                    "PerformanceMonitor v3.0.0 is installed" over a server whose database no longer exists,
+                    with Save enabled. Forget the verdict; RestoreAfterInstall will say "status unknown".
+                    */
+                    _preInstallState = null;
+                    _verdictServerName = null;
                 }
 
                 _installResult = await InstallationService.ExecuteInstallationAsync(

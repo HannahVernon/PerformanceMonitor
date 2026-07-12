@@ -1,4 +1,4 @@
-﻿using Installer.Core;
+using Installer.Core;
 using Installer.Tests.Helpers;
 using Microsoft.Data.SqlClient;
 

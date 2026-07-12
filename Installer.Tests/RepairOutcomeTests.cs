@@ -1,4 +1,4 @@
-﻿using Installer.Core;
+using Installer.Core;
 
 namespace Installer.Tests;
 

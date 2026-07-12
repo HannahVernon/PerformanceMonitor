@@ -34,6 +34,7 @@
                 <TextBlock Text="Server Name/Address:" FontWeight="Bold" Margin="0,0,0,4"
                            Foreground="{DynamicResource ForegroundBrush}"/>
                 <TextBox x:Name="ServerNameTextBox" Margin="0,0,0,12"
+                         TextChanged="ServerNameTextBox_TextChanged"
                          ToolTip="e.g., localhost, server.domain.com, 192.168.1.100, server\instance"/>
 
                 <!-- Display Name -->
