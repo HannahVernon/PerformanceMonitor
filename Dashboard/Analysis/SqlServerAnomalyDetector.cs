@@ -42,6 +42,15 @@ public class SqlServerAnomalyDetector
     /// </summary>
     private const double DefaultEventRatioThreshold = 3.0;
 
+    // Absolute-magnitude floors so a z-score against a thin baseline can't surface a trivial value;
+    // sigma display cap so a variance-collapsed baseline can't render millions-of-sigma.
+    private const double BatchRequestFloor = 500.0;         // requests/sec
+    private const double SessionCountFloor = 50.0;          // connections
+    private const double QueryDurationFloorUs = 1_000_000;  // total elapsed us = 1 second
+    private const double MemoryPressureFloorPct = 90.0;     // total/target %
+    private const double WriteLatencyFloorMs = 20.0;        // ms, was 5
+    private const double SigmaDisplayCap = 25.0;
+
     /// <summary>
     /// Per-metric deviation thresholds. Metrics not listed use DefaultDeviationThreshold.
     /// </summary>
@@ -442,7 +451,7 @@ AND   collection_time < @windowEnd;";
                 ["avg_cpu_in_window"] = avgCpu,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = Math.Min(deviation, SigmaDisplayCap),
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples,
                 ["confidence"] = 1.0,
@@ -697,7 +706,7 @@ AND   (num_of_reads_delta > 0 OR num_of_writes_delta > 0);";
                         ["current_latency_ms"] = currentReadLat,
                         ["baseline_mean_ms"] = baseline.Mean,
                         ["baseline_stddev_ms"] = effectiveStdDev,
-                        ["deviation_sigma"] = readDeviation,
+                        ["deviation_sigma"] = Math.Min(readDeviation, SigmaDisplayCap),
                         ["baseline_samples"] = baseline.SampleCount
                     };
                     AddBaselineContext(metadata, baseline);
@@ -714,7 +723,7 @@ AND   (num_of_reads_delta > 0 OR num_of_writes_delta > 0);";
             }
 
             // Write latency anomaly
-            if (currentWriteLat > 5)
+            if (currentWriteLat > WriteLatencyFloorMs)
             {
                 var writeDeviation = (currentWriteLat - baseline.Mean) / effectiveStdDev;
                 if (writeDeviation >= ioThreshold)
@@ -724,7 +733,7 @@ AND   (num_of_reads_delta > 0 OR num_of_writes_delta > 0);";
                         ["current_latency_ms"] = currentWriteLat,
                         ["baseline_mean_ms"] = baseline.Mean,
                         ["baseline_stddev_ms"] = effectiveStdDev,
-                        ["deviation_sigma"] = writeDeviation,
+                        ["deviation_sigma"] = Math.Min(writeDeviation, SigmaDisplayCap),
                         ["baseline_samples"] = baseline.SampleCount
                     };
                     AddBaselineContext(metadata, baseline);
@@ -789,7 +798,7 @@ AND   cntr_value_delta >= 0;";
             if (windowSamples == 0) return;
 
             var deviation = (peakBatch - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.BatchRequests)) return;
+            if (deviation < GetDeviationThreshold(SqlServerMetricNames.BatchRequests) || peakBatch < BatchRequestFloor) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -797,7 +806,7 @@ AND   cntr_value_delta >= 0;";
                 ["avg_batch_requests"] = avgBatch,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = Math.Min(deviation, SigmaDisplayCap),
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -864,7 +873,7 @@ FROM per_collection;";
             if (windowSamples == 0) return;
 
             var deviation = (peakConnections - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.SessionCount)) return;
+            if (deviation < GetDeviationThreshold(SqlServerMetricNames.SessionCount) || peakConnections < SessionCountFloor) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -872,7 +881,7 @@ FROM per_collection;";
                 ["avg_connections"] = avgConnections,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = Math.Min(deviation, SigmaDisplayCap),
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -942,7 +951,7 @@ FROM per_collection;";
             if (windowSamples == 0) return;
 
             var deviation = (peakElapsed - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.QueryDuration)) return;
+            if (deviation < GetDeviationThreshold(SqlServerMetricNames.QueryDuration) || peakElapsed < QueryDurationFloorUs) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -950,7 +959,7 @@ FROM per_collection;";
                 ["avg_total_elapsed_us"] = avgElapsed,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = Math.Min(deviation, SigmaDisplayCap),
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -1015,7 +1024,7 @@ AND   committed_target_memory_mb > 0;";
             if (windowSamples == 0) return;
 
             var deviation = (peakPressure - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.Memory)) return;
+            if (deviation < GetDeviationThreshold(SqlServerMetricNames.Memory) || peakPressure < MemoryPressureFloorPct) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -1023,7 +1032,7 @@ AND   committed_target_memory_mb > 0;";
                 ["avg_memory_pressure_pct"] = avgPressure,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = Math.Min(deviation, SigmaDisplayCap),
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };

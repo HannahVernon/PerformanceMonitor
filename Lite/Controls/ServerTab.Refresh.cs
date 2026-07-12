@@ -163,10 +163,10 @@ public partial class ServerTab : UserControl
                         var qsdt = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate))));
                         var ect = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExecutionTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetExecutionCountTrendAsync(_serverId, hoursBack, fromDate, toDate))));
                         await System.Threading.Tasks.Task.WhenAll(qdt, pdt, qsdt, ect);
-                        UpdateQueryDurationTrendChart(qdt.Result);
-                        UpdateProcDurationTrendChart(pdt.Result);
-                        UpdateQueryStoreDurationTrendChart(qsdt.Result);
-                        UpdateExecutionCountTrendChart(ect.Result);
+                        UpdateQueryDurationTrendChart(qdt.Result, hoursBack, fromDate, toDate);
+                        UpdateProcDurationTrendChart(pdt.Result, hoursBack, fromDate, toDate);
+                        UpdateQueryStoreDurationTrendChart(qsdt.Result, hoursBack, fromDate, toDate);
+                        UpdateExecutionCountTrendChart(ect.Result, hoursBack, fromDate, toDate);
                         break;
                     case 1: // Active Queries
                         var snapshots = await Task.Run(() => _dataService.GetLatestQuerySnapshotsAsync(_serverId, hoursBack, fromDate, toDate));
@@ -267,10 +267,10 @@ public partial class ServerTab : UserControl
                 await RefreshQueryStoreComparisonAsync(cStart3, cEnd3);
             }
 
-            UpdateQueryDurationTrendChart(queryDurationTrendTask.Result);
-            UpdateProcDurationTrendChart(procDurationTrendTask.Result);
-            UpdateQueryStoreDurationTrendChart(queryStoreDurationTrendTask.Result);
-            UpdateExecutionCountTrendChart(executionCountTrendTask.Result);
+            UpdateQueryDurationTrendChart(queryDurationTrendTask.Result, hoursBack, fromDate, toDate);
+            UpdateProcDurationTrendChart(procDurationTrendTask.Result, hoursBack, fromDate, toDate);
+            UpdateQueryStoreDurationTrendChart(queryStoreDurationTrendTask.Result, hoursBack, fromDate, toDate);
+            UpdateExecutionCountTrendChart(executionCountTrendTask.Result, hoursBack, fromDate, toDate);
             UpdateQueryHeatmapChart(heatmapTask.Result);
         }
         catch (Exception ex)
@@ -323,7 +323,7 @@ public partial class ServerTab : UserControl
                         var memTrend = await Task.Run(() => _dataService.GetMemoryTrendAsync(_serverId, hoursBack, fromDate, toDate));
                         var memGrantTrend = await Task.Run(() => _dataService.GetMemoryGrantTrendAsync(_serverId, hoursBack, fromDate, toDate));
                         UpdateMemorySummary(memStats);
-                        UpdateMemoryChart(memTrend, memGrantTrend);
+                        UpdateMemoryChart(memTrend, memGrantTrend, hoursBack, fromDate, toDate);
                         break;
                     case 1: // Memory Clerks
                         var clerkTypes = await Task.Run(() => _dataService.GetDistinctMemoryClerkTypesAsync(_serverId, hoursBack, fromDate, toDate));
@@ -332,7 +332,7 @@ public partial class ServerTab : UserControl
                         break;
                     case 2: // Memory Grants
                         var grantChart = await Task.Run(() => _dataService.GetMemoryGrantChartDataAsync(_serverId, hoursBack, fromDate, toDate));
-                        UpdateMemoryGrantCharts(grantChart);
+                        UpdateMemoryGrantCharts(grantChart, hoursBack, fromDate, toDate);
                         break;
                     case 3: // Memory Pressure Events
                         var pressureEvents = await Task.Run(() => _dataService.GetMemoryPressureEventsAsync(_serverId, hoursBack, fromDate, toDate));
@@ -353,8 +353,8 @@ public partial class ServerTab : UserControl
             await System.Threading.Tasks.Task.WhenAll(memoryTask, memoryTrendTask, memoryClerkTypesTask, memoryGrantTrendTask, memoryGrantChartTask, memoryPressureEventsTask);
 
             UpdateMemorySummary(memoryTask.Result);
-            UpdateMemoryChart(memoryTrendTask.Result, memoryGrantTrendTask.Result);
-            UpdateMemoryGrantCharts(memoryGrantChartTask.Result);
+            UpdateMemoryChart(memoryTrendTask.Result, memoryGrantTrendTask.Result, hoursBack, fromDate, toDate);
+            UpdateMemoryGrantCharts(memoryGrantChartTask.Result, hoursBack, fromDate, toDate);
             UpdateMemoryPressureEventsChart(memoryPressureEventsTask.Result, hoursBack, fromDate, toDate);
             PopulateMemoryClerkPicker(memoryClerkTypesTask.Result);
             await UpdateMemoryClerksChartFromPickerAsync();
@@ -375,8 +375,8 @@ public partial class ServerTab : UserControl
 
             await System.Threading.Tasks.Task.WhenAll(fileIoTrendTask, fileIoThroughputTask);
 
-            UpdateFileIoCharts(fileIoTrendTask.Result);
-            UpdateFileIoThroughputCharts(fileIoThroughputTask.Result);
+            UpdateFileIoCharts(fileIoTrendTask.Result, hoursBack, fromDate, toDate);
+            UpdateFileIoThroughputCharts(fileIoThroughputTask.Result, hoursBack, fromDate, toDate);
         }
         catch (Exception ex)
         {
