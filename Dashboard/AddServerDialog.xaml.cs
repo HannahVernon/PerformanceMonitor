@@ -41,11 +41,12 @@ namespace PerformanceMonitorDashboard
         }
 
         /*
-        Non-null when installing would be unsafe, and why. Three cases, all of which would otherwise
-        reinstall over a database whose real state we do not know:
+        Non-null when installing would be unsafe, and why. Four causes, all of which would otherwise act
+        on a database whose real state we do not know:
           - discovery threw (a transient error is indistinguishable from "no database"),
           - the installed version is NEWER than this Dashboard (installing would downgrade it),
-          - the installed version will not parse at all.
+          - the installed version will not parse at all,
+          - THIS BUILD's own version will not parse (a fresh install would write it to the ledger).
         Guards the install path structurally rather than relying on the button being hidden.
         */
         private string? _installBlockedReason;
@@ -539,8 +540,29 @@ namespace PerformanceMonitorDashboard
         */
         private bool InstallInProgress => _currentState == DialogState.Installing;
 
-        /* The state the install was launched from, so a cancel/failure can return to it. */
+        /* The state to return to when an install ends. Re-derived from the install-time re-read. */
         private DialogState _preInstallState = DialogState.Initial;
+
+        /*
+        Which connected state the FACTS imply. Used by detection and, crucially, re-derived from the
+        install-time re-read before the install begins.
+
+        Restoring "the state we came from" is wrong: the server box stays editable, so the state we came
+        from may belong to a different server. Retype it from an up-to-date server to one four migrations
+        behind, click, let the upgrade abort, and restoring Connected_Current would render "PerformanceMonitor
+        v2.5.0 is up to date." over a half-upgraded database, with Save enabled -- the user saves and moves on.
+        */
+        private static DialogState DeriveConnectedState(string? installedVersion, string appVersion)
+        {
+            if (installedVersion == null)
+            {
+                return DialogState.Connected_NoDatabase;
+            }
+
+            return RepairOutcome.HasPendingUpgrade(installedVersion, appVersion)
+                ? DialogState.Connected_NeedsUpgrade
+                : DialogState.Connected_Current;
+        }
 
         /*
         Return to the state the install was launched from -- NOT Initial.
@@ -680,19 +702,7 @@ namespace PerformanceMonitorDashboard
                     return;
                 }
 
-                if (_installedVersion == null)
-                {
-                    TransitionToState(DialogState.Connected_NoDatabase);
-                    return;
-                }
-
-                /* Both parse and installed <= app, or GetInstallBlockReason would have blocked above. */
-                var installedCore = ScriptProvider.TryParseVersionCore(_installedVersion)!;
-                var appCore = ScriptProvider.TryParseVersionCore(appVersion)!;
-
-                TransitionToState(installedCore < appCore
-                    ? DialogState.Connected_NeedsUpgrade
-                    : DialogState.Connected_Current);
+                TransitionToState(DeriveConnectedState(_installedVersion, appVersion));
             }
             catch (Exception ex)
             {
@@ -749,8 +759,16 @@ namespace PerformanceMonitorDashboard
                         "Install and repair are blocked: running the older installer would revert this server's " +
                         "objects to the older definitions and record it at the lower version. Update this Dashboard first.";
 
-                default:
+                case InstallBlock.None:
                     return null;
+
+                default:
+                    /*
+                    Never default to "safe to install". A new InstallBlock member silently becoming an
+                    allow is the one failure mode this whole guard exists to prevent.
+                    */
+                    throw new NotSupportedException(
+                        $"Unhandled {nameof(InstallBlock)}: {InstallGuard.Check(installedVersion, appVersion)}");
             }
         }
 
@@ -1006,31 +1024,41 @@ namespace PerformanceMonitorDashboard
                 }
 
                 /*
-                Refuse to repair what is not there. Falling through would silently run a FULL fresh install
-                and stamp the target version -- a whole new database on a mistyped server, and, if the
-                database exists but its history table does not, a target-version stamp that strands every
-                migration in between. Someone who ticked Repair asked for the opposite.
+                Refuse to reinstall what is not there. Falling through would silently run a FULL fresh
+                install and stamp the target version -- a whole new database, Agent jobs and XE sessions on
+                a mistyped server. Both buttons that promise to act on an EXISTING install are covered:
+                "Upgrade Now" (Connected_NeedsUpgrade) and "Reinstall Objects" (Connected_Current), plus the
+                Repair checkbox. The server box stays editable and the re-read above runs against whatever
+                is in it NOW, so a retarget to a bare instance reaches all three.
                 */
-                if ((RepairCheckBox.IsChecked == true || _preInstallState == DialogState.Connected_Current) &&
+                bool promisedAnExistingInstall =
+                    _preInstallState == DialogState.Connected_NeedsUpgrade ||
+                    _preInstallState == DialogState.Connected_Current;
+
+                if ((RepairCheckBox.IsChecked == true || promisedAnExistingInstall) &&
                     CleanInstallCheckBox.IsChecked != true &&
                     _installedVersion == null)
                 {
                     /*
-                    The Connected_Current arm matters as much as the checkbox: that state's button says
-                    "Reinstall Objects", the server box stays editable, and the install-time re-read runs
+                    The button arms matter as much as the checkbox: those states' buttons say "Upgrade Now"
+                    and "Reinstall Objects", the server box stays editable, and the install-time re-read runs
                     against whatever is in it now. Retype it to a bare instance and the button would
                     silently perform a FULL fresh install -- new database, jobs, XE sessions -- from a
                     button that promised to reinstall existing objects.
                     */
                     await Dispatcher.InvokeAsync(() =>
                     {
+                        /* Every other exit clears all three; this one must too. ResetSchedule TRUNCATEs
+                           config.collection_schedule, so a tick surviving a retarget wipes the wrong server. */
                         RepairCheckBox.IsChecked = false;
+                        CleanInstallCheckBox.IsChecked = false;
+                        ResetScheduleCheckBox.IsChecked = false;
                         InstallStatusText.Text = string.Empty;
                         TransitionToState(DialogState.Connected_NoDatabase);
                         MessageBox.Show(
                             "There is no existing PerformanceMonitor installation on this server to reinstall.\n\n" +
-                            "Repair and Reinstall Objects restore the objects of an EXISTING installation; neither " +
-                            "creates one. Click Install Now to perform a fresh install instead.",
+                            "Repair, Upgrade and Reinstall Objects restore or update the objects of an EXISTING " +
+                            "installation; none of them creates one. Click Install Now to perform a fresh install instead.",
                             "Nothing to Reinstall",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
@@ -1044,6 +1072,16 @@ namespace PerformanceMonitorDashboard
                     await Dispatcher.InvokeAsync(() => BlockInstall(blockReason));
                     return;
                 }
+
+                /*
+                Re-derive where a failure should land us from what we just READ, not from where we came
+                from. Those differ whenever the server box was retyped: restoring the old state would
+                render the old server's verdict over the new server's version -- "PerformanceMonitor v2.5.0
+                is up to date" on a database four migrations behind, with Save enabled. It also keeps
+                _preInstallState out of InstallComplete/MonitoringCredentials (reachable via the repair
+                handoff), which RestoreAfterInstall would otherwise re-enter with Advanced Options unfrozen.
+                */
+                _preInstallState = DeriveConnectedState(_installedVersion, appVersion);
 
                 InstallStatusText.Text = "Preparing installation...";
 
@@ -1381,10 +1419,11 @@ namespace PerformanceMonitorDashboard
                         InstallUpgradeButton.Visibility = Visibility.Visible;
                         DatabaseStatusPanel.Visibility = Visibility.Visible;
                         /*
-                        That Border also holds the "Skip, just add server" link. In MonitoringCredentials it
-                        would otherwise become clickable for the first time, and SkipInstall_Click flips
-                        _currentState to Initial -- after which Save_Click silently saves the INSTALLER
-                        credentials instead of the monitoring credentials the user just typed.
+                        That Border also holds the "Skip, just add server" link, which would otherwise become
+                        clickable for the first time in MonitoringCredentials -- an abandon-the-upgrade action
+                        sitting inches from the Upgrade Now button we just put there. (Save_Click no longer
+                        keys on _currentState, so it can no longer swap the credentials; this is about not
+                        offering a foot-gun next to the handoff.)
                         */
                         SkipInstallText.Visibility = Visibility.Collapsed;
                     }

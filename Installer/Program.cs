@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
  * This file is part of the SQL Server Performance Monitor.
@@ -789,6 +789,22 @@ namespace PerformanceMonitorInstaller
                             WaitForExit();
                         }
                         return (int)InstallationResultCode.VersionCheckFailed;
+
+                    case InstallBlock.None:
+                        break;
+
+                    default:
+                        /*
+                        Never default to "safe to install". A new InstallBlock member silently becoming an
+                        allow is the one failure mode this whole guard exists to prevent.
+                        */
+                        Console.WriteLine();
+                        WriteError($"Unhandled install-guard result. Aborting rather than assuming it is safe.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
                 }
 
                 /*
@@ -1099,13 +1115,13 @@ namespace PerformanceMonitorInstaller
             Shared with the Dashboard so the two cannot drift -- see RepairOutcome. A critical file
             failing already returned CriticalScriptFailed above, so it cannot reach here; pass false.
             */
-            bool repairHasPendingUpgrade = RepairOutcome.FailuresAreExpected(
+            bool repairFailuresExcused = RepairOutcome.FailuresAreExpected(
                 repairRan,
                 currentVersion,
                 version,
                 criticalFileFailed: false);
 
-            installationSuccessful = totalFailureCount == 0 || repairHasPendingUpgrade;
+            installationSuccessful = totalFailureCount == 0 || repairFailuresExcused;
 
             /*
             Log installation history to database
