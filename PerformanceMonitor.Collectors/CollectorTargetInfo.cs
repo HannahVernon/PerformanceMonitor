@@ -22,6 +22,15 @@ public sealed class CollectorTargetInfo
     public bool IsAzureManagedInstance { get; init; }
 
     /// <summary>
+    /// True when the target is an Amazon RDS for SQL Server instance (detected via
+    /// <c>DB_ID('rdsadmin') IS NOT NULL</c>). RDS does not expose the underlying OS, so DMVs that
+    /// read OS/service state — notably <c>sys.dm_server_services</c> (used by agent_status) — and the
+    /// restricted msdb surface running_jobs needs (<c>msdb.dbo.syssessions</c>) are unavailable there.
+    /// Definitions gate those collectors off via <see cref="AppliesTo"/> so both hosts skip them.
+    /// </summary>
+    public bool IsAwsRds { get; init; }
+
+    /// <summary>
     /// SQL Server major version (13 = 2016 … 17 = 2025); 0 when unknown. Definitions gate
     /// version-specific columns on this (database_config treats 0 as "assume newest" to match
     /// the original collector).

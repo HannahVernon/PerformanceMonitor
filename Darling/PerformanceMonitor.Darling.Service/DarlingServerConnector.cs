@@ -118,6 +118,7 @@ FROM sys.dm_os_sys_info";
             {
                 IsAzureSqlDb = engineEdition == 5,
                 IsAzureManagedInstance = engineEdition == 8,
+                IsAwsRds = isAwsRds,
                 SqlMajorVersion = majorVersion,
             },
             StorageName = storageName,

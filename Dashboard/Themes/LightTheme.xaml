@@ -23,7 +23,7 @@
     <!-- Text Colors (dark on light backgrounds) -->
     <Color x:Key="ForegroundColor">#1A1D23</Color>
     <Color x:Key="ForegroundDimColor">#1A1D23</Color>
-    <Color x:Key="ForegroundMutedColor">#718096</Color>
+    <Color x:Key="ForegroundMutedColor">#5A6472</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#DEE2E6</Color>
@@ -60,7 +60,7 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
@@ -1334,15 +1334,15 @@
 
     <!-- Time Range Slicer -->
     <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="#F0F2F5"/>
-    <SolidColorBrush x:Key="SlicerChartLineBrush" Color="#2196F3"/>
-    <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#332196F3"/>
-    <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#55FFFFFF"/>
-    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#11000000"/>
-    <SolidColorBrush x:Key="SlicerHandleBrush" Color="#4A5568"/>
-    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="#2196F3"/>
-    <SolidColorBrush x:Key="SlicerBorderBrush" Color="#CBD5E0"/>
-    <SolidColorBrush x:Key="SlicerLabelBrush" Color="#718096"/>
-    <SolidColorBrush x:Key="SlicerToggleBrush" Color="#4A5568"/>
+    <SolidColorBrush x:Key="SlicerChartLineBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#332EAEF1"/>
+    <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#40000000"/>
+    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#222EAEF1"/>
+    <SolidColorBrush x:Key="SlicerHandleBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="SlicerBorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="SlicerLabelBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerToggleBrush" Color="{StaticResource ForegroundColor}"/>
 
     <!-- ============================================ -->
     <!-- Plan Viewer Resources                        -->

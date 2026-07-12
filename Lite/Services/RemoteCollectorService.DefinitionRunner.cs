@@ -44,6 +44,7 @@ public partial class RemoteCollectorService
         {
             IsAzureSqlDb = status.SqlEngineEdition == 5,
             IsAzureManagedInstance = status.SqlEngineEdition == 8,
+            IsAwsRds = status.IsAwsRds,
             SqlMajorVersion = status.SqlMajorVersion,
         };
 

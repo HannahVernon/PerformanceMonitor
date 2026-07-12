@@ -34,11 +34,14 @@ public sealed class RunningJobsCollectorDefinitionTests
     }
 
     [Fact]
-    public void AppliesTo_SkipsAzureSqlDb_ButCollectsOnPremManagedInstanceAndRds()
+    public void AppliesTo_SkipsAzureSqlDbAndRds_ButCollectsOnPremAndManagedInstance()
     {
         /* Azure SQL DB has no SQL Agent (msdb unreachable) — skip rather than log a per-cycle ERROR. */
         Assert.False(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true }));
-        /* Managed Instance has Agent; on-prem and RDS (a non-Azure edition) collect too. */
+        /* AWS RDS blocks msdb.dbo.syssessions (the join needs sysadmin, which RDS never grants) — it would
+           raise "SELECT permission was denied" every cycle, so skip it there. */
+        Assert.False(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAwsRds = true }));
+        /* Managed Instance has Agent; on-prem collects too. */
         Assert.True(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true }));
         Assert.True(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo()));
     }
