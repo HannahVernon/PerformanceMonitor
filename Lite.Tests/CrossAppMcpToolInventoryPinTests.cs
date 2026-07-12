@@ -1,0 +1,161 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor Lite.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace Lite.Tests;
+
+/// <summary>
+/// PIN B (parity board §05 D3, round 2): the MCP tool-INVENTORY pin. Nothing pins Lite's and Darling's MCP
+/// tool sets together — <c>McpSchemaCompatTests</c> guards the Gemini schema SHAPE, not the tool set — so the
+/// 55-vs-73 drift is invisible to CI. This enumerates every <c>[McpServerTool(Name="…")]</c> in both apps' MCP
+/// servers and asserts Darling's set is a SUPERSET of Lite's, with two allow-lists:
+/// <list type="bullet">
+/// <item><see cref="KnownLiteMissingMcpTools"/> — a RATCHET of the Darling-only tools Lite hasn't ported yet;
+/// it only ever shrinks, and a NEW Darling tool with no Lite twin must be either ported or added here;</item>
+/// <item><see cref="KnownNamingDrift"/> — the one same-capability / different-name pair
+/// (Lite <c>get_blocked_process_reports</c> &lt;-&gt; Darling <c>get_blocking</c>).</item>
+/// </list>
+/// A NEW tool on either side with no twin fails the pin; porting a ratchet tool to Lite forces its removal.
+///
+/// <para>
+/// Tool names are read from source (the regular <c>[McpServerTool(Name = "…")]</c> attribute) rather than by
+/// reflecting the <c>PerformanceMonitor.Darling.Service</c> assembly — this CI-run Lite test project does not
+/// (and should not) reference the headless-service / Npgsql stack. <see cref="ExtractToolNames"/> asserts every
+/// method-level <c>[McpServerTool(</c> carries an explicit <c>Name =</c>, so the source scan cannot silently
+/// miss a tool that relied on framework-derived naming.
+/// </para>
+/// </summary>
+public sealed class CrossAppMcpToolInventoryPinTests
+{
+    private const string LiteMcpDir = "Lite/Mcp";
+    private const string DarlingMcpDir = "Darling/PerformanceMonitor.Darling.Service/Mcp";
+
+    /* Same capability, different tool name — flagged for a later naming-unification pass (parity board §05 D,
+       Tier 2). Left AS drift here (not renamed) because renaming a shipped MCP tool is a compatibility change;
+       this pin documents the pair so it is not mistaken for a missing tool and cannot silently multiply. */
+    private static readonly (string Lite, string Darling)[] KnownNamingDrift =
+    {
+        ("get_blocked_process_reports", "get_blocking"),
+    };
+
+    // Lite-missing MCP tools -- parity board Tier 2; remove when ported
+    private static readonly HashSet<string> KnownLiteMissingMcpTools = new(StringComparer.Ordinal)
+    {
+        // latch / spinlock (Lite already collects latch_stats + spinlock_stats but exposes no tool)
+        "get_latch_stats", "get_spinlock_stats",
+        // plan-cache bloat + cpu-scheduler pressure (Lite already collects both)
+        "get_plan_cache_bloat", "get_cpu_scheduler_pressure",
+        // resource semaphore (Lite has only get_memory_grants)
+        "get_resource_semaphore",
+        // default-trace events + daily summary
+        "get_default_trace_events", "get_daily_summary",
+        // config-change history
+        "get_server_config_changes", "get_database_config_changes", "get_trace_flag_changes",
+        // system_health parser (x8; Lite already collects system_health_events)
+        "get_health_parser_system_health", "get_health_parser_severe_errors",
+        "get_health_parser_scheduler_issues", "get_health_parser_memory_node_oom",
+        "get_health_parser_memory_conditions", "get_health_parser_memory_broker",
+        "get_health_parser_io_issues", "get_health_parser_cpu_tasks",
+    };
+
+    [Fact]
+    public void DarlingMcpTools_AreASupersetOfLite_ExceptKnownNamingDrift()
+    {
+        var lite = ExtractToolNames(LiteMcpDir);
+        var darling = ExtractToolNames(DarlingMcpDir);
+
+        /* Non-vacuous floor: a broken scan returning a handful of tools must not sail through. */
+        Assert.True(lite.Count >= 40, $"Lite MCP tool scan returned only {lite.Count} tools — the scan is likely broken");
+        Assert.True(darling.Count >= 40, $"Darling MCP tool scan returned only {darling.Count} tools — the scan is likely broken");
+
+        var driftLite = KnownNamingDrift.Select(d => d.Lite).ToHashSet(StringComparer.Ordinal);
+
+        /* Every Lite tool (minus the registered naming-drift Lite names) must exist in Darling. */
+        var missingFromDarling = lite
+            .Where(t => !driftLite.Contains(t) && !darling.Contains(t))
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+        Assert.True(missingFromDarling.Count == 0,
+            "Darling is missing Lite MCP tool(s) with no registered naming-drift twin: [" +
+            string.Join(", ", missingFromDarling) +
+            "]. Add the tool to Darling, or register a KnownNamingDrift pair.");
+
+        /* The naming-drift allow-list must still describe reality — both names present, and it really is a
+           rename (not a resolved duplicate) — so a fix or a fresh collision forces this list to be updated. */
+        foreach (var (liteName, darlingName) in KnownNamingDrift)
+        {
+            Assert.True(lite.Contains(liteName),
+                $"KnownNamingDrift lists Lite tool '{liteName}' that no longer exists — remove the stale pair.");
+            Assert.True(darling.Contains(darlingName),
+                $"KnownNamingDrift lists Darling tool '{darlingName}' that no longer exists — remove the stale pair.");
+            Assert.False(darling.Contains(liteName),
+                $"Darling now also exposes '{liteName}', so the naming drift is resolved — remove the pair.");
+        }
+    }
+
+    [Fact]
+    public void LiteMissingMcpTools_MatchTheRatchetAllowList()
+    {
+        var lite = ExtractToolNames(LiteMcpDir);
+        var darling = ExtractToolNames(DarlingMcpDir);
+
+        var driftDarling = KnownNamingDrift.Select(d => d.Darling).ToHashSet(StringComparer.Ordinal);
+
+        /* Darling tools with no Lite twin, excluding the naming-drift Darling name (whose capability Lite HAS,
+           under a different name). This is the shrinking to-do list. */
+        var darlingOnly = darling
+            .Where(t => !lite.Contains(t) && !driftDarling.Contains(t))
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.True(KnownLiteMissingMcpTools.SetEquals(darlingOnly),
+            "Darling-only MCP tools drifted from the ratchet allow-list.\n" +
+            "  Added a Darling tool with no Lite twin? Port it to Lite, or add it to KnownLiteMissingMcpTools.\n" +
+            "  Ported a listed tool to Lite? Remove it from KnownLiteMissingMcpTools (the ratchet only shrinks).\n" +
+            $"  Present in Darling but NOT in the allow-list: [{Format(darlingOnly.Except(KnownLiteMissingMcpTools))}]\n" +
+            $"  Listed but no longer Darling-only:            [{Format(KnownLiteMissingMcpTools.Except(darlingOnly))}]");
+    }
+
+    private static string Format(IEnumerable<string> names) =>
+        string.Join(", ", names.OrderBy(n => n, StringComparer.Ordinal));
+
+    /// <summary>
+    /// Reads every distinct MCP tool name from the <c>*.cs</c> files under a repo-relative <c>Mcp</c> directory.
+    /// Asserts each method-level <c>[McpServerTool(</c> carries an explicit <c>Name = "…"</c> (the convention
+    /// the scan relies on; <c>[McpServerToolType]</c> is class-level and has no <c>(</c>, so it is not matched)
+    /// and that no tool name is defined twice.
+    /// </summary>
+    private static HashSet<string> ExtractToolNames(string relativeDir)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var file in ParitySource.EnumerateCsFiles(relativeDir))
+        {
+            var src = File.ReadAllText(file);
+
+            var toolAttrs = Regex.Matches(src, @"\[McpServerTool\(");
+            var namedAttrs = Regex.Matches(src, @"\[McpServerTool\(Name\s*=\s*""([a-z0-9_]+)""");
+            Assert.True(toolAttrs.Count == namedAttrs.Count,
+                $"{Path.GetFileName(file)}: {toolAttrs.Count} [McpServerTool(] attribute(s) but {namedAttrs.Count} " +
+                "carry an explicit Name = \"…\". Every MCP tool must name itself explicitly so the parity scan sees it.");
+
+            foreach (Match m in namedAttrs)
+            {
+                var name = m.Groups[1].Value;
+                Assert.True(names.Add(name), $"duplicate MCP tool name '{name}' under {relativeDir}");
+            }
+        }
+
+        return names;
+    }
+}
