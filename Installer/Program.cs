@@ -757,6 +757,18 @@ namespace PerformanceMonitorInstaller
                 */
                 switch (InstallGuard.Check(currentVersion, version))
                 {
+                    case InstallBlock.UnreadableBuildVersion:
+                        /* Also checked above, before the clean-install branch. Handled here so the switch
+                           is exhaustive and cannot silently fall through if that check ever moves. */
+                        Console.WriteLine();
+                        WriteError($"This installer reports its own version as '{version}', which is not a valid version.");
+                        Console.WriteLine("Aborting: an install would record that value as the server's version.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+
                     case InstallBlock.UnreadableInstalledVersion:
                         Console.WriteLine();
                         WriteError($"The version recorded on this server ('{currentVersion}') is not a valid version.");
@@ -1172,12 +1184,34 @@ namespace PerformanceMonitorInstaller
             */
             if (repairRan)
             {
+                /*
+                Keyed on HasPendingUpgrade, NOT on FailuresAreExpected. They answer different questions,
+                and they disagree for the unknown sentinel: an unreadable version cannot excuse a file
+                failure, but it absolutely can have every hop pending. Reusing the one flag printed
+                "already at the current version, so there is no upgrade to apply" two lines under
+                "still at v1.0.0" -- for a server with eleven migrations waiting.
+                */
+                bool versionUnknown = RepairOutcome.IsVersionUnknown(currentVersion);
+                bool pendingUpgrade = RepairOutcome.HasPendingUpgrade(currentVersion, version);
+
                 Console.WriteLine();
                 Console.WriteLine("================================================================================");
-                Console.WriteLine($"Repair complete. This server is still at v{currentVersion} and no version was recorded.");
 
-                if (repairHasPendingUpgrade)
+                if (versionUnknown)
                 {
+                    Console.WriteLine("Repair complete. No version was recorded.");
+                    Console.WriteLine("This server's recorded version could not be read, so it is unknown which migrations");
+                    Console.WriteLine("have run.");
+                    if (totalFailureCount > 0)
+                    {
+                        Console.WriteLine($"{totalFailureCount} object(s) failed. Some may simply be waiting on a migration.");
+                    }
+                    Console.WriteLine();
+                    Console.WriteLine("Next: re-run WITHOUT --repair to attempt every upgrade, then re-check.");
+                }
+                else if (pendingUpgrade)
+                {
+                    Console.WriteLine($"Repair complete. This server is still at v{currentVersion} and no version was recorded.");
                     if (totalFailureCount > 0)
                     {
                         Console.WriteLine($"{totalFailureCount} object(s) could not be compiled because the pending upgrade has not");
@@ -1189,7 +1223,8 @@ namespace PerformanceMonitorInstaller
                 }
                 else
                 {
-                    Console.WriteLine("This server was already at the current version, so there is no upgrade to apply.");
+                    Console.WriteLine($"Repair complete. This server is at v{currentVersion} and no version was recorded.");
+                    Console.WriteLine("It was already at the current version, so there is no upgrade to apply.");
                 }
 
                 Console.WriteLine("================================================================================");

@@ -555,6 +555,17 @@ namespace PerformanceMonitorDashboard
         */
         private void RestoreAfterInstall(string message)
         {
+            /*
+            Clear the destructive/mode flags HERE, because this is now the only exit path from a run.
+            Rerouting the cancel/fatal/abort handlers away from TransitionToState(Initial) left the
+            clearing that used to live in that case as dead code -- and re-enabled the form on top of a
+            still-ticked "Perform clean install (drops existing database)". Cancel a run, retype the
+            server box, click again, and it drops a database that never consented.
+            */
+            RepairCheckBox.IsChecked = false;
+            CleanInstallCheckBox.IsChecked = false;
+            ResetScheduleCheckBox.IsChecked = false;
+
             TransitionToState(_preInstallState);
 
             DatabaseStatusPanel.Visibility = Visibility.Visible;
@@ -709,7 +720,7 @@ namespace PerformanceMonitorDashboard
         would silently revert a newer database to this binary's older object definitions and record
         the lower version as SUCCESS.
         */
-        internal static string? GetInstallBlockReason(string? installedVersion, string appVersion)
+        private static string? GetInstallBlockReason(string? installedVersion, string appVersion)
         {
             /*
             The DECISION lives in Installer.Core/InstallGuard, shared with the CLI and pinned by tests
@@ -789,7 +800,7 @@ namespace PerformanceMonitorDashboard
                     break;
 
                 case DialogState.Connected_NeedsUpgrade:
-                    string normalizedInstalled = NormalizeVersion(_installedVersion!);
+                    string normalizedInstalled = NormalizeVersion(_installedVersion ?? "unknown");
                     ConnectionInfoText.Text = connectionHeader;
                     DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedInstalled} is installed. " +
                         $"v{appVersion} is available — click Upgrade Now to apply the update.";
@@ -802,7 +813,7 @@ namespace PerformanceMonitorDashboard
                     break;
 
                 case DialogState.Connected_Current:
-                    string normalizedCurrent = NormalizeVersion(_installedVersion!);
+                    string normalizedCurrent = NormalizeVersion(_installedVersion ?? "unknown");
                     ConnectionInfoText.Text = connectionHeader;
                     DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedCurrent} is up to date. " +
                         "If objects are missing or damaged, click Reinstall Objects to restore them.";
@@ -1000,20 +1011,27 @@ namespace PerformanceMonitorDashboard
                 database exists but its history table does not, a target-version stamp that strands every
                 migration in between. Someone who ticked Repair asked for the opposite.
                 */
-                if (RepairCheckBox.IsChecked == true &&
+                if ((RepairCheckBox.IsChecked == true || _preInstallState == DialogState.Connected_Current) &&
                     CleanInstallCheckBox.IsChecked != true &&
                     _installedVersion == null)
                 {
+                    /*
+                    The Connected_Current arm matters as much as the checkbox: that state's button says
+                    "Reinstall Objects", the server box stays editable, and the install-time re-read runs
+                    against whatever is in it now. Retype it to a bare instance and the button would
+                    silently perform a FULL fresh install -- new database, jobs, XE sessions -- from a
+                    button that promised to reinstall existing objects.
+                    */
                     await Dispatcher.InvokeAsync(() =>
                     {
                         RepairCheckBox.IsChecked = false;
                         InstallStatusText.Text = string.Empty;
                         TransitionToState(DialogState.Connected_NoDatabase);
                         MessageBox.Show(
-                            "There is no existing PerformanceMonitor installation on this server to repair.\n\n" +
-                            "Repair reinstalls the objects of an existing installation; it will not create one. " +
-                            "Repair has been cleared -- click Install Now to perform a fresh install.",
-                            "Nothing to Repair",
+                            "There is no existing PerformanceMonitor installation on this server to reinstall.\n\n" +
+                            "Repair and Reinstall Objects restore the objects of an EXISTING installation; neither " +
+                            "creates one. Click Install Now to perform a fresh install instead.",
+                            "Nothing to Reinstall",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
                     });
@@ -1251,20 +1269,25 @@ namespace PerformanceMonitorDashboard
                 bool criticalFileFailed = _installResult.Errors.Any(e => Patterns.IsCriticalFile(e.FileName));
 
                 /* Shared with the CLI so the two cannot drift -- see RepairOutcome. */
-                bool repairHasPendingUpgrade = RepairOutcome.FailuresAreExpected(
-                    isRepair,
-                    repairFromVersion,
-                    appVersion,
-                    criticalFileFailed);
+                /*
+                THREE different questions, and they disagree for the unknown sentinel. Answering all of
+                them with one flag told the operator "already at the current version, so there is no
+                upgrade to apply" for a server with every hop pending, and withheld the button that would
+                have applied them.
+                */
+                bool failuresExcused = RepairOutcome.FailuresAreExpected(
+                    isRepair, repairFromVersion, appVersion, criticalFileFailed);
+                bool hasPendingUpgrade = RepairOutcome.HasPendingUpgrade(repairFromVersion, appVersion);
+                bool versionUnknown = RepairOutcome.IsVersionUnknown(repairFromVersion);
 
-                bool repairUsable = isRepair && !criticalFileFailed &&
-                    (_installResult.Success || repairHasPendingUpgrade);
+                /* The repair ran and was not aborted by a critical file, so its handoff is still owed. */
+                bool repairCompleted = isRepair && !criticalFileFailed;
 
                 /* Update final status */
                 await Dispatcher.InvokeAsync(() =>
                 {
                     InstallProgressBar.Value = 100;
-                    if (repairUsable)
+                    if (repairCompleted)
                     {
                         /*
                         A repair on a database with pending migrations is EXPECTED to report file errors,
@@ -1276,22 +1299,29 @@ namespace PerformanceMonitorDashboard
                         A failed CREATE OR ALTER leaves the old body intact, so nothing is damaged; the
                         upgrade's own install pass recompiles them once the schema is current.
 
-                        So the handoff is NOT gated on _installResult.Success: gating it would leave the
-                        user staring at "completed with N error(s)" and no next step, which is how the
-                        half-migrated database this feature exists to escape gets left behind. It IS gated
-                        on there being a pending upgrade, because without one those errors are real.
+                        So the completion block is NOT gated on _installResult.Success: gating it would
+                        leave the user staring at "completed with N error(s)" and no next step, which is
+                        how the half-migrated database this feature exists to escape gets left behind.
                         */
-                        if (repairHasPendingUpgrade)
-                        {
-                            InstallStatusText.Text = _installResult.Success
-                                ? "Repair completed. Run the upgrade to apply pending migrations."
-                                : "Repair completed with expected errors. Run the upgrade to complete.";
+                        InstallStatusText.Text =
+                            _installResult.Success ? "Repair completed."
+                            : failuresExcused ? $"Repair completed with {_installResult.FilesFailed} expected error(s)."
+                            : $"Repair completed with {_installResult.FilesFailed} error(s).";
 
+                        if (versionUnknown)
+                        {
+                            AppendInstallLog(
+                                "Repair complete. No version was recorded, and this server's recorded version could not be read -- " +
+                                "it is unknown which migrations have run. Click Upgrade Now to attempt every upgrade, then re-check.",
+                                "Warning");
+                        }
+                        else if (hasPendingUpgrade)
+                        {
                             AppendInstallLog(
                                 $"Repair complete. The server is still at v{NormalizeVersion(repairFromVersion!)} and no version was recorded -- click Upgrade Now to apply the pending migrations.",
                                 "Success");
 
-                            if (!_installResult.Success)
+                            if (!_installResult.Success && failuresExcused)
                             {
                                 AppendInstallLog(
                                     $"{_installResult.FilesFailed} object(s) could not be compiled because the pending upgrade has not run yet. " +
@@ -1301,7 +1331,6 @@ namespace PerformanceMonitorDashboard
                         }
                         else
                         {
-                            InstallStatusText.Text = "Repair completed successfully.";
                             AppendInstallLog(
                                 "Repair complete. This server was already at the current version, so no version was recorded and there is no upgrade to apply.",
                                 "Success");
@@ -1334,17 +1363,20 @@ namespace PerformanceMonitorDashboard
 
                     Not gated on _installResult.Success, for the reason above: a repair with the expected
                     compile errors still needs the handoff. It IS gated on no critical file having failed,
-                    because that repair reinstalled nothing.
+                    because that repair reinstalled nothing -- and on there actually being an upgrade to
+                    hand off TO, which for the unknown sentinel means yes (every hop may be pending).
                     */
-                    if (repairUsable && repairHasPendingUpgrade &&
+                    if (repairCompleted && hasPendingUpgrade &&
                         (_currentState == DialogState.InstallComplete ||
                          _currentState == DialogState.MonitoringCredentials))
                     {
                         /* The prologue blanks this, and neither completion state repopulates it. */
                         ConnectionInfoText.Text = $"Connected to {ServerNameTextBox.Text}";
-                        DatabaseStatusText.Text =
-                            $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion!)} " +
-                            "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
+                        DatabaseStatusText.Text = versionUnknown
+                            ? "Objects were reinstalled. This server's recorded version could not be read, so it is " +
+                              "unknown which migrations have run. Click Upgrade Now to attempt every upgrade."
+                            : $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion!)} " +
+                              "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
                         InstallUpgradeButton.Content = "Upgrade Now";
                         InstallUpgradeButton.Visibility = Visibility.Visible;
                         DatabaseStatusPanel.Visibility = Visibility.Visible;

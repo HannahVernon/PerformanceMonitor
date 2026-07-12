@@ -78,6 +78,47 @@ public class RepairOutcomeTests
             criticalFileFailed: false));
     }
 
+    [Fact]
+    public void UnknownSentinel_AnswersTheTwoQuestionsDIFFERENTLY()
+    {
+        /*
+        The whole point of splitting them. For an unreadable version:
+          - "may I excuse these file failures?"  -> NO. We cannot certify a success we cannot explain.
+          - "is there an upgrade to run next?"   -> YES. Every hop may be pending.
+
+        Answering both with one flag printed "already at the current version, so there is no upgrade to
+        apply" for a server with eleven migrations waiting, and withheld the button that would have
+        applied them.
+        */
+        const string sentinel = InstallationService.UnknownVersionSentinel;
+
+        Assert.False(RepairOutcome.FailuresAreExpected(
+            repairRan: true, installedVersion: sentinel, targetVersion: "3.1.0", criticalFileFailed: false));
+
+        Assert.True(RepairOutcome.HasPendingUpgrade(sentinel, "3.1.0"));
+        Assert.True(RepairOutcome.IsVersionUnknown(sentinel));
+    }
+
+    [Theory]
+    [InlineData("3.1.0", "3.1.0", false)]
+    [InlineData("3.0.0", "3.1.0", true)]
+    [InlineData("3.2.0", "3.1.0", false)]
+    [InlineData("Unreachable", "3.1.0", false)]
+    [InlineData(null, "3.1.0", false)]
+    public void HasPendingUpgrade_KeysOnlyOnVersionOrder(string? installed, string target, bool expected)
+    {
+        Assert.Equal(expected, RepairOutcome.HasPendingUpgrade(installed, target));
+    }
+
+    [Theory]
+    [InlineData("3.1.0")]
+    [InlineData("Unreachable")]
+    [InlineData(null)]
+    public void IsVersionUnknown_OnlyTheSentinel(string? installed)
+    {
+        Assert.False(RepairOutcome.IsVersionUnknown(installed));
+    }
+
     [Theory]
     [InlineData("3.0.0", "3.1.0.0")]
     [InlineData("2.9", "3.1.0")]

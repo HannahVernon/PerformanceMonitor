@@ -71,4 +71,33 @@ public static class RepairOutcome
         /* The expected failures only exist when there is a migration still to run. */
         return installed < target;
     }
+
+    /// <summary>
+    /// True when there is an upgrade to run AFTER this repair — i.e. what the "now run the upgrade"
+    /// handoff should key on.
+    ///
+    /// This is a DIFFERENT question from <see cref="FailuresAreExpected"/>, and the difference is the
+    /// unknown sentinel. "May I excuse these file failures?" must answer NO for an unreadable version
+    /// (we cannot certify a success we cannot explain). "Is there an upgrade to run next?" must answer
+    /// YES for the same input — the version is unknown, so every hop may be pending. Reusing one boolean
+    /// for both told the operator "already at the current version, so there is no upgrade to apply" for
+    /// a server with eleven pending hops, and withheld the handoff button that would have applied them.
+    /// </summary>
+    public static bool HasPendingUpgrade(string? installedVersion, string? targetVersion)
+    {
+        var installed = ScriptProvider.TryParseVersionCore(installedVersion);
+        var target = ScriptProvider.TryParseVersionCore(targetVersion);
+
+        return installed != null && target != null && installed < target;
+    }
+
+    /// <summary>
+    /// True when the recorded version could not be read, so it is unknown which migrations have run.
+    /// Callers must say so rather than asserting the server is current.
+    /// </summary>
+    public static bool IsVersionUnknown(string? installedVersion) =>
+        string.Equals(
+            installedVersion?.Trim(),
+            InstallationService.UnknownVersionSentinel,
+            StringComparison.Ordinal);
 }
