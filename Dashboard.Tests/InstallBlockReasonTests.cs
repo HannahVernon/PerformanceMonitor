@@ -69,5 +69,20 @@ namespace Dashboard.Tests
             Assert.NotNull(reason);
             Assert.Contains("This Dashboard reports its own version", reason);
         }
+
+        [Fact]
+        public void UnreadableAppVersion_IsBlocked_EvenOnAFreshServer()
+        {
+            /*
+            Regression: the app-version check used to sit BELOW the no-database early return, so a fresh
+            server sailed through -- and appVersion is exactly what a fresh install writes to
+            installation_history.installer_version. That poisoned the ledger at birth, after which both
+            the Dashboard and the CLI refuse to touch the server ever again.
+            */
+            var reason = AddServerDialog.GetInstallBlockReason(null, "not-a-version");
+
+            Assert.NotNull(reason);
+            Assert.Contains("This Dashboard reports its own version", reason);
+        }
     }
 }

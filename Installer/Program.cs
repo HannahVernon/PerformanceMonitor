@@ -771,6 +771,25 @@ namespace PerformanceMonitorInstaller
                     }
                 }
 
+                /*
+                Refuse to repair what is not there. Falling through would run a FULL fresh install and
+                stamp the target version -- a whole new database and Agent jobs on a mistyped server, and,
+                if the database exists but its history table does not, a target-version stamp that strands
+                every migration in between. An operator who typed --repair asked for the opposite.
+                */
+                if (repairMode && currentVersion == null)
+                {
+                    Console.WriteLine();
+                    WriteError("--repair found no existing PerformanceMonitor installation to repair on this server.");
+                    Console.WriteLine("Repair reinstalls the objects of an existing installation; it will not create one.");
+                    Console.WriteLine("Re-run without --repair to install, or check the server name.");
+                    if (!automatedMode)
+                    {
+                        WaitForExit();
+                    }
+                    return (int)InstallationResultCode.VersionCheckFailed;
+                }
+
                 if (currentVersion != null && repairMode)
                 {
                     /*
@@ -1055,10 +1074,20 @@ namespace PerformanceMonitorInstaller
             whole pass, so the repair reinstalled nothing and really did fail.
             */
             bool repairRan = repairMode && currentVersion != null;
-            bool criticalFileFailed = installationErrors.Any(e => Patterns.IsCriticalFile(e.FileName));
-            bool repairUsable = repairRan && !criticalFileFailed;
 
-            installationSuccessful = totalFailureCount == 0 || repairUsable;
+            /*
+            Only a repair with a PENDING upgrade can legitimately fail install files. Without one there is
+            no migration-added column to be missing, so a failure is a REAL failure and must exit non-zero
+            -- otherwise a --repair against an up-to-date server reports SUCCESS with broken procedures and
+            blames a "pending upgrade" that does not exist. A critical file (01_/02_/03_) failing already
+            returned CriticalScriptFailed above, so it cannot reach here.
+            */
+            var repairedCore = ScriptProvider.TryParseVersionCore(currentVersion);
+            var targetCore = ScriptProvider.TryParseVersionCore(version);
+            bool repairHasPendingUpgrade =
+                repairRan && repairedCore != null && targetCore != null && repairedCore < targetCore;
+
+            installationSuccessful = totalFailureCount == 0 || repairHasPendingUpgrade;
 
             /*
             Log installation history to database
@@ -1135,19 +1164,28 @@ namespace PerformanceMonitorInstaller
             The repair handoff. Without it the operator is told "N error(s), review errors above" with no
             next step and reaches for --reinstall, which drops the database.
             */
-            if (repairUsable)
+            if (repairRan)
             {
                 Console.WriteLine();
                 Console.WriteLine("================================================================================");
                 Console.WriteLine($"Repair complete. This server is still at v{currentVersion} and no version was recorded.");
-                if (totalFailureCount > 0)
+
+                if (repairHasPendingUpgrade)
                 {
-                    Console.WriteLine($"{totalFailureCount} object(s) could not be compiled because the pending upgrade has not");
-                    Console.WriteLine("run yet. This is expected -- they reference columns the upgrade adds, and the");
-                    Console.WriteLine("upgrade will recompile them.");
+                    if (totalFailureCount > 0)
+                    {
+                        Console.WriteLine($"{totalFailureCount} object(s) could not be compiled because the pending upgrade has not");
+                        Console.WriteLine("run yet. This is expected -- they reference columns the upgrade adds, and the");
+                        Console.WriteLine("upgrade will recompile them.");
+                    }
+                    Console.WriteLine();
+                    Console.WriteLine("Next: re-run WITHOUT --repair to apply the pending upgrade.");
                 }
-                Console.WriteLine();
-                Console.WriteLine("Next: re-run WITHOUT --repair to apply the pending upgrade.");
+                else
+                {
+                    Console.WriteLine("This server was already at the current version, so there is no upgrade to apply.");
+                }
+
                 Console.WriteLine("================================================================================");
             }
 

@@ -63,10 +63,19 @@ namespace PerformanceMonitorDashboard
         private DialogState _currentState = DialogState.Initial;
         private string? _serverVersion;
 
+        /*
+        Cancel the install on ANY close. Cancel_Click covers the Cancel button and ESC (IsCancel), but the
+        title-bar X and Alt+F4 bypass it entirely -- without this the install keeps running against the
+        database, history write included, with the dialog already destroyed and nothing left to stop it.
+        */
+        private void CancelInstallOnClose(object? sender, System.ComponentModel.CancelEventArgs e) =>
+            _installCts?.Cancel();
+
         public AddServerDialog()
         {
             InitializeComponent();
             SizeToWorkArea();
+            Closing += CancelInstallOnClose;
             _isEditMode = false;
             ServerConnection = new ServerConnection();
             Title = "Add SQL Server";
@@ -76,6 +85,7 @@ namespace PerformanceMonitorDashboard
         {
             InitializeComponent();
             SizeToWorkArea();
+            Closing += CancelInstallOnClose;
             _isEditMode = true;
             ServerConnection = existingServer;
             Title = "Edit SQL Server";
@@ -353,25 +363,8 @@ namespace PerformanceMonitorDashboard
         Build clamp matters for the same reason: TryParse("3.1") succeeds with Build == -1, which
         would otherwise format as "3.1.-1" and fail to re-parse. Matches ScriptProvider.ParseVersionCore.
         */
-        private static string NormalizeVersion(string version)
-        {
-            string core = version.Trim();
-
-            int plus = core.IndexOf('+', StringComparison.Ordinal);
-            if (plus >= 0)
-                core = core[..plus];
-
-            int dash = core.IndexOf('-', StringComparison.Ordinal);
-            if (dash >= 0)
-                core = core[..dash];
-
-            if (Version.TryParse(core, out var parsed))
-            {
-                return $"{parsed.Major}.{parsed.Minor}.{Math.Max(parsed.Build, 0)}";
-            }
-
-            return version;
-        }
+        private static string NormalizeVersion(string version) =>
+            ScriptProvider.TryParseVersionCore(version)?.ToString() ?? version;
 
         private bool ValidateInputs()
         {
@@ -673,21 +666,30 @@ namespace PerformanceMonitorDashboard
         */
         internal static string? GetInstallBlockReason(string? installedVersion, string appVersion)
         {
-            if (installedVersion == null)
-            {
-                return null;
-            }
-
-            var installedCore = ScriptProvider.TryParseVersionCore(installedVersion);
             var appCore = ScriptProvider.TryParseVersionCore(appVersion);
 
-            /* Distinct causes, distinct messages: nothing the user does to the database fixes a bad build version. */
+            /*
+            Checked BEFORE the no-database case on purpose. appVersion is what a fresh install WRITES to
+            installation_history.installer_version, so letting an unparseable one through on an empty
+            server poisons the ledger at birth -- after which both the Dashboard and the CLI refuse to
+            touch that server ever again, recoverable only by hand-editing the row or a destructive
+            reinstall. Distinct message too: nothing the user does to the database fixes a bad build.
+            */
             if (appCore == null)
             {
                 return $"This Dashboard reports its own version as '{appVersion}', which is not a valid version.\n\n" +
                     "Install and upgrade are blocked: without a comparable version we cannot tell which " +
-                    "migrations still need to run. This is a build problem, not a problem with the server.";
+                    "migrations still need to run, and a fresh install would record that value as the " +
+                    "server's version. This is a build problem, not a problem with the server.";
             }
+
+            if (installedVersion == null)
+            {
+                /* No installation found: a fresh install is safe. */
+                return null;
+            }
+
+            var installedCore = ScriptProvider.TryParseVersionCore(installedVersion);
 
             if (installedCore == null)
             {
@@ -941,6 +943,32 @@ namespace PerformanceMonitorDashboard
                     return;
                 }
 
+                /*
+                Refuse to repair what is not there. Falling through would silently run a FULL fresh install
+                and stamp the target version -- a whole new database on a mistyped server, and, if the
+                database exists but its history table does not, a target-version stamp that strands every
+                migration in between. Someone who ticked Repair asked for the opposite.
+                */
+                if (RepairCheckBox.IsChecked == true &&
+                    CleanInstallCheckBox.IsChecked != true &&
+                    _installedVersion == null)
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        RepairCheckBox.IsChecked = false;
+                        TransitionToState(DialogState.Connected_NoDatabase);
+                        SetFormEnabled(true);
+                        MessageBox.Show(
+                            "There is no existing PerformanceMonitor installation on this server to repair.\n\n" +
+                            "Repair reinstalls the objects of an existing installation; it will not create one. " +
+                            "Repair has been cleared -- click Install Now to perform a fresh install.",
+                            "Nothing to Repair",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
+                    });
+                    return;
+                }
+
                 string? blockReason = GetInstallBlockReason(_installedVersion, appVersion);
                 if (blockReason != null)
                 {
@@ -1174,7 +1202,20 @@ namespace PerformanceMonitorDashboard
                 below, and must not be dressed up as one.
                 */
                 bool criticalFileFailed = _installResult.Errors.Any(e => Patterns.IsCriticalFile(e.FileName));
-                bool repairUsable = isRepair && !criticalFileFailed;
+
+                /*
+                Only a repair with a PENDING upgrade can legitimately fail install files. Without one there
+                is no migration-added column to be missing, so a failure is a REAL failure -- otherwise a
+                repair of an up-to-date server would report "expected errors" and hand off to an upgrade
+                that does not exist.
+                */
+                var repairedCore = ScriptProvider.TryParseVersionCore(repairFromVersion);
+                var targetCore = ScriptProvider.TryParseVersionCore(appVersion);
+                bool repairHasPendingUpgrade =
+                    isRepair && repairedCore != null && targetCore != null && repairedCore < targetCore;
+
+                bool repairUsable = isRepair && !criticalFileFailed &&
+                    (_installResult.Success || repairHasPendingUpgrade);
 
                 /* Update final status */
                 await Dispatcher.InvokeAsync(() =>
@@ -1194,22 +1235,33 @@ namespace PerformanceMonitorDashboard
 
                         So the handoff is NOT gated on _installResult.Success: gating it would leave the
                         user staring at "completed with N error(s)" and no next step, which is how the
-                        half-migrated database this feature exists to escape gets left behind.
+                        half-migrated database this feature exists to escape gets left behind. It IS gated
+                        on there being a pending upgrade, because without one those errors are real.
                         */
-                        InstallStatusText.Text = _installResult.Success
-                            ? "Repair completed. Run the upgrade to apply pending migrations."
-                            : "Repair completed with expected errors. Run the upgrade to complete.";
-
-                        AppendInstallLog(
-                            $"Repair complete. The server is still at v{NormalizeVersion(repairFromVersion!)} and no version was recorded -- click Upgrade Now to apply the pending migrations.",
-                            "Success");
-
-                        if (!_installResult.Success)
+                        if (repairHasPendingUpgrade)
                         {
+                            InstallStatusText.Text = _installResult.Success
+                                ? "Repair completed. Run the upgrade to apply pending migrations."
+                                : "Repair completed with expected errors. Run the upgrade to complete.";
+
                             AppendInstallLog(
-                                $"{_installResult.FilesFailed} object(s) could not be compiled because the pending upgrade has not run yet. " +
-                                "This is expected -- they reference columns the upgrade adds, and the upgrade will recompile them.",
-                                "Info");
+                                $"Repair complete. The server is still at v{NormalizeVersion(repairFromVersion!)} and no version was recorded -- click Upgrade Now to apply the pending migrations.",
+                                "Success");
+
+                            if (!_installResult.Success)
+                            {
+                                AppendInstallLog(
+                                    $"{_installResult.FilesFailed} object(s) could not be compiled because the pending upgrade has not run yet. " +
+                                    "This is expected -- they reference columns the upgrade adds, and the upgrade will recompile them.",
+                                    "Info");
+                            }
+                        }
+                        else
+                        {
+                            InstallStatusText.Text = "Repair completed successfully.";
+                            AppendInstallLog(
+                                "Repair complete. This server was already at the current version, so no version was recorded and there is no upgrade to apply.",
+                                "Success");
                         }
                     }
                     else if (_installResult.Success)
@@ -1241,10 +1293,12 @@ namespace PerformanceMonitorDashboard
                     compile errors still needs the handoff. It IS gated on no critical file having failed,
                     because that repair reinstalled nothing.
                     */
-                    if (repairUsable &&
+                    if (repairUsable && repairHasPendingUpgrade &&
                         (_currentState == DialogState.InstallComplete ||
                          _currentState == DialogState.MonitoringCredentials))
                     {
+                        /* The prologue blanks this, and neither completion state repopulates it. */
+                        ConnectionInfoText.Text = $"Connected to {ServerNameTextBox.Text}";
                         DatabaseStatusText.Text =
                             $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion!)} " +
                             "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
@@ -1420,6 +1474,14 @@ namespace PerformanceMonitorDashboard
             {
                 var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync(SaveButton);
 
+                /*
+                An install started while this connection test was in flight (InstallUpgradeButton stays
+                hit-testable -- SetFormEnabled does not touch it). Falling through would set DialogResult
+                and Close(), destroying the dialog while the install runs on against the database with no
+                UI and nothing left to cancel it.
+                */
+                if (InstallInProgress) return;
+
                 if (!connected)
                 {
                     if (mfaCancelled)
@@ -1486,9 +1548,17 @@ namespace PerformanceMonitorDashboard
             {
                 authenticationType = AuthenticationTypes.SqlServer;
 
-                /* Use monitoring credentials if provided */
-                if (_currentState == DialogState.MonitoringCredentials &&
-                    UseSameCredsCheckBox.IsChecked == false &&
+                /*
+                Use the monitoring credentials if the user actually entered them.
+
+                Deliberately NOT gated on _currentState: the repair handoff puts a live "Upgrade Now"
+                button in front of MonitoringCredentials, which used to be terminal. Any exit from the
+                install that button starts (abort, cancel, fatal, version block) transitions away, and
+                the typed monitoring login would then be silently discarded and the INSTALLER account --
+                typically sysadmin -- persisted as the ongoing monitoring credential instead. Keying on
+                what was entered rather than on a transient state cannot drift that way.
+                */
+                if (UseSameCredsCheckBox.IsChecked == false &&
                     !string.IsNullOrWhiteSpace(MonitorUsernameTextBox.Text))
                 {
                     Username = MonitorUsernameTextBox.Text.Trim();
