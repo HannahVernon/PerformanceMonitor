@@ -4,7 +4,7 @@
 // DuckDbSchemaGenerator replaced them (feature/parity-collapse-lite-schema base = origin/dev).
 //
 // DO NOT EDIT. This is the equivalence ORACLE: DuckDbSchemaEquivalenceTests executes each of these
-// against a fresh in-memory DuckDB and asserts the generated schema produces a byte-identical
+// against a fresh DuckDB database and asserts the generated schema produces a byte-identical
 // PRAGMA table_info (columns, DuckDB types, order, NOT NULL, DEFAULT, PRIMARY KEY) and matching
 // indexes. Editing this file would defeat the proof that existing DuckDB stores are safe.
 // Extracted mechanically from the pre-change Schema.cs constants to guarantee byte-exactness.

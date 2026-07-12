@@ -477,11 +477,18 @@ public class DuckDbInitializer
             _logger?.LogInformation("Running migration to v5: adding database_scoped_config and trace_flags tables");
             /* Generated from the catalog (same source as GetAllTableStatements, which also recreates these
                with IF NOT EXISTS immediately after migrations); byte-equivalent to the former hand-written
-               Schema constants this migration used before the schema was made catalog-driven. */
-            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateTable(DatabaseScopedConfigCollector.Instance));
-            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateIndex(DatabaseScopedConfigCollector.Instance)!);
-            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateTable(TraceFlagsCollector.Instance));
-            await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateIndex(TraceFlagsCollector.Instance)!);
+               Schema constants this migration used before the schema was made catalog-driven. The index is
+               null-checked (both collectors have one today) rather than asserted, mirroring the generator. */
+            foreach (ICollectorSchemaInfo collector in new[]
+                { (ICollectorSchemaInfo)DatabaseScopedConfigCollector.Instance, TraceFlagsCollector.Instance })
+            {
+                await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateTable(collector));
+                var collectorIndex = DuckDbSchemaGenerator.CreateIndex(collector);
+                if (collectorIndex is not null)
+                {
+                    await ExecuteNonQueryAsync(connection, collectorIndex);
+                }
+            }
         }
 
         if (fromVersion < 6)

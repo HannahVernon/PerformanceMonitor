@@ -177,6 +177,12 @@ public static class DuckDbSchemaGenerator
     /// <c>PRAGMA table_info</c> diverge from the golden snapshot, failing the build). The prefix
     /// columns (id PRIMARY KEY, time / server_id / server_name NOT NULL) are NOT listed here — they
     /// are emitted uniformly by <see cref="CreateTable"/>.</para>
+    ///
+    /// <para>Only <c>NOT NULL</c> and column <c>DEFAULT</c> fragments belong here — the two things the
+    /// equivalence test's <c>PRAGMA table_info</c> comparison verifies (its <c>notnull</c> / <c>dflt_value</c>
+    /// columns). Do NOT add <c>CHECK</c>, <c>UNIQUE</c>, <c>COLLATE</c>, or generated-column expressions:
+    /// none are needed by any collector table, and <c>table_info</c> would not fully validate them, so the
+    /// equivalence proof would have a blind spot. (Such shapes are not expressible from the catalog anyway.)</para>
     /// </summary>
     public static IReadOnlyDictionary<string, string> PayloadColumnConstraints { get; } =
         new Dictionary<string, string>(StringComparer.Ordinal)
