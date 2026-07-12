@@ -1048,10 +1048,13 @@ WHERE server_id = $3";
         }
 
         /* AWS RDS gates — limited msdb permissions (syssessions not accessible) + restricted server DMVs.
-           job_history is NOT gated here: it reads only sysjobhistory/sysjobs/syscategories (never
-           syssessions), which RDS exposes, so retained job history collects on RDS just fine.
-           agent_status IS gated: sys.dm_server_services is not exposed on RDS (the Agent service is
-           AWS-managed there). */
+           The cross-host source of truth for these two is now the shared definition AppliesTo
+           (RunningJobsCollector / AgentStatusCollector both check !IsAwsRds), so Darling skips them too;
+           this block is Lite's earlier host-side short-circuit (same belt-and-suspenders as the Azure gate).
+           job_history is NOT gated: it reads only sysjobhistory/sysjobs/syscategories (never syssessions),
+           which RDS exposes, so retained job history collects on RDS just fine.
+           agent_status IS gated: sys.dm_server_services reads OS/service-control state RDS does not expose.
+           running_jobs IS gated: it joins msdb.dbo.syssessions, which RDS blocks even for the master login. */
         if (isAwsRds)
         {
             switch (collectorName)

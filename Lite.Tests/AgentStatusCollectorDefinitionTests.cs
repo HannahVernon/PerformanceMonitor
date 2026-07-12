@@ -64,9 +64,14 @@ public sealed class AgentStatusCollectorDefinitionTests
     }
 
     [Fact]
-    public void AppliesTo_CollectsEverywhereExceptAzureSqlDb()
+    public void AppliesTo_CollectsEverywhereExceptAzureSqlDbAndRds()
     {
+        /* Azure SQL DB has no Agent / no sys.dm_server_services; AWS RDS is a managed service that doesn't
+           expose the OS/service-control state sys.dm_server_services reads — skip both rather than return an
+           empty snapshot that would drive a false "Agent Not Running" alert. */
         Assert.False(AgentStatusCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureSqlDb = true }));
+        Assert.False(AgentStatusCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAwsRds = true }));
+        /* Managed Instance has Agent; on-prem collects too. */
         Assert.True(AgentStatusCollector.Instance.AppliesTo(new CollectorTargetInfo { IsAzureManagedInstance = true }));
         Assert.True(AgentStatusCollector.Instance.AppliesTo(new CollectorTargetInfo()));
     }

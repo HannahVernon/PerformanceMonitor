@@ -31,11 +31,11 @@ namespace PerformanceMonitor.Collectors;
 /// running-jobs AWS RDS gate); the MIN over enabled jobs' future runs is the fleet-relevant "next thing
 /// that will happen".</para>
 ///
-/// <para><b>Azure SQL Database (edition 5): does NOT apply</b> — no SQL Agent and no
-/// <c>sys.dm_server_services</c> there (<see cref="AppliesTo"/> = <c>!IsAzureSqlDb</c>, mirroring
-/// <see cref="RunningJobsCollector"/> / <see cref="JobHistoryCollector"/>). AWS RDS does not expose
-/// <c>sys.dm_server_services</c> either, so hosts gate it off there the same way they gate running_jobs
-/// (Lite's IsCollectorSupported); on-prem, Managed Instance collect normally.</para>
+/// <para><b>Azure SQL Database (edition 5) and AWS RDS: do NOT apply</b> — Azure SQL DB has no SQL Agent
+/// and no <c>sys.dm_server_services</c>; AWS RDS is a managed service that does not expose the OS/service-control
+/// state <c>sys.dm_server_services</c> reads. <see cref="AppliesTo"/> = <c>!IsAzureSqlDb &amp;&amp; !IsAwsRds</c>
+/// so both hosts skip identically (Lite also short-circuits earlier in IsCollectorSupported), mirroring
+/// <see cref="RunningJobsCollector"/>. On-prem and Managed Instance collect normally.</para>
 /// </summary>
 public sealed class AgentStatusCollector : CollectorDefinitionBase<AgentStatusCollector.Row>
 {
@@ -103,10 +103,13 @@ OPTION(RECOMPILE);";
 
     /// <summary>
     /// Collects on SQL Server and Azure SQL Managed Instance. NOT Azure SQL Database (edition 5): no Agent
-    /// and no sys.dm_server_services there. AWS RDS also lacks sys.dm_server_services and is gated host-side
-    /// (Lite's IsCollectorSupported), exactly like running_jobs.
+    /// and no sys.dm_server_services there. NOT AWS RDS either: sys.dm_server_services reads OS/service-control
+    /// state that RDS (a managed service with no OS access) does not expose, so the query returns nothing
+    /// useful and would drive a false "Agent Not Running" alert. Both are gated here in the shared AppliesTo so
+    /// Lite and Darling skip identically; Lite additionally short-circuits in its host-side IsCollectorSupported
+    /// (the same belt-and-suspenders it uses for the Azure gate).
     /// </summary>
-    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb && !target.IsAwsRds;
 
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 

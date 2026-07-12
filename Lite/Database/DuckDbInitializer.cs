@@ -126,6 +126,27 @@ public class DuckDbInitializer
         "collection_log"
     ];
 
+    /* Archive views for these tables must DEDUP the hot∪parquet union on a server-side natural key.
+       The 512MB emergency reset (ArchiveService.ArchiveAllAndResetAsync) archives all hot data to parquet
+       AND wipes collection_log, so the next cycle re-collects recent history into the hot store while the
+       parquet tier still holds it — the plain UNION ALL would then show each re-collected event twice.
+       The local surrogate prefix id (job_history_id / default_trace_event_id) is a per-process counter
+       (CollectionIdGenerator), so it is NOT stable across re-collection and cannot be the key — only the
+       SQL-Server-side identity is. Other archivable tables can't double up this way (normal archival keeps
+       hot and parquet disjoint, and their rows aren't re-collected after a reset), so they keep the plain
+       union. Value = the PARTITION BY column list for the QUALIFY ROW_NUMBER dedup. */
+    private static readonly IReadOnlyDictionary<string, string> ArchiveViewDedupKeys =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            /* sysjobhistory.instance_id: a unique monotonic IDENTITY per server that survives
+               sp_purge_jobhistory — JobHistoryCollector's exact-and-complete dedup watermark. */
+            ["job_history"] = "server_id, instance_id",
+            /* The default trace's EventSequence is unique within a trace; pairing it with event_time
+               (the StartTime watermark) keeps events distinct across the server restarts that reset
+               EventSequence, and groups identical re-collected rows (NULLs included) for dedup. */
+            ["default_trace_events"] = "server_id, event_time, event_sequence",
+        };
+
     /// <summary>
     /// Gets the connection string for the DuckDB database.
     /// - checkpoint_threshold=1GB: disables automatic WAL checkpoints to prevent
@@ -1145,6 +1166,22 @@ WHERE NOT EXISTS (
     AND   d.server_id  = p.server_id
     AND   d.metric_name = p.metric_name
 )";
+                    }
+                    else if (ArchiveViewDedupKeys.TryGetValue(table, out var dedupKey))
+                    {
+                        /* Dedup the hot∪parquet union on the server-side natural key so a logical event that was
+                           re-collected after the 512MB emergency reset (still present in parquet) appears exactly
+                           once. QUALIFY keeps the newest-collected copy — the re-collected hot row outranks its
+                           archived parquet twin (identical content either way). */
+                        viewSql = $@"CREATE OR REPLACE VIEW v_{table} AS
+SELECT *
+FROM
+(
+    SELECT * FROM {table}
+    UNION ALL BY NAME
+    SELECT * FROM read_parquet('{globPath}', union_by_name=true)
+)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY {dedupKey} ORDER BY collection_time DESC) = 1";
                     }
                     else
                     {

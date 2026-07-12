@@ -148,11 +148,13 @@ OPTION(RECOMPILE);";
     /// Azure SQL Database has no SQL Agent — <c>msdb.dbo.sysjobactivity</c> is unreachable there
     /// (the three-part msdb reference raises "not supported in this version of SQL Server"), so skip
     /// the collector rather than log a per-cycle ERROR. Managed Instance (edition 8) DOES have Agent,
-    /// so it collects there; RDS/on-prem collect too (a login lacking msdb rights surfaces as a soft
-    /// PERMISSIONS status, not a skip). Mirrors the failed-jobs alert path, which already skips Azure
-    /// SQL DB before querying msdb (AppliesTo = !IsAzureSqlDb).
+    /// so it collects there; on-prem collects too. AWS RDS is skipped: this query joins
+    /// <c>msdb.dbo.syssessions</c>, which RDS blocks with "SELECT permission was denied" even for the
+    /// master login (the table requires sysadmin, which RDS never grants), so it would ERROR every cycle.
+    /// Both gates live here in the shared AppliesTo so Lite and Darling skip identically (Lite also
+    /// short-circuits earlier in IsCollectorSupported); mirrors the failed-jobs alert path's Azure skip.
     /// </summary>
-    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb;
+    public override bool AppliesTo(CollectorTargetInfo target) => !target.IsAzureSqlDb && !target.IsAwsRds;
 
     public override CollectorQuery BuildQuery(CollectorContext context) => new(QueryText);
 
