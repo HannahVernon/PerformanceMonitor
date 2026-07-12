@@ -6,6 +6,10 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
 using PerformanceMonitor.Collectors;
 using Xunit;
 
@@ -26,6 +30,10 @@ namespace Lite.Tests;
 /// gate identically off ONE surface;</item>
 /// <item>the <see cref="CollectorTargetInfo.HasMsdbAccess"/> default (unknown ⇒ assume access) and the
 /// unknown-collector-name fall-through.</item>
+/// <item>(round 2, from the #1500 review) that every collector name Lite's <c>RunCollectorAsync</c> dispatch
+/// switch handles is a real <see cref="CollectorCatalog"/> name — because the pre-dispatch
+/// <see cref="CollectorCatalog.AppliesTo(string, CollectorTargetInfo)"/> returns true-on-miss for an unknown
+/// name, a switch string that drifted from its definition's <c>Name</c> would make the gate silently no-op.</item>
 /// </list>
 /// </summary>
 public sealed class CollectorGateSurfacePinTests
@@ -152,5 +160,74 @@ public sealed class CollectorGateSurfacePinTests
         Assert.True(RunningJobsCollector.Instance.AppliesTo(new CollectorTargetInfo()));
         Assert.True(JobHistoryCollector.Instance.AppliesTo(new CollectorTargetInfo()));
         Assert.True(AgentStatusCollector.Instance.AppliesTo(new CollectorTargetInfo()));
+    }
+
+    // ── PIN C (round 2, from the #1500 review): dispatch-name hardening ──────────────────────────────────
+    // The pins above prove Lite's by-name gate (CollectorCatalog.AppliesTo(name, target)) agrees with each
+    // definition's AppliesTo FOR CATALOG NAMES. They can't catch a switch string in RunCollectorAsync drifting
+    // from its definition's Name (a rename, a typo): the pre-dispatch AppliesTo(name) returns true-on-miss for
+    // the unknown string, so the gate silently no-ops and the collector runs where it should have been skipped.
+    // The dispatch string list has no canonical export, so it is scanned from RemoteCollectorService.cs source.
+
+    private const string RemoteCollectorServicePath = "Lite/Services/RemoteCollectorService.cs";
+
+    [Fact]
+    public void RunCollectorDispatchNames_AreAllRealCatalogCollectors()
+    {
+        var dispatchNames = ExtractRunCollectorDispatchNames();
+
+        /* Non-vacuous floor: the real switch has ~35 arms — a scan that found a handful is broken, not passing. */
+        Assert.True(dispatchNames.Count >= 30,
+            $"the RunCollectorAsync dispatch-switch scan found only {dispatchNames.Count} arms — the parse is likely broken");
+
+        var catalog = CollectorCatalog.All.Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
+        var orphans = FindOrphanDispatchNames(dispatchNames, catalog);
+
+        Assert.True(orphans.Count == 0,
+            "RunCollectorAsync dispatches collector name(s) absent from CollectorCatalog.All — " +
+            "CollectorCatalog.AppliesTo(name) returns true-on-miss for these, so their target gate silently " +
+            "no-ops (they run even where a definition's AppliesTo would skip them): " + string.Join(", ", orphans));
+    }
+
+    [Fact]
+    public void DispatchNameCatalogCheck_IsNonVacuous()
+    {
+        /* Prove the check has teeth so a future extraction/regex change can't make it vacuously green: a real
+           dispatch name yields no orphan, and a fake one that is NOT a catalog collector is flagged. */
+        var catalog = CollectorCatalog.All.Select(d => d.Name).ToHashSet(StringComparer.Ordinal);
+        Assert.Contains("wait_stats", catalog);   // sanity: the catalog side of the check is populated
+
+        var real = ExtractRunCollectorDispatchNames();
+        Assert.Empty(FindOrphanDispatchNames(real, catalog));
+
+        var withFake = real.Append("totally_not_a_real_collector").ToList();
+        Assert.Equal(new[] { "totally_not_a_real_collector" }, FindOrphanDispatchNames(withFake, catalog));
+    }
+
+    private static List<string> FindOrphanDispatchNames(IEnumerable<string> dispatchNames, ISet<string> catalogNames) =>
+        dispatchNames.Where(n => !catalogNames.Contains(n)).Distinct(StringComparer.Ordinal)
+            .OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+    /// <summary>
+    /// Scans the collector-name string literals from <c>RunCollectorAsync</c>'s dispatch switch expression in
+    /// <c>RemoteCollectorService.cs</c>: the region from <c>collectorName switch</c> to its <c>_ =&gt;</c>
+    /// default arm, matching each <c>"name" =&gt;</c> arm. The default arm (no quotes) and the two upstream
+    /// <c>collectorName == "…"</c> XE-ensure guards (before the switch) are excluded by construction.
+    /// </summary>
+    private static List<string> ExtractRunCollectorDispatchNames()
+    {
+        var src = ParitySource.ReadFile(RemoteCollectorServicePath);
+
+        var switchIdx = src.IndexOf("collectorName switch", StringComparison.Ordinal);
+        Assert.True(switchIdx > 0, "could not find the 'collectorName switch' dispatch in RemoteCollectorService.cs");
+
+        var defaultArmIdx = src.IndexOf("_ =>", switchIdx, StringComparison.Ordinal);
+        Assert.True(defaultArmIdx > switchIdx, "could not find the dispatch switch's default '_ =>' arm");
+
+        var switchBody = src.Substring(switchIdx, defaultArmIdx - switchIdx);
+
+        return Regex.Matches(switchBody, @"^\s*""([a-z0-9_]+)""\s*=>", RegexOptions.Multiline)
+            .Select(m => m.Groups[1].Value)
+            .ToList();
     }
 }
