@@ -20,9 +20,33 @@ namespace PerformanceMonitorInstaller
 {
     class Program
     {
+        /*
+        The unknown sentinel PARSES, so interpolating it printed "Existing installation detected: v0.0.0"
+        -- a guess stated as a fact, and one the same run then contradicts a few lines later with "this
+        server's recorded version could not be read". It is not a version; do not print it as one.
+        */
+        static string DescribeInstalledVersion(string? version) =>
+            RepairOutcome.IsVersionUnknown(version)
+                ? "Existing installation detected, but its recorded version could not be read."
+                : $"Existing installation detected: v{version}";
+
         static async Task<int> Main(string[] args)
         {
-            var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "Unknown";
+            /*
+            GetName().Version is never null for a loaded assembly, so the old "?? Unknown" could not fire:
+            a build with no AssemblyVersion reports 0.0.0.0, which PARSES -- InstallGuard waves it through,
+            and a fresh install writes it into installation_history as the version of record. It then reads
+            back as version 0.0.0, which is UnknownVersionSentinel, so every later run takes that server's
+            real version as unreadable and replays every migration. A version-less build must land on
+            something UNPARSEABLE so InstallGuard blocks it (UnreadableBuildVersion). Same hole, same fix,
+            as the Dashboard's GetAppVersion -- the two surfaces write to the same ledger.
+            */
+            var asmVersion = Assembly.GetExecutingAssembly().GetName().Version;
+            var version =
+                asmVersion != null && (asmVersion.Major | asmVersion.Minor | asmVersion.Build) != 0
+                    ? asmVersion.ToString()
+                    : "Unknown";
+
             var infoVersion = Assembly.GetExecutingAssembly()
                 .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? version;
 
@@ -834,14 +858,14 @@ namespace PerformanceMonitorInstaller
                     recovered without dropping the database. The pending upgrade runs afterwards.
                     */
                     Console.WriteLine();
-                    Console.WriteLine($"Existing installation detected: v{currentVersion}");
+                    Console.WriteLine(DescribeInstalledVersion(currentVersion));
                     Console.WriteLine("Repair mode: skipping upgrade scripts. Objects will be reinstalled at their");
                     Console.WriteLine("current definitions; the pending upgrade still needs to run afterwards.");
                 }
                 else if (currentVersion != null)
                 {
                     Console.WriteLine();
-                    Console.WriteLine($"Existing installation detected: v{currentVersion}");
+                    Console.WriteLine(DescribeInstalledVersion(currentVersion));
                     Console.WriteLine("Checking for applicable upgrades...");
 
                     var (upgSuccessCount, upgFailureCount, upgradeCount) =

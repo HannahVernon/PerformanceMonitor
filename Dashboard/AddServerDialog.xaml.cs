@@ -352,7 +352,8 @@ namespace PerformanceMonitorDashboard
             would then take that server's real version as "unknown" and replay every migration. So a
             version-less build must land on something UNPARSEABLE, which InstallGuard blocks
             (UnreadableBuildVersion). Checked here, not one branch later, because this branch is the one
-            that can produce it. Matches the CLI, which already falls back to "Unknown".
+            that can produce it. The CLI's Main has the identical guard, for the identical reason -- both
+            surfaces write to the same ledger, so the hole had to be closed on both.
             */
             if (version != null && (version.Major | version.Minor | version.Build) != 0)
             {
@@ -593,6 +594,52 @@ namespace PerformanceMonitorDashboard
         private void RecordVerdictFor(string serverName) => _verdictServerName = serverName.Trim();
 
         /*
+        The repair handoff's version claim, kept so the handoff can be RE-RENDERED rather than painted
+        once. Painting it once made withdrawing it one-way: a retarget correctly hid the claim and the
+        "Upgrade Now" button, but typing the server name back -- or typing one character and deleting it --
+        never brought them back, so the only button that applies the pending upgrade was gone for good
+        while the install log still said to click it. Repair writes no history row, so the upgrade was
+        still offered on the next dialog open; nothing on screen said so.
+        */
+        private string? _handoffStatusText;
+
+        /*
+        Idempotent, and safe to call on every keystroke. Withdraws the handoff when the box no longer names
+        the server the repair actually ran against, and restores it when it names it again -- in the same
+        words the verdict states use, because it is the same lie: what is on screen describes a different
+        server. The panel stays VISIBLE while withdrawn so the user is TOLD why the upgrade they were just
+        handed disappeared, instead of watching it vanish. MonitoringCredsPanel is a separate grid row and
+        is deliberately untouched: the SQL-auth user still needs it.
+        */
+        private void RenderRepairHandoff()
+        {
+            if (_handoffStatusText == null) return;
+
+            ConnectionInfoText.Text = $"Connected to {_verdictServerName}";
+            DatabaseStatusPanel.Visibility = Visibility.Visible;
+
+            /*
+            That Border also holds the "Skip, just add server" link, which would otherwise become clickable
+            for the first time in MonitoringCredentials -- an abandon-the-upgrade action sitting inches from
+            the Upgrade Now button we just put there.
+            */
+            SkipInstallText.Visibility = Visibility.Collapsed;
+
+            if (VerdictMatchesServerBox())
+            {
+                DatabaseStatusText.Text = _handoffStatusText;
+                InstallUpgradeButton.Content = "Upgrade Now";
+                InstallUpgradeButton.Visibility = Visibility.Visible;
+                return;
+            }
+
+            DatabaseStatusText.Text =
+                "The server name changed after this server's status was checked, so what is on screen may " +
+                "describe a different server.\n\nClick Test Connection to re-check the server now in the box.";
+            InstallUpgradeButton.Visibility = Visibility.Collapsed;
+        }
+
+        /*
         Editing the server name invalidates everything on screen: the verdict, the connection info, and any
         detection still in flight all describe the server that WAS in the box. Bumping the epoch makes an
         in-flight detection discard itself instead of publishing a verdict for the old server under the new
@@ -603,27 +650,32 @@ namespace PerformanceMonitorDashboard
         {
             if (InstallInProgress) return;
 
+            /*
+            Any detection in flight was probing the PREVIOUS name -- discard it. It painted "Checking
+            database status..." before it awaited, and its Superseded() early-outs return without clearing
+            that, so the label would sit there indefinitely announcing a check nobody is running any more.
+            */
             _detectEpoch++;
-
-            if (VerdictMatchesServerBox()) return;
-
-            if (IsServerVerdictState(_currentState))
-            {
-                /* Re-entering the state lets the stamp guard demote it. */
-                TransitionToState(_currentState);
-                return;
-            }
+            StatusText.Text = string.Empty;
+            StatusText.Visibility = Visibility.Collapsed;
 
             /*
             The repair handoff arms a live "Upgrade Now" and a version claim in InstallComplete /
-            MonitoringCredentials -- states that are NOT verdict states, so the guard above does not see
-            them. Both describe the server that was in the box. Withdraw them, or the screen keeps
-            asserting "still at v2.5.0 -- click Upgrade Now" under a name it was never read from.
+            MonitoringCredentials -- states that are NOT verdict states, so the guard below does not see
+            them. Re-rendered rather than hidden, because withdrawal has to be REVERSIBLE: typing one
+            character and deleting it must not permanently destroy the only button that applies the
+            pending upgrade.
             */
             if (_currentState is DialogState.InstallComplete or DialogState.MonitoringCredentials)
             {
-                DatabaseStatusPanel.Visibility = Visibility.Collapsed;
-                InstallUpgradeButton.Visibility = Visibility.Collapsed;
+                RenderRepairHandoff();
+                return;
+            }
+
+            if (IsServerVerdictState(_currentState) && !VerdictMatchesServerBox())
+            {
+                /* Re-entering the state lets the stamp guard demote it. */
+                TransitionToState(_currentState);
             }
         }
 
@@ -868,6 +920,20 @@ namespace PerformanceMonitorDashboard
         private void BlockInstall(string reason)
         {
             _installBlockedReason = reason;
+
+            /*
+            BlockInstall is also an exit from a RUN (InstallOrUpgrade_Click blocks on a failed re-read and
+            on an unsafe version), so it must clear the mode flags exactly as RestoreAfterInstall does --
+            a ticked "clean install" that survives a run is the bug that has reopened more times than any
+            other in this file, and it drops the database. Today it is unreachable through here only
+            because Connected_StatusUnknown happens to collapse the panel holding the checkboxes, so the
+            user cannot see or re-arm them. That is a rendering accident standing in for a consent check.
+            Clear them here and the guarantee no longer depends on which panels a state happens to hide.
+            */
+            CleanInstallCheckBox.IsChecked = false;
+            RepairCheckBox.IsChecked = false;
+            ResetScheduleCheckBox.IsChecked = false;
+
             TransitionToState(DialogState.Connected_StatusUnknown);
         }
 
@@ -975,11 +1041,23 @@ namespace PerformanceMonitorDashboard
             InstallUpgradeButton.Visibility = Visibility.Visible;
             SkipInstallText.Visibility = Visibility.Visible;
 
-            /* Build the connection header shown for all connected states */
-            string serverName = ServerNameTextBox.Text;
-            string connectionHeader = _serverVersion != null
-                ? $"Connected to {serverName} ({_serverVersion})"
-                : $"Connected to {serverName}";
+            /*
+            Built from the STAMPED server, never the live box, and only when the stamp still matches it.
+            Reading the box here rendered "Connected to S (Microsoft SQL Server 2019 ...)" mid-keystroke:
+            a connection that was never made, to a half-typed name, carrying the PREVIOUS server's engine
+            version. The three verdict states below reach this line only with a matching stamp (the guard
+            demotes them otherwise), but Connected_StatusUnknown is not a verdict state -- it is where a
+            demotion LANDS -- so it was never covered. Asserting "Connected to" a server we did not
+            connect to is the same lie the guard exists to stop; say nothing instead.
+            */
+            string connectionHeader = string.Empty;
+
+            if (VerdictMatchesServerBox())
+            {
+                connectionHeader = _serverVersion != null
+                    ? $"Connected to {_verdictServerName} ({_serverVersion})"
+                    : $"Connected to {_verdictServerName}";
+            }
 
             switch (newState)
             {
@@ -1370,7 +1448,16 @@ namespace PerformanceMonitorDashboard
                 }
                 else if (!cleanInstall && _installedVersion != null)
                 {
-                    AppendInstallLog($"Checking for upgrades from v{NormalizeVersion(_installedVersion)} to v{appVersion}...", "Info");
+                    /*
+                    The sentinel parses, so interpolating it logged "Checking for upgrades from v0.0.0" --
+                    stating the "I could not read this server's version" guess as a fact. Every other
+                    consumer in this file guards it with IsVersionUnknown; this line did not.
+                    */
+                    AppendInstallLog(
+                        RepairOutcome.IsVersionUnknown(_installedVersion)
+                            ? $"This server's recorded version could not be read. Attempting every upgrade up to v{appVersion}..."
+                            : $"Checking for upgrades from v{NormalizeVersion(_installedVersion)} to v{appVersion}...",
+                        "Info");
 
                     var upgradeResult = await InstallationService.ExecuteAllUpgradesAsync(
                         provider,
@@ -1649,24 +1736,13 @@ namespace PerformanceMonitorDashboard
                         (_currentState == DialogState.InstallComplete ||
                          _currentState == DialogState.MonitoringCredentials))
                     {
-                        /* The prologue blanks this, and neither completion state repopulates it. */
-                        ConnectionInfoText.Text = $"Connected to {ServerNameTextBox.Text}";
-                        DatabaseStatusText.Text = versionUnknown
+                        _handoffStatusText = versionUnknown
                             ? "Objects were reinstalled. This server's recorded version could not be read, so it is " +
                               "unknown which migrations have run. Click Upgrade Now to attempt every upgrade."
                             : $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion!)} " +
                               "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
-                        InstallUpgradeButton.Content = "Upgrade Now";
-                        InstallUpgradeButton.Visibility = Visibility.Visible;
-                        DatabaseStatusPanel.Visibility = Visibility.Visible;
-                        /*
-                        That Border also holds the "Skip, just add server" link, which would otherwise become
-                        clickable for the first time in MonitoringCredentials -- an abandon-the-upgrade action
-                        sitting inches from the Upgrade Now button we just put there. (Save_Click no longer
-                        keys on _currentState, so it can no longer swap the credentials; this is about not
-                        offering a foot-gun next to the handoff.)
-                        */
-                        SkipInstallText.Visibility = Visibility.Collapsed;
+
+                        RenderRepairHandoff();
                     }
                 });
             }
@@ -1818,21 +1894,40 @@ namespace PerformanceMonitorDashboard
         {
             if (!ValidateInputs()) return;
 
-            /* If we just finished installing, skip re-testing the connection */
-            bool skipConnectionTest = _currentState == DialogState.InstallComplete ||
-                                       _currentState == DialogState.MonitoringCredentials;
+            /*
+            "We just installed, so the connection is proven" is only true if the box still names the server
+            we installed to. Keyed on _currentState alone, retyping the box after an install skipped the
+            test entirely: the new name was persisted un-contacted, and under SQL auth the INSTALLER's
+            credentials -- routinely sa -- were saved as the ongoing monitoring account for a server nobody
+            had ever connected to. The stamp is what makes the claim true, so test the stamp.
+            */
+            bool skipConnectionTest =
+                (_currentState == DialogState.InstallComplete ||
+                 _currentState == DialogState.MonitoringCredentials) &&
+                VerdictMatchesServerBox();
 
             if (!skipConnectionTest)
             {
+                /*
+                An install can start AND FINISH while this connection test is in flight (InstallUpgradeButton
+                stays hit-testable -- SetFormEnabled does not touch it). InstallInProgress alone is the
+                half of that test that un-fires: it is only read when this continuation resumes, so a run
+                that completed in the meantime reads as "no install", and we fall through to DialogResult
+                and Close() -- destroying the dialog the instant the install lands, before the SQL-auth user
+                is ever shown the monitoring-credentials panel, and persisting the installer account in its
+                place. The epoch cannot un-fire; InstallOrUpgrade_Click bumps it on every start.
+
+                It also covers the retype: TextChanged bumps the epoch too, so a box edited while this test
+                was in flight abandons the save rather than persisting the new name on the strength of a
+                connection proven against the old one. Every bump has a visible cause on screen -- an
+                install panel, a re-detect, or the "server name changed" notice -- so the abandoned save is
+                never silent, and Save re-enables.
+                */
+                int epoch = _detectEpoch;
+
                 var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync(SaveButton);
 
-                /*
-                An install started while this connection test was in flight (InstallUpgradeButton stays
-                hit-testable -- SetFormEnabled does not touch it). Falling through would set DialogResult
-                and Close(), destroying the dialog while the install runs on against the database with no
-                UI and nothing left to cancel it.
-                */
-                if (InstallInProgress) return;
+                if (epoch != _detectEpoch || InstallInProgress) return;
 
                 if (!connected)
                 {
