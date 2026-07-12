@@ -444,6 +444,16 @@ namespace PerformanceMonitorDashboard
             triggerButton.IsEnabled = false;
             SaveButton.IsEnabled = false;
 
+            /*
+            StatusText may already be carrying something the user still needs -- most importantly the
+            "the server name changed, what is on screen may describe a different server" notice, which is
+            the ONLY thing on screen after a retarget withdraws the post-run panels. Blanking it in the
+            finally below left a dialog with no panels and no explanation whenever the test then failed.
+            Borrow it, and give it back.
+            */
+            string priorStatus = StatusText.Text;
+            var priorStatusVisibility = StatusText.Visibility;
+
             StatusText.Text = EntraMfaAuthRadio.IsChecked == true
                 ? "Testing connection — please complete authentication in the popup window..."
                 : "Testing connection...";
@@ -481,8 +491,10 @@ namespace PerformanceMonitorDashboard
                 {
                     triggerButton.IsEnabled = true;
                     SaveButton.IsEnabled = true;
-                    StatusText.Text = string.Empty;
-                    StatusText.Visibility = System.Windows.Visibility.Collapsed;
+
+                    /* Give back whatever we borrowed. On success the detection repaints over it anyway. */
+                    StatusText.Text = priorStatus;
+                    StatusText.Visibility = priorStatusVisibility;
                 }
             }
 
@@ -515,13 +527,18 @@ namespace PerformanceMonitorDashboard
         {
             if (!ValidateInputs()) return;
 
-            var (connected, errorMessage, mfaCancelled, serverVersion) = await RunConnectionTestAsync(TestConnectionButton);
+            var (connected, errorMessage, mfaCancelled, _) = await RunConnectionTestAsync(TestConnectionButton);
 
             if (connected)
             {
-                _serverVersion = serverVersion;
-
-                /* Show connection + database status inline instead of a popup */
+                /*
+                Deliberately does NOT write _serverVersion. It is one of the three facts that must only ever
+                be committed together, by PublishProbedServer -- and this write was the last place that set
+                one of them on its own, post-await, with no stamp beside it. The box is editable during that
+                await, so it could stamp the PREVIOUS server's engine version into place while the verdict
+                and the state still described someone else. DetectDatabaseStatusAsync re-probes and publishes
+                all three itself, which is where it belongs.
+                */
                 await DetectDatabaseStatusAsync();
             }
             else if (mfaCancelled)
@@ -602,6 +619,30 @@ namespace PerformanceMonitorDashboard
         private string? _verdictServerName;
 
         private void RecordVerdictFor(string serverName) => _verdictServerName = serverName.Trim();
+
+        /*
+        The probed server's three facts are committed TOGETHER, and only where a verdict about it is
+        actually published -- never in the prologue, and never before a guard that can still abandon the
+        publish.
+
+        They have to move as one because the stamp is what every consumer tests before rendering the other
+        two. Hoisting the stamp to the top of the probe (so that a BLOCK would be attributed) looked
+        harmless -- "re-stamped on the success path with the same value" -- but it is only re-stamped if
+        that path is REACHED. A detection superseded at the version read returned having already moved the
+        stamp and the engine version to the new server, while _installedVersion and _currentState still
+        described the old one. VerdictMatchesServerBox() then answered TRUE, so the guard did not merely
+        miss the lie, it AFFIRMED it: "PerformanceMonitor v3.1.0 is up to date", with Save enabled, over a
+        server that had no PerformanceMonitor database at all.
+
+        A half-replaced set of facts is the one thing the guard cannot catch. Stale-but-consistent it
+        catches every time.
+        */
+        private void PublishProbedServer(ServerInfo info, string serverVersion, string serverName)
+        {
+            _coreServerInfo = info;
+            _serverVersion = serverVersion;
+            RecordVerdictFor(serverName);
+        }
 
         /*
         The repair handoff's version claim, kept so the handoff can be RE-RENDERED rather than painted
@@ -830,11 +871,12 @@ namespace PerformanceMonitorDashboard
         private void RestoreAfterInstall(string message)
         {
             /*
-            Clear the destructive/mode flags HERE, because this is now the only exit path from a run.
-            Rerouting the cancel/fatal/abort handlers away from TransitionToState(Initial) left the
-            clearing that used to live in that case as dead code -- and re-enabled the form on top of a
-            still-ticked "Perform clean install (drops existing database)". Cancel a run, retype the
-            server box, click again, and it drops a database that never consented.
+            REDUNDANT, and deliberately kept. TransitionToState clears these on every non-Installing
+            transition, and every path out of here goes through it -- that choke point is the guarantee,
+            not this. An earlier comment here claimed this was "the only exit path from a run", which was
+            wrong twice over (BlockInstall and the stale-name demotion are exits too, and the demotion
+            never reaches either) and would have sent the next reader hunting the wrong mechanism on the
+            code path that runs DROP DATABASE. Belt and braces on that path is worth three lines.
             */
             RepairCheckBox.IsChecked = false;
             CleanInstallCheckBox.IsChecked = false;
@@ -913,47 +955,40 @@ namespace PerformanceMonitorDashboard
                 /* An install started, or a newer detection superseded us: publish nothing. */
                 if (Superseded()) return;
 
-                _coreServerInfo = probedServerInfo;
-
-                if (_coreServerInfo == null || !_coreServerInfo.IsConnected)
+                if (probedServerInfo == null || !probedServerInfo.IsConnected)
                 {
+                    /*
+                    Nothing was established, so publish nothing. The previous server's facts and its stamp
+                    stay together and stale -- which the guard catches -- rather than half-replaced, which
+                    is the one thing it cannot catch.
+                    */
                     StatusText.Text = string.Empty;
                     StatusText.Visibility = Visibility.Collapsed;
                     return;
                 }
 
-                /*
-                Refresh the header's version string with the rest of the connection facts. It was written
-                nowhere but Test Connection, so reaching this path by retyping the box and clicking Check
-                for Updates rendered the NEW server's name beside the OLD server's version -- "Connected to
-                SQL-B (SQL Server 2019)" for a 2022 box. Committed here, next to _coreServerInfo, so the
-                unsupported-version branch below reports the version it actually just read.
-                */
-                _serverVersion = _coreServerInfo.SqlServerVersion.Split('\n')[0].Trim();
+                string probedServerVersion = probedServerInfo.SqlServerVersion.Split('\n')[0].Trim();
 
-                /*
-                Stamp as soon as the connection facts land, not only on the success path below. Everything
-                from here on -- including the two BlockInstall branches -- is a statement ABOUT the server
-                we just probed, and the stamp is what lets the dialog notice when the box stops naming it.
-                Stamped only at the end, a block was an unattributed fact: retype past an unsupported 2014
-                instance to a 2022 one and the panel still read "SQL Server 2014 is not supported", with no
-                stamp to catch it. Re-stamped on the success path with the same value; harmless.
-                */
-                RecordVerdictFor(probedServerName);
-
-                if (!_coreServerInfo.IsSupportedVersion)
+                if (!probedServerInfo.IsSupportedVersion)
                 {
                     /*
+                    A publish: "SQL Server 2014 is not supported" is a fact ABOUT this server, so it is
+                    stamped with it -- otherwise retyping past an unsupported 2014 instance to a 2022 one
+                    left the panel still saying 2014, with no stamp for the guard to catch it on. Safe to
+                    commit here: no await stands between the guard above and this line, so the publish
+                    cannot be abandoned after the fields are written.
+
                     Routed through BlockInstall rather than hand-poked. Writing the panels directly here
                     bypassed the stale-verdict guard entirely and left _currentState pointing at whatever
                     the previous server's state was -- so an unsupported server could be described using
-                    the previous one's facts, under this one's name. BlockInstall hides the install button,
-                    re-enables the form and states the reason, which is all this branch ever wanted.
+                    the previous one's facts, under this one's name.
                     */
+                    PublishProbedServer(probedServerInfo, probedServerVersion, probedServerName);
+
                     StatusText.Text = string.Empty;
                     StatusText.Visibility = Visibility.Collapsed;
                     BlockInstall(
-                        $"{_coreServerInfo.ProductMajorVersionName} is not supported.\n\n" +
+                        $"{probedServerInfo.ProductMajorVersionName} is not supported.\n\n" +
                         "PerformanceMonitor requires SQL Server 2016 or later.");
                     return;
                 }
@@ -988,12 +1023,14 @@ namespace PerformanceMonitorDashboard
                     */
                     _installBlockedReason = null;
 
-                    /* Stamp with the server we ACTUALLY read, captured before the awaits. */
-                    RecordVerdictFor(probedServerName);
+                    PublishProbedServer(probedServerInfo, probedServerVersion, probedServerName);
                 }
                 catch (Exception ex)
                 {
                     if (Superseded()) return;
+
+                    /* A publish: the block names THIS server's failure, so it is stamped with it. */
+                    PublishProbedServer(probedServerInfo, probedServerVersion, probedServerName);
 
                     BlockInstall(
                         $"Could not determine the installed PerformanceMonitor version: {ex.Message}\n\n" +
@@ -1013,6 +1050,13 @@ namespace PerformanceMonitorDashboard
             }
             catch (Exception ex)
             {
+                /*
+                The one continuation in this method that was not guarded. A stale detection whose connection
+                test throws would paint its error over a running install's screen, or over a newer
+                detection's result -- reporting a failure against a server nobody is looking at any more.
+                */
+                if (Superseded()) return;
+
                 StatusText.Text = $"Could not check database status: {ex.Message}";
                 StatusText.Visibility = Visibility.Visible;
             }
