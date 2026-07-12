@@ -345,19 +345,21 @@ namespace PerformanceMonitorDashboard
             }
 
             var version = assembly.GetName().Version;
-            if (version != null)
+
+            /*
+            An assembly with no AssemblyVersion reports 0.0.0.0 -- which IS the unknown sentinel. Falling
+            through to it would write a parseable "0.0.0" into a server's ledger, and every later read
+            would then take that server's real version as "unknown" and replay every migration. So a
+            version-less build must land on something UNPARSEABLE, which InstallGuard blocks
+            (UnreadableBuildVersion). Checked here, not one branch later, because this branch is the one
+            that can produce it. Matches the CLI, which already falls back to "Unknown".
+            */
+            if (version != null && (version.Major | version.Minor | version.Build) != 0)
             {
                 /* Normalize 4-part to 3-part: "2.4.1.0" -> "2.4.1" */
                 return $"{version.Major}.{version.Minor}.{version.Build}";
             }
 
-            /*
-            Deliberately unparseable, and deliberately NOT the unknown sentinel. A build with no version
-            must be BLOCKED by InstallGuard (UnreadableBuildVersion), not quietly write a parseable
-            version into a server's ledger -- and if it wrote the sentinel, every later read would take
-            that server's real version as "unknown" and replay every migration. Matches the CLI, which
-            already falls back to "Unknown".
-            */
             return "Unknown";
         }
 
@@ -603,9 +605,25 @@ namespace PerformanceMonitorDashboard
 
             _detectEpoch++;
 
-            if (IsServerVerdictState(_currentState) && !VerdictMatchesServerBox())
+            if (VerdictMatchesServerBox()) return;
+
+            if (IsServerVerdictState(_currentState))
             {
+                /* Re-entering the state lets the stamp guard demote it. */
                 TransitionToState(_currentState);
+                return;
+            }
+
+            /*
+            The repair handoff arms a live "Upgrade Now" and a version claim in InstallComplete /
+            MonitoringCredentials -- states that are NOT verdict states, so the guard above does not see
+            them. Both describe the server that was in the box. Withdraw them, or the screen keeps
+            asserting "still at v2.5.0 -- click Upgrade Now" under a name it was never read from.
+            */
+            if (_currentState is DialogState.InstallComplete or DialogState.MonitoringCredentials)
+            {
+                DatabaseStatusPanel.Visibility = Visibility.Collapsed;
+                InstallUpgradeButton.Visibility = Visibility.Collapsed;
             }
         }
 
@@ -760,6 +778,15 @@ namespace PerformanceMonitorDashboard
                     return;
                 }
 
+                /*
+                Refresh the header's version string with the rest of the connection facts. It was written
+                nowhere but Test Connection, so reaching this path by retyping the box and clicking Check
+                for Updates rendered the NEW server's name beside the OLD server's version -- "Connected to
+                SQL-B (SQL Server 2019)" for a 2022 box. Committed here, next to _coreServerInfo, so the
+                unsupported-version branch below reports the version it actually just read.
+                */
+                _serverVersion = _coreServerInfo.SqlServerVersion.Split('\n')[0].Trim();
+
                 if (!_coreServerInfo.IsSupportedVersion)
                 {
                     /*
@@ -786,8 +813,6 @@ namespace PerformanceMonitorDashboard
                 stranding every pending hop permanently. The CLI passes throwOnError: true for
                 exactly this reason; the Dashboard's install path must too.
                 */
-                _installBlockedReason = null;
-
                 try
                 {
                     /* Local first, guard, then commit -- a running install reads _installedVersion. */
@@ -799,6 +824,16 @@ namespace PerformanceMonitorDashboard
                     if (Superseded()) return;
 
                     _installedVersion = probedVersion;
+
+                    /*
+                    Cleared HERE, not before the await. Clearing it in the prologue makes the clear
+                    unconditional while the publish it belongs to stays guarded: an install that blocked
+                    itself mid-flight (a cancel, a fatal) would be retroactively un-blocked by a detection
+                    that then declines to publish anything -- leaving a live button whose every click is a
+                    "Blocked" dialog. State that describes a verdict is committed with the verdict.
+                    */
+                    _installBlockedReason = null;
+
                     /* Stamp with the server we ACTUALLY read, captured before the awaits. */
                     RecordVerdictFor(probedServerName);
                 }
@@ -1099,6 +1134,16 @@ namespace PerformanceMonitorDashboard
             */
             /* Structural backstop: never start a second install over a running one. */
             if (InstallInProgress) return;
+
+            /*
+            Permanently supersede any detection still in flight. Superseded() also tests InstallInProgress,
+            but that is only read when the continuation RESUMES -- so a detection that spans the whole run
+            wakes up AFTER it, sees the install finished, and publishes its pre-install verdict over the
+            result: the "Upgrade Now" button returns on a server that was just upgraded, or comes back live
+            while _installBlockedReason is still set, so every click is a "Blocked" box. The epoch is the
+            only part of that test which cannot un-fire.
+            */
+            _detectEpoch++;
 
             if (_installBlockedReason != null)
             {
