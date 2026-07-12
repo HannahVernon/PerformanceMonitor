@@ -740,6 +740,25 @@ namespace PerformanceMonitorInstaller
                 failures, so nothing downstream catches it. Repair is no exception -- it runs the same
                 install scripts.
                 */
+                /*
+                Validate this binary's OWN version first. It is what a FRESH install writes to
+                installation_history.installer_version, so letting an unparseable one through poisons a
+                brand-new server's ledger at birth -- after which both this installer and the Dashboard
+                refuse to touch it ever again. The Dashboard blocks on this; the CLI used to skip it.
+                */
+                if (ScriptProvider.TryParseVersionCore(version) == null)
+                {
+                    Console.WriteLine();
+                    WriteError($"This installer reports its own version as '{version}', which is not a valid version.");
+                    Console.WriteLine("Aborting: a fresh install would record that value as the server's version.");
+                    Console.WriteLine("This is a build problem, not a problem with the server.");
+                    if (!automatedMode)
+                    {
+                        WaitForExit();
+                    }
+                    return (int)InstallationResultCode.VersionCheckFailed;
+                }
+
                 if (currentVersion != null)
                 {
                     var installedCore = ScriptProvider.TryParseVersionCore(currentVersion);
@@ -1076,16 +1095,14 @@ namespace PerformanceMonitorInstaller
             bool repairRan = repairMode && currentVersion != null;
 
             /*
-            Only a repair with a PENDING upgrade can legitimately fail install files. Without one there is
-            no migration-added column to be missing, so a failure is a REAL failure and must exit non-zero
-            -- otherwise a --repair against an up-to-date server reports SUCCESS with broken procedures and
-            blames a "pending upgrade" that does not exist. A critical file (01_/02_/03_) failing already
-            returned CriticalScriptFailed above, so it cannot reach here.
+            Shared with the Dashboard so the two cannot drift -- see RepairOutcome. A critical file
+            failing already returned CriticalScriptFailed above, so it cannot reach here; pass false.
             */
-            var repairedCore = ScriptProvider.TryParseVersionCore(currentVersion);
-            var targetCore = ScriptProvider.TryParseVersionCore(version);
-            bool repairHasPendingUpgrade =
-                repairRan && repairedCore != null && targetCore != null && repairedCore < targetCore;
+            bool repairHasPendingUpgrade = RepairOutcome.FailuresAreExpected(
+                repairRan,
+                currentVersion,
+                version,
+                criticalFileFailed: false);
 
             installationSuccessful = totalFailureCount == 0 || repairHasPendingUpgrade;
 

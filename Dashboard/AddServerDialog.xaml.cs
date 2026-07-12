@@ -539,6 +539,36 @@ namespace PerformanceMonitorDashboard
         */
         private bool InstallInProgress => _currentState == DialogState.Installing;
 
+        /* The state the install was launched from, so a cancel/failure can return to it. */
+        private DialogState _preInstallState = DialogState.Initial;
+
+        /*
+        Return to the state the install was launched from -- NOT Initial.
+
+        Initial does not reset InstallUpgradeButton.Content or DatabaseStatusText, and the exit paths
+        used to force-show InstallationPanel on top of it. Launched from Connected_Current that produced
+        a genuinely dangerous screen: the button still read "Repair", the text still read "is up to
+        date", and Advanced Options -- holding "Perform clean install (drops existing database)" -- was
+        now visible behind it. Ticking that and clicking [Repair] dropped the database. Connected_Current
+        keeps its options panel collapsed precisely so that cannot happen, so restoring it honestly is
+        the fix; there, the failure is surfaced in the status panel that IS visible.
+        */
+        private void RestoreAfterInstall(string message)
+        {
+            TransitionToState(_preInstallState);
+
+            if (_preInstallState == DialogState.Connected_Current)
+            {
+                DatabaseStatusText.Text = message;
+                return;
+            }
+
+            DatabaseStatusPanel.Visibility = Visibility.Visible;
+            InstallationPanel.Visibility = Visibility.Visible;
+            AdvancedOptionsExpander.IsEnabled = true;
+            InstallStatusText.Text = message;
+        }
+
         private async System.Threading.Tasks.Task DetectDatabaseStatusAsync()
         {
             if (InstallInProgress) return;
@@ -558,11 +588,18 @@ namespace PerformanceMonitorDashboard
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
 
-                /* Test connection via Installer.Core to get ServerInfo */
-                _coreServerInfo = await InstallationService.TestConnectionAsync(installerConnStr);
+                /*
+                Land in a LOCAL, guard, and only then commit to the shared field. An install may have
+                started while this was in flight (against a different server -- the box stays editable),
+                and it reads _coreServerInfo. Guarding after the field write would already have clobbered
+                it with the previous server's ServerInfo.
+                */
+                var probedServerInfo = await InstallationService.TestConnectionAsync(installerConnStr);
 
-                /* An install started while we were connecting: do not touch the UI it now owns. */
+                /* An install started while we were connecting: do not touch what it now owns. */
                 if (InstallInProgress) return;
+
+                _coreServerInfo = probedServerInfo;
 
                 if (_coreServerInfo == null || !_coreServerInfo.IsConnected)
                 {
@@ -599,12 +636,15 @@ namespace PerformanceMonitorDashboard
 
                 try
                 {
-                    _installedVersion = await InstallationService.GetInstalledVersionAsync(
+                    /* Local first, guard, then commit -- a running install reads _installedVersion. */
+                    var probedVersion = await InstallationService.GetInstalledVersionAsync(
                         installerConnStr,
                         throwOnError: true);
 
-                    /* An install started while we were probing: do not touch the UI it now owns. */
+                    /* An install started while we were probing: do not touch what it now owns. */
                     if (InstallInProgress) return;
+
+                    _installedVersion = probedVersion;
                 }
                 catch (Exception ex)
                 {
@@ -751,6 +791,8 @@ namespace PerformanceMonitorDashboard
                     InstallUpgradeButton.Content = "Install Now";
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     InstallationPanel.Visibility = Visibility.Visible;
+                    /* Reachable from Installing (the "nothing to repair" refusal), which disabled the form. */
+                    SetFormEnabled(true);
                     SaveButton.IsEnabled = false;
                     break;
 
@@ -892,6 +934,8 @@ namespace PerformanceMonitorDashboard
             Creating the CTS first also means Cancel and ESC work DURING the probe rather than no-oping
             on a null and letting the install continue after the dialog has closed.
             */
+            _preInstallState = _currentState;
+
             TransitionToState(DialogState.Installing);
             InstallLogTextBox.Clear();
             InstallProgressBar.Value = 0;
@@ -956,8 +1000,8 @@ namespace PerformanceMonitorDashboard
                     await Dispatcher.InvokeAsync(() =>
                     {
                         RepairCheckBox.IsChecked = false;
+                        InstallStatusText.Text = string.Empty;
                         TransitionToState(DialogState.Connected_NoDatabase);
-                        SetFormEnabled(true);
                         MessageBox.Show(
                             "There is no existing PerformanceMonitor installation on this server to repair.\n\n" +
                             "Repair reinstalls the objects of an existing installation; it will not create one. " +
@@ -1066,7 +1110,6 @@ namespace PerformanceMonitorDashboard
                         await Dispatcher.InvokeAsync(() =>
                         {
                             InstallProgressBar.Value = 0;
-                            InstallStatusText.Text = $"Upgrade aborted: {upgradeFailure} upgrade script(s) failed.";
                             AppendInstallLog(
                                 $"Installation aborted: {upgradeFailure} upgrade script(s) failed. Upgrade scripts must succeed before installation can proceed.",
                                 "Error");
@@ -1076,10 +1119,7 @@ namespace PerformanceMonitorDashboard
                             AppendInstallLog(
                                 "If the failure is a missing or damaged object, tick 'Repair' in Advanced Options to reinstall the schema objects without running migrations, then run the upgrade again.",
                                 "Info");
-                            TransitionToState(DialogState.Initial);
-                            DatabaseStatusPanel.Visibility = Visibility.Visible;
-                            InstallationPanel.Visibility = Visibility.Visible;
-                            AdvancedOptionsExpander.IsEnabled = true;
+                            RestoreAfterInstall($"Upgrade aborted: {upgradeFailure} upgrade script(s) failed.");
                         });
 
                         return;
@@ -1203,16 +1243,12 @@ namespace PerformanceMonitorDashboard
                 */
                 bool criticalFileFailed = _installResult.Errors.Any(e => Patterns.IsCriticalFile(e.FileName));
 
-                /*
-                Only a repair with a PENDING upgrade can legitimately fail install files. Without one there
-                is no migration-added column to be missing, so a failure is a REAL failure -- otherwise a
-                repair of an up-to-date server would report "expected errors" and hand off to an upgrade
-                that does not exist.
-                */
-                var repairedCore = ScriptProvider.TryParseVersionCore(repairFromVersion);
-                var targetCore = ScriptProvider.TryParseVersionCore(appVersion);
-                bool repairHasPendingUpgrade =
-                    isRepair && repairedCore != null && targetCore != null && repairedCore < targetCore;
+                /* Shared with the CLI so the two cannot drift -- see RepairOutcome. */
+                bool repairHasPendingUpgrade = RepairOutcome.FailuresAreExpected(
+                    isRepair,
+                    repairFromVersion,
+                    appVersion,
+                    criticalFileFailed);
 
                 bool repairUsable = isRepair && !criticalFileFailed &&
                     (_installResult.Success || repairHasPendingUpgrade);
@@ -1319,25 +1355,17 @@ namespace PerformanceMonitorDashboard
             {
                 Dispatcher.Invoke(() =>
                 {
-                    InstallStatusText.Text = "Installation cancelled.";
                     AppendInstallLog("Installation was cancelled by user.", "Warning");
                     InstallProgressBar.Value = 0;
-                    TransitionToState(DialogState.Initial);
-                    DatabaseStatusPanel.Visibility = Visibility.Visible;
-                    InstallationPanel.Visibility = Visibility.Visible;
-                    AdvancedOptionsExpander.IsEnabled = true;
+                    RestoreAfterInstall("Installation cancelled.");
                 });
             }
             catch (Exception ex)
             {
                 Dispatcher.Invoke(() =>
                 {
-                    InstallStatusText.Text = $"Installation failed: {ex.Message}";
                     AppendInstallLog($"Fatal error: {ex.Message}", "Error");
-                    TransitionToState(DialogState.Initial);
-                    DatabaseStatusPanel.Visibility = Visibility.Visible;
-                    InstallationPanel.Visibility = Visibility.Visible;
-                    AdvancedOptionsExpander.IsEnabled = true;
+                    RestoreAfterInstall($"Installation failed: {ex.Message}");
                 });
             }
             finally

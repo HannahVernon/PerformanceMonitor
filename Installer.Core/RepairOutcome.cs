@@ -1,0 +1,61 @@
+namespace Installer.Core;
+
+/// <summary>
+/// Decides whether a repair's failed install files are the EXPECTED kind.
+///
+/// A repair runs the install scripts without the migrations. Those scripts compile against the CURRENT
+/// schema, and <c>ALTER PROCEDURE</c> binds columns at compile time -- e.g.
+/// <c>install/23_process_blocked_process_xml.sql</c> reads
+/// <c>collect.blocking_BlockedProcessReport.monitor_loop</c>, a column the 3.0.0-to-3.1.0 migration adds.
+/// So on a database with a PENDING upgrade, some procedures simply cannot compile until it runs
+/// (Msg 207, "Invalid column name"). A failed <c>CREATE OR ALTER</c> leaves the old body intact, nothing
+/// is damaged, and the upgrade's own install pass recompiles them.
+///
+/// Both conditions matter, and getting either wrong is dangerous in a different direction:
+///
+/// <list type="bullet">
+/// <item>Treating those failures as a FAILURE sends the operator reaching for a destructive reinstall,
+/// and makes a %ERRORLEVEL% gate reject a good repair.</item>
+/// <item>Treating them as EXPECTED when there is NO pending upgrade reports SUCCESS over genuinely
+/// broken objects, and blames a migration that does not exist.</item>
+/// </list>
+///
+/// Shared so the Dashboard and the CLI cannot drift: this is the contract the CHANGELOG states.
+/// </summary>
+public static class RepairOutcome
+{
+    /// <summary>
+    /// True when a repair's install-file failures are the expected uncompilable-until-upgraded kind, and
+    /// the run should therefore be reported as a success with a "now run the upgrade" handoff.
+    /// </summary>
+    /// <param name="repairRan">A repair actually ran against an existing installation.</param>
+    /// <param name="installedVersion">The version recorded on the server.</param>
+    /// <param name="targetVersion">This binary's version.</param>
+    /// <param name="criticalFileFailed">
+    /// A critical file (01_/02_/03_) failed, which aborts the whole pass -- so the repair reinstalled
+    /// nothing and genuinely failed, whatever the version situation.
+    /// </param>
+    public static bool FailuresAreExpected(
+        bool repairRan,
+        string? installedVersion,
+        string? targetVersion,
+        bool criticalFileFailed)
+    {
+        if (!repairRan || criticalFileFailed)
+        {
+            return false;
+        }
+
+        var installed = ScriptProvider.TryParseVersionCore(installedVersion);
+        var target = ScriptProvider.TryParseVersionCore(targetVersion);
+
+        /* No comparable versions means no basis for the "expected" story. */
+        if (installed == null || target == null)
+        {
+            return false;
+        }
+
+        /* The expected failures only exist when there is a migration still to run. */
+        return installed < target;
+    }
+}

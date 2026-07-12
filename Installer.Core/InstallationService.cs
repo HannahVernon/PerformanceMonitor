@@ -960,7 +960,47 @@ END;";
             var tableExists = await tableCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             if (tableExists == null || tableExists == DBNull.Value)
             {
-                LogDebug(progress, "GetInstalledVersionAsync: installation_history table does not exist → old or corrupted install");
+                /*
+                The database exists but has no history table. That is TWO very different situations, and
+                answering null for both is a stranding bug:
+
+                  - An empty database someone pre-created for us (common, to control the file paths).
+                    Nothing is installed, migrations would fail against tables that do not exist, and
+                    null -> "fresh install" is exactly right.
+
+                  - A PerformanceMonitor database whose ledger was lost -- an ancient pre-history install,
+                    or someone dropped config.installation_history. Here null reads as "fresh install":
+                    the install scripts run over the LIVE schema, FilterUpgrades(null, ...) offers zero
+                    hops so every migration is skipped, and the target version is then stamped SUCCESS.
+                    Version detection reads that back and never offers those hops again -- permanently
+                    stranded, which is the precise bug this whole path exists to prevent.
+
+                Tell them apart by whether the database actually holds collect objects. For the damaged
+                case fall back to the same "1.0.0" sentinel the #538 guard below uses -- "unknown, attempt
+                every upgrade" -- which is the safe direction: the upgrade scripts are all IF NOT EXISTS
+                guarded, so replaying them no-ops where already applied and lands the schema where it belongs.
+                */
+                using var collectCheckCmd = new SqlCommand(@"
+                    SELECT
+                        COUNT_BIG(*)
+                    FROM PerformanceMonitor.sys.tables AS t
+                    JOIN PerformanceMonitor.sys.schemas AS s
+                      ON s.schema_id = t.schema_id
+                    WHERE s.name = N'collect';", connection);
+
+                var collectTables = await collectCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                long collectCount =
+                    collectTables == null || collectTables == DBNull.Value
+                        ? 0L
+                        : Convert.ToInt64(collectTables);
+
+                if (collectCount > 0)
+                {
+                    LogDebug(progress, $"GetInstalledVersionAsync: installation_history missing but {collectCount} collect table(s) present → damaged install, fallback to 1.0.0 (#538 guard)");
+                    return "1.0.0";
+                }
+
+                LogDebug(progress, "GetInstalledVersionAsync: database exists but holds no collect objects → clean install");
                 return null;
             }
 
