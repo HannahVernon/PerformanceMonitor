@@ -770,7 +770,7 @@ public partial class MainWindow : Window
             return existing.Content as ViewerServerTab;
         }
 
-        var serverTab = new ViewerServerTab(_dataService, server, _preferences);
+        var serverTab = new ViewerServerTab(_dataService, server, _preferences, _serverStore);
         serverTab.StatusChanged += OnServerTabStatusChanged;
         serverTab.ApplyTimeRangeRequested += OnApplyTimeRangeToAllRequested;
         serverTab.DisplayModeChanged += OnDisplayModeChanged;

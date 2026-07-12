@@ -31,7 +31,7 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetTopQueriesByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
+            var rows = await dataService.GetTopQueriesByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseNames: string.IsNullOrEmpty(database_name) ? null : new[] { database_name });
             if (rows.Count == 0)
             {
                 return McpHelpers.Status("unavailable", "No query stats available for the specified time range.");
@@ -102,7 +102,7 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetTopProceduresByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
+            var rows = await dataService.GetTopProceduresByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseNames: string.IsNullOrEmpty(database_name) ? null : new[] { database_name });
             if (rows.Count == 0)
             {
                 return McpHelpers.Status(
@@ -166,7 +166,7 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetQueryStoreTopQueriesAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
+            var rows = await dataService.GetQueryStoreTopQueriesAsync(resolved.Value.ServerId, hours_back, top, databaseNames: string.IsNullOrEmpty(database_name) ? null : new[] { database_name });
             if (rows.Count == 0)
             {
                 return McpHelpers.Status("unavailable", "No Query Store data available. Query Store may not be enabled on target databases.");

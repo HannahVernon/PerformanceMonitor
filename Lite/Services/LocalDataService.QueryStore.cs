@@ -24,11 +24,12 @@ public partial class LocalDataService
     /// Shows top queries by total duration (execution_count * avg_duration).
     /// </summary>
     public async Task<List<TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
-        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -42,13 +43,15 @@ SELECT
 FROM v_query_store_stats
 WHERE server_id = $1
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 GROUP BY date_trunc('hour', collection_time)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
@@ -69,13 +72,14 @@ ORDER BY bucket";
         return items;
     }
 
-    public async Task<List<QueryStoreRow>> GetQueryStoreTopQueriesAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, string? databaseName = null)
+    public async Task<List<QueryStoreRow>> GetQueryStoreTopQueriesAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetQueryStoreTopQueriesAsync", "v_query_store_stats top N");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 5, out var dbValues);
 
         command.CommandText = @"
 WITH ranked AS (
@@ -134,8 +138,7 @@ WITH ranked AS (
     FROM v_query_store_stats
     WHERE server_id = $1
     AND   collection_time >= $2
-    AND   collection_time <= $3
-    AND   ($5 IS NULL OR database_name = $5)
+    AND   collection_time <= $3" + dbClause + @"
     GROUP BY database_name, query_id, plan_id, query_hash
     ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS DOUBLE PRECISION)) DESC
     LIMIT $4 + 5
@@ -213,7 +216,8 @@ LIMIT $4";
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = top });
-        command.Parameters.Add(new DuckDBParameter { Value = (object?)databaseName ?? DBNull.Value });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryStoreRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -287,18 +291,20 @@ LIMIT $4";
     public async Task<List<QueryStatsComparisonItem>> GetQueryStoreComparisonAsync(
         int serverId,
         DateTime currentStart, DateTime currentEnd,
-        DateTime baselineStart, DateTime baselineEnd)
+        DateTime baselineStart, DateTime baselineEnd,
+        IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetQueryStoreComparisonAsync", "v_query_store_stats comparison");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 6, out var dbValues);
 
         command.CommandText = @"
 WITH top_current AS (
     SELECT database_name, query_hash
     FROM v_query_store_stats
     WHERE server_id = $1
-    AND   collection_time >= $2 AND collection_time <= $3
+    AND   collection_time >= $2 AND collection_time <= $3" + dbClause + @"
     AND   execution_count > 0
     GROUP BY database_name, query_hash
     ORDER BY SUM(execution_count) DESC
@@ -308,7 +314,7 @@ top_baseline AS (
     SELECT database_name, query_hash
     FROM v_query_store_stats
     WHERE server_id = $1
-    AND   collection_time >= $4 AND collection_time <= $5
+    AND   collection_time >= $4 AND collection_time <= $5" + dbClause + @"
     AND   execution_count > 0
     GROUP BY database_name, query_hash
     ORDER BY SUM(execution_count) DESC
@@ -372,6 +378,8 @@ FULL OUTER JOIN baseline_period b
         command.Parameters.Add(new DuckDBParameter { Value = currentEnd });
         command.Parameters.Add(new DuckDBParameter { Value = baselineStart });
         command.Parameters.Add(new DuckDBParameter { Value = baselineEnd });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryStatsComparisonItem>();
         using var reader = await command.ExecuteReaderAsync();
@@ -579,12 +587,13 @@ OPTION(RECOMPILE);',
     /// <summary>
     /// Gets Query Store duration trend — SUM(execution_count * avg_duration) per collection snapshot.
     /// </summary>
-    public async Task<List<QueryTrendPoint>> GetQueryStoreDurationTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<QueryTrendPoint>> GetQueryStoreDurationTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 WITH raw AS
@@ -597,7 +606,7 @@ WITH raw AS
     FROM v_query_store_stats
     WHERE server_id = $1
     AND   collection_time >= $2
-    AND   collection_time <= $3
+    AND   collection_time <= $3" + dbClause + @"
     GROUP BY collection_time
 )
 SELECT
@@ -610,6 +619,8 @@ ORDER BY collection_time";
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryTrendPoint>();
         using var reader = await command.ExecuteReaderAsync();

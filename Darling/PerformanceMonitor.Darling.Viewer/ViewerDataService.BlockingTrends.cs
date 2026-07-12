@@ -56,12 +56,14 @@ public sealed partial class ViewerDataService
             SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
             FROM v_blocked_process_reports
             WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY DATE_TRUNC('minute', event_time)
         ),
         dmv AS (
             SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
             FROM v_dmv_blocking_snapshots
             WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+            AND   ($4::text[] IS NULL OR database_name = ANY($4))
             GROUP BY DATE_TRUNC('minute', event_time)
         )
         SELECT bucket, incident_count FROM bpr
@@ -161,6 +163,7 @@ public sealed partial class ViewerDataService
         AND   blocking_session_id > 0
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         AND   database_name IS NOT NULL
         GROUP BY
             collection_time,
@@ -172,20 +175,23 @@ public sealed partial class ViewerDataService
 
     /// <summary>Blocking-incident-per-minute buckets for one server over the window (Blocking Trends).</summary>
     public async Task<List<BlockingTrendPoint>> GetBlockingTrendAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => await ReadCountTrendAsync(BlockingTrendSql, serverId, startUtc, endUtc, cancellationToken);
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
+        => await ReadCountTrendAsync(BlockingTrendSql, serverId, startUtc, endUtc, applyDatabaseFilter: true, databaseNames: databaseNames, cancellationToken: cancellationToken);
 
     /// <summary>Deadlock-per-minute buckets for one server over the window (Blocking Trends).</summary>
     public async Task<List<BlockingTrendPoint>> GetDeadlockTrendAsync(
         int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => await ReadCountTrendAsync(DeadlockTrendSql, serverId, startUtc, endUtc, cancellationToken);
+        => await ReadCountTrendAsync(DeadlockTrendSql, serverId, startUtc, endUtc, cancellationToken: cancellationToken);
 
     /// <summary>
     /// The blocking and deadlock trends share a (bucket timestamp, COUNT(*)) shape, so one reader maps
     /// both. COUNT(*) is bigint in Postgres, read via GetInt64 and narrowed to the record's int.
+    /// The blocking trend applies the #1319 database filter (both CTEs carry database_name); the deadlock
+    /// trend is server-global (v_deadlocks has no database_name column), so it leaves the filter off.
     /// </summary>
     private async Task<List<BlockingTrendPoint>> ReadCountTrendAsync(
-        string sql, int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+        string sql, int serverId, DateTime startUtc, DateTime endUtc,
+        bool applyDatabaseFilter = false, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<BlockingTrendPoint>();
 
@@ -199,6 +205,8 @@ public sealed partial class ViewerDataService
         {
             TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified),
         });
+        if (applyDatabaseFilter)
+            command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -268,7 +276,7 @@ public sealed partial class ViewerDataService
 
     /// <summary>Blocked-session count by database for one server over the window (Current Waits).</summary>
     public async Task<List<BlockedSessionTrendPoint>> GetBlockedSessionTrendAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<BlockedSessionTrendPoint>();
 
@@ -282,6 +290,7 @@ public sealed partial class ViewerDataService
         {
             TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified),
         });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

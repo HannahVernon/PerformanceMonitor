@@ -52,6 +52,12 @@ public partial class ServerTab : UserControl
     private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
     private List<SelectableItem> _waitTypeItems = new();
     private List<SelectableItem> _perfmonCounterItems = new();
+    /* #1319: per-server global database filter (display-only). Empty set = "All" (unfiltered). */
+    private readonly HashSet<string> _selectedDatabases = new(StringComparer.OrdinalIgnoreCase);
+    private List<SelectableItem> _databaseFilterItems = new();
+    private bool _isUpdatingDatabaseFilterSelection;
+    /// <summary>The database filter as a reader argument: null (= All, unfiltered) when nothing is selected.</summary>
+    private IReadOnlyList<string>? SelectedDatabaseFilter => _selectedDatabases.Count == 0 ? null : _selectedDatabases.ToList();
     private ChartHoverHelper? _waitStatsHover;
     private ChartHoverHelper? _perfmonHover;
     private ChartHoverHelper? _cpuHover;
@@ -117,6 +123,7 @@ public partial class ServerTab : UserControl
     public event Action<int, int, DateTime?>? AlertCountsChanged; /* blockingCount, deadlockCount, latestEventTimeUtc */
     public event Action<int>? ApplyTimeRangeRequested; /* selectedIndex */
     public event Func<Task>? ManualRefreshRequested;
+    public event Action<ServerConnection>? PersistServerRequested; /* #1319: persist ViewFilterDatabases via ServerManager */
 
     public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
     {
@@ -124,6 +131,8 @@ public partial class ServerTab : UserControl
         SetupBarCellMaxes();
 
         _server = server;
+        foreach (var db in _server.ViewFilterDatabases)
+            _selectedDatabases.Add(db);
         _dataService = new LocalDataService(duckDb);
         _serverId = RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(server));
         _credentialResolver = credentialResolver;
