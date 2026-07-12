@@ -40,12 +40,14 @@ namespace PerformanceMonitorDashboard
         }
 
         /*
-        Set when version discovery failed outright (as opposed to finding no database). Installing
-        in that state would reinstall over an existing database with its migrations skipped, and
-        then stamp it SUCCESS at the target version -- the #538 hazard. Guards the install path
-        structurally rather than relying on the button being hidden.
+        Non-null when installing would be unsafe, and why. Three cases, all of which would otherwise
+        reinstall over a database whose real state we do not know:
+          - discovery threw (a transient error is indistinguishable from "no database"),
+          - the installed version is NEWER than this Dashboard (installing would downgrade it),
+          - the installed version will not parse at all.
+        Guards the install path structurally rather than relying on the button being hidden.
         */
-        private bool _databaseStatusUnknown;
+        private string? _installBlockedReason;
 
         public ServerConnection ServerConnection { get; private set; }
         public string? Username { get; private set; }
@@ -343,12 +345,30 @@ namespace PerformanceMonitorDashboard
         /// <summary>
         /// Normalize a version string to 3-part for comparison (e.g., "2.4.1.0" -> "2.4.1").
         /// </summary>
+        /*
+        Reduce a version to its three-part numeric core, stripping any SemVer build (+sha) or
+        pre-release (-rc1) suffix. Without the strip, a "3.2.0-rc1" InformationalVersion fails to
+        parse, and the install/upgrade routing below then treats EVERY server as up to date. The
+        Build clamp matters for the same reason: TryParse("3.1") succeeds with Build == -1, which
+        would otherwise format as "3.1.-1" and fail to re-parse. Matches ScriptProvider.ParseVersionCore.
+        */
         private static string NormalizeVersion(string version)
         {
-            if (Version.TryParse(version, out var parsed))
+            string core = version.Trim();
+
+            int plus = core.IndexOf('+', StringComparison.Ordinal);
+            if (plus >= 0)
+                core = core[..plus];
+
+            int dash = core.IndexOf('-', StringComparison.Ordinal);
+            if (dash >= 0)
+                core = core[..dash];
+
+            if (Version.TryParse(core, out var parsed))
             {
-                return $"{parsed.Major}.{parsed.Minor}.{parsed.Build}";
+                return $"{parsed.Major}.{parsed.Minor}.{Math.Max(parsed.Build, 0)}";
             }
+
             return version;
         }
 
@@ -514,6 +534,13 @@ namespace PerformanceMonitorDashboard
                 StatusText.Text = "Checking database status...";
                 StatusText.Visibility = Visibility.Visible;
 
+                /*
+                A fresh detection means a fresh server/state, so the destructive and mode-changing
+                options start clear. Without this they persist across a retarget of the server box.
+                */
+                RepairCheckBox.IsChecked = false;
+                CleanInstallCheckBox.IsChecked = false;
+
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
 
@@ -551,49 +578,62 @@ namespace PerformanceMonitorDashboard
                 stranding every pending hop permanently. The CLI passes throwOnError: true for
                 exactly this reason; the Dashboard's install path must too.
                 */
+                _installBlockedReason = null;
+
                 try
                 {
                     _installedVersion = await InstallationService.GetInstalledVersionAsync(
                         installerConnStr,
                         throwOnError: true);
-                    _databaseStatusUnknown = false;
                 }
                 catch (Exception ex)
                 {
-                    _databaseStatusUnknown = true;
-                    TransitionToState(DialogState.Connected_StatusUnknown);
-                    DatabaseStatusText.Text =
+                    BlockInstall(
                         $"Could not determine the installed PerformanceMonitor version: {ex.Message}\n\n" +
                         "Install and upgrade are blocked until this resolves. Proceeding could reinstall over an " +
-                        "existing database, skip its pending migrations, and record it as up to date.";
+                        "existing database, skip its pending migrations, and record it as up to date.");
                     return;
                 }
 
                 if (_installedVersion == null)
                 {
                     TransitionToState(DialogState.Connected_NoDatabase);
+                    return;
+                }
+
+                string normalizedInstalled = NormalizeVersion(_installedVersion);
+                string normalizedApp = NormalizeVersion(appVersion);
+
+                if (!Version.TryParse(normalizedInstalled, out var installedVer) ||
+                    !Version.TryParse(normalizedApp, out var appVer))
+                {
+                    /* If the two versions cannot be compared, we cannot know which migrations apply. */
+                    BlockInstall(
+                        $"Could not interpret the installed PerformanceMonitor version ('{_installedVersion}').\n\n" +
+                        "Install and upgrade are blocked: without a comparable version we cannot tell which " +
+                        "migrations still need to run.");
+                }
+                else if (installedVer < appVer)
+                {
+                    TransitionToState(DialogState.Connected_NeedsUpgrade);
+                }
+                else if (installedVer > appVer)
+                {
+                    /*
+                    The server is on a NEWER build than this Dashboard. Installing would run the older
+                    binary's scripts over a newer schema -- every CREATE OR ALTER proc and view reverts
+                    to its older body -- and then record the LOWER version as SUCCESS. A silent
+                    downgrade. Block it; the fix is to update this Dashboard.
+                    */
+                    BlockInstall(
+                        $"PerformanceMonitor v{normalizedInstalled} is installed, which is newer than this " +
+                        $"Dashboard (v{normalizedApp}).\n\n" +
+                        "Install and repair are blocked: running the older installer would revert this server's " +
+                        "objects to the older definitions and record it at the lower version. Update this Dashboard first.");
                 }
                 else
                 {
-                    string normalizedInstalled = NormalizeVersion(_installedVersion);
-                    string normalizedApp = NormalizeVersion(appVersion);
-
-                    if (Version.TryParse(normalizedInstalled, out var installedVer) &&
-                        Version.TryParse(normalizedApp, out var appVer))
-                    {
-                        if (installedVer < appVer)
-                        {
-                            TransitionToState(DialogState.Connected_NeedsUpgrade);
-                        }
-                        else
-                        {
-                            TransitionToState(DialogState.Connected_Current);
-                        }
-                    }
-                    else
-                    {
-                        TransitionToState(DialogState.Connected_Current);
-                    }
+                    TransitionToState(DialogState.Connected_Current);
                 }
             }
             catch (Exception ex)
@@ -601,6 +641,13 @@ namespace PerformanceMonitorDashboard
                 StatusText.Text = $"Could not check database status: {ex.Message}";
                 StatusText.Visibility = Visibility.Visible;
             }
+        }
+
+        /* Record why installing is unsafe and drop into the state that hides the install button. */
+        private void BlockInstall(string reason)
+        {
+            _installBlockedReason = reason;
+            TransitionToState(DialogState.Connected_StatusUnknown);
         }
 
         private void TransitionToState(DialogState newState)
@@ -613,6 +660,13 @@ namespace PerformanceMonitorDashboard
             InstallationPanel.Visibility = Visibility.Collapsed;
             MonitoringCredsPanel.Visibility = Visibility.Collapsed;
             ViewReportButton.Visibility = Visibility.Collapsed;
+            /*
+            Unfreeze Advanced Options. The install states below re-disable it immediately, but without
+            this it was only ever re-enabled on the abort/cancel/fatal paths -- so after a completed
+            install it stayed disabled for the rest of the dialog's life, stranding whatever mode
+            checkboxes were ticked inside it with no way to untick them.
+            */
+            AdvancedOptionsExpander.IsEnabled = true;
             StatusText.Text = string.Empty;
             StatusText.Visibility = Visibility.Collapsed;
             ConnectionInfoText.Text = string.Empty;
@@ -655,21 +709,23 @@ namespace PerformanceMonitorDashboard
                         "If objects are missing or damaged, click Repair to reinstall them.";
                     /*
                     Repair stays reachable at the current version: the install scripts are idempotent,
-                    so re-running them restores missing objects. There are no migrations to skip here
-                    (current == target), so this is a plain reinstall at the same version. The CLI can
-                    already do this with --repair; without it the Dashboard had no non-destructive
-                    recovery for a healthy-version-but-damaged database.
+                    so re-running them restores missing objects. This state now means installed ==
+                    target exactly, so there are no migrations to skip and this is a plain reinstall at
+                    the same version. The CLI can already do this with --repair; without it the
+                    Dashboard had no non-destructive recovery for a healthy-version-but-damaged database.
+
+                    InstallationPanel stays collapsed on purpose: it holds the "drops existing database"
+                    clean-install checkbox, which must never sit behind a button labelled Repair.
                     */
                     InstallUpgradeButton.Content = "Repair";
-                    InstallationPanel.Visibility = Visibility.Visible;
                     SkipInstallText.Visibility = Visibility.Collapsed;
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     SaveButton.IsEnabled = true;
                     break;
 
                 case DialogState.Connected_StatusUnknown:
-                    /* DatabaseStatusText is set by the caller: it carries the underlying error. */
                     ConnectionInfoText.Text = connectionHeader;
+                    DatabaseStatusText.Text = _installBlockedReason ?? "The database status could not be determined.";
                     InstallUpgradeButton.Visibility = Visibility.Collapsed;
                     SkipInstallText.Visibility = Visibility.Collapsed;
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
@@ -686,6 +742,14 @@ namespace PerformanceMonitorDashboard
 
                 case DialogState.InstallComplete:
                     InstallationPanel.Visibility = Visibility.Visible;
+                    /*
+                    Clear both mode checkboxes once a run completes, on EVERY outcome. They are sticky
+                    otherwise: the form is re-enabled here, so the user can retype the server box and
+                    click again -- carrying "Repair" (skip every migration) or, worse, "Clean install"
+                    (drop the database) onto a server that was never consented to.
+                    */
+                    RepairCheckBox.IsChecked = false;
+                    CleanInstallCheckBox.IsChecked = false;
                     AdvancedOptionsExpander.IsEnabled = false;
                     CancelInstallButton.IsEnabled = false;
                     SetFormEnabled(true);
@@ -729,16 +793,37 @@ namespace PerformanceMonitorDashboard
         private async void InstallOrUpgrade_Click(object sender, RoutedEventArgs e)
         {
             /*
-            Never install when discovery failed: we cannot tell an absent database from an existing
-            one we simply could not read, and guessing "absent" reinstalls over it with the
-            migrations skipped and then records it as up to date.
+            Never install when the detected state said it is unsafe: we cannot tell an absent database
+            from an existing one we simply could not read, and guessing "absent" reinstalls over it with
+            the migrations skipped and then records it as up to date.
             */
-            if (_databaseStatusUnknown)
+            if (_installBlockedReason != null)
+            {
+                MessageBox.Show(_installBlockedReason, "Install Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            /*
+            Re-read the installed version against the connection we are about to WRITE to. The cached
+            _installedVersion comes from the last Test Connection, but the server box stays editable and
+            BuildInstallerConnectionString() rebuilds the connection string live -- so retyping the box
+            and clicking straight through would install into a different server while still reasoning
+            about the previous one's version. Since the cached version is what suppresses hops, that
+            would run zero migrations and then stamp SUCCESS at the wrong version, stranding the real
+            server's upgrades. Fail loudly here for the same reason discovery does.
+            */
+            try
+            {
+                _installedVersion = await InstallationService.GetInstalledVersionAsync(
+                    BuildInstallerConnectionString(),
+                    throwOnError: true);
+            }
+            catch (Exception ex)
             {
                 MessageBox.Show(
-                    "The installed PerformanceMonitor version could not be determined, so installing " +
-                    "could reinstall over an existing database and skip its pending migrations.\n\n" +
-                    "Resolve the connection or permissions problem and reopen this dialog.",
+                    $"Could not determine the installed PerformanceMonitor version on this server: {ex.Message}\n\n" +
+                    "Install and upgrade are blocked: proceeding could reinstall over an existing database " +
+                    "and skip its pending migrations.",
                     "Database Status Unknown",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -969,14 +1054,7 @@ namespace PerformanceMonitorDashboard
                     InstallProgressBar.Value = 100;
                     if (_installResult.Success && repairFromVersion != null)
                     {
-                        /*
-                        Clear Repair before landing in InstallComplete, which disables the expander the
-                        checkbox lives in. Leaving it ticked would trap the user: the next click on
-                        "Upgrade Now" would repair again, and they could not untick it without
-                        reopening the dialog.
-                        */
-                        RepairCheckBox.IsChecked = false;
-
+                        /* InstallComplete clears the Repair checkbox on every outcome, so the next click upgrades. */
                         InstallStatusText.Text = "Repair completed. Run the upgrade to apply pending migrations.";
                         AppendInstallLog(
                             $"Repair completed successfully. The server is still at v{NormalizeVersion(repairFromVersion)} -- click Upgrade Now to apply the pending migrations.",
