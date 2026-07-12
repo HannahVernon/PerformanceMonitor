@@ -490,6 +490,8 @@ public partial class RemoteCollectorService
                 "session_summary_stats" => await CollectSessionSummaryStatsAsync(server, cancellationToken),
                 "system_health_events" => await CollectSystemHealthEventsAsync(server, cancellationToken),
                 "default_trace_events" => await CollectDefaultTraceEventsAsync(server, cancellationToken),
+                "job_history" => await CollectJobHistoryAsync(server, cancellationToken),
+                "agent_status" => await CollectAgentStatusAsync(server, cancellationToken),
                 _ => throw new ArgumentException($"Unknown collector: {collectorName}")
             };
 
@@ -946,6 +948,33 @@ WHERE server_id = $3";
     }
 
     /// <summary>
+    /// Gets the most recent value of a monotonic bigint identity column from DuckDB for incremental
+    /// collection — the numeric twin of <see cref="GetLastCollectedTimeAsync"/> (job_history dedups on
+    /// <c>instance_id</c>, sysjobhistory's IDENTITY bigint). Returns null on first run or if the query
+    /// fails (caller uses its documented first-run/fallback path).
+    /// </summary>
+    protected async Task<long?> GetLastCollectedInstanceIdAsync(
+        int serverId, string tableName, string columnName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var conn = _duckDb.CreateConnection();
+            await conn.OpenAsync(cancellationToken);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"SELECT MAX({columnName}) FROM {tableName} WHERE server_id = $1";
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            if (result is not null && result != DBNull.Value)
+                return Convert.ToInt64(result);
+        }
+        catch
+        {
+            /* If DuckDB query fails, caller uses fallback window */
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Whether a prior SUCCESS row exists in collection_log for this collector+server — the "has collected
     /// before" signal (see <see cref="PerformanceMonitor.Collectors.CollectorContext.HasCollectedBefore"/>),
     /// consulted only when the watermark is null. Returns false on any failure, which errs toward the
@@ -1012,16 +1041,23 @@ WHERE server_id = $3";
                 case "server_config":     /* sys.configurations not available */
                 case "trace_flags":       /* DBCC TRACESTATUS not available */
                 case "running_jobs":      /* msdb.dbo.sysjobs not available */
+                case "job_history":       /* msdb.dbo.sysjobhistory not available (no Agent on Azure SQL DB) */
+                case "agent_status":      /* no SQL Agent / sys.dm_server_services on Azure SQL DB */
                     return false;
             }
         }
 
-        /* AWS RDS gates — limited msdb permissions (syssessions not accessible) */
+        /* AWS RDS gates — limited msdb permissions (syssessions not accessible) + restricted server DMVs.
+           job_history is NOT gated here: it reads only sysjobhistory/sysjobs/syscategories (never
+           syssessions), which RDS exposes, so retained job history collects on RDS just fine.
+           agent_status IS gated: sys.dm_server_services is not exposed on RDS (the Agent service is
+           AWS-managed there). */
         if (isAwsRds)
         {
             switch (collectorName)
             {
                 case "running_jobs":      /* msdb.dbo.syssessions not accessible */
+                case "agent_status":      /* sys.dm_server_services not exposed on RDS */
                     return false;
             }
         }
@@ -1032,6 +1068,8 @@ WHERE server_id = $3";
             switch (collectorName)
             {
                 case "running_jobs":      /* requires msdb.dbo.sysjobs, sysjobactivity, etc. */
+                case "job_history":       /* requires msdb.dbo.sysjobhistory, sysjobs */
+                case "agent_status":      /* requires msdb.dbo.sysjobschedules for the next-run decode */
                     return false;
             }
         }

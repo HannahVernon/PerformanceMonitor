@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyThreeVersions_V21DefaultTraceEvents_V22IndexObjectStatsLatestIndex_V23CollectionLogHypertable()
+    public void MigrationScripts_TwentyFiveVersions_V23CollectionLogHypertable_V24JobHistory_V25AgentStatus()
     {
-        Assert.Equal(23, PgMigrations.Scripts.Count);
+        Assert.Equal(25, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -58,7 +58,9 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(21, PgMigrations.Scripts[20].Version);
         Assert.Equal(22, PgMigrations.Scripts[21].Version);
         Assert.Equal(23, PgMigrations.Scripts[22].Version);
-        Assert.Equal(23, StorageVersion.SchemaVersion);
+        Assert.Equal(24, PgMigrations.Scripts[23].Version);
+        Assert.Equal(25, PgMigrations.Scripts[24].Version);
+        Assert.Equal(25, StorageVersion.SchemaVersion);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so

@@ -380,7 +380,9 @@ SELECT
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE c.relname = 'collection_log' AND n.nspname = 'collect')
         OR NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
-    )";
+    ),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'job_history'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'agent_status')";
 
     /// <summary>The store schema version this viewer build requires — the highest migration it knows
     /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
@@ -401,7 +403,7 @@ SELECT
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
             {
-                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5), reader.GetBoolean(6));
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5), reader.GetBoolean(6), reader.GetBoolean(7), reader.GetBoolean(8));
             }
 
             return null;
@@ -423,11 +425,25 @@ SELECT
     /// 19, else <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else
     /// <paramref name="hasConfigControlPlane"/> (V17) → 17, else 16 — the "older than the V17 config control
     /// plane" floor (the exact pre-17 version isn't probed, but it is below what the viewer needs). Pure, so it
-    /// is unit-tested without a live store; a schema bump past 23 trips the pinning test that keeps this in step
+    /// is unit-tested without a live store; a schema bump past 25 trips the pinning test that keeps this in step
     /// with <see cref="StorageVersion.SchemaVersion"/>.
     /// </summary>
-    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg)
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus)
     {
+        /* V24/V25 (#1433 Job History tab) are engine-agnostic table-existence sentinels, so they ARE
+           standalone newest-first arms (unlike the V23 hypertable composite): agent_status (V25) present →
+           25, else job_history (V24) present → 24, else fall through to the V22/V23 composite below. A
+           fully-migrated store has both. */
+        if (hasAgentStatus)
+        {
+            return 25;
+        }
+
+        if (hasJobHistory)
+        {
+            return 24;
+        }
+
         if (hasIndexObjectStatsLatestIndex)
         {
             /* V22's index is the newest ENGINE-AGNOSTIC sentinel and the floor for V23. V23's only schema
