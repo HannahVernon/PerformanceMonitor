@@ -1192,7 +1192,25 @@ namespace PerformanceMonitorInstaller
             Console.WriteLine("Installation Summary");
             Console.WriteLine("================================================================================");
 
-            if (installationSuccessful)
+            if (repairFailuresExcused && totalFailureCount > 0)
+            {
+                /*
+                A repair with a pending upgrade exits 0 -- but it did NOT install cleanly, and saying
+                "Installation completed successfully! / All collector stored procedures" over N procedures
+                that demonstrably failed to compile is a lie the very next paragraph contradicts. The exit
+                code is the contract for scripts; the banner is for the human, and the human needs the truth.
+
+                Gated on there BEING failures: repairFailuresExcused only means "if it failed, that is
+                expected", so a clean repair is still a clean install and gets the ordinary banner.
+                */
+                WriteWarning($"Repair completed with {totalFailureCount} expected error(s).");
+                Console.WriteLine();
+                Console.WriteLine("Those errors are expected: the install scripts compile against the CURRENT");
+                Console.WriteLine("schema, and this server's pending upgrade has not run yet, so a few procedures");
+                Console.WriteLine("cannot compile until it does. A failed CREATE OR ALTER leaves the previous");
+                Console.WriteLine("definition intact -- nothing was damaged, and the upgrade recompiles them.");
+            }
+            else if (installationSuccessful)
             {
                 WriteSuccess("Installation completed successfully!");
                 Console.WriteLine();

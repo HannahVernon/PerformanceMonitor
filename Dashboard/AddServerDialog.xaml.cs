@@ -604,19 +604,35 @@ namespace PerformanceMonitorDashboard
         private string? _handoffStatusText;
 
         /*
-        Idempotent, and safe to call on every keystroke. Withdraws the handoff when the box no longer names
-        the server the repair actually ran against, and restores it when it names it again -- in the same
-        words the verdict states use, because it is the same lie: what is on screen describes a different
-        server. The panel stays VISIBLE while withdrawn so the user is TOLD why the upgrade they were just
-        handed disappeared, instead of watching it vanish. MonitoringCredsPanel is a separate grid row and
-        is deliberately untouched: the SQL-auth user still needs it.
+        The verdict state a stale-name demotion came FROM, so retyping the name back can undo it. Set only
+        by that demotion and cleared by every other transition, so a REAL block -- unsupported SQL version,
+        unreadable version, database newer than the binary -- can never be typed away.
         */
-        private void RenderRepairHandoff()
+        private DialogState? _demotedFromState;
+
+        /*
+        Idempotent, and safe to call on every keystroke. No-ops unless a repair actually left an upgrade
+        pending -- for an ordinary install, upgrade or reinstall there is no handoff to render. The reason
+        the panels went away is stated once, by RenderPostRunClaims; this just shows or hides them.
+        MonitoringCredsPanel is a separate grid row and is deliberately untouched: the SQL-auth user still
+        needs it either way.
+        */
+        private void RenderRepairHandoff(bool addressed)
         {
             if (_handoffStatusText == null) return;
 
+            if (!addressed)
+            {
+                DatabaseStatusPanel.Visibility = Visibility.Collapsed;
+                InstallUpgradeButton.Visibility = Visibility.Collapsed;
+                return;
+            }
+
             ConnectionInfoText.Text = $"Connected to {_verdictServerName}";
+            DatabaseStatusText.Text = _handoffStatusText;
             DatabaseStatusPanel.Visibility = Visibility.Visible;
+            InstallUpgradeButton.Content = "Upgrade Now";
+            InstallUpgradeButton.Visibility = Visibility.Visible;
 
             /*
             That Border also holds the "Skip, just add server" link, which would otherwise become clickable
@@ -624,19 +640,6 @@ namespace PerformanceMonitorDashboard
             the Upgrade Now button we just put there.
             */
             SkipInstallText.Visibility = Visibility.Collapsed;
-
-            if (VerdictMatchesServerBox())
-            {
-                DatabaseStatusText.Text = _handoffStatusText;
-                InstallUpgradeButton.Content = "Upgrade Now";
-                InstallUpgradeButton.Visibility = Visibility.Visible;
-                return;
-            }
-
-            DatabaseStatusText.Text =
-                "The server name changed after this server's status was checked, so what is on screen may " +
-                "describe a different server.\n\nClick Test Connection to re-check the server now in the box.";
-            InstallUpgradeButton.Visibility = Visibility.Collapsed;
         }
 
         /*
@@ -660,15 +663,33 @@ namespace PerformanceMonitorDashboard
             StatusText.Visibility = Visibility.Collapsed;
 
             /*
-            The repair handoff arms a live "Upgrade Now" and a version claim in InstallComplete /
-            MonitoringCredentials -- states that are NOT verdict states, so the guard below does not see
-            them. Re-rendered rather than hidden, because withdrawal has to be REVERSIBLE: typing one
-            character and deleting it must not permanently destroy the only button that applies the
-            pending upgrade.
+            The completion states are not verdict states, so the guard below never sees them -- but they
+            assert plenty about a specific server: "Installation completed successfully!", the install log,
+            and (after a repair) a live "Upgrade Now" with a version claim. All of it describes the server
+            the run went to. Withdraw it when the box no longer names that server, and RESTORE it when the
+            box names it again: typing one character and deleting it must not permanently destroy the only
+            button that applies a pending upgrade, nor permanently hide the result of an install that did
+            happen.
             */
             if (_currentState is DialogState.InstallComplete or DialogState.MonitoringCredentials)
             {
-                RenderRepairHandoff();
+                RenderPostRunClaims();
+                return;
+            }
+
+            /*
+            Undo a stale-name demotion when the name comes back. The verdict was never WRONG -- it was
+            mis-addressed -- and _demotedFromState is set only by that demotion, so a real block cannot be
+            typed away. Without this, one keystroke and a backspace left "Upgrade Now" gone for good under
+            a notice ("the server name changed") that was no longer even true.
+            */
+            if (_currentState == DialogState.Connected_StatusUnknown &&
+                _demotedFromState != null &&
+                VerdictMatchesServerBox())
+            {
+                DialogState restored = _demotedFromState.Value;
+                _installBlockedReason = null;
+                TransitionToState(restored);
                 return;
             }
 
@@ -677,6 +698,45 @@ namespace PerformanceMonitorDashboard
                 /* Re-entering the state lets the stamp guard demote it. */
                 TransitionToState(_currentState);
             }
+        }
+
+        /*
+        Everything a completed run leaves on screen describes the server the run actually went to: the
+        install log and its "Installation completed successfully!" headline, the View Report link, and after
+        a repair the "Upgrade Now" handoff with its version claim. Retyping the box left all of it standing
+        under the new name -- so a user could retarget after an install and click Save believing
+        PerformanceMonitor had been installed on the server now in the box.
+
+        Only the repair handoff was withdrawn before, because that was the path the previous round happened
+        to be looking at; the ordinary install, upgrade and reinstall are the COMMON case and had no
+        withdrawal at all. Withdraw all of it together, restore all of it together, and say once why it went
+        away -- idempotent, so it is safe to call on every keystroke.
+        */
+        private void RenderPostRunClaims()
+        {
+            bool addressed = VerdictMatchesServerBox();
+
+            InstallationPanel.Visibility = addressed ? Visibility.Visible : Visibility.Collapsed;
+
+            if (_reportPath != null)
+            {
+                ViewReportButton.Visibility = addressed ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            RenderRepairHandoff(addressed);
+
+            if (addressed)
+            {
+                StatusText.Text = string.Empty;
+                StatusText.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            /* The panels are gone; without this the dialog would simply look empty for no stated reason. */
+            StatusText.Text =
+                "The server name changed after this server's status was checked, so what is on screen may " +
+                "describe a different server.\n\nClick Test Connection to check the server now in the box.";
+            StatusText.Visibility = Visibility.Visible;
         }
 
         private bool VerdictMatchesServerBox() =>
@@ -922,18 +982,11 @@ namespace PerformanceMonitorDashboard
             _installBlockedReason = reason;
 
             /*
-            BlockInstall is also an exit from a RUN (InstallOrUpgrade_Click blocks on a failed re-read and
-            on an unsafe version), so it must clear the mode flags exactly as RestoreAfterInstall does --
-            a ticked "clean install" that survives a run is the bug that has reopened more times than any
-            other in this file, and it drops the database. Today it is unreachable through here only
-            because Connected_StatusUnknown happens to collapse the panel holding the checkboxes, so the
-            user cannot see or re-arm them. That is a rendering accident standing in for a consent check.
-            Clear them here and the guarantee no longer depends on which panels a state happens to hide.
+            The destructive/mode ticks are cleared by TransitionToState, for every state but Installing --
+            deliberately NOT here. Clearing them at each exit is what kept failing: the stale-name demotion
+            rewrites the state in place and never reaches this method, so a clear written here would have
+            missed it exactly as the three before it did.
             */
-            CleanInstallCheckBox.IsChecked = false;
-            RepairCheckBox.IsChecked = false;
-            ResetScheduleCheckBox.IsChecked = false;
-
             TransitionToState(DialogState.Connected_StatusUnknown);
         }
 
@@ -1012,10 +1065,46 @@ namespace PerformanceMonitorDashboard
             */
             if (IsServerVerdictState(newState) && !VerdictMatchesServerBox())
             {
+                /*
+                Remembered so the demotion can be UNDONE. The verdict was never wrong -- it was
+                mis-addressed -- so if the box comes back to the name it was read from, it is valid again.
+                Null on every other transition, which is what keeps a REAL block (unsupported version,
+                unreadable version, newer-than-binary) from being undone by typing.
+                */
+                _demotedFromState = newState;
+
                 _installBlockedReason =
                     "The server name changed after this server's status was checked, so what is on screen may " +
                     "describe a different server.\n\nClick Test Connection to re-check the server now in the box.";
                 newState = DialogState.Connected_StatusUnknown;
+            }
+            else
+            {
+                _demotedFromState = null;
+            }
+
+            /*
+            Consent for a destructive option is per-run and per-SERVER. These three ticks authorize
+            DROP DATABASE (clean install), skipping the migrations (repair), and TRUNCATE
+            config.collection_schedule (reset schedule) -- against the server that was on screen when they
+            were ticked. ANY transition other than starting the run invalidates that: the run ended, or the
+            verdict was demoted because the box now names someone else.
+
+            Cleared HERE, at the one choke point every state change passes through, because clearing it at
+            each exit is precisely what kept failing. It was patched into RestoreAfterInstall, then the
+            detection prologue, then BlockInstall -- and the stale-name demotion, which rewrites newState in
+            place a dozen lines above and never calls BlockInstall at all, still slipped past every one of
+            them. That path is unreachable today only because the state it lands in happens to collapse the
+            panel holding these checkboxes: a rendering accident standing in for a consent check, on the
+            code path that drops a database.
+
+            Installing is the sole exception -- the run is about to READ these ticks.
+            */
+            if (newState != DialogState.Installing)
+            {
+                CleanInstallCheckBox.IsChecked = false;
+                RepairCheckBox.IsChecked = false;
+                ResetScheduleCheckBox.IsChecked = false;
             }
 
             _currentState = newState;
@@ -1723,6 +1812,17 @@ namespace PerformanceMonitorDashboard
                         AppendInstallLog($"Installation completed with {_installResult.FilesFailed} error(s).", "Error");
                     }
 
+                    /*
+                    Re-stamp the verdict with the server the run actually went to. A clean install forgets
+                    it on the way in (it is about to DROP the database, so a cancel must not restore a
+                    verdict describing it) -- but the run SUCCEEDED, so we now know exactly which server
+                    this screen describes: the one we just wrote to. Without this the stamp stays null,
+                    and everything keyed on it treats a completed clean install as un-addressed: Save
+                    re-runs the connection test (a second interactive MFA prompt on Entra), and the first
+                    keystroke in the server box withdraws a success message that was perfectly true.
+                    */
+                    RecordVerdictFor(installTimeServerName);
+
                     TransitionToState(DialogState.InstallComplete);
 
                     /*
@@ -1752,7 +1852,8 @@ namespace PerformanceMonitorDashboard
                             : $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion!)} " +
                               "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
 
-                        RenderRepairHandoff();
+                        /* Addressed by construction: the box was frozen for the run and just re-stamped. */
+                        RenderRepairHandoff(addressed: true);
                     }
                 });
             }
