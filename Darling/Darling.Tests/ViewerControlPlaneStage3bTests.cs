@@ -293,6 +293,33 @@ public sealed class ViewerCollectorScheduleLogicTests
     }
 
     [Fact]
+    public void Presets_CoverTheSamePinnedCollectorSet()
+    {
+        /* The three preset tables are duplicated byte-for-byte from Lite's ScheduleManager.s_presets (the
+           projects don't share a schedule library). Mirror Lite's own SchedulePresets_CoverTheSamePinnedCollectorSet
+           guard HERE so a collector added to Lite's presets (or to one Darling preset but not the others) without
+           being mirrored into all three fails this test instead of silently shipping a preset that skips it — the
+           anti-drift pin the class docstring promises. (job_history/agent_status/default_trace_events fell behind
+           exactly this way; see the #1494 review.) */
+        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "wait_stats", "latch_stats", "spinlock_stats", "cpu_scheduler_stats", "plan_cache_stats",
+            "query_stats", "procedure_stats", "query_store", "query_snapshots", "cpu_utilization",
+            "file_io_stats", "memory_stats", "memory_clerks", "memory_pressure_events", "tempdb_stats",
+            "perfmon_stats", "deadlocks", "memory_grant_stats", "waiting_tasks", "dmv_blocking_snapshot",
+            "blocked_process_report", "running_jobs", "session_summary_stats", "system_health_events",
+            "default_trace_events", "job_history", "agent_status"
+        };
+
+        Assert.Equal(3, CollectorSchedulePresets.Presets.Count);
+        foreach (var (presetName, intervals) in CollectorSchedulePresets.Presets)
+        {
+            Assert.True(expected.SetEquals(intervals.Keys),
+                $"preset '{presetName}' collector set drifted from the pinned set");
+        }
+    }
+
+    [Fact]
     public void ApplyPreset_ChangesFrequenciesOnly_AndDetectRoundTrips()
     {
         var schedule = CollectorSchedulePresets.BuildDefaultSchedule();
