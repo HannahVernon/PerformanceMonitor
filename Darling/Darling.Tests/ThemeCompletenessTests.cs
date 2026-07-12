@@ -85,8 +85,10 @@ public sealed class ThemeCompletenessTests
         var offenders = new List<string>();
         foreach (var xaml in Directory.EnumerateFiles(viewerDir, "*.xaml", SearchOption.AllDirectories))
         {
-            if (xaml.Contains(Path.Combine("obj", ""), StringComparison.OrdinalIgnoreCase) ||
-                xaml.Contains(Path.Combine("bin", ""), StringComparison.OrdinalIgnoreCase))
+            // Skip build output by whole path SEGMENT (obj/bin), not a substring: Path.Combine("obj", "")
+            // yields "obj" with no separator, so a Contains("obj") would also skip a legitimately-named
+            // XAML file such as ObjectBrowser.xaml.
+            if (HasBuildOutputSegment(xaml))
             {
                 continue;
             }
@@ -122,6 +124,13 @@ public sealed class ThemeCompletenessTests
         var text = File.ReadAllText(path);
         return KeyDefinition.Matches(text).Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
     }
+
+    /// <summary>True if any whole path segment is a build-output directory (obj/bin). Segment-based, not a
+    /// substring test — a plain Contains("obj") would false-positive on a file such as ObjectBrowser.xaml.</summary>
+    private static bool HasBuildOutputSegment(string path) =>
+        path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(seg => seg.Equals("obj", StringComparison.OrdinalIgnoreCase) ||
+                        seg.Equals("bin", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The Viewer project directory, resolved from this test file's compile-time path (it lives at
     /// <c>Darling/Darling.Tests/</c>; the Viewer is the sibling <c>Darling/PerformanceMonitor.Darling.Viewer/</c>).</summary>
