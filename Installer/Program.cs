@@ -1133,7 +1133,7 @@ namespace PerformanceMonitorInstaller
 
             It writes NO history row at all. A repair changes no version, and installation_history is
             the version ledger -- echoing back a version we merely READ is how a guess becomes a fact.
-            Concretely: GetInstalledVersionAsync returns "1.0.0" as a #538 fallback when the database
+            Concretely: GetInstalledVersionAsync returns the unknown sentinel as a #538 fallback when the database
             exists but has no SUCCESS row, meaning "unknown, try every upgrade". Persisting that as a
             SUCCESS row would turn the guess into truth. Writing nothing leaves the previous row as the
             version of record, so the pending upgrade is still offered afterwards.

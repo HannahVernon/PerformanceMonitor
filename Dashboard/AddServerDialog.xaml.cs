@@ -351,7 +351,14 @@ namespace PerformanceMonitorDashboard
                 return $"{version.Major}.{version.Minor}.{version.Build}";
             }
 
-            return "0.0.0";
+            /*
+            Deliberately unparseable, and deliberately NOT the unknown sentinel. A build with no version
+            must be BLOCKED by InstallGuard (UnreadableBuildVersion), not quietly write a parseable
+            version into a server's ledger -- and if it wrote the sentinel, every later read would take
+            that server's real version as "unknown" and replay every migration. Matches the CLI, which
+            already falls back to "Unknown".
+            */
+            return "Unknown";
         }
 
         /// <summary>
@@ -540,8 +547,72 @@ namespace PerformanceMonitorDashboard
         */
         private bool InstallInProgress => _currentState == DialogState.Installing;
 
-        /* The state to return to when an install ends. Re-derived from the install-time re-read. */
-        private DialogState _preInstallState = DialogState.Initial;
+        /*
+        Two detections can be in flight at once (Test Connection re-arms its button in a finally before
+        the detection it triggered has finished, and Check for Updates disables only its own). They then
+        race to write _installedVersion / _coreServerInfo / _currentState, and a late-landing one renders
+        the FIRST server's verdict under the SECOND server's name. Each run takes an epoch; a superseded
+        continuation discards itself instead of publishing a verdict nobody asked for.
+        */
+        private int _detectEpoch;
+
+        /*
+        TWO different things, deliberately two fields. Conflating them is what let a button reading
+        "Upgrade Now" perform a full fresh install on a retargeted bare server:
+
+          _launchState     -- where the click came FROM, i.e. what the button PROMISED. Fixed at click
+                              time and never re-derived. Only meaningful for "did the user ask us to act
+                              on an existing installation?".
+          _preInstallState -- where a failure should RESTORE to, i.e. what the FACTS say. Always a
+                              Connected_* state, and refreshed from the install-time re-read, because the
+                              server box stays editable and the facts may belong to a different server.
+
+        One field served both, was consumed for the promise BEFORE being re-derived for the restore, and
+        so answered the promise question with a value that could be InstallComplete -- exactly the state
+        the repair handoff puts a live "Upgrade Now" button in.
+        */
+        private DialogState _launchState = DialogState.Initial;
+
+        /* Null until THIS server's version has actually been read. See RestoreAfterInstall. */
+        private DialogState? _preInstallState;
+
+        /*
+        THE structural guard. Every critical found in rounds 6-10 was one bug wearing different clothes:
+        the server box stays editable, so _installedVersion / _coreServerInfo / _currentState can all
+        describe a server that is no longer the one in the box -- and some consumer renders or acts on
+        them anyway. Nine rounds of patching each consumer in turn left the next one uncovered.
+
+        So the verdict is stamped with the server it was read FROM, and TransitionToState refuses to
+        render a Connected_* verdict whose stamp no longer matches the box. One check, one place,
+        structurally uncheatable: a stale verdict cannot be displayed, whoever forgets to re-check.
+        */
+        private string? _verdictServerName;
+
+        private void RecordVerdictFor(string serverName) => _verdictServerName = serverName.Trim();
+
+        private bool VerdictMatchesServerBox() =>
+            _verdictServerName != null &&
+            string.Equals(_verdictServerName, ServerNameTextBox.Text.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsServerVerdictState(DialogState state) =>
+            state is DialogState.Connected_NoDatabase
+                  or DialogState.Connected_NeedsUpgrade
+                  or DialogState.Connected_Current;
+
+        /*
+        Did the button the user actually clicked promise to act on an EXISTING installation? Only
+        Connected_NoDatabase says "Install Now"; every other launchable state promises otherwise --
+        including InstallComplete/MonitoringCredentials, where the repair handoff deliberately puts a live
+        "Upgrade Now" in front of the user.
+        */
+        private static bool PromisesExistingInstall(DialogState launchState) => launchState switch
+        {
+            DialogState.Connected_NeedsUpgrade => true,      // "Upgrade Now"
+            DialogState.Connected_Current => true,           // "Reinstall Objects"
+            DialogState.InstallComplete => true,             // repair handoff: "Upgrade Now"
+            DialogState.MonitoringCredentials => true,       // repair handoff, SQL auth: "Upgrade Now"
+            _ => false,                                      // Connected_NoDatabase: "Install Now"
+        };
 
         /*
         Which connected state the FACTS imply. Used by detection and, crucially, re-derived from the
@@ -588,7 +659,21 @@ namespace PerformanceMonitorDashboard
             CleanInstallCheckBox.IsChecked = false;
             ResetScheduleCheckBox.IsChecked = false;
 
-            TransitionToState(_preInstallState);
+            /*
+            If the run ended BEFORE this server's version was read -- cancel or a connect failure during
+            the install-time re-read -- we have no verdict for it, and the fields still describe whatever
+            was checked last. Do not restore a Connected_* state: that renders the previous server's
+            verdict under this one's name. Say we do not know.
+            */
+            if (_preInstallState == null)
+            {
+                BlockInstall(
+                    $"{message}\n\nThis server's installed version was not read, so its status is unknown. " +
+                    "Click Test Connection to check it.");
+                return;
+            }
+
+            TransitionToState(_preInstallState.Value);
 
             DatabaseStatusPanel.Visibility = Visibility.Visible;
             InstallationPanel.Visibility = Visibility.Visible;
@@ -601,12 +686,15 @@ namespace PerformanceMonitorDashboard
             must stay out of reach, so re-show the panel with Advanced Options DISABLED rather than
             collapsed: WPF propagates IsEnabled to children, so the checkbox cannot be ticked.
             */
-            AdvancedOptionsExpander.IsEnabled = _preInstallState != DialogState.Connected_Current;
+            AdvancedOptionsExpander.IsEnabled = _preInstallState.Value != DialogState.Connected_Current;
         }
 
         private async System.Threading.Tasks.Task DetectDatabaseStatusAsync()
         {
             if (InstallInProgress) return;
+
+            int epoch = ++_detectEpoch;
+            bool Superseded() => epoch != _detectEpoch || InstallInProgress;
 
             try
             {
@@ -634,8 +722,8 @@ namespace PerformanceMonitorDashboard
                 */
                 var probedServerInfo = await InstallationService.TestConnectionAsync(installerConnStr);
 
-                /* An install started while we were connecting: do not touch what it now owns. */
-                if (InstallInProgress) return;
+                /* An install started, or a newer detection superseded us: publish nothing. */
+                if (Superseded()) return;
 
                 _coreServerInfo = probedServerInfo;
 
@@ -679,14 +767,16 @@ namespace PerformanceMonitorDashboard
                         installerConnStr,
                         throwOnError: true);
 
-                    /* An install started while we were probing: do not touch what it now owns. */
-                    if (InstallInProgress) return;
+                    /* An install started, or a newer detection superseded us: publish nothing. */
+                    if (Superseded()) return;
 
                     _installedVersion = probedVersion;
+                    /* Stamp the verdict with the server it was read from. */
+                    RecordVerdictFor(ServerNameTextBox.Text);
                 }
                 catch (Exception ex)
                 {
-                    if (InstallInProgress) return;
+                    if (Superseded()) return;
 
                     BlockInstall(
                         $"Could not determine the installed PerformanceMonitor version: {ex.Message}\n\n" +
@@ -782,6 +872,23 @@ namespace PerformanceMonitorDashboard
 
         private void TransitionToState(DialogState newState)
         {
+            /*
+            Refuse to render a verdict that belongs to a different server. The states below assert facts
+            about "this server" -- its installed version, whether it needs an upgrade, whether it is up to
+            date -- and every one of those facts came from a read of some server. If the box has since
+            been retyped, rendering them puts the OLD server's verdict under the NEW server's name:
+            "PerformanceMonitor v3.1.0 is up to date" over a database four migrations behind, with Save
+            enabled. That exact lie has been reached three different ways across nine review rounds, so it
+            is stopped here, once, rather than at each consumer.
+            */
+            if (IsServerVerdictState(newState) && !VerdictMatchesServerBox())
+            {
+                _installBlockedReason =
+                    "The server name changed after this server's status was checked, so what is on screen may " +
+                    "describe a different server.\n\nClick Test Connection to re-check the server now in the box.";
+                newState = DialogState.Connected_StatusUnknown;
+            }
+
             _currentState = newState;
             string appVersion = GetAppVersion();
 
@@ -828,8 +935,12 @@ namespace PerformanceMonitorDashboard
                 case DialogState.Connected_NeedsUpgrade:
                     string normalizedInstalled = NormalizeVersion(_installedVersion ?? "unknown");
                     ConnectionInfoText.Text = connectionHeader;
-                    DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedInstalled} is installed. " +
-                        $"v{appVersion} is available — click Upgrade Now to apply the update.";
+                    /* Never state the sentinel as a fact: it means "installed, version unreadable". */
+                    DatabaseStatusText.Text = RepairOutcome.IsVersionUnknown(_installedVersion)
+                        ? "PerformanceMonitor is installed, but its recorded version could not be read, so it is " +
+                          $"unknown which migrations have run. Click Upgrade Now to attempt every upgrade and bring it to v{appVersion}."
+                        : $"PerformanceMonitor v{normalizedInstalled} is installed. " +
+                          $"v{appVersion} is available — click Upgrade Now to apply the update.";
                     InstallUpgradeButton.Content = "Upgrade Now";
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     InstallationPanel.Visibility = Visibility.Visible;
@@ -978,7 +1089,14 @@ namespace PerformanceMonitorDashboard
             Creating the CTS first also means Cancel and ESC work DURING the probe rather than no-oping
             on a null and letting the install continue after the dialog has closed.
             */
-            _preInstallState = _currentState;
+            /*
+            The promise is fixed here and never re-derived. The restore target starts from the best facts
+            we currently have -- and is refreshed from the install-time re-read below -- but it is a
+            Connected_* state from the outset, so a cancel DURING the re-read can never restore into
+            InstallComplete and unfreeze the clean-install checkbox the repair handoff had frozen.
+            */
+            _launchState = _currentState;
+            _preInstallState = null;
 
             TransitionToState(DialogState.Installing);
             InstallLogTextBox.Clear();
@@ -1007,10 +1125,22 @@ namespace PerformanceMonitorDashboard
                 */
                 try
                 {
+                    /*
+                    Refresh the server facts too, not just the version. _coreServerInfo came from the last
+                    Test Connection, and after a retarget it describes a different box -- so the summary
+                    report would name THIS server with the previous one's SQL version and edition.
+                    */
+                    _coreServerInfo = await InstallationService.TestConnectionAsync(
+                        installerConnStr,
+                        cancellationToken: cancellationToken);
+
                     _installedVersion = await InstallationService.GetInstalledVersionAsync(
                         installerConnStr,
                         throwOnError: true,
                         cancellationToken: cancellationToken);
+
+                    /* Stamp the verdict with the server we just read -- this is the connection we will write to. */
+                    RecordVerdictFor(ServerNameTextBox.Text);
                 }
                 catch (Exception) when (cancellationToken.IsCancellationRequested)
                 {
@@ -1039,9 +1169,7 @@ namespace PerformanceMonitorDashboard
                 Repair checkbox. The server box stays editable and the re-read above runs against whatever
                 is in it NOW, so a retarget to a bare instance reaches all three.
                 */
-                bool promisedAnExistingInstall =
-                    _preInstallState == DialogState.Connected_NeedsUpgrade ||
-                    _preInstallState == DialogState.Connected_Current;
+                bool promisedAnExistingInstall = PromisesExistingInstall(_launchState);
 
                 if ((RepairCheckBox.IsChecked == true || promisedAnExistingInstall) &&
                     CleanInstallCheckBox.IsChecked != true &&
@@ -1204,7 +1332,7 @@ namespace PerformanceMonitorDashboard
 
                 So a repair writes NO history row at all. It does not change the version, and
                 installation_history is the version ledger -- writing back a version we merely READ is
-                how a guess becomes a fact. Concretely: GetInstalledVersionAsync returns "1.0.0" as a
+                how a guess becomes a fact. Concretely: GetInstalledVersionAsync returns the unknown sentinel as a
                 #538 fallback when the database exists but has no SUCCESS row, meaning "unknown, try
                 every upgrade". Echoing that back as a SUCCESS row would persist the guess as truth.
                 Writing nothing leaves the previous row as the version of record, which is exactly
@@ -1501,6 +1629,11 @@ namespace PerformanceMonitorDashboard
 
         private void SkipInstall_Click(object sender, MouseButtonEventArgs e)
         {
+            /* This bypasses TransitionToState, so it is the one exit that never cleared these. */
+            RepairCheckBox.IsChecked = false;
+            CleanInstallCheckBox.IsChecked = false;
+            ResetScheduleCheckBox.IsChecked = false;
+
             DatabaseStatusPanel.Visibility = Visibility.Collapsed;
             InstallationPanel.Visibility = Visibility.Collapsed;
             SaveButton.IsEnabled = true;

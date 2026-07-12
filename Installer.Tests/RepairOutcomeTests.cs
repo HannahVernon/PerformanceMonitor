@@ -1,4 +1,4 @@
-using Installer.Core;
+﻿using Installer.Core;
 
 namespace Installer.Tests;
 
@@ -66,7 +66,7 @@ public class RepairOutcomeTests
     public void UnknownVersionSentinel_IsNeverExpected()
     {
         /*
-        "1.0.0" is GetInstalledVersionAsync's guess for "installed, but I cannot read the version" -- not
+        The sentinel is GetInstalledVersionAsync's guess for "installed, but I cannot read the version" -- not
         a fact. It sorts below every real version, so trusting it would answer "an upgrade is pending"
         unconditionally and report every REAL repair failure as expected, exiting 0. A schema-current
         3.1.0 server whose history rows are all FAILED, with genuinely broken procedures, must not pass.
