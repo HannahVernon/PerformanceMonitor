@@ -147,7 +147,7 @@ public partial class ViewerServerTab
 
     private async Task LoadTopQueriesAsync(DateTime startUtc, DateTime endUtc)
     {
-        var rows = await _dataService.GetTopQueriesByCpuAsync(_server.ServerId, startUtc, endUtc);
+        var rows = await _dataService.GetTopQueriesByCpuAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _queryStatsFilterMgr!.UpdateData(rows);
         SetDefaultSortIfNone(QueryStatsGrid, "TotalElapsedMs", ListSortDirection.Descending);
         await LoadQueryStatsSlicerAsync(startUtc, endUtc);
@@ -156,7 +156,7 @@ public partial class ViewerServerTab
 
     private async Task LoadTopProceduresAsync(DateTime startUtc, DateTime endUtc)
     {
-        var rows = await _dataService.GetTopProceduresByCpuAsync(_server.ServerId, startUtc, endUtc);
+        var rows = await _dataService.GetTopProceduresByCpuAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _procStatsFilterMgr!.UpdateData(rows);
         SetDefaultSortIfNone(ProcedureStatsGrid, "TotalElapsedMs", ListSortDirection.Descending);
         await LoadProcStatsSlicerAsync(startUtc, endUtc);
@@ -165,7 +165,7 @@ public partial class ViewerServerTab
 
     private async Task LoadQueryStoreAsync(DateTime startUtc, DateTime endUtc)
     {
-        var rows = await _dataService.GetQueryStoreTopQueriesAsync(_server.ServerId, startUtc, endUtc);
+        var rows = await _dataService.GetQueryStoreTopQueriesAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _queryStoreFilterMgr!.UpdateData(rows);
         SetDefaultSortIfNone(QueryStoreGrid, "TotalDurationMs", ListSortDirection.Descending);
         await LoadQueryStoreSlicerAsync(startUtc, endUtc);
@@ -180,7 +180,7 @@ public partial class ViewerServerTab
     /// </summary>
     private async Task LoadExpensiveQueriesAsync(DateTime startUtc, DateTime endUtc)
     {
-        var rows = await _dataService.GetUnifiedExpensiveQueriesAsync(_server.ServerId, startUtc, endUtc);
+        var rows = await _dataService.GetUnifiedExpensiveQueriesAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _expensiveQueriesFilterMgr!.UpdateData(rows);
         SetDefaultSortIfNone(ExpensiveQueriesGrid, "AvgWorkerTimeMs", ListSortDirection.Descending);
     }
@@ -189,7 +189,7 @@ public partial class ViewerServerTab
 
     private async Task LoadQueryStatsSlicerAsync(DateTime startUtc, DateTime endUtc)
     {
-        var data = await _dataService.GetQueryStatsSlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetQueryStatsSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _queryStatsSlicerData = data;
         _queryStatsSlicerMetric = "TotalCpu";
         if (data.Count > 0)
@@ -200,7 +200,7 @@ public partial class ViewerServerTab
     {
         try
         {
-            var rows = await _dataService.GetTopQueriesByCpuAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            var rows = await _dataService.GetTopQueriesByCpuAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
             _queryStatsFilterMgr!.UpdateData(rows);
             await RefreshQueryStatsComparisonAsync(e.StartUtc, e.EndUtc);
         }
@@ -212,7 +212,7 @@ public partial class ViewerServerTab
 
     private async Task LoadProcStatsSlicerAsync(DateTime startUtc, DateTime endUtc)
     {
-        var data = await _dataService.GetProcStatsSlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetProcStatsSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _procStatsSlicerData = data;
         _procStatsSlicerMetric = "TotalCpu";
         if (data.Count > 0)
@@ -223,7 +223,7 @@ public partial class ViewerServerTab
     {
         try
         {
-            var rows = await _dataService.GetTopProceduresByCpuAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            var rows = await _dataService.GetTopProceduresByCpuAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
             _procStatsFilterMgr!.UpdateData(rows);
             await RefreshProcStatsComparisonAsync(e.StartUtc, e.EndUtc);
         }
@@ -235,7 +235,7 @@ public partial class ViewerServerTab
 
     private async Task LoadQueryStoreSlicerAsync(DateTime startUtc, DateTime endUtc)
     {
-        var data = await _dataService.GetQueryStoreSlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetQueryStoreSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _queryStoreSlicerData = data;
         _queryStoreSlicerMetric = "TotalCpu";
         if (data.Count > 0)
@@ -246,7 +246,7 @@ public partial class ViewerServerTab
     {
         try
         {
-            var rows = await _dataService.GetQueryStoreTopQueriesAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            var rows = await _dataService.GetQueryStoreTopQueriesAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
             _queryStoreFilterMgr!.UpdateData(rows);
             await RefreshQueryStoreComparisonAsync(e.StartUtc, e.EndUtc);
         }

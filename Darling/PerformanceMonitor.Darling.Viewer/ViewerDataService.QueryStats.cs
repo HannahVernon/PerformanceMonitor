@@ -166,6 +166,7 @@ public sealed partial class ViewerDataService
             WHERE server_id = $1
             AND   collection_time >= $2
             AND   collection_time <= $3
+            AND   ($5::text[] IS NULL OR database_name = ANY($5))
             GROUP BY database_name, query_hash
             HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
             ORDER BY SUM(delta_elapsed_time) DESC
@@ -244,13 +245,14 @@ public sealed partial class ViewerDataService
     /// <paramref name="endUtc"/>], pre-sorted by total elapsed time descending (the grid's default sort).
     /// </summary>
     public async Task<List<ViewerQueryStatsRow>> GetTopQueriesByCpuAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, int top = TopQueriesPageSize, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, int top = TopQueriesPageSize, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var rows = new List<ViewerQueryStatsRow>();
 
         await using var command = _dataSource.CreateCommand(TopQueriesSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = top });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -322,6 +324,7 @@ public sealed partial class ViewerDataService
             FROM query_stats
             WHERE server_id = $1
             AND   collection_time >= $2 AND collection_time <= $3
+            AND   ($6::text[] IS NULL OR database_name = ANY($6))
             AND   delta_execution_count > 0
             GROUP BY query_hash, database_name
             ORDER BY SUM(delta_execution_count) DESC
@@ -332,6 +335,7 @@ public sealed partial class ViewerDataService
             FROM query_stats
             WHERE server_id = $1
             AND   collection_time >= $4 AND collection_time <= $5
+            AND   ($6::text[] IS NULL OR database_name = ANY($6))
             AND   delta_execution_count > 0
             GROUP BY query_hash, database_name
             ORDER BY SUM(delta_execution_count) DESC
@@ -396,12 +400,14 @@ public sealed partial class ViewerDataService
         int serverId,
         DateTime currentStart, DateTime currentEnd,
         DateTime baselineStart, DateTime baselineEnd,
+        IReadOnlyList<string>? databaseNames = null,
         CancellationToken cancellationToken = default)
     {
         var items = new List<QueryStatsComparisonItem>();
 
         await using var command = _dataSource.CreateCommand(QueryStatsComparisonSql);
         AddComparisonParameters(command, serverId, currentStart, currentEnd, baselineStart, baselineEnd);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -445,14 +451,15 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         GROUP BY date_trunc('hour', collection_time)
         ORDER BY bucket
         """;
 
     /// <summary>Hourly query-stats slicer buckets over [<paramref name="startUtc"/>, <paramref name="endUtc"/>].</summary>
     public async Task<List<TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => await ReadQueryStatsSlicerAsync(QueryStatsSlicerSql, serverId, startUtc, endUtc, cancellationToken);
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
+        => await ReadQueryStatsSlicerAsync(QueryStatsSlicerSql, serverId, startUtc, endUtc, databaseNames, cancellationToken);
 
     /// <summary>
     /// Shared reader for the query-stats / procedure-stats hourly slicer buckets (same column shape:
@@ -460,12 +467,13 @@ public sealed partial class ViewerDataService
     /// total CPU (Value = TotalCpu), matching Lite's initial "Total CPU (ms)" label.
     /// </summary>
     internal async Task<List<TimeSliceBucket>> ReadQueryStatsSlicerAsync(
-        string sql, int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+        string sql, int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames, CancellationToken cancellationToken)
     {
         var items = new List<TimeSliceBucket>();
 
         await using var command = _dataSource.CreateCommand(sql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

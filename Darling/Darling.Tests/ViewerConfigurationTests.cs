@@ -170,8 +170,18 @@ public sealed class ViewerConfigurationSqlTests
         Assert.DoesNotContain("N'", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
         Assert.Contains("$1", sql, StringComparison.Ordinal);
-        /* Latest-snapshot reads are parameterized on server_id alone — no windowing $2. */
-        Assert.DoesNotContain("$2", sql, StringComparison.Ordinal);
+        if (which is "database" or "scoped")
+        {
+            /* #1319: the database-scoped config reads gain the global database filter — a single nullable
+               text[] param ($2) applied as database_name = ANY($2). It is NOT a time window (the
+               latest-snapshot capture_time subquery still reuses $1). */
+            Assert.Contains("database_name = ANY($2)", sql, StringComparison.Ordinal);
+        }
+        else
+        {
+            /* Server-config + trace-flag reads are server-wide (not database-scoped) — server_id ($1) only. */
+            Assert.DoesNotContain("$2", sql, StringComparison.Ordinal);
+        }
     }
 }
 

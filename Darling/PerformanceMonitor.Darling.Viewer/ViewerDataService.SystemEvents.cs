@@ -386,12 +386,17 @@ public sealed partial class ViewerDataService
     /// the window, newest first, with database_id resolved to a name from the collected mapping.
     /// </summary>
     public async Task<List<SevereErrorRow>> GetSevereErrorsAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var mapTask = GetDatabaseNameMapAsync(serverId, cancellationToken);
         var xmls = await ReadSystemHealthEventXmlAsync(
             serverId, startUtc, endUtc, SystemHealthParser.ErrorReportedEvent, cancellationToken);
         var map = await mapTask;
+
+        /* #1319 database filter: severe_errors has no database_name column (the DB is resolved in C# from the
+           event's database_id via the collected id↔name map), so the filter is applied client-side on the
+           resolved name. A null/empty selection leaves every row (today's behavior). */
+        var filter = databaseNames is { Count: > 0 } ? new HashSet<string>(databaseNames, StringComparer.OrdinalIgnoreCase) : null;
 
         return await Task.Run(() =>
         {
@@ -400,7 +405,11 @@ public sealed partial class ViewerDataService
             {
                 var record = SystemHealthParser.ParseSevereError(xml);
                 if (record != null && SystemEventSignificance.IsSignificant(record))
-                    rows.Add(new SevereErrorRow(record, ResolveDatabaseName(record.DatabaseId, map)));
+                {
+                    var databaseName = ResolveDatabaseName(record.DatabaseId, map);
+                    if (filter == null || filter.Contains(databaseName))
+                        rows.Add(new SevereErrorRow(record, databaseName));
+                }
             }
             return rows;
         }, cancellationToken);
@@ -626,6 +635,7 @@ public sealed partial class ViewerDataService
         WHERE dte.server_id = $1
         AND   dte.event_time - make_interval(mins => svr.offset_minutes) >= $2
         AND   dte.event_time - make_interval(mins => svr.offset_minutes) <= $3
+        AND   ($4::text[] IS NULL OR dte.database_name = ANY($4))
         ORDER BY event_time_utc DESC
         """;
 
@@ -636,7 +646,7 @@ public sealed partial class ViewerDataService
     /// off-thread like the XML-shredding system_health categories.
     /// </summary>
     public async Task<List<DefaultTraceEventRow>> GetDefaultTraceEventsAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var rows = new List<DefaultTraceEventRow>();
 
@@ -644,6 +654,7 @@ public sealed partial class ViewerDataService
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
         command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(startUtc, DateTimeKind.Unspecified) });
         command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified) });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))

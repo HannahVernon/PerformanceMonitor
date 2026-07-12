@@ -131,6 +131,47 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- #1319: per-server global database filter (display-only) -->
+                    <Button x:Name="DatabaseFilterButton" Content="Databases: All" Click="DatabaseFilterButton_Click"
+                            Padding="8,4" Margin="0,0,8,0"
+                            ToolTip="Filter database-scoped views (queries, blocking, per-database config, trends) to selected databases. No effect on server-wide views such as CPU, memory, waits, or jobs."/>
+                    <Popup x:Name="DatabaseFilterPopup" PlacementTarget="{Binding ElementName=DatabaseFilterButton}"
+                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True"
+                           Closed="DatabaseFilterPopup_Closed">
+                        <Border Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="4" Padding="8" Width="300">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="Filter Databases" FontWeight="SemiBold" Margin="0,0,0,4"
+                                           Foreground="{DynamicResource ForegroundBrush}"/>
+                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4">
+                                    <Button Content="Select All" Click="DatabaseFilterSelectAll_Click" Padding="6,2" Margin="0,0,4,0" FontSize="11"/>
+                                    <Button Content="Clear All" Click="DatabaseFilterClearAll_Click" Padding="6,2" FontSize="11"/>
+                                    <TextBlock x:Name="DatabaseFilterCountText" Text="All databases" FontSize="10"
+                                               Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <TextBox Grid.Row="2" x:Name="DatabaseFilterSearchBox" TextChanged="DatabaseFilterSearch_TextChanged"
+                                         Margin="0,0,0,4" Padding="4,2"/>
+                                <ListBox Grid.Row="3" x:Name="DatabaseFilterList" Background="Transparent" BorderThickness="0"
+                                         MaxHeight="320" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                      Checked="DatabaseFilter_CheckChanged" Unchecked="DatabaseFilter_CheckChanged"
+                                                      Foreground="{DynamicResource ForegroundBrush}" FontSize="11">
+                                                <TextBlock Text="{Binding DisplayName}"/>
+                                            </CheckBox>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+                    </Popup>
                     <ComboBox x:Name="TimeRangeCombo" SelectedIndex="1" Width="120" Margin="0,0,8,0"
                               SelectionChanged="TimeRangeCombo_SelectionChanged">
                         <ComboBoxItem Content="Last 1 hour"/>

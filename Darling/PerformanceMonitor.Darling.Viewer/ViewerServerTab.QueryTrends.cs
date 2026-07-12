@@ -66,10 +66,10 @@ public partial class ViewerServerTab
     /// (NpgsqlDataSource pools a connection each), then each result renders into its chart.</summary>
     private async Task LoadPerformanceTrendsAsync(DateTime startUtc, DateTime endUtc)
     {
-        var queryDurationTask = _dataService.GetQueryDurationTrendAsync(_server.ServerId, startUtc, endUtc);
-        var procDurationTask = _dataService.GetProcedureDurationTrendAsync(_server.ServerId, startUtc, endUtc);
-        var queryStoreDurationTask = _dataService.GetQueryStoreDurationTrendAsync(_server.ServerId, startUtc, endUtc);
-        var executionCountTask = _dataService.GetExecutionCountTrendAsync(_server.ServerId, startUtc, endUtc);
+        var queryDurationTask = _dataService.GetQueryDurationTrendAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        var procDurationTask = _dataService.GetProcedureDurationTrendAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        var queryStoreDurationTask = _dataService.GetQueryStoreDurationTrendAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        var executionCountTask = _dataService.GetExecutionCountTrendAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
 
         await Task.WhenAll(queryDurationTask, procDurationTask, queryStoreDurationTask, executionCountTask);
 

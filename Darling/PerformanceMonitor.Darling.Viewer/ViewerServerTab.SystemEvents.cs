@@ -160,7 +160,7 @@ public partial class ViewerServerTab
     private async Task LoadSevereErrorsAsync()
     {
         var (startUtc, endUtc) = GetWindowUtc();
-        var data = await _dataService.GetSevereErrorsAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetSevereErrorsAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _seSevereErrorFilterMgr!.UpdateData(data);
         SevereErrorsNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SevereErrorsCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";
@@ -223,7 +223,7 @@ public partial class ViewerServerTab
     private async Task LoadDefaultTraceEventsAsync()
     {
         var (startUtc, endUtc) = GetWindowUtc();
-        var data = await _dataService.GetDefaultTraceEventsAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetDefaultTraceEventsAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _seDefaultTraceFilterMgr!.UpdateData(data);
         DefaultTraceNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         DefaultTraceCountIndicator.Text = data.Count > 0 ? $"{data.Count} event(s)" : "";

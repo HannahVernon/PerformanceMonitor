@@ -280,6 +280,45 @@ public sealed class ViewerServerStore
         return isFavorite;
     }
 
+    /// <summary>#1319: the persisted per-server display database filter (empty list = All / not yet set).</summary>
+    public List<string> GetViewFilterDatabases(string serverName)
+        => GetByServerName(serverName)?.ViewFilterDatabases ?? new List<string>();
+
+    /// <summary>
+    /// #1319: persists the per-server display database filter, adopting a minimal viewer-local registry
+    /// entry when the server has none yet (same adopt-on-write rule as <see cref="SetFavorite"/>). An empty
+    /// list clears the filter (and writes no new entry for a server that had none).
+    /// </summary>
+    public void SetViewFilterDatabases(string serverName, List<string> databases)
+    {
+        if (string.IsNullOrWhiteSpace(serverName))
+        {
+            return;
+        }
+
+        var entry = GetByServerName(serverName);
+        if (entry is null)
+        {
+            if (databases.Count == 0)
+            {
+                return;
+            }
+
+            _servers.Add(new ViewerServerEntry
+            {
+                ServerName = serverName,
+                DisplayName = serverName,
+                ViewFilterDatabases = databases
+            });
+        }
+        else
+        {
+            entry.ViewFilterDatabases = databases;
+        }
+
+        Save();
+    }
+
     /// <summary>The stored (username, password) for a server id, or null — used to pre-fill the Edit dialog.</summary>
     public (string Username, string Password)? GetCredential(string id) => _secrets.Get(id);
 
