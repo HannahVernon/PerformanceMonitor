@@ -107,6 +107,24 @@ public class AnomalyDetectorTests : IDisposable
         Assert.DoesNotContain(anomalies, f => f.Key == "ANOMALY_BATCH_REQUESTS");
     }
 
+    [Fact]
+    public async Task DetectBatchRequestAnomalies_LowVolumeSpike_NoAnomaly()
+    {
+        await _duckDb.InitializeAsync();
+
+        // Low-throughput server: a 6x relative spike but the peak stays at 300/sec
+        // — below the 500/sec BatchRequestFloor — must NOT be flagged.
+        await SeedBaselinePerfmon("Batch Requests/sec", 50, variance: 5);
+        for (int i = 0; i < 16; i++)
+            await SeedPerfmonAsync(_analysisStart.AddMinutes(i * 15), "Batch Requests/sec", 300);
+
+        await SeedBaselineCpu(10, variance: 2);
+
+        var anomalies = await _detector.DetectAnomaliesAsync(CreateContext());
+
+        Assert.DoesNotContain(anomalies, f => f.Key == "ANOMALY_BATCH_REQUESTS");
+    }
+
     // ── Session Count ──
 
     [Fact]
@@ -157,6 +175,30 @@ public class AnomalyDetectorTests : IDisposable
         Assert.DoesNotContain(anomalies, f => f.Key == "ANOMALY_SESSION_SPIKE");
     }
 
+    [Fact]
+    public async Task DetectSessionAnomalies_LowCountSpike_NoAnomaly()
+    {
+        await _duckDb.InitializeAsync();
+
+        // Low-connection server: an 8x relative spike but the peak stays at 40
+        // connections — below the 50 SessionCountFloor — must NOT be flagged.
+        await SeedBaselineSessions(5, variance: 1);
+        for (int i = 0; i < 16; i++)
+        {
+            var t = _analysisStart.AddMinutes(i * 15);
+            await SeedSessionStatAsync(t, "App1", 30);
+            await SeedSessionStatAsync(t, "App2", 10);
+        }
+
+        await SeedBaselineCpu(10, variance: 2);
+        for (int i = 0; i < 4; i++)
+            await SeedCpuAsync(_analysisStart.AddMinutes(i * 15), 10);
+
+        var anomalies = await _detector.DetectAnomaliesAsync(CreateContext());
+
+        Assert.DoesNotContain(anomalies, f => f.Key == "ANOMALY_SESSION_SPIKE");
+    }
+
     // ── Query Duration ──
 
     [Fact]
@@ -167,7 +209,29 @@ public class AnomalyDetectorTests : IDisposable
         // Baseline: ~10000 microseconds total elapsed per collection
         await SeedBaselineQueryStats(10_000, variance: 1000);
 
-        // Analysis window: spike to 500000 microseconds
+        // Analysis window: spike to 5,000,000 microseconds (5s) — above the 1s
+        // QueryDurationFloorUs so a genuinely slow query is still flagged
+        for (int i = 0; i < 16; i++)
+            await SeedQueryStatAsync(_analysisStart.AddMinutes(i * 15), 5_000_000, 100);
+
+        await SeedBaselineCpu(10, variance: 2);
+        await SeedBaselineWaits();
+
+        var anomalies = await _detector.DetectAnomaliesAsync(CreateContext());
+
+        Assert.Contains(anomalies, f => f.Key == "ANOMALY_QUERY_DURATION");
+    }
+
+    [Fact]
+    public async Task DetectQueryDurationAnomalies_SubFloorSpike_NoAnomaly()
+    {
+        await _duckDb.InitializeAsync();
+
+        // A huge *relative* spike (50x baseline) whose peak stays at 500,000 us
+        // (0.5s) — below the 1s QueryDurationFloorUs — must NOT be flagged. Guards
+        // against alarming on trivially small absolute query durations, the noise
+        // this floor was added to suppress.
+        await SeedBaselineQueryStats(10_000, variance: 1000);
         for (int i = 0; i < 16; i++)
             await SeedQueryStatAsync(_analysisStart.AddMinutes(i * 15), 500_000, 100);
 
@@ -176,7 +240,7 @@ public class AnomalyDetectorTests : IDisposable
 
         var anomalies = await _detector.DetectAnomaliesAsync(CreateContext());
 
-        Assert.Contains(anomalies, f => f.Key == "ANOMALY_QUERY_DURATION");
+        Assert.DoesNotContain(anomalies, f => f.Key == "ANOMALY_QUERY_DURATION");
     }
 
     // ── Memory Pressure ──
@@ -198,6 +262,24 @@ public class AnomalyDetectorTests : IDisposable
         var anomalies = await _detector.DetectAnomaliesAsync(CreateContext());
 
         Assert.Contains(anomalies, f => f.Key == "ANOMALY_MEMORY_PRESSURE");
+    }
+
+    [Fact]
+    public async Task DetectMemoryAnomalies_SubFloorSpike_NoAnomaly()
+    {
+        await _duckDb.InitializeAsync();
+
+        // Pressure climbs sharply (40% -> 85%) but the peak stays below the 90%
+        // MemoryPressureFloorPct — must NOT be flagged.
+        await SeedBaselineMemory(40_000, 100_000);
+        for (int i = 0; i < 16; i++)
+            await SeedMemoryStatAsync(_analysisStart.AddMinutes(i * 15), 85_000, 100_000);
+
+        await SeedBaselineCpu(10, variance: 2);
+
+        var anomalies = await _detector.DetectAnomaliesAsync(CreateContext());
+
+        Assert.DoesNotContain(anomalies, f => f.Key == "ANOMALY_MEMORY_PRESSURE");
     }
 
     [Fact]
