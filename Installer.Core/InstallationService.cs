@@ -1126,8 +1126,27 @@ END;";
         int totalSuccessCount = 0;
         int totalFailureCount = 0;
 
-        var upgrades = provider.GetApplicableUpgrades(currentVersion, targetVersion,
-            warning => progress?.Report(new InstallationProgress { Message = warning, Status = "Warning" }));
+        List<UpgradeInfo> upgrades;
+        try
+        {
+            upgrades = provider.GetApplicableUpgrades(currentVersion, targetVersion,
+                warning => progress?.Report(new InstallationProgress { Message = warning, Status = "Warning" }));
+        }
+        catch (ArgumentException ex)
+        {
+            /*
+            Report as a failure rather than letting it surface as "no upgrades needed". Callers abort
+            when totalFailureCount > 0, so this keeps an unreadable version from silently skipping
+            every migration and then stamping the database as current.
+            */
+            progress?.Report(new InstallationProgress
+            {
+                Message = $"Cannot determine which upgrades to apply: {ex.Message}",
+                Status = "Error"
+            });
+
+            return (0, 1, 0);
+        }
 
         if (upgrades.Count == 0)
         {

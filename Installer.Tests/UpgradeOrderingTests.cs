@@ -116,6 +116,74 @@ public class UpgradeOrderingTests
         Assert.Empty(upgrades);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void BlankCurrentVersion_ReturnsEmpty(string currentVersion)
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        var upgrades = ScriptProvider.FromDirectory(dir.RootPath).GetApplicableUpgrades(currentVersion, "2.2.0");
+
+        Assert.Empty(upgrades);
+    }
+
+    [Theory]
+    [InlineData("Unreachable")]
+    [InlineData("Not installed")]
+    [InlineData("2.x")]
+    public void UnparseableCurrentVersion_Throws(string currentVersion)
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        var provider = ScriptProvider.FromDirectory(dir.RootPath);
+
+        // An empty result means "no upgrades needed". If a status string silently produced one,
+        // every migration would be skipped and the caller would still stamp the DB as current.
+        var ex = Assert.Throws<ArgumentException>(
+            () => provider.GetApplicableUpgrades(currentVersion, "2.2.0"));
+
+        Assert.Equal("currentVersion", ex.ParamName);
+    }
+
+    [Fact]
+    public void UnparseableTargetVersion_Throws()
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        var provider = ScriptProvider.FromDirectory(dir.RootPath);
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => provider.GetApplicableUpgrades("2.0.0", "not-a-version"));
+
+        Assert.Equal("targetVersion", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task ExecuteAllUpgrades_UnreadableVersion_ReportsFailureRatherThanSkipping()
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        // Callers abort when totalFailureCount > 0. Returning (0, 0, 0) here would read as
+        // "nothing to upgrade", and the caller would go on to stamp the database as current at
+        // the target version -- stranding every skipped hop. The connection string is never used:
+        // discovery fails before any database work.
+        var (successCount, failureCount, upgradeCount) = await InstallationService.ExecuteAllUpgradesAsync(
+            ScriptProvider.FromDirectory(dir.RootPath),
+            "Server=unused;Database=unused;",
+            "Unreachable",
+            "2.2.0",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, successCount);
+        Assert.Equal(1, failureCount);
+        Assert.Equal(0, upgradeCount);
+    }
+
     [Fact]
     public void OrderedByFromVersion()
     {

@@ -80,20 +80,38 @@ public abstract class ScriptProvider
     /// <summary>
     /// Core upgrade-discovery logic shared by both providers.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Thrown when a version is present but unparseable. An empty result means "no upgrades needed",
+    /// which must never be the answer to "I could not read the version you gave me".
+    /// </exception>
     protected static List<UpgradeInfo> FilterUpgrades(
         IEnumerable<UpgradeInfo> candidates,
         string? currentVersion,
         string targetVersion)
     {
-        if (currentVersion == null)
+        /* No recorded version at all means a fresh install: there is nothing to upgrade from. */
+        if (string.IsNullOrWhiteSpace(currentVersion))
             return [];
 
+        /*
+        A version that is present but unparseable is a caller bug -- a status string like
+        "Unreachable" reaching us instead of a version. Returning an empty list would run zero
+        migrations and report zero failures, and the caller would then stamp installation_history
+        as SUCCESS at the target version. Version detection only reads the most recent SUCCESS row,
+        so every skipped hop would be stranded permanently. Fail loudly instead.
+        */
         if (!Version.TryParse(currentVersion, out var currentRaw))
-            return [];
+            throw new ArgumentException(
+                $"'{currentVersion}' is not a valid version. Upgrade discovery needs the installed version, not a status string.",
+                nameof(currentVersion));
+
         var current = new Version(currentRaw.Major, currentRaw.Minor, currentRaw.Build);
 
         if (!Version.TryParse(targetVersion, out var targetRaw))
-            return [];
+            throw new ArgumentException(
+                $"'{targetVersion}' is not a valid version.",
+                nameof(targetVersion));
+
         var target = new Version(targetRaw.Major, targetRaw.Minor, targetRaw.Build);
 
         return candidates

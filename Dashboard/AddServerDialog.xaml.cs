@@ -720,11 +720,14 @@ namespace PerformanceMonitorDashboard
                 });
 
                 /* Run upgrades if applicable (existing database, not clean install) */
+                int upgradeSuccess = 0;
+                int upgradeFailure = 0;
+
                 if (!cleanInstall && _installedVersion != null)
                 {
                     AppendInstallLog($"Checking for upgrades from v{NormalizeVersion(_installedVersion)} to v{appVersion}...", "Info");
 
-                    var (upgradeSuccess, upgradeFailure, upgradeCount) = await InstallationService.ExecuteAllUpgradesAsync(
+                    var upgradeResult = await InstallationService.ExecuteAllUpgradesAsync(
                         provider,
                         installerConnStr,
                         _installedVersion,
@@ -732,14 +735,41 @@ namespace PerformanceMonitorDashboard
                         progress,
                         cancellationToken);
 
-                    if (upgradeCount > 0)
+                    upgradeSuccess = upgradeResult.totalSuccessCount;
+                    upgradeFailure = upgradeResult.totalFailureCount;
+
+                    if (upgradeResult.upgradeCount > 0)
                     {
                         AppendInstallLog($"Upgrades complete: {upgradeSuccess} succeeded, {upgradeFailure} failed", upgradeFailure == 0 ? "Success" : "Warning");
                     }
 
+                    /*
+                    Abort when an upgrade script fails, matching the CLI installer.
+                    Reinstalling over a partially-upgraded database compounds the damage, and
+                    recording a successful install at the target version would strand the failed
+                    migration permanently: version detection reads the most recent SUCCESS row, so
+                    the hop would never be offered again. Writing no history row leaves the server
+                    at its current version, and upgrade scripts are idempotent, so re-running after
+                    fixing the error resumes cleanly.
+                    */
                     if (upgradeFailure > 0)
                     {
-                        AppendInstallLog("Upgrade failures detected. Continuing with full installation to ensure consistency...", "Warning");
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            InstallStatusText.Text = $"Upgrade aborted: {upgradeFailure} upgrade script(s) failed.";
+                            AppendInstallLog(
+                                $"Installation aborted: {upgradeFailure} upgrade script(s) failed. Upgrade scripts must succeed before installation can proceed.",
+                                "Error");
+                            AppendInstallLog(
+                                "Fix the errors above and run the upgrade again. The server remains at its current version.",
+                                "Info");
+                            TransitionToState(DialogState.Initial);
+                            DatabaseStatusPanel.Visibility = Visibility.Visible;
+                            InstallationPanel.Visibility = Visibility.Visible;
+                            AdvancedOptionsExpander.IsEnabled = true;
+                        });
+
+                        return;
                     }
                 }
 
@@ -771,14 +801,20 @@ namespace PerformanceMonitorDashboard
                 try
                 {
                     AppendInstallLog("Recording installation history...", "Info");
+
+                    /*
+                    Fold the upgrade script counts in. InstallationResult only covers the install
+                    files, so passing it alone would under-report files_executed and could record a
+                    SUCCESS at the target version even when a migration had failed.
+                    */
                     await InstallationService.LogInstallationHistoryAsync(
                         installerConnStr,
                         appVersion,
                         appVersion,
                         _installResult.StartTime,
-                        _installResult.FilesSucceeded,
-                        _installResult.FilesFailed,
-                        _installResult.Success,
+                        upgradeSuccess + _installResult.FilesSucceeded,
+                        upgradeFailure + _installResult.FilesFailed,
+                        upgradeFailure == 0 && _installResult.Success,
                         progress);
                     AppendInstallLog("Installation history recorded", "Success");
                 }
