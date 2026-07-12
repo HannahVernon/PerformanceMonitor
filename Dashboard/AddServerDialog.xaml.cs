@@ -1168,18 +1168,22 @@ namespace PerformanceMonitorDashboard
                     in the box" -- into a dead end: the installer-side probe can fail where the plain
                     connection test just succeeded (different connection string, different database), and
                     the user clicked, and nothing happened. No message, no state change. Forever.
+
+                    A STATUS LINE, not a BlockInstall. A block is a fact about a specific server, and the
+                    guard attributes it by the stamp -- which we just refused to move, correctly. Blocking
+                    here would leave the block attributed to the PREVIOUS server, so the next keystroke would
+                    restate it as "the server name changed", which is not what happened. And the only way to
+                    attribute it would be to stamp without the facts, which is the half-replaced state that
+                    made the guard affirm a lie in the first place. So: no new claim about any server, just
+                    a plain report of what failed. The install stays blocked by whatever already blocked it.
                     */
                     string detail =
                         string.IsNullOrWhiteSpace(probedServerInfo?.ErrorMessage)
                             ? "."
                             : $": {probedServerInfo.ErrorMessage}";
 
-                    StatusText.Text = string.Empty;
-                    StatusText.Visibility = Visibility.Collapsed;
-
-                    BlockInstall(
-                        $"Could not read this server's PerformanceMonitor status{detail}\n\n" +
-                        "Install and upgrade are blocked until this resolves.");
+                    StatusText.Text = $"Could not read this server's PerformanceMonitor status{detail}";
+                    StatusText.Visibility = Visibility.Visible;
                     return;
                 }
 
