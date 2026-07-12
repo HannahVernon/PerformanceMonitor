@@ -33,10 +33,19 @@ namespace PerformanceMonitorDashboard
             Connected_NoDatabase,
             Connected_NeedsUpgrade,
             Connected_Current,
+            Connected_StatusUnknown,
             Installing,
             InstallComplete,
             MonitoringCredentials
         }
+
+        /*
+        Set when version discovery failed outright (as opposed to finding no database). Installing
+        in that state would reinstall over an existing database with its migrations skipped, and
+        then stamp it SUCCESS at the target version -- the #538 hazard. Guards the install path
+        structurally rather than relying on the button being hidden.
+        */
+        private bool _databaseStatusUnknown;
 
         public ServerConnection ServerConnection { get; private set; }
         public string? Username { get; private set; }
@@ -533,8 +542,32 @@ namespace PerformanceMonitorDashboard
                     return;
                 }
 
-                /* Check installed version */
-                _installedVersion = await InstallationService.GetInstalledVersionAsync(installerConnStr);
+                /*
+                Check installed version. throwOnError matters: with the soft overload a transient
+                SqlException -- a timeout, the database OFFLINE/RESTORING, a permissions blip -- comes
+                back as null, which is indistinguishable from "no database". That drops us into the
+                fresh-install path, which skips every migration, reinstalls over the existing
+                database, and then stamps installation_history SUCCESS at the target version --
+                stranding every pending hop permanently. The CLI passes throwOnError: true for
+                exactly this reason; the Dashboard's install path must too.
+                */
+                try
+                {
+                    _installedVersion = await InstallationService.GetInstalledVersionAsync(
+                        installerConnStr,
+                        throwOnError: true);
+                    _databaseStatusUnknown = false;
+                }
+                catch (Exception ex)
+                {
+                    _databaseStatusUnknown = true;
+                    TransitionToState(DialogState.Connected_StatusUnknown);
+                    DatabaseStatusText.Text =
+                        $"Could not determine the installed PerformanceMonitor version: {ex.Message}\n\n" +
+                        "Install and upgrade are blocked until this resolves. Proceeding could reinstall over an " +
+                        "existing database, skip its pending migrations, and record it as up to date.";
+                    return;
+                }
 
                 if (_installedVersion == null)
                 {
@@ -618,7 +651,25 @@ namespace PerformanceMonitorDashboard
                 case DialogState.Connected_Current:
                     string normalizedCurrent = NormalizeVersion(_installedVersion!);
                     ConnectionInfoText.Text = connectionHeader;
-                    DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedCurrent} is up to date.";
+                    DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedCurrent} is up to date. " +
+                        "If objects are missing or damaged, click Repair to reinstall them.";
+                    /*
+                    Repair stays reachable at the current version: the install scripts are idempotent,
+                    so re-running them restores missing objects. There are no migrations to skip here
+                    (current == target), so this is a plain reinstall at the same version. The CLI can
+                    already do this with --repair; without it the Dashboard had no non-destructive
+                    recovery for a healthy-version-but-damaged database.
+                    */
+                    InstallUpgradeButton.Content = "Repair";
+                    InstallationPanel.Visibility = Visibility.Visible;
+                    SkipInstallText.Visibility = Visibility.Collapsed;
+                    DatabaseStatusPanel.Visibility = Visibility.Visible;
+                    SaveButton.IsEnabled = true;
+                    break;
+
+                case DialogState.Connected_StatusUnknown:
+                    /* DatabaseStatusText is set by the caller: it carries the underlying error. */
+                    ConnectionInfoText.Text = connectionHeader;
                     InstallUpgradeButton.Visibility = Visibility.Collapsed;
                     SkipInstallText.Visibility = Visibility.Collapsed;
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
@@ -677,6 +728,23 @@ namespace PerformanceMonitorDashboard
 
         private async void InstallOrUpgrade_Click(object sender, RoutedEventArgs e)
         {
+            /*
+            Never install when discovery failed: we cannot tell an absent database from an existing
+            one we simply could not read, and guessing "absent" reinstalls over it with the
+            migrations skipped and then records it as up to date.
+            */
+            if (_databaseStatusUnknown)
+            {
+                MessageBox.Show(
+                    "The installed PerformanceMonitor version could not be determined, so installing " +
+                    "could reinstall over an existing database and skip its pending migrations.\n\n" +
+                    "Resolve the connection or permissions problem and reopen this dialog.",
+                    "Database Status Unknown",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
             TransitionToState(DialogState.Installing);
             InstallLogTextBox.Clear();
             InstallProgressBar.Value = 0;
@@ -798,6 +866,14 @@ namespace PerformanceMonitorDashboard
                     }
                 }
 
+                /*
+                A repair reinstalls objects without running migrations, so it must NOT record the
+                target version -- that would strand every pending hop, which is exactly the bug the
+                abort above exists to prevent. Record it at the version the database is actually
+                still at, so the upgrade is still offered afterwards.
+                */
+                string historyVersion = repairFromVersion ?? appVersion;
+
                 /* Run main installation */
                 AppendInstallLog("Starting main installation...", "Info");
 
@@ -828,22 +904,17 @@ namespace PerformanceMonitorDashboard
                     AppendInstallLog("Recording installation history...", "Info");
 
                     /*
-                    A repair reinstalls objects without running migrations, so it must NOT record the
-                    target version -- that would strand every pending hop, which is exactly the bug
-                    the abort above exists to prevent. Record it at the version the database is
-                    actually still at, so the upgrade is still offered afterwards.
-                    */
-                    string historyVersion = repairFromVersion ?? appVersion;
-
-                    /*
                     Fold the upgrade script counts in. InstallationResult only covers the install
                     files, so passing it alone would under-report files_executed and could record a
                     SUCCESS at the target version even when a migration had failed.
+
+                    installer_version is what the database is at (historyVersion); installer_info_version
+                    records which binary ran, which on a repair is the newer one.
                     */
                     await InstallationService.LogInstallationHistoryAsync(
                         installerConnStr,
                         historyVersion,
-                        historyVersion,
+                        appVersion,
                         _installResult.StartTime,
                         upgradeSuccess + _installResult.FilesSucceeded,
                         upgradeFailure + _installResult.FilesFailed,
@@ -878,11 +949,12 @@ namespace PerformanceMonitorDashboard
                 /* Generate summary report */
                 try
                 {
+                    /* historyVersion, not appVersion: after a repair the database is still at the old version. */
                     _reportPath = InstallationService.GenerateSummaryReport(
                         ServerNameTextBox.Text.Trim(),
                         _coreServerInfo?.SqlServerVersion ?? "",
                         _coreServerInfo?.SqlServerEdition ?? "",
-                        appVersion,
+                        historyVersion,
                         _installResult);
                     AppendInstallLog($"Report saved: {_reportPath}", "Info");
                 }
@@ -897,9 +969,17 @@ namespace PerformanceMonitorDashboard
                     InstallProgressBar.Value = 100;
                     if (_installResult.Success && repairFromVersion != null)
                     {
+                        /*
+                        Clear Repair before landing in InstallComplete, which disables the expander the
+                        checkbox lives in. Leaving it ticked would trap the user: the next click on
+                        "Upgrade Now" would repair again, and they could not untick it without
+                        reopening the dialog.
+                        */
+                        RepairCheckBox.IsChecked = false;
+
                         InstallStatusText.Text = "Repair completed. Run the upgrade to apply pending migrations.";
                         AppendInstallLog(
-                            $"Repair completed successfully. The server is still at v{NormalizeVersion(repairFromVersion)} -- clear 'Repair' in Advanced Options and run the upgrade to apply the pending migrations.",
+                            $"Repair completed successfully. The server is still at v{NormalizeVersion(repairFromVersion)} -- click Upgrade Now to apply the pending migrations.",
                             "Success");
                     }
                     else if (_installResult.Success)

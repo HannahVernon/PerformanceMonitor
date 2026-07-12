@@ -635,6 +635,8 @@ namespace PerformanceMonitorInstaller
                 installationErrors.Clear();
                 installationSuccessful = false;
                 installationStartTime = DateTime.Now;
+                /* Reset with its siblings so a clean-install iteration can never reuse the prior one's version. */
+                currentVersion = null;
 
                 /*
                 Ask about clean install (automated mode preserves database unless --reinstall flag is used)
@@ -695,7 +697,6 @@ namespace PerformanceMonitorInstaller
                 /*
                 Upgrade mode - check for existing installation and apply upgrades
                 */
-                currentVersion = null;
                 try
                 {
                     currentVersion = await InstallationService.GetInstalledVersionAsync(connectionString, throwOnError: true).ConfigureAwait(false);
@@ -1008,12 +1009,17 @@ namespace PerformanceMonitorInstaller
                 actually still at, so the upgrade is still offered afterwards.
                 */
                 string historyVersion = repairMode && currentVersion != null ? currentVersion : version;
-                string historyInfoVersion = repairMode && currentVersion != null ? currentVersion : infoVersion;
 
+                /*
+                installer_info_version records which binary ran, so it passes through unchanged --
+                on a repair that is the newer installer, even though installer_version stays at the
+                version the database is still on. currentVersion came from the installer_version
+                column, so reusing it here would put an assembly-style version in an info-version field.
+                */
                 await InstallationService.LogInstallationHistoryAsync(
                     connectionString,
                     historyVersion,
-                    historyInfoVersion,
+                    infoVersion,
                     installationStartTime,
                     totalSuccessCount,
                     totalFailureCount,
