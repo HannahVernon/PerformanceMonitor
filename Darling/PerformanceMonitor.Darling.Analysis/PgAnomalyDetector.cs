@@ -12,6 +12,8 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Analysis.Baselines;
+using static PerformanceMonitor.Analysis.Baselines.AnomalyThresholds;
 
 namespace PerformanceMonitor.Darling.Analysis;
 
@@ -50,54 +52,6 @@ public class PgAnomalyDetector
     private readonly NpgsqlDataSource _postgres;
     private readonly PgBaselineProvider _baselineProvider;
     private readonly ILogger? _logger;
-
-    /// <summary>
-    /// Default number of standard deviations above baseline mean to flag as anomalous.
-    /// </summary>
-    private const double DefaultDeviationThreshold = 2.0;
-
-    /// <summary>
-    /// Default ratio threshold for the wait-profile detector (peak window all-types ms/sec ÷ baseline
-    /// mean). On the HONEST per-second scale now, so far below the old 5.0 that assumed a ~240x-inflated
-    /// input; matches the FactScorer WaitProfileRatioFloor. CALIBRATE ON THE SQL2025/HAMMERDB BOX.
-    /// </summary>
-    private const double DefaultRatioThreshold = 4.0;
-
-    /// <summary>
-    /// Default ratio threshold for event-based anomaly detection (blocking/deadlocks).
-    /// </summary>
-    private const double DefaultEventRatioThreshold = 3.0;
-
-    // #1486 absolute-magnitude floors (the z-path sanity ceiling) so a z-score against a thin
-    // baseline can't surface a trivial value; sigma display cap so a variance-collapsed baseline
-    // can't render millions-of-sigma.
-    private const double CpuFloorPct = 50.0;                // %
-    private const double ReadLatencyFloorMs = 10.0;         // ms
-    private const double BatchRequestFloor = 500.0;         // requests/sec
-    private const double SessionCountFloor = 50.0;          // connections
-    private const double QueryDurationFloorUs = 1_000_000;  // total elapsed us = 1 second
-    private const double MemoryPressureFloorPct = 90.0;     // total/target %
-    private const double WriteLatencyFloorMs = 20.0;        // ms, was 5
-    private const double SigmaDisplayCap = 25.0;
-
-    // Low-quality-baseline ABSOLUTE-FALLBACK bars: when the baseline is too thin to trust a z-score
-    // (BaselineBucket.IsTrustworthy false), the detector fires on these instead of going silent.
-    // Each is deliberately HIGHER than the matching #1486 magnitude floor above (the interaction
-    // trap: a young store fires only on the higher bar, never on both-AND-ed into blindness).
-    private const double CpuFallbackPct = 90.0;                 // %
-    private const double MemoryPressureFallbackPct = 95.0;      // total/target %
-    private const double BatchRequestFallback = 5000.0;        // requests/sec
-    private const double SessionCountFallback = 500.0;         // connections
-    private const double QueryDurationFallbackUs = 5_000_000;  // total elapsed us = 5 seconds
-    private const double IoLatencyFallbackMs = 50.0;           // ms (read and write)
-
-    // Wait-profile detector (DetectWaitAnomalies → one ANOMALY_WAIT_PROFILE): the current window's
-    // all-types wait ms/sec (PEAK across collections, matching the z-detectors) is compared to the
-    // WaitMsPerSec baseline. DefaultRatioThreshold and the FactScorer wait slope are on the HONEST
-    // per-second scale now (the old 5×/20× was calibrated to a ~240×-inflated per-hour-vs-per-interval
-    // input) — a sensible starting point; CALIBRATE ON THE SQL2025/HAMMERDB BOX.
-    private const double WaitProfileFallbackMsPerSec = 250.0;  // untrustworthy-baseline absolute bar
-    private const double NoBaselineRatio = 100.0;             // scoring sentinel for a first-occurrence (is_new)
 
     /// <summary>
     /// Per-metric deviation thresholds. Metrics not listed use DefaultDeviationThreshold.
@@ -324,10 +278,6 @@ ORDER BY ms_delta DESC LIMIT 1";
     /// Emits ANOMALY_OBJECT_GROWTH for the biggest table grower over threshold and
     /// ANOMALY_OBJECT_CONTENTION for the index with the largest new lock-wait time.
     /// </summary>
-    private const decimal ObjectGrowthMbThreshold = 100m;   // ignore tables that grew less than 100 MB
-    private const double ObjectGrowthPctThreshold = 20.0;   // ...and less than 20% day-over-day
-    private const long ObjectLockWaitMsDeltaThreshold = 60000; // 1 minute of new lock waits
-
     private async Task DetectObjectStatsAnomalies(AnalysisContext context, List<Fact> anomalies)
     {
         try

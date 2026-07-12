@@ -10,6 +10,7 @@ using System;
 using System.Threading.Tasks;
 using Npgsql;
 using NpgsqlTypes;
+using PerformanceMonitor.Analysis.Baselines;
 using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Analysis;
 using PerformanceMonitor.Darling.Storage;
