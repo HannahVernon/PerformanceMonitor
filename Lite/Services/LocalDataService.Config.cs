@@ -51,10 +51,11 @@ ORDER BY configuration_name";
     /// <summary>
     /// Gets the latest database configuration snapshot (sys.databases).
     /// </summary>
-    public async Task<List<DatabaseConfigRow>> GetLatestDatabaseConfigAsync(int serverId)
+    public async Task<List<DatabaseConfigRow>> GetLatestDatabaseConfigAsync(int serverId, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 2, out var dbValues);
         command.CommandText = @"
 SELECT database_name, state_desc, compatibility_level, collation_name, recovery_model,
        is_read_only, is_auto_close_on, is_auto_shrink_on,
@@ -66,10 +67,12 @@ SELECT database_name, state_desc, compatibility_level, collation_name, recovery_
        is_accelerated_database_recovery_on, is_memory_optimized_enabled, is_optimized_locking_on
 FROM v_database_config
 WHERE server_id = $1
-AND   capture_time = (SELECT MAX(capture_time) FROM v_database_config WHERE server_id = $1)
+AND   capture_time = (SELECT MAX(capture_time) FROM v_database_config WHERE server_id = $1)" + dbClause + @"
 ORDER BY database_name";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<DatabaseConfigRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -115,18 +118,21 @@ ORDER BY database_name";
     /// <summary>
     /// Gets the latest database-scoped configuration snapshot.
     /// </summary>
-    public async Task<List<DatabaseScopedConfigRow>> GetLatestDatabaseScopedConfigAsync(int serverId)
+    public async Task<List<DatabaseScopedConfigRow>> GetLatestDatabaseScopedConfigAsync(int serverId, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 2, out var dbValues);
         command.CommandText = @"
 SELECT database_name, configuration_name, value, value_for_secondary
 FROM v_database_scoped_config
 WHERE server_id = $1
-AND   capture_time = (SELECT MAX(capture_time) FROM v_database_scoped_config WHERE server_id = $1)
+AND   capture_time = (SELECT MAX(capture_time) FROM v_database_scoped_config WHERE server_id = $1)" + dbClause + @"
 ORDER BY database_name, configuration_name";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<DatabaseScopedConfigRow>();
         using var reader = await command.ExecuteReaderAsync();

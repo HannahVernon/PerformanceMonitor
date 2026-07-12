@@ -122,7 +122,7 @@ public partial class ViewerServerTab
     private async Task LoadQueryHeatmapAsync(DateTime startUtc, DateTime endUtc)
     {
         var metric = (HeatmapMetric)HeatmapMetricCombo.SelectedIndex;
-        var result = await _dataService.GetQueryHeatmapAsync(_server.ServerId, metric, startUtc, endUtc);
+        var result = await _dataService.GetQueryHeatmapAsync(_server.ServerId, metric, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         UpdateQueryHeatmapChart(result);
     }
 
@@ -133,7 +133,7 @@ public partial class ViewerServerTab
         {
             var (startUtc, endUtc) = GetWindowUtc();
             var metric = (HeatmapMetric)HeatmapMetricCombo.SelectedIndex;
-            var result = await _dataService.GetQueryHeatmapAsync(_server.ServerId, metric, startUtc, endUtc);
+            var result = await _dataService.GetQueryHeatmapAsync(_server.ServerId, metric, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
             UpdateQueryHeatmapChart(result);
         }
         catch (Exception ex)

@@ -391,7 +391,7 @@ HAVING COUNT(*) >= 24";
                 var tdeDbNames = new List<string>();
                 if (isEnterprise && f.MajorVersion < 15)
                 {
-                    var configRows = await GetLatestDatabaseConfigAsync(serverId, cancellationToken);
+                    var configRows = await GetLatestDatabaseConfigAsync(serverId, cancellationToken: cancellationToken);
                     tdeDbNames = SelectTdeDatabaseNames(configRows);
                 }
 
@@ -518,7 +518,7 @@ HAVING COUNT(*) >= 24";
         // 7. Dev/test workload detection (collected database name list).
         try
         {
-            var configRows = await GetLatestDatabaseConfigAsync(serverId, cancellationToken);
+            var configRows = await GetLatestDatabaseConfigAsync(serverId, cancellationToken: cancellationToken);
             var devDbs = MatchDevTestDatabases(configRows.Select(r => r.DatabaseName));
             if (devDbs.Count > 0)
             {

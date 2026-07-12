@@ -156,6 +156,7 @@ public sealed partial class ViewerDataService
             WHERE server_id = $1
             AND   collection_time >= $2
             AND   collection_time <= $3
+            AND   ($5::text[] IS NULL OR database_name = ANY($5))
             GROUP BY database_name, query_id, plan_id, query_hash
             ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS double precision)) DESC
             LIMIT $4 + 5
@@ -234,13 +235,14 @@ public sealed partial class ViewerDataService
     /// <paramref name="endUtc"/>], pre-sorted by total duration descending (the grid's default sort).
     /// </summary>
     public async Task<List<ViewerQueryStoreRow>> GetQueryStoreTopQueriesAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, int top = TopQueriesPageSize, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, int top = TopQueriesPageSize, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var rows = new List<ViewerQueryStoreRow>();
 
         await using var command = _dataSource.CreateCommand(QueryStoreTopSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
         command.Parameters.Add(new Npgsql.NpgsqlParameter<int> { TypedValue = top });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -317,6 +319,7 @@ public sealed partial class ViewerDataService
             FROM query_store_stats
             WHERE server_id = $1
             AND   collection_time >= $2 AND collection_time <= $3
+            AND   ($6::text[] IS NULL OR database_name = ANY($6))
             AND   execution_count > 0
             GROUP BY database_name, query_hash
             ORDER BY SUM(execution_count) DESC
@@ -327,6 +330,7 @@ public sealed partial class ViewerDataService
             FROM query_store_stats
             WHERE server_id = $1
             AND   collection_time >= $4 AND collection_time <= $5
+            AND   ($6::text[] IS NULL OR database_name = ANY($6))
             AND   execution_count > 0
             GROUP BY database_name, query_hash
             ORDER BY SUM(execution_count) DESC
@@ -391,12 +395,14 @@ public sealed partial class ViewerDataService
         int serverId,
         DateTime currentStart, DateTime currentEnd,
         DateTime baselineStart, DateTime baselineEnd,
+        IReadOnlyList<string>? databaseNames = null,
         CancellationToken cancellationToken = default)
     {
         var items = new List<QueryStatsComparisonItem>();
 
         await using var command = _dataSource.CreateCommand(QueryStoreComparisonSql);
         AddComparisonParameters(command, serverId, currentStart, currentEnd, baselineStart, baselineEnd);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -439,12 +445,13 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         GROUP BY date_trunc('hour', collection_time)
         ORDER BY bucket
         """;
 
     /// <summary>Hourly Query Store slicer buckets over [<paramref name="startUtc"/>, <paramref name="endUtc"/>].</summary>
     public async Task<List<TimeSliceBucket>> GetQueryStoreSlicerDataAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
-        => await ReadQueryStatsSlicerAsync(QueryStoreSlicerSql, serverId, startUtc, endUtc, cancellationToken);
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
+        => await ReadQueryStatsSlicerAsync(QueryStoreSlicerSql, serverId, startUtc, endUtc, databaseNames, cancellationToken);
 }

@@ -97,7 +97,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 43;
+    internal const int CurrentSchemaVersion = 45;
 
     private readonly string _archivePath;
 
@@ -120,6 +120,7 @@ public class DuckDbInitializer
         "dmv_blocking_snapshots",
         "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
         "session_stats", "session_summary_stats", "system_health_events", "default_trace_events",
+        "job_history", "agent_status",
         "server_config", "database_config",
         "database_scoped_config", "trace_flags", "config_alert_log",
         "collection_log"
@@ -1013,6 +1014,26 @@ public class DuckDbInitializer
                     GetAllTableStatements() below; the v_ view comes from CreateArchiveViewsAsync via
                     ArchivableTables. */
             _logger?.LogInformation("Running migration to v43: adding default_trace_events table");
+        }
+
+        if (fromVersion < 44)
+        {
+            /* v44: added job_history (retained SQL Agent job-run history from msdb.dbo.sysjobhistory —
+                    every step row + the job-outcome row, deduped on the monotonic instance_id high-water
+                    mark, 365-day retention) for the fleet-wide Job History tab (issue #1433). New table
+                    only — created by GetAllTableStatements() below; the v_ view comes from
+                    CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v44: adding job_history table");
+        }
+
+        if (fromVersion < 45)
+        {
+            /* v45: added agent_status (SQL Agent service Running/Stopped from sys.dm_server_services +
+                    next scheduled run from msdb.dbo.sysjobschedules) — the current-state snapshot behind the
+                    Job History tab header and the "Agent Not Running" alert (issue #1433 Phase 2). New table
+                    only — created by GetAllTableStatements() below; the v_ view comes from
+                    CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v45: adding agent_status table");
         }
     }
 

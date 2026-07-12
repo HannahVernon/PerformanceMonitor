@@ -138,7 +138,7 @@ public sealed class ViewerUnifiedExpensiveQueriesSqlTests
     }
 
     [Fact]
-    public void UnifiedSql_IsPostgresDialect_FivePositionalParams_NoTsqlIsms()
+    public void UnifiedSql_IsPostgresDialect_SixPositionalParams_NoTsqlIsms()
     {
         var sql = ViewerDataService.UnifiedExpensiveQueriesSql;
         Assert.DoesNotContain("getdate", sql.ToLowerInvariant());
@@ -148,7 +148,9 @@ public sealed class ViewerUnifiedExpensiveQueriesSqlTests
         Assert.DoesNotContain("@", sql, StringComparison.Ordinal);
         Assert.Contains("$1", sql, StringComparison.Ordinal);
         Assert.Contains("$5", sql, StringComparison.Ordinal);
-        Assert.DoesNotContain("$6", sql, StringComparison.Ordinal);
+        /* #1319: the global database filter is the 6th positional param — a nullable text[] applied as
+           database_name = ANY($6) in all three UNION-ALL source branches. */
+        Assert.Contains("database_name = ANY($6)", sql, StringComparison.Ordinal);
     }
 
     private static int CountOccurrences(string haystack, string needle)

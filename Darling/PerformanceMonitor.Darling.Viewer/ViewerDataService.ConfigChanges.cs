@@ -107,6 +107,7 @@ public sealed partial class ViewerDataService
         FROM v_database_config
         WHERE server_id = $1
         AND   capture_time <= $2
+        AND   ($3::text[] IS NULL OR database_name = ANY($3))
         ORDER BY database_name, capture_time
         """;
 
@@ -165,9 +166,9 @@ public sealed partial class ViewerDataService
     /// <summary>Database-configuration changes in the window [startUtc, endUtc]. Reads every snapshot up to
     /// endUtc then UNPIVOTs the wide row per (database, setting) whose value moved.</summary>
     public async Task<List<DatabaseConfigChangeRow>> GetDatabaseConfigChangesAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
-        var snapshots = await ReadDatabaseConfigSnapshotsAsync(serverId, endUtc, cancellationToken);
+        var snapshots = await ReadDatabaseConfigSnapshotsAsync(serverId, endUtc, databaseNames, cancellationToken);
         return DiffDatabaseConfigChanges(snapshots, startUtc, endUtc);
     }
 
@@ -203,11 +204,12 @@ public sealed partial class ViewerDataService
     }
 
     private async Task<List<DatabaseConfigSnapshot>> ReadDatabaseConfigSnapshotsAsync(
-        int serverId, DateTime endUtc, CancellationToken cancellationToken)
+        int serverId, DateTime endUtc, IReadOnlyList<string>? databaseNames, CancellationToken cancellationToken)
     {
         var rows = new List<DatabaseConfigSnapshot>();
         await using var command = _dataSource.CreateCommand(DatabaseConfigChangesSnapshotsSql);
         AddServerIdAndWindowEnd(command, serverId, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

@@ -220,6 +220,11 @@ public partial class MainWindow : Window
         AlertsHistoryContent.Initialize(_dataService);
         AlertsHistoryContent.StatusChanged += OnServerTabStatusChanged;
 
+        /* The Job History tab is a self-loading all-servers control (retained SQL Agent job-run history);
+           give it the store and surface its load outcomes on the shared status bar. */
+        JobHistoryContent.Initialize(_dataService);
+        JobHistoryContent.StatusChanged += OnServerTabStatusChanged;
+
         /* The FinOps tab is a self-loading cross-server aggregate control with its own server selector; give
            it the store, surface its load/refresh outcomes on the shared status bar, and route its query grids'
            "View Plan" requests into the standalone Plan Viewer surface (it has no per-server plan host). */
@@ -738,6 +743,9 @@ public partial class MainWindow : Window
                 case TabItem tab when ReferenceEquals(tab, AlertsTab):
                     await AlertsHistoryContent.RefreshAlertsAsync();
                     break;
+                case TabItem tab when ReferenceEquals(tab, JobHistoryTabItem):
+                    await JobHistoryContent.RefreshJobsAsync();
+                    break;
                 case TabItem tab when ReferenceEquals(tab, FinOpsTab):
                     await FinOpsContent.RefreshActiveSubTabAsync();
                     break;
@@ -770,7 +778,7 @@ public partial class MainWindow : Window
             return existing.Content as ViewerServerTab;
         }
 
-        var serverTab = new ViewerServerTab(_dataService, server, _preferences);
+        var serverTab = new ViewerServerTab(_dataService, server, _preferences, _serverStore);
         serverTab.StatusChanged += OnServerTabStatusChanged;
         serverTab.ApplyTimeRangeRequested += OnApplyTimeRangeToAllRequested;
         serverTab.DisplayModeChanged += OnDisplayModeChanged;

@@ -96,6 +96,14 @@ public sealed class ViewerServerEntry : INotifyPropertyChanged
     /// <summary>User databases to skip in per-database collectors.</summary>
     public List<string> ExcludedDatabases { get; set; } = new();
 
+    /// <summary>
+    /// #1319: the per-server global database FILTER (display-only). When non-empty, database-scoped views
+    /// (query grids, blocking, per-DB config, trends/slicers/heatmap) show only these databases; empty =
+    /// "All". Distinct from <see cref="ExcludedDatabases"/> (collector-side "don't COLLECT"); this changes
+    /// only what the viewer displays. Persisted per-server in viewer-servers.json so a subset stays sticky.
+    /// </summary>
+    public List<string> ViewFilterDatabases { get; set; } = new();
+
     /// <summary>Server name with "(Read-Only)" suffix when <see cref="ReadOnlyIntent"/> is set (grid + status text).</summary>
     [JsonIgnore]
     public string ServerNameDisplay => ReadOnlyIntent ? $"{ServerName} (Read-Only)" : ServerName;

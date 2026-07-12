@@ -116,6 +116,10 @@ public partial class MainWindow : Window
             /* Auto-refresh alert history if the tab is active */
             if (ServerTabControl.SelectedItem == AlertsTab)
                 AlertsHistoryContent.RefreshAlerts();
+
+            /* Auto-refresh job history if the tab is active */
+            if (ServerTabControl.SelectedItem == JobHistoryTabItem)
+                JobHistoryContent.RefreshJobs();
         };
 
         // Initialize database and UI
@@ -221,6 +225,9 @@ public partial class MainWindow : Window
             AlertsHistoryContent.Initialize(_dataService);
             AlertsHistoryContent.MuteRuleService = _muteRuleService;
             AlertsHistoryContent.AlertsDismissed += OnAlertHistoryDismissed;
+
+            // Initialize job history tab
+            JobHistoryContent.Initialize(_dataService);
 
             // Initialize FinOps tab
             FinOpsContent.Initialize(_dataService, _serverManager);
@@ -380,6 +387,12 @@ public partial class MainWindow : Window
         if (ServerTabControl.SelectedItem == AlertsTab)
         {
             AlertsHistoryContent.RefreshAlerts();
+        }
+
+        /* Refresh job history tab when selected */
+        if (ServerTabControl.SelectedItem == JobHistoryTabItem)
+        {
+            JobHistoryContent.RefreshJobs();
         }
 
         /* Refresh recommendations tab when selected (picks up newly-collected findings) */
@@ -711,6 +724,9 @@ public partial class MainWindow : Window
         serverTab.AlertCountsChanged += alertHandler;
         serverTab.ApplyTimeRangeRequested += timeRangeHandler;
         serverTab.ManualRefreshRequested += refreshHandler;
+        /* #1319: persist the per-server view database filter (no credential side effects). The handler
+           captures only the long-lived _serverManager, so it needs no explicit unsubscribe. */
+        serverTab.PersistServerRequested += s => _serverManager.UpdateServerSettings(s);
         _tabEventHandlers[server.Id] = (alertHandler, timeRangeHandler, refreshHandler);
 
         _openServerTabs[server.Id] = tabItem;

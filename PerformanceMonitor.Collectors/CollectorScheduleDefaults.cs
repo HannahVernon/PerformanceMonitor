@@ -58,5 +58,7 @@ public static class CollectorScheduleDefaults
         ["session_summary_stats"] = new(5, 30),
         ["system_health_events"] = new(5, 30),
         ["default_trace_events"] = new(5, 30),
+        ["job_history"] = new(5, 365),
+        ["agent_status"] = new(5, 7),
     };
 }

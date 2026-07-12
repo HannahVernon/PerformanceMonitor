@@ -91,7 +91,9 @@ public sealed class ViewerQueriesSqlTests
         /* The viewer has no per-server UTC offset; the delta HAVING already excludes never-ran plans. */
         var sql = ViewerDataService.TopQueriesSql;
         Assert.DoesNotContain("INTERVAL", sql, StringComparison.Ordinal);
-        Assert.DoesNotContain("$5", sql, StringComparison.Ordinal);
+        /* #1319: $5 is now the global database filter (database_name = ANY($5)), NOT Lite's utc-offset
+           staleness param — the viewer still drops Lite's INTERVAL staleness filter. */
+        Assert.Contains("database_name = ANY($5)", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("$6", sql, StringComparison.Ordinal);
     }
 

@@ -71,14 +71,14 @@ public partial class ViewerServerTab
         if (_pendingActiveQueriesWindow is { } pending)
         {
             _pendingActiveQueriesWindow = null;
-            var pendingSnapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, pending.FromUtc, pending.ToUtc);
+            var pendingSnapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, pending.FromUtc, pending.ToUtc, databaseNames: SelectedDatabaseFilter);
             _querySnapshotsFilterMgr!.UpdateData(pendingSnapshots);
             LatestSnapshotIndicator.Text = pending.Indicator;
             await LoadActiveQueriesSlicerAsync(pending.FromUtc.AddHours(-1), pending.ToUtc.AddHours(1));
             return;
         }
 
-        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, startUtc, endUtc);
+        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LatestSnapshotIndicator.Text = "";
         await LoadActiveQueriesSlicerAsync(startUtc, endUtc);
@@ -86,7 +86,7 @@ public partial class ViewerServerTab
 
     private async Task LoadActiveQueriesSlicerAsync(DateTime startUtc, DateTime endUtc)
     {
-        var data = await _dataService.GetActiveQuerySlicerDataAsync(_server.ServerId, startUtc, endUtc);
+        var data = await _dataService.GetActiveQuerySlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _activeQueriesSlicerData = data;
         _activeQueriesSlicerMetric = "Sessions";
         if (data.Count > 0)
@@ -97,7 +97,7 @@ public partial class ViewerServerTab
     {
         try
         {
-            var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, e.StartUtc, e.EndUtc);
+            var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
             _querySnapshotsFilterMgr!.UpdateData(snapshots);
             LatestSnapshotIndicator.Text = "";
         }
@@ -178,7 +178,7 @@ public partial class ViewerServerTab
             }
 
             LatestSnapshotIndicator.Text = "Loading...";
-            var (batchTime, rows) = await _dataService.GetLatestQuerySnapshotBatchAsync(_server.ServerId);
+            var (batchTime, rows) = await _dataService.GetLatestQuerySnapshotBatchAsync(_server.ServerId, databaseNames: SelectedDatabaseFilter);
             _querySnapshotsFilterMgr!.UpdateData(rows);
             LatestSnapshotIndicator.Text = batchTime.HasValue
                 ? $"Latest snapshot: {ViewerTimeHelper.ForDisplay(batchTime.Value):yyyy-MM-dd HH:mm:ss}"
@@ -288,7 +288,7 @@ public partial class ViewerServerTab
             _suppressDrillDownAutoRefresh = false;
         }
 
-        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, fromUtc, toUtc);
+        var snapshots = await _dataService.GetLatestQuerySnapshotsAsync(_server.ServerId, fromUtc, toUtc, databaseNames: SelectedDatabaseFilter);
         _querySnapshotsFilterMgr!.UpdateData(snapshots);
         LatestSnapshotIndicator.Text = indicator;
 

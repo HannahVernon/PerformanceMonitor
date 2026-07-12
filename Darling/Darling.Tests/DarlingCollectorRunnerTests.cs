@@ -203,6 +203,63 @@ public sealed class DarlingCollectorRunnerTests
         }
     }
 
+    [Fact]
+    public async Task GetLastCollectedInstanceIdAsync_ReturnsMaxInstanceId_ScopedPerServer()
+    {
+        /* The numeric (bigint) watermark helper behind job_history's instance_id dedup (#1433). Gated on
+           Postgres only — it seeds job_history rows directly and reads MAX(instance_id), proving per-server
+           scoping and the first-run null, the numeric twin of GetLastCollectedTimeAsync (line 102). */
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg), "Set DARLING_TEST_PG to run the numeric-watermark read.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator());
+        const int serverId = -880088;
+        const int otherServerId = -880099;
+
+        await CleanServerRowsAsync(dataSource, "job_history", serverId, ct);
+        await CleanServerRowsAsync(dataSource, "job_history", otherServerId, ct);
+        try
+        {
+            /* First run: no rows for the server yet → null (caller collects all history). */
+            Assert.Null(await runner.GetLastCollectedInstanceIdAsync(serverId, "job_history", "instance_id", ct));
+
+            /* Two rows for the server + a higher instance_id for a DIFFERENT server, to prove per-server scoping. */
+            await InsertJobHistoryInstanceAsync(dataSource, ct, serverId, jobHistoryId: 9_100_001, instanceId: 100);
+            await InsertJobHistoryInstanceAsync(dataSource, ct, serverId, jobHistoryId: 9_100_002, instanceId: 250);
+            await InsertJobHistoryInstanceAsync(dataSource, ct, otherServerId, jobHistoryId: 9_100_003, instanceId: 9999);
+
+            var max = await runner.GetLastCollectedInstanceIdAsync(serverId, "job_history", "instance_id", ct);
+            Assert.Equal(250L, max);
+        }
+        finally
+        {
+            await CleanServerRowsAsync(dataSource, "job_history", serverId, ct);
+            await CleanServerRowsAsync(dataSource, "job_history", otherServerId, ct);
+        }
+    }
+
+    private static async Task InsertJobHistoryInstanceAsync(
+        NpgsqlDataSource dataSource, CancellationToken ct, int serverId, long jobHistoryId, long instanceId)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand(@"
+INSERT INTO job_history (job_history_id, collection_time, server_id, server_name, instance_id)
+VALUES ($1, $2, $3, $4, $5)", connection);
+        command.Parameters.AddWithValue(jobHistoryId);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue("NUM-WM-SRV");
+        command.Parameters.AddWithValue(instanceId);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
     private static MonitoredServer MakeLiveConfig(string name, string sqlHost)
     {
         var sqlUser = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_USER");

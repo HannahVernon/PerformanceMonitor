@@ -30,7 +30,7 @@ public partial class ViewerServerTab : UserControl
         var (startUtc, endUtc) = GetWindowUtc();
 
         var serverTask = _dataService.GetServerConfigChangesAsync(_server.ServerId, startUtc, endUtc);
-        var databaseTask = _dataService.GetDatabaseConfigChangesAsync(_server.ServerId, startUtc, endUtc);
+        var databaseTask = _dataService.GetDatabaseConfigChangesAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         var traceFlagTask = _dataService.GetTraceFlagChangesAsync(_server.ServerId, startUtc, endUtc);
 
         await Task.WhenAll(serverTask, databaseTask, traceFlagTask);

@@ -60,6 +60,14 @@ public partial class RemoteCollectorService
             ? null
             : await GetLastCollectedTimeAsync(serverId, definition.TargetTable, definition.WatermarkColumn, cancellationToken);
 
+        /* Numeric (bigint) watermark = the host store's latest already-collected value of the definition's
+           monotonic identity column (job_history's instance_id) — the bigint twin of the timestamp watermark
+           above, for exact-and-complete dedup that survives server-side purges. Null for every collector that
+           declares no numeric watermark (the common case), so no extra query runs for them. */
+        long? numericWatermark = definition.NumericWatermarkColumn is null
+            ? null
+            : await GetLastCollectedInstanceIdAsync(serverId, definition.TargetTable, definition.NumericWatermarkColumn, cancellationToken);
+
         /* Only when the watermark came back null (hot store empty): tell a TRUE first run from a store merely
            emptied by archival, so a definition like default_trace_events doesn't re-scan source data already
            in the parquet archive (CollectorContext.HasCollectedBefore). Skipped in the common (non-null
@@ -76,6 +84,7 @@ public partial class RemoteCollectorService
             Deltas = _deltaCalculator,
             Target = target,
             Watermark = watermark,
+            NumericWatermark = numericWatermark,
             HasCollectedBefore = hasCollectedBefore,
             IgnoredWaitTypes = _ignoredWaitTypes.Value,
             ExcludedDatabases = server.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
@@ -271,6 +280,7 @@ public partial class RemoteCollectorService
         CollectorParameterType.DateTime2 => new SqlParameter(parameter.Name, SqlDbType.DateTime2) { Value = parameter.Value ?? DBNull.Value },
         CollectorParameterType.NVarChar128 => new SqlParameter(parameter.Name, SqlDbType.NVarChar, 128) { Value = parameter.Value ?? DBNull.Value },
         CollectorParameterType.Int32 => new SqlParameter(parameter.Name, SqlDbType.Int) { Value = parameter.Value ?? DBNull.Value },
+        CollectorParameterType.BigInt => new SqlParameter(parameter.Name, SqlDbType.BigInt) { Value = parameter.Value ?? DBNull.Value },
         _ => throw new ArgumentOutOfRangeException(nameof(parameter), parameter.Type, "Unmapped collector parameter type"),
     };
 }

@@ -153,6 +153,7 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         ORDER BY event_time DESC
         LIMIT 200
         """;
@@ -191,6 +192,7 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         ORDER BY event_time DESC
         LIMIT 200
         """;
@@ -224,10 +226,10 @@ public sealed partial class ViewerDataService
     /// the alert path's semantics, on the shared row shape.
     /// </summary>
     public async Task<List<ViewerBlockedProcessRow>> GetRecentBlockedProcessReportsAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
-        var items = await ReadBlockedProcessRowsAsync(serverId, startUtc, endUtc, cancellationToken);
-        var dmvItems = await ReadDmvBlockedProcessRowsAsync(serverId, startUtc, endUtc, cancellationToken);
+        var items = await ReadBlockedProcessRowsAsync(serverId, startUtc, endUtc, databaseNames, cancellationToken);
+        var dmvItems = await ReadDmvBlockedProcessRowsAsync(serverId, startUtc, endUtc, databaseNames, cancellationToken);
 
         BlockedProcessReportMerge.AppendDmvFallbackRows(items, dmvItems);
 
@@ -236,12 +238,13 @@ public sealed partial class ViewerDataService
 
     /// <summary>Maps the full 37-column blocked-process-report read into the widened grid row.</summary>
     private async Task<List<ViewerBlockedProcessRow>> ReadBlockedProcessRowsAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames, CancellationToken cancellationToken)
     {
         var rows = new List<ViewerBlockedProcessRow>();
 
         await using var command = _dataSource.CreateCommand(BlockedProcessReportsSql);
         AddBlockingParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -295,12 +298,13 @@ public sealed partial class ViewerDataService
 
     /// <summary>Maps the 19-column DMV blocking-snapshot fallback read into the widened grid row.</summary>
     private async Task<List<ViewerBlockedProcessRow>> ReadDmvBlockedProcessRowsAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames, CancellationToken cancellationToken)
     {
         var rows = new List<ViewerBlockedProcessRow>();
 
         await using var command = _dataSource.CreateCommand(DmvBlockingSnapshotsSql);
         AddBlockingParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {

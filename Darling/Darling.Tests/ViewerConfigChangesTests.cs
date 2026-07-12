@@ -97,7 +97,16 @@ public sealed class ViewerConfigChangesSqlTests
         Assert.Contains("$2", sql, StringComparison.Ordinal);
         /* Upper bound only — the window START is applied to change_time in C# so the pre-window baseline is
            kept for correct left-edge change detection. A lower $3 read bound would under-report. */
-        Assert.DoesNotContain("$3", sql, StringComparison.Ordinal);
+        if (which == "database")
+        {
+            /* #1319: the database-config change read gains the global database filter ($3, a nullable
+               text[] applied as database_name = ANY($3)) — a database-name predicate, not a lower time bound. */
+            Assert.Contains("database_name = ANY($3)", sql, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.DoesNotContain("$3", sql, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

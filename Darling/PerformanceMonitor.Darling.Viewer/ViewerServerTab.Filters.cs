@@ -103,8 +103,8 @@ public partial class ViewerServerTab : UserControl
     private async Task LoadConfigurationAsync()
     {
         var serverConfigTask = _dataService.GetLatestServerConfigAsync(_server.ServerId);
-        var databaseConfigTask = _dataService.GetLatestDatabaseConfigAsync(_server.ServerId);
-        var databaseScopedConfigTask = _dataService.GetLatestDatabaseScopedConfigAsync(_server.ServerId);
+        var databaseConfigTask = _dataService.GetLatestDatabaseConfigAsync(_server.ServerId, databaseNames: SelectedDatabaseFilter);
+        var databaseScopedConfigTask = _dataService.GetLatestDatabaseScopedConfigAsync(_server.ServerId, databaseNames: SelectedDatabaseFilter);
         var traceFlagsTask = _dataService.GetLatestTraceFlagsAsync(_server.ServerId);
 
         await Task.WhenAll(serverConfigTask, databaseConfigTask, databaseScopedConfigTask, traceFlagsTask);

@@ -179,8 +179,9 @@ public sealed class ViewerQuerySnapshotsSqlTests
         Assert.Contains("collection_time = (SELECT MAX(collection_time) FROM query_snapshots WHERE server_id = $1)", sql, StringComparison.Ordinal);
         Assert.Contains("query_text NOT LIKE 'WAITFOR%'", sql, StringComparison.Ordinal);
         Assert.Contains("ORDER BY cpu_time_ms DESC", sql, StringComparison.Ordinal);
-        /* Single param: the batch is server-scoped, not window-scoped. */
-        Assert.DoesNotContain("$2", sql, StringComparison.Ordinal);
+        /* #1319: the batch stays server-scoped (the MAX(collection_time) subquery reuses $1, not a window),
+           plus the global database filter's single nullable text[] param ($2 = ANY). */
+        Assert.Contains("database_name = ANY($2)", sql, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -52,5 +52,7 @@ public static class CollectorCatalog
         BlockedProcessReportCollector.Instance,
         SystemHealthEventsCollector.Instance,
         DefaultTraceEventsCollector.Instance,
+        JobHistoryCollector.Instance,
+        AgentStatusCollector.Instance,
     };
 }

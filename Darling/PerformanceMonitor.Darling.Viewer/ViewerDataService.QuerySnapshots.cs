@@ -142,6 +142,7 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         AND   query_text NOT LIKE 'WAITFOR%'
         ORDER BY collection_time DESC, cpu_time_ms DESC
         """;
@@ -158,16 +159,18 @@ public sealed partial class ViewerDataService
         FROM query_snapshots
         WHERE server_id = $1
         AND   collection_time = (SELECT MAX(collection_time) FROM query_snapshots WHERE server_id = $1)
+        AND   ($2::text[] IS NULL OR database_name = ANY($2))
         AND   query_text NOT LIKE 'WAITFOR%'
         ORDER BY cpu_time_ms DESC
         """;
 
     /// <summary>Active-Queries grid rows over [<paramref name="startUtc"/>, <paramref name="endUtc"/>].</summary>
     public async Task<List<ViewerQuerySnapshotRow>> GetLatestQuerySnapshotsAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         await using var command = _dataSource.CreateCommand(LatestQuerySnapshotsSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         return await ReadQuerySnapshotsAsync(command, cancellationToken);
     }
 
@@ -184,6 +187,7 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($5::text[] IS NULL OR database_name = ANY($5))
         AND   wait_type = $4
         AND   query_text NOT LIKE 'WAITFOR%'
         ORDER BY collection_time DESC, cpu_time_ms DESC
@@ -191,11 +195,12 @@ public sealed partial class ViewerDataService
 
     /// <summary>Active-Queries snapshot rows filtered to one <paramref name="waitType"/> over the window.</summary>
     public async Task<List<ViewerQuerySnapshotRow>> GetQuerySnapshotsByWaitTypeAsync(
-        int serverId, string waitType, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, string waitType, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         await using var command = _dataSource.CreateCommand(QuerySnapshotsByWaitTypeSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = waitType });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         return await ReadQuerySnapshotsAsync(command, cancellationToken);
     }
 
@@ -205,10 +210,11 @@ public sealed partial class ViewerDataService
     /// returned rows (all share one collection_time).
     /// </summary>
     public async Task<(DateTime? BatchTime, List<ViewerQuerySnapshotRow> Rows)> GetLatestQuerySnapshotBatchAsync(
-        int serverId, CancellationToken cancellationToken = default)
+        int serverId, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         await using var command = _dataSource.CreateCommand(LatestQuerySnapshotBatchSql);
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         var rows = await ReadQuerySnapshotsAsync(command, cancellationToken);
         DateTime? batchTime = rows.Count > 0 ? rows[0].CollectionTime : null;
         return (batchTime, rows);
@@ -284,18 +290,20 @@ public sealed partial class ViewerDataService
         WHERE server_id = $1
         AND   collection_time >= $2
         AND   collection_time <= $3
+        AND   ($4::text[] IS NULL OR database_name = ANY($4))
         GROUP BY date_trunc('hour', collection_time)
         ORDER BY bucket
         """;
 
     /// <summary>Hourly Active-Queries slicer buckets over the window (Value = session count).</summary>
     public async Task<List<TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
-        int serverId, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken = default)
+        int serverId, DateTime startUtc, DateTime endUtc, IReadOnlyList<string>? databaseNames = null, CancellationToken cancellationToken = default)
     {
         var items = new List<TimeSliceBucket>();
 
         await using var command = _dataSource.CreateCommand(ActiveQuerySlicerSql);
         AddServerWindowParameters(command, serverId, startUtc, endUtc);
+        command.Parameters.Add(DatabaseFilterParameter(databaseNames));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
