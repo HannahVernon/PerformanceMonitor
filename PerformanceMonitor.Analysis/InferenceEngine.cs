@@ -276,7 +276,8 @@ public class InferenceEngine
         for (var i = 0; i < incidentStories.Count; i++)
             foreach (var key in incidentStories[i].Path)
                 foreach (var edge in _graph.GetActiveEdges(NormalizeKey(key), factsByKey))
-                    if (owner.TryGetValue(NormalizeKey(edge.Destination), out var j) && j != i)
+                    if (owner.TryGetValue(NormalizeKey(edge.Destination), out var j) && j != i
+                        && CanUnionAcrossDatabase(incidentStories[i], incidentStories[j]))
                         Union(i, j);
 
         var components = new Dictionary<int, List<AnalysisStory>>();
@@ -288,6 +289,22 @@ public class InferenceEngine
             list.Add(incidentStories[i]);
         }
         return components.Values.ToList();
+    }
+
+    /// <summary>
+    /// Guards the incident union against merging two DB-scoped findings from DIFFERENT databases
+    /// (correlate-and-focus DB-awareness — vetted option i). A server-scoped story (no DatabaseName)
+    /// bridges freely, so a server-wide symptom (CPU, waits) still correlates with a db-scoped cause;
+    /// only two stories that EACH name a database, and name DIFFERENT ones, are held apart. This is
+    /// the structural fix that stops a db1 finding and a db2 finding from being fingerprinted into one
+    /// cross-database incident (the anomaly-fold reconciler is DB-aware for the same reason). It does
+    /// not over-fragment same-database incidents: same-DB and server-scoped pairs still union.
+    /// </summary>
+    private static bool CanUnionAcrossDatabase(AnalysisStory a, AnalysisStory b)
+    {
+        if (string.IsNullOrEmpty(a.DatabaseName) || string.IsNullOrEmpty(b.DatabaseName))
+            return true;
+        return string.Equals(a.DatabaseName, b.DatabaseName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

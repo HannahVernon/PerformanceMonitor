@@ -63,7 +63,8 @@ public class AnalysisNotificationTests : IDisposable
         double? rootValue = 92.5,
         Dictionary<string, double>? metadata = null,
         Dictionary<string, object>? drillDown = null,
-        string rootFactKey = "CPU_SPIKE")
+        string rootFactKey = "CPU_SPIKE",
+        string incidentId = "")
     {
         return new AnalysisFinding
         {
@@ -72,6 +73,7 @@ public class AnalysisNotificationTests : IDisposable
             Category = category,
             StoryPath = "CPU_SPIKE → PLAN_REGRESSION",
             StoryPathHash = hash,
+            IncidentId = incidentId,
             Severity = severity,
             Confidence = 0.67,
             FactCount = 2,
@@ -82,6 +84,30 @@ public class AnalysisNotificationTests : IDisposable
             RootFactMetadata = metadata,
             DrillDown = drillDown
         };
+    }
+
+    /// <summary>
+    /// Captures dispatched <see cref="FindingAlert"/>s so the incident-dedup tests can assert on how
+    /// many alerts fired and what each one carried, without going through the DuckDB alert store.
+    /// </summary>
+    private sealed class CapturingSender : IFindingAlertSender
+    {
+        public List<FindingAlert> Sent { get; } = new();
+        public Task<DateTime?> GetLastAlertTimeAsync(string serverId, string metricName) =>
+            Task.FromResult<DateTime?>(null);
+        public Task SendFindingAlertAsync(FindingAlert alert)
+        {
+            Sent.Add(alert);
+            return Task.CompletedTask;
+        }
+    }
+
+    private (AnalysisNotificationService Notifier, CapturingSender Sender) MakeCapturingNotifier()
+    {
+        var sender = new CapturingSender();
+        var notifier = new AnalysisNotificationService(
+            sender, _settings, f => f.ServerId.ToString(), new AppLoggerAdapter<AnalysisNotificationService>());
+        return (notifier, sender);
     }
 
     /* ── #1140: finding-path dedup incidents (BuildContext derives them from the drill-down) ── */
@@ -511,6 +537,225 @@ public class AnalysisNotificationTests : IDisposable
         });
 
         Assert.Equal(1, await CountAlertLogRowsAsync());
+    }
+
+    /* ── Stage B change 3: incident-level e-mail dedup ── */
+
+    [Fact]
+    public async Task NotifyAsync_FindingsSharingIncident_SendOneAlert_NamingCoFired()
+    {
+        // Two findings in the SAME incident collapse to ONE alert led by the higher-severity primary;
+        // the other is named in the co-fired line of that one message.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        var primary = MakeFinding("aaaa000000000001", severity: 2.0, rootFactKey: "CPU_SPIKE",
+            category: "cpu_pressure", incidentId: "incident-1");
+        var secondary = MakeFinding("bbbb000000000002", severity: 1.6, rootFactKey: "BLOCKING_EVENTS",
+            category: "blocking", incidentId: "incident-1");
+
+        // Deliberately pass the lower-severity finding first — primary selection is by severity, not order.
+        await notifier.NotifyAsync(new[] { secondary, primary });
+
+        var alert = Assert.Single(sender.Sent);
+        Assert.Equal(2.0, alert.Severity);            // the CPU_SPIKE primary leads the incident
+        Assert.Contains("aaaa0000", alert.MetricName); // metric name embeds the primary's hash
+        var coFired = alert.Context.Details.Single(d => d.Heading == "Co-fired in this incident");
+        Assert.NotNull(coFired.Body);
+        // Incident-scoped wording (matches the heading) — NOT the window-scoped reader wording.
+        Assert.StartsWith("Also fired in this incident:", coFired.Body);
+    }
+
+    [Fact]
+    public async Task NotifyAsync_LoneFinding_HasNoCoFiredItem()
+    {
+        // A single-finding incident sends the same message as before — no co-fired item appended.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[] { MakeFinding("solo000000000001", severity: 2.0, incidentId: "incident-1") });
+
+        var alert = Assert.Single(sender.Sent);
+        Assert.DoesNotContain(alert.Context.Details, d => d.Heading == "Co-fired in this incident");
+    }
+
+    [Fact]
+    public async Task NotifyAsync_BelowCriticalCooldownKeyedByIncident_SuppressesSecondFindingOfSameIncident()
+    {
+        // A DIFFERENT BELOW-CRITICAL finding of the SAME incident in a later cycle is suppressed by the
+        // incident cooldown — below-critical co-fired symptoms stay one-e-mail-per-incident.
+        //
+        // Re-scoped from the original all-severities test: with escalate-on-CRITICAL, the incident-key
+        // dedup now applies only to below-critical members (a CRITICAL member escalates past it — see
+        // NotifyAsync_NewCriticalJoiningAlertedIncident_SendsFreshEmailNamingIt). The notify threshold
+        // is lowered below the 1.5 CRITICAL cutoff so severity-1.0 findings are notify-worthy yet
+        // below-critical; both key on "1:inc-9", so the second is held.
+        App.AnalysisNotifySeverity = 0.75;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[] { MakeFinding("aaaa000000000001", severity: 1.0, incidentId: "inc-9") });
+        await notifier.NotifyAsync(new[] { MakeFinding("bbbb000000000002", severity: 1.0, incidentId: "inc-9") });
+
+        Assert.Single(sender.Sent); // one alert for the incident; the second below-critical finding is cooled down
+    }
+
+    [Fact]
+    public async Task NotifyAsync_NewCriticalJoiningAlertedIncident_SendsFreshEmailNamingIt()
+    {
+        // Escalate-on-CRITICAL (guarantee b): an incident that already e-mailed on a below-critical
+        // primary, then gains a CRITICAL member in a later cycle, sends a FRESH e-mail led by that
+        // critical — the new critical is never silently held under the incident cooldown.
+        App.AnalysisNotifySeverity = 0.75;   // notify below the 1.5 CRITICAL cutoff
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        // Cycle 1: incident inc-esc e-mails on a below-critical primary (keyed on the incident).
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("dddd000000000001", severity: 1.0, rootFactKey: "BLOCKING_EVENTS",
+                category: "blocking", incidentId: "inc-esc")
+        });
+
+        // Cycle 2: a CRITICAL symptom joins the SAME incident (its own per-hash bucket is fresh).
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("dddd000000000001", severity: 1.0, rootFactKey: "BLOCKING_EVENTS",
+                category: "blocking", incidentId: "inc-esc"),
+            MakeFinding("cccc000000000002", severity: 2.0, rootFactKey: "CPU_SPIKE",
+                category: "cpu_pressure", incidentId: "inc-esc")
+        });
+
+        Assert.Equal(2, sender.Sent.Count);
+        Assert.Equal(2.0, sender.Sent[1].Severity);                 // the fresh e-mail is led by the critical
+        Assert.Contains("cccc0000", sender.Sent[1].MetricName);     // metric name embeds the critical's hash
+    }
+
+    [Fact]
+    public async Task NotifyAsync_NewLowerCriticalJoiningCriticalIncident_SendsFreshEmail()
+    {
+        // Escalate-on-CRITICAL (guarantee b, harder case): the incident already e-mailed on a HIGHER
+        // critical; a strictly-LOWER but still critical symptom joins later. It has its own per-hash
+        // bucket, so it e-mails fresh (led by it, since the higher critical is still cooling) — a new
+        // critical is never held even when its incident already alerted on a more severe critical.
+        App.AnalysisNotifySeverity = 1.5;    // default; both findings are CRITICAL-band
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 2.0, rootFactKey: "CPU_SPIKE",
+                category: "cpu_pressure", incidentId: "inc-2crit")
+        });
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 2.0, rootFactKey: "CPU_SPIKE",
+                category: "cpu_pressure", incidentId: "inc-2crit"),
+            MakeFinding("bbbb000000000002", severity: 1.7, rootFactKey: "BLOCKING_EVENTS",
+                category: "blocking", incidentId: "inc-2crit")
+        });
+
+        Assert.Equal(2, sender.Sent.Count);
+        Assert.Equal(1.7, sender.Sent[1].Severity);                 // led by the newly-joined critical
+        Assert.Contains("bbbb0000", sender.Sent[1].MetricName);
+    }
+
+    [Fact]
+    public async Task NotifyAsync_BelowCriticalCoFiredWithCritical_StaysHeldUnderIncidentBucket()
+    {
+        // Guarantee c: a below-critical symptom co-firing with a critical is named as co-fired in the
+        // critical's one e-mail and does NOT get its own — and on the next identical cycle nothing
+        // re-fires (the critical cools on its hash bucket, the below-critical on the incident bucket).
+        App.AnalysisNotifySeverity = 0.75;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        var critical = new Func<AnalysisFinding>(() => MakeFinding("aaaa000000000001", severity: 2.0,
+            rootFactKey: "CPU_SPIKE", category: "cpu_pressure", incidentId: "inc-mix"));
+        var belowCritical = new Func<AnalysisFinding>(() => MakeFinding("dddd000000000002", severity: 1.0,
+            rootFactKey: "BLOCKING_EVENTS", category: "blocking", incidentId: "inc-mix"));
+
+        await notifier.NotifyAsync(new[] { critical(), belowCritical() });
+        await notifier.NotifyAsync(new[] { critical(), belowCritical() });
+
+        var only = Assert.Single(sender.Sent);                      // one e-mail total across both cycles
+        Assert.Equal(2.0, only.Severity);                           // led by the critical
+        var coFired = only.Context.Details.Single(d => d.Heading == "Co-fired in this incident");
+        Assert.StartsWith("Also fired in this incident:", coFired.Body);   // the below-critical rides along
+    }
+
+    [Fact]
+    public async Task NotifyAsync_LoneCritical_DoesNotRespamWithinCooldown()
+    {
+        // Guarantee a: a lone CRITICAL e-mails once and respects its own per-hash cooldown — repeated
+        // notify cycles inside the window do not re-spam.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        var crit = MakeFinding("aaaa000000000001", severity: 2.0, incidentId: "inc-lone");
+        await notifier.NotifyAsync(new[] { crit });
+        await notifier.NotifyAsync(new[] { crit });
+        await notifier.NotifyAsync(new[] { crit });
+
+        Assert.Single(sender.Sent);
+    }
+
+    [Fact]
+    public async Task NotifyAsync_DistinctCriticalIncidents_EachSend()
+    {
+        // Guarantee e: two genuinely distinct problems (different incident ids) are never collapsed —
+        // each critical incident sends its own e-mail.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 2.0, incidentId: "inc-A"),
+            MakeFinding("bbbb000000000002", severity: 2.0, incidentId: "inc-B")
+        });
+
+        Assert.Equal(2, sender.Sent.Count);
+    }
+
+    [Fact]
+    public async Task NotifyAsync_BelowCriticalEmptyIncidentId_KeepsPerHashBuckets()
+    {
+        // Guarantee d (below-critical branch): two below-critical findings with NO incident id must not
+        // collapse — each keys on "{serverId}:{StoryPathHash}" via the IncidentToken fallback, so two
+        // distinct empty-id below-critical findings still send two alerts.
+        App.AnalysisNotifySeverity = 0.75;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 1.0),  // empty IncidentId, below-critical
+            MakeFinding("bbbb000000000002", severity: 1.0)   // empty IncidentId, different hash
+        });
+
+        Assert.Equal(2, sender.Sent.Count);
+    }
+
+    [Fact]
+    public async Task NotifyAsync_LegacyEmptyIncidentId_KeepsPerHashBuckets()
+    {
+        // Regression guard: findings with NO incident id must NOT collapse into one bucket — each keys
+        // by its StoryPathHash, so two distinct empty-id findings still send two alerts.
+        App.AnalysisNotifySeverity = 1.5;
+        App.AnalysisNotifyCooldownMinutes = 360;
+        var (notifier, sender) = MakeCapturingNotifier();
+
+        await notifier.NotifyAsync(new[]
+        {
+            MakeFinding("aaaa000000000001", severity: 2.0),  // empty IncidentId
+            MakeFinding("bbbb000000000002", severity: 2.0)   // empty IncidentId, different hash
+        });
+
+        Assert.Equal(2, sender.Sent.Count);
     }
 
     /* ── WS2: always raise a tray balloon for a notify-worthy finding ── */
