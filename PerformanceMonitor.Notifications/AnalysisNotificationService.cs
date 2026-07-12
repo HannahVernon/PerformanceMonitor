@@ -44,15 +44,30 @@ public sealed class AnalysisNotificationService
     private readonly Action<string, string>? _showTrayNotification;
 
     /// <summary>
-    /// Per-INCIDENT re-notification cooldown, keyed "{serverId}:{IncidentId}" — falling back to the
-    /// finding's StoryPathHash when it has no incident id (legacy rows / absolution findings), so
-    /// those never collapse into one shared bucket. Keying by incident (not per finding) is what
-    /// stops one incident from fanning into N e-mails as its constituent findings each fire.
-    /// Seeded lazily from the alert log on first lookup per key so an incident that just fired and
-    /// entered its cooldown stays suppressed across an app restart. Pruned on each notify cycle to
+    /// Per-symptom re-notification cooldown (escalate-on-CRITICAL keying). A below-critical finding is
+    /// keyed by its incident ("{serverId}:{IncidentId}", falling back to its StoryPathHash when it has
+    /// no incident id — legacy rows / absolution findings — so those never collapse into one shared
+    /// bucket), so co-fired non-critical symptoms stay one-e-mail-per-incident. A CRITICAL-band finding
+    /// (severity &gt;= <see cref="CriticalSeverityCutoff"/>) is instead keyed by its OWN StoryPathHash, so
+    /// a new critical escalates past that dedup and is never silently held inside an already-alerted
+    /// incident. Seeded lazily from the alert log on first lookup per key so a symptom that just fired
+    /// and entered its cooldown stays suppressed across an app restart. Pruned on each notify cycle to
     /// entries within 2 × AnalysisNotifyCooldownMinutes.
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> _cooldowns = new();
+
+    /// <summary>
+    /// Severity at/above which a finding is CRITICAL-band — the canonical <c>&gt;= 1.5</c> cutoff every
+    /// recommendation reader bands CRITICAL by (Dashboard <c>RecommendationDeduper.FromEngineSeverity</c>,
+    /// Lite <c>LiteRecommendationsReader.SeverityBand</c>, and the Darling viewer's
+    /// <c>ViewerDataService.SeverityBand</c>). A finding at/above this escalates past the per-incident
+    /// e-mail dedup: it gets its own per-finding re-notify bucket, so a new critical joining an
+    /// already-alerted incident e-mails fresh and is never silently held. Below-critical co-fired
+    /// symptoms stay deduped under the incident bucket. Not a fresh literal — it keys off the same
+    /// value the shared severity bands use (there is no single named constant to import; the readers
+    /// each spell the cutoff inline, and this service references only PerformanceMonitor.Analysis).
+    /// </summary>
+    private const double CriticalSeverityCutoff = 1.5;
 
     /// <param name="sender">The per-app alert dispatcher (its <c>EmailAlertService</c>).</param>
     /// <param name="settings">Alert settings (severity threshold + cooldown; clamped per app).</param>
@@ -92,10 +107,13 @@ public sealed class AnalysisNotificationService
     }
 
     /// <summary>
-    /// Notifies once per INCIDENT (not once per finding) at or above the configured severity, when the
-    /// incident is not inside its re-notification cooldown. Findings sharing an incident id in this
-    /// batch are collapsed to a single alert led by the highest-severity primary; the rest are named
-    /// as co-fired in that one message. Never throws.
+    /// Notifies at or above the configured severity, collapsing co-fired symptoms to one e-mail per
+    /// incident per cycle — EXCEPT a CRITICAL-band symptom (severity &gt;= <see cref="CriticalSeverityCutoff"/>),
+    /// which holds its own re-notify bucket and so escalates past the dedup: a new critical joining an
+    /// already-alerted incident sends a fresh e-mail naming that critical symptom, while below-critical
+    /// co-fired symptoms stay held under the incident bucket. Each cycle sends one e-mail per incident,
+    /// led by the highest-severity member whose bucket is not cooling and naming the rest as co-fired.
+    /// Never throws.
     /// </summary>
     public async Task NotifyAsync(IReadOnlyList<AnalysisFinding> findings)
     {
@@ -120,29 +138,29 @@ public sealed class AnalysisNotificationService
                 _cooldowns.TryRemove(stale.Key, out _);
         }
 
-        /* Group the notify-worthy findings by incident so one incident yields one alert. The group
-           token is the finding's IncidentId, falling back to its StoryPathHash when empty — a legacy
-           or absolution finding has no incident id, and without the fallback every empty-id finding
-           would collapse into a single bucket. ServerId is part of the key so two servers never
-           share a bucket. GroupBy preserves first-seen order, keeping alert ordering stable. */
+        /* Group the notify-worthy findings by incident so co-firing symptoms collapse into ONE e-mail
+           per cycle. The group token is the finding's IncidentId, falling back to its StoryPathHash
+           when empty — a legacy or absolution finding has no incident id, and without the fallback
+           every empty-id finding would collapse into a single bucket. ServerId is part of the key so
+           two servers never share a bucket. GroupBy preserves first-seen order, keeping alert ordering
+           stable. */
         var incidents = findings
             .Where(f => f is not null && f.Severity >= threshold)
             .GroupBy(f => $"{f.ServerId}:{IncidentToken(f)}");
 
         foreach (var incident in incidents)
         {
-            /* The PRIMARY finding leads the alert; the rest are named as co-fired in its message.
-               Highest severity wins, root-key- then hash-tiebroken for a deterministic primary
-               (mirrors IncidentId.Compute's severity-desc, ordinal-root-key tiebreak). */
+            /* Members ordered so the highest-severity finding leads and the rest are named as co-fired.
+               Highest severity wins, root-key- then hash-tiebroken for a deterministic order (mirrors
+               IncidentId.Compute's severity-desc, ordinal-root-key tiebreak). */
             var members = incident
                 .OrderByDescending(f => f.Severity)
                 .ThenBy(f => f.RootFactKey, StringComparer.Ordinal)
                 .ThenBy(f => f.StoryPathHash, StringComparer.Ordinal)
                 .ToList();
-            var primary = members[0];
 
-            var key = incident.Key;
-            var serverId = _resolveServerId(primary);
+            /* ServerId is identical for every member (it is part of the group key); resolve once. */
+            var serverId = _resolveServerId(members[0]);
 
             /* Honor per-server silencing (Dashboard "Silence All Alerts"). Checked after
                resolving serverId but before the cooldown seed/stamp, so a silenced server
@@ -150,29 +168,52 @@ public sealed class AnalysisNotificationService
             if (_isServerSilenced is not null && _isServerSilenced(serverId))
                 continue;
 
-            var metricName = FindingMessageFormatter.MetricName(primary);
+            /* Per-member re-notification bucket (escalate-on-CRITICAL): a CRITICAL-band member
+               (severity >= the shared >= 1.5 cutoff) gets its OWN per-finding bucket keyed on its
+               StoryPathHash, so a NEW critical symptom escalates past the incident dedup and e-mails
+               even when the incident already alerted on another member. A below-critical member stays
+               on the shared per-incident bucket, so co-fired non-critical symptoms remain one-e-mail-
+               per-incident. */
+            string BucketKey(AnalysisFinding f) =>
+                f.Severity >= CriticalSeverityCutoff
+                    ? $"{serverId}:{f.StoryPathHash}"
+                    : $"{serverId}:{IncidentToken(f)}";
 
-            /* Seed the in-memory cooldown from the alert log on first lookup per key so an
-               incident that fired shortly before an app restart is not re-fired afterward. No
-               channel/error filter — the cooldown is stamped unconditionally below, so the
-               persisted equivalent is the latest row for the primary's metric_name. */
-            if (!_cooldowns.ContainsKey(key))
+            /* Seed each not-yet-known bucket from the alert log on first lookup so a symptom that
+               fired shortly before an app restart is not re-fired afterward. The persisted equivalent
+               is the latest row for that member's metric_name (which embeds the finding's hash).
+               Below-critical members share one bucket, so only the first (highest-severity) below-
+               critical member — the one that would lead a below-critical e-mail — is looked up. */
+            foreach (var m in members)
             {
-                var lastPersisted = await _sender.GetLastAlertTimeAsync(serverId, metricName);
+                var seedKey = BucketKey(m);
+                if (_cooldowns.ContainsKey(seedKey))
+                    continue;
+                var lastPersisted = await _sender.GetLastAlertTimeAsync(serverId, FindingMessageFormatter.MetricName(m));
                 if (lastPersisted.HasValue)
-                {
-                    _cooldowns.TryAdd(key, lastPersisted.Value);
-                }
+                    _cooldowns.TryAdd(seedKey, lastPersisted.Value);
             }
 
-            if (_cooldowns.TryGetValue(key, out var last) && now - last < cooldown)
+            /* Lead = the highest-severity member whose bucket is not cooling; the whole incident is
+               held only when EVERY member's bucket is cooling (send-if-any-fresh, the same rule the
+               live IncidentCooldown path uses). So a fresh critical leads its own e-mail even when the
+               incident's top finding is still cooling. */
+            AnalysisFinding? lead = null;
+            foreach (var m in members)
+            {
+                if (_cooldowns.TryGetValue(BucketKey(m), out var last) && now - last < cooldown)
+                    continue;
+                lead = m;
+                break;
+            }
+            if (lead is null)
                 continue;
 
             try
             {
-                var context = FindingMessageFormatter.BuildContext(primary, threshold);
+                var context = FindingMessageFormatter.BuildContext(lead, threshold);
 
-                /* Name the other findings that co-fired in THIS incident, in the one message, so the
+                /* Name the OTHER findings that co-fired in THIS incident, in the one message, so the
                    single alert still accounts for everything the incident surfaced. Reuses the shared
                    CoFiredSummary the viewer/MCP surfaces use, but with the INCIDENT-scoped lead-in so the
                    body matches the "Co-fired in this incident" heading (the default window wording would
@@ -180,7 +221,7 @@ public sealed class AnalysisNotificationService
                    so no item) for a lone finding, leaving the message byte-identical to the pre-dedup
                    single-finding path. */
                 var coFired = CoFiredSummary.Line(
-                    CoFiredSummary.OtherTitles(FindingTitle(primary),
+                    CoFiredSummary.OtherTitles(FindingTitle(lead),
                         members.Select(m => (FindingTitle(m), m.Severity))),
                     leadIn: CoFiredSummary.IncidentLeadIn);
                 if (coFired is not null)
@@ -188,18 +229,18 @@ public sealed class AnalysisNotificationService
 
                 /* SendFindingAlertAsync fans out to email + Slack + Teams and records the
                    alert per this app's cadence. It returns no success/failure signal, so the
-                   cooldown is stamped regardless — an incident whose delivery failed is
+                   buckets are stamped regardless — a symptom whose delivery failed is
                    suppressed for the full cooldown (accepted best-effort behavior). */
                 await _sender.SendFindingAlertAsync(new FindingAlert(
-                    metricName,
-                    primary.ServerName,
-                    FindingMessageFormatter.CurrentValue(primary),
+                    FindingMessageFormatter.MetricName(lead),
+                    lead.ServerName,
+                    FindingMessageFormatter.CurrentValue(lead),
                     threshold.ToString("F1"),
                     serverId,
                     context,
-                    primary.Severity,
+                    lead.Severity,
                     threshold,
-                    FindingMessageFormatter.DetailText(primary, threshold)));
+                    FindingMessageFormatter.DetailText(lead, threshold)));
 
                 /* Always raise the tray balloon for a notify-worthy incident (user choice), the
                    same visible signal threshold alerts already pop — so a local-only user with no
@@ -207,18 +248,23 @@ public sealed class AnalysisNotificationService
                    notifications are disabled (the sink checks the pref). */
                 if (_showTrayNotification is not null)
                 {
-                    var (title, message) = FindingMessageFormatter.BalloonText(primary);
+                    var (title, message) = FindingMessageFormatter.BalloonText(lead);
                     _showTrayNotification(title, message);
                 }
 
-                _cooldowns[key] = now;
+                /* Stamp EVERY member's bucket (send-if-any-fresh, stamp-all): the e-mail named every
+                   member, so none should re-fire until its cooldown elapses — the just-led critical on
+                   its hash bucket, each co-fired critical on its own, and every below-critical member on
+                   the shared incident bucket. */
+                foreach (var m in members)
+                    _cooldowns[BucketKey(m)] = now;
             }
             catch (Exception ex)
             {
                 /* SendFindingAlertAsync is documented never to throw; this guards a
                    formatter defect so one bad incident cannot abort the rest. */
                 _logger.LogError(
-                    $"AnalysisNotificationService: failed to notify on incident {key}: {ex.GetType().Name}: {ex.Message}");
+                    $"AnalysisNotificationService: failed to notify on incident {incident.Key}: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
