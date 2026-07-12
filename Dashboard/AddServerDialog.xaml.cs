@@ -559,17 +559,26 @@ namespace PerformanceMonitorDashboard
         {
             if (!ValidateInputs()) return;
 
+            /*
+            The server this test is actually about, captured with the connection string built from it. The
+            box is editable for the whole ~10s test (unbounded on Entra MFA), and the failure message below
+            used to re-read it AFTER the await -- so retyping during the connect produced "Could not connect
+            to A" about a server that is fine, for a failure that belonged to B. The last read-the-box-after-
+            the-await in this file.
+            */
+            string testedServerName = ServerNameTextBox.Text.Trim();
+
             var (connected, errorMessage, mfaCancelled) = await RunConnectionTestAsync(TestConnectionButton);
 
             if (connected)
             {
                 /*
-                Deliberately does NOT write _serverVersion. It is one of the three facts that must only ever
-                be committed together, by PublishProbedServer -- and this write was the last place that set
-                one of them on its own, post-await, with no stamp beside it. The box is editable during that
+                Deliberately does NOT write _serverVersion. It is one of the four facts that may only ever be
+                committed together, by PublishProbedServer -- and this write was the last place that set one
+                of them on its own, post-await, with no stamp beside it. The box is editable during that
                 await, so it could stamp the PREVIOUS server's engine version into place while the verdict
                 and the state still described someone else. DetectDatabaseStatusAsync re-probes and publishes
-                all three itself, which is where it belongs.
+                them as a set, which is where it belongs.
                 */
                 await DetectDatabaseStatusAsync();
             }
@@ -586,7 +595,7 @@ namespace PerformanceMonitorDashboard
             {
                 var detail = errorMessage != null ? $"\n\nError: {errorMessage}" : string.Empty;
                 MessageBox.Show(
-                    $"Could not connect to {ServerNameTextBox.Text}.{detail}\n\nPlease check:\n" +
+                    $"Could not connect to {testedServerName}.{detail}\n\nPlease check:\n" +
                     "• Server name/address is correct\n" +
                     "• Server is accessible from this machine\n" +
                     "• Firewall allows SQL Server connections\n" +
@@ -2227,6 +2236,27 @@ namespace PerformanceMonitorDashboard
 
                 if (InstallInProgress) return;
 
+                /*
+                The dialog was CLOSED while this test was running -- ESC, Cancel, the X. Bail here, before
+                anything is written, because in edit mode ServerConnection is not a copy: it is the very
+                object ServerManager holds in its list (MainWindow hands us item.Server directly). The
+                assignments below mutate it IN PLACE, so a save the user cancelled still renames their
+                monitored server -- and it reaches disk on its own, the next time UpdateLastConnected fires
+                for ANY server. PROD01 quietly becomes TEST99, keeps PROD01's id and credential, and PROD01
+                stops being monitored.
+
+                This guard used to sit 47 lines lower, next to the DialogResult write. That stopped the
+                THROW and not the WRITE -- and the throw was the only thing the user ever saw, so moving it
+                down there turned a loud bug into a silent one. Guard before you commit the facts; it is the
+                same rule the detection path already follows.
+
+                One check covers everything: RunConnectionTestAsync is the only await in this method (the
+                skipConnectionTest path has none), so this is the only window in which _dialogClosed can
+                flip. It also kills the orphaned "Do you still want to save this connection?" box below,
+                which was popping up with no dialog left behind it.
+                */
+                if (_dialogClosed) return;
+
                 if (epoch != _detectEpoch)
                 {
                     /*
@@ -2235,10 +2265,14 @@ namespace PerformanceMonitorDashboard
                     which is the most common way to reach Save -- a retype renders nothing at all, and this
                     return then swallowed the click. The user fixes a typo while the 10-second connection test
                     is running, clicks nothing else, and believes the server was added.
+
+                    Worded for all four bumpers, not just the retype. Check for Updates and "Skip, just add
+                    server" bump the epoch too, and blaming "the server details changed" for a change the
+                    user never made is its own small lie.
                     */
                     StatusText.Text =
-                        "The server details changed while the connection was being tested, so nothing was " +
-                        "saved. Click Save again.";
+                        "Nothing was saved -- something changed while the connection was being tested. " +
+                        "Click Save again.";
                     StatusText.Visibility = Visibility.Visible;
                     return;
                 }
