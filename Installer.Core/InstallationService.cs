@@ -20,6 +20,18 @@ namespace Installer.Core;
 /// </summary>
 public static class InstallationService
 {
+    /// <summary>
+    /// Returned by <see cref="GetInstalledVersionAsync"/> when the database is clearly a
+    /// PerformanceMonitor install but its recorded version cannot be read — no SUCCESS row, or no
+    /// history table at all. It is a GUESS meaning "unknown, attempt every upgrade", chosen because it
+    /// sorts below every real version so <c>FilterUpgrades</c> offers all of them: the safe direction.
+    ///
+    /// It is NOT a fact, and callers that DECIDE something from a version must not treat it as one —
+    /// it compares less than any target, so anything keyed on "is an upgrade pending?" would answer
+    /// yes unconditionally. See <see cref="RepairOutcome"/>.
+    /// </summary>
+    public const string UnknownVersionSentinel = "1.0.0";
+
     private static readonly char[] NewLineChars = ['\r', '\n'];
 
     /// <summary>
@@ -968,8 +980,10 @@ END;";
                     Nothing is installed, migrations would fail against tables that do not exist, and
                     null -> "fresh install" is exactly right.
 
-                  - A PerformanceMonitor database whose ledger was lost -- an ancient pre-history install,
-                    or someone dropped config.installation_history. Here null reads as "fresh install":
+                  - A PerformanceMonitor database whose ledger was lost: someone dropped
+                    config.installation_history, or a restore/migration left it behind. (Not "an ancient
+                    pre-history install" -- the table has shipped since the first commit.) Here null reads
+                    as "fresh install":
                     the install scripts run over the LIVE schema, FilterUpgrades(null, ...) offers zero
                     hops so every migration is skipped, and the target version is then stamped SUCCESS.
                     Version detection reads that back and never offers those hops again -- permanently
@@ -997,7 +1011,7 @@ END;";
                 if (collectCount > 0)
                 {
                     LogDebug(progress, $"GetInstalledVersionAsync: installation_history missing but {collectCount} collect table(s) present → damaged install, fallback to 1.0.0 (#538 guard)");
-                    return "1.0.0";
+                    return UnknownVersionSentinel;
                 }
 
                 LogDebug(progress, "GetInstalledVersionAsync: database exists but holds no collect objects → clean install");
@@ -1025,7 +1039,7 @@ END;";
             rather than treating this as a fresh install (which would drop the database).
             */
             LogDebug(progress, "GetInstalledVersionAsync: no SUCCESS rows — fallback to 1.0.0 (#538 guard)");
-            return "1.0.0";
+            return UnknownVersionSentinel;
         }
         catch (SqlException ex)
         {

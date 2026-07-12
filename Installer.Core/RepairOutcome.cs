@@ -46,6 +46,19 @@ public static class RepairOutcome
             return false;
         }
 
+        /*
+        The "unknown" sentinel is a GUESS, not a version -- GetInstalledVersionAsync returns it when the
+        database is clearly installed but its recorded version cannot be read. It sorts below every real
+        version, so trusting it here would answer "yes, an upgrade is pending" unconditionally, and every
+        REAL repair failure on such a server would be reported as expected and exit 0. Concretely: a
+        schema-current 3.1.0 server whose history rows are all FAILED, with four genuinely broken
+        procedures, would pass a %ERRORLEVEL% gate while telling the operator to ignore the errors.
+        */
+        if (string.Equals(installedVersion?.Trim(), InstallationService.UnknownVersionSentinel, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         var installed = ScriptProvider.TryParseVersionCore(installedVersion);
         var target = ScriptProvider.TryParseVersionCore(targetVersion);
 

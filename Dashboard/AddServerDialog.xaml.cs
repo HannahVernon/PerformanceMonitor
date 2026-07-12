@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
  * This file is part of the SQL Server Performance Monitor.
@@ -557,16 +557,18 @@ namespace PerformanceMonitorDashboard
         {
             TransitionToState(_preInstallState);
 
-            if (_preInstallState == DialogState.Connected_Current)
-            {
-                DatabaseStatusText.Text = message;
-                return;
-            }
-
             DatabaseStatusPanel.Visibility = Visibility.Visible;
             InstallationPanel.Visibility = Visibility.Visible;
-            AdvancedOptionsExpander.IsEnabled = true;
             InstallStatusText.Text = message;
+
+            /*
+            Show the log either way -- it is the only place the actual SQL error text lives, and hiding it
+            leaves the user one exception message to work with. But when the run was launched from
+            Connected_Current the button still reads "Reinstall Objects" and the clean-install checkbox
+            must stay out of reach, so re-show the panel with Advanced Options DISABLED rather than
+            collapsed: WPF propagates IsEnabled to children, so the checkbox cannot be ticked.
+            */
+            AdvancedOptionsExpander.IsEnabled = _preInstallState != DialogState.Connected_Current;
         }
 
         private async System.Threading.Tasks.Task DetectDatabaseStatusAsync()
@@ -584,6 +586,9 @@ namespace PerformanceMonitorDashboard
                 */
                 RepairCheckBox.IsChecked = false;
                 CleanInstallCheckBox.IsChecked = false;
+                /* Sticky and INVISIBLE behind a collapsed panel otherwise -- it TRUNCATEs config.collection_schedule,
+                   so a tick left over from another server would wipe this one's tuned intervals with no consent. */
+                ResetScheduleCheckBox.IsChecked = false;
 
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
@@ -706,49 +711,36 @@ namespace PerformanceMonitorDashboard
         */
         internal static string? GetInstallBlockReason(string? installedVersion, string appVersion)
         {
-            var appCore = ScriptProvider.TryParseVersionCore(appVersion);
-
             /*
-            Checked BEFORE the no-database case on purpose. appVersion is what a fresh install WRITES to
-            installation_history.installer_version, so letting an unparseable one through on an empty
-            server poisons the ledger at birth -- after which both the Dashboard and the CLI refuse to
-            touch that server ever again, recoverable only by hand-editing the row or a destructive
-            reinstall. Distinct message too: nothing the user does to the database fixes a bad build.
+            The DECISION lives in Installer.Core/InstallGuard, shared with the CLI and pinned by tests
+            that actually run in CI. Only the wording is ours. Two of these cases are invisible to every
+            other guard -- they produce zero upgrade hops AND zero failures, so the migration-failure
+            abort never fires and nothing downstream notices.
             */
-            if (appCore == null)
+            switch (InstallGuard.Check(installedVersion, appVersion))
             {
-                return $"This Dashboard reports its own version as '{appVersion}', which is not a valid version.\n\n" +
-                    "Install and upgrade are blocked: without a comparable version we cannot tell which " +
-                    "migrations still need to run, and a fresh install would record that value as the " +
-                    "server's version. This is a build problem, not a problem with the server.";
+                case InstallBlock.UnreadableBuildVersion:
+                    return $"This Dashboard reports its own version as '{appVersion}', which is not a valid version.\n\n" +
+                        "Install and upgrade are blocked: without a comparable version we cannot tell which " +
+                        "migrations still need to run, and a fresh install would record that value as the " +
+                        "server's version. This is a build problem, not a problem with the server.";
+
+                case InstallBlock.UnreadableInstalledVersion:
+                    return $"Could not interpret the installed PerformanceMonitor version ('{installedVersion}').\n\n" +
+                        "Install and upgrade are blocked: without a comparable version we cannot tell which " +
+                        "migrations still need to run. Correct the most recent SUCCESS row in " +
+                        "PerformanceMonitor.config.installation_history, or rebuild the database with the " +
+                        "CLI installer's --reinstall (destructive).";
+
+                case InstallBlock.InstalledIsNewerThanBuild:
+                    return $"PerformanceMonitor v{NormalizeVersion(installedVersion!)} is installed, which is newer than this " +
+                        $"Dashboard (v{NormalizeVersion(appVersion)}).\n\n" +
+                        "Install and repair are blocked: running the older installer would revert this server's " +
+                        "objects to the older definitions and record it at the lower version. Update this Dashboard first.";
+
+                default:
+                    return null;
             }
-
-            if (installedVersion == null)
-            {
-                /* No installation found: a fresh install is safe. */
-                return null;
-            }
-
-            var installedCore = ScriptProvider.TryParseVersionCore(installedVersion);
-
-            if (installedCore == null)
-            {
-                return $"Could not interpret the installed PerformanceMonitor version ('{installedVersion}').\n\n" +
-                    "Install and upgrade are blocked: without a comparable version we cannot tell which " +
-                    "migrations still need to run. Correct the most recent SUCCESS row in " +
-                    "PerformanceMonitor.config.installation_history, or rebuild the database with the " +
-                    "CLI installer's --reinstall (destructive).";
-            }
-
-            if (installedCore > appCore)
-            {
-                return $"PerformanceMonitor v{installedCore} is installed, which is newer than this " +
-                    $"Dashboard (v{appCore}).\n\n" +
-                    "Install and repair are blocked: running the older installer would revert this server's " +
-                    "objects to the older definitions and record it at the lower version. Update this Dashboard first.";
-            }
-
-            return null;
         }
 
         private void TransitionToState(DialogState newState)
@@ -804,6 +796,8 @@ namespace PerformanceMonitorDashboard
                     InstallUpgradeButton.Content = "Upgrade Now";
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
                     InstallationPanel.Visibility = Visibility.Visible;
+                    /* Reachable from Installing (every upgrade abort restores here), which disabled the form. */
+                    SetFormEnabled(true);
                     SaveButton.IsEnabled = true;
                     break;
 
@@ -811,7 +805,7 @@ namespace PerformanceMonitorDashboard
                     string normalizedCurrent = NormalizeVersion(_installedVersion!);
                     ConnectionInfoText.Text = connectionHeader;
                     DatabaseStatusText.Text = $"PerformanceMonitor v{normalizedCurrent} is up to date. " +
-                        "If objects are missing or damaged, click Repair to reinstall them.";
+                        "If objects are missing or damaged, click Reinstall Objects to restore them.";
                     /*
                     Repair stays reachable at the current version: the install scripts are idempotent,
                     so re-running them restores missing objects. This state now means installed ==
@@ -820,11 +814,18 @@ namespace PerformanceMonitorDashboard
                     Dashboard had no non-destructive recovery for a healthy-version-but-damaged database.
 
                     InstallationPanel stays collapsed on purpose: it holds the "drops existing database"
-                    clean-install checkbox, which must never sit behind a button labelled Repair.
+                    clean-install checkbox, which must never sit behind this button.
+
+                    Named "Reinstall Objects", NOT "Repair": the Repair CHECKBOX means something different
+                    (skip the migrations, write no history row), and it is deliberately unreachable here.
+                    This button runs the ordinary install path -- with installed == target there are no
+                    migrations to skip, so it is a same-version REINSTALL and correctly records one.
                     */
-                    InstallUpgradeButton.Content = "Repair";
+                    InstallUpgradeButton.Content = "Reinstall Objects";
                     SkipInstallText.Visibility = Visibility.Collapsed;
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
+                    /* Reachable from Installing (a failed reinstall restores here), which disabled the form. */
+                    SetFormEnabled(true);
                     SaveButton.IsEnabled = true;
                     break;
 
@@ -858,6 +859,9 @@ namespace PerformanceMonitorDashboard
                     */
                     RepairCheckBox.IsChecked = false;
                     CleanInstallCheckBox.IsChecked = false;
+                    /* Sticky and INVISIBLE behind a collapsed panel otherwise -- it TRUNCATEs config.collection_schedule,
+                       so a tick left over from another server would wipe this one's tuned intervals with no consent. */
+                    ResetScheduleCheckBox.IsChecked = false;
                     AdvancedOptionsExpander.IsEnabled = false;
                     CancelInstallButton.IsEnabled = false;
                     SetFormEnabled(true);
@@ -900,6 +904,9 @@ namespace PerformanceMonitorDashboard
                     */
                     RepairCheckBox.IsChecked = false;
                     CleanInstallCheckBox.IsChecked = false;
+                    /* Sticky and INVISIBLE behind a collapsed panel otherwise -- it TRUNCATEs config.collection_schedule,
+                       so a tick left over from another server would wipe this one's tuned intervals with no consent. */
+                    ResetScheduleCheckBox.IsChecked = false;
                     SetFormEnabled(true);
                     SaveButton.IsEnabled = true;
                     SaveButton.Content = "Save";

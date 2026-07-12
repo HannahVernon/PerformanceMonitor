@@ -663,6 +663,26 @@ namespace PerformanceMonitorInstaller
                     dropExisting = cleanInstall?.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase) ?? false;
                 }
 
+                /*
+                Validate this binary's OWN version BEFORE the clean-install branch, not inside the upgrade
+                one. It is what a FRESH install writes to installation_history.installer_version, so
+                letting an unparseable value through poisons a brand-new server's ledger at birth -- after
+                which both this installer and the Dashboard refuse to touch it ever again. --reinstall IS
+                a fresh install, so scoping this to the upgrade path missed the exact case it names.
+                */
+                if (ScriptProvider.TryParseVersionCore(version) == null)
+                {
+                    Console.WriteLine();
+                    WriteError($"This installer reports its own version as '{version}', which is not a valid version.");
+                    Console.WriteLine("Aborting: an install would record that value as the server's version.");
+                    Console.WriteLine("This is a build problem, not a problem with the server.");
+                    if (!automatedMode)
+                    {
+                        WaitForExit();
+                    }
+                    return (int)InstallationResultCode.VersionCheckFailed;
+                }
+
                 if (dropExisting)
             {
                 Console.WriteLine();
@@ -729,43 +749,15 @@ namespace PerformanceMonitorInstaller
                 }
 
                 /*
-                Validate the recorded version before doing anything with it. --repair skips
-                ExecuteAllUpgradesAsync, which is the only thing that would otherwise parse it, and then
-                writes it straight back as installer_version -- so without this an unreadable value gets
-                re-persisted, after which every non-repair run aborts forever and only --repair "works".
-
-                And refuse to run an older installer over a newer database: the install scripts would
-                revert every CREATE OR ALTER proc and view to this binary's older definitions, and the
-                history row would record the LOWER version as SUCCESS. That produces zero hops and zero
-                failures, so nothing downstream catches it. Repair is no exception -- it runs the same
-                install scripts.
+                Same decision the Dashboard makes -- shared via InstallGuard so the two cannot drift, and
+                pinned by tests that actually run in CI. --repair skips ExecuteAllUpgradesAsync, which is
+                the only thing that would otherwise parse the recorded version before writing it straight
+                back, and the newer-than-us case produces zero hops AND zero failures, so nothing
+                downstream catches it. Repair is no exception -- it runs the same install scripts.
                 */
-                /*
-                Validate this binary's OWN version first. It is what a FRESH install writes to
-                installation_history.installer_version, so letting an unparseable one through poisons a
-                brand-new server's ledger at birth -- after which both this installer and the Dashboard
-                refuse to touch it ever again. The Dashboard blocks on this; the CLI used to skip it.
-                */
-                if (ScriptProvider.TryParseVersionCore(version) == null)
+                switch (InstallGuard.Check(currentVersion, version))
                 {
-                    Console.WriteLine();
-                    WriteError($"This installer reports its own version as '{version}', which is not a valid version.");
-                    Console.WriteLine("Aborting: a fresh install would record that value as the server's version.");
-                    Console.WriteLine("This is a build problem, not a problem with the server.");
-                    if (!automatedMode)
-                    {
-                        WaitForExit();
-                    }
-                    return (int)InstallationResultCode.VersionCheckFailed;
-                }
-
-                if (currentVersion != null)
-                {
-                    var installedCore = ScriptProvider.TryParseVersionCore(currentVersion);
-                    var binaryCore = ScriptProvider.TryParseVersionCore(version);
-
-                    if (installedCore == null)
-                    {
+                    case InstallBlock.UnreadableInstalledVersion:
                         Console.WriteLine();
                         WriteError($"The version recorded on this server ('{currentVersion}') is not a valid version.");
                         Console.WriteLine("Aborting: without a comparable version we cannot tell which migrations still need to run.");
@@ -774,12 +766,10 @@ namespace PerformanceMonitorInstaller
                             WaitForExit();
                         }
                         return (int)InstallationResultCode.VersionCheckFailed;
-                    }
 
-                    if (binaryCore != null && installedCore > binaryCore)
-                    {
+                    case InstallBlock.InstalledIsNewerThanBuild:
                         Console.WriteLine();
-                        WriteError($"Installed version v{installedCore} is newer than this installer (v{binaryCore}).");
+                        WriteError($"Installed version v{currentVersion} is newer than this installer (v{version}).");
                         Console.WriteLine("Aborting: running an older installer over a newer database would revert its objects to");
                         Console.WriteLine("the older definitions and record it at the lower version. Use a matching or newer installer.");
                         if (!automatedMode)
@@ -787,7 +777,6 @@ namespace PerformanceMonitorInstaller
                             WaitForExit();
                         }
                         return (int)InstallationResultCode.VersionCheckFailed;
-                    }
                 }
 
                 /*

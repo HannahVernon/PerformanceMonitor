@@ -1,3 +1,4 @@
+using Installer.Core;
 using Installer.Tests.Helpers;
 using Microsoft.Data.SqlClient;
 
@@ -42,13 +43,44 @@ public class VersionDetectionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DatabaseExists_NoHistoryTable_ReturnsNull()
+    public async Task DatabaseExists_NoHistoryTable_NoCollectObjects_ReturnsNull()
     {
-        // Create database but don't create the installation_history table
+        // An EMPTY database (someone pre-created it, e.g. to control the file paths). Nothing is
+        // installed, so a clean install is correct -- attempting migrations here would fail against
+        // tables that do not exist.
         await TestDatabaseHelper.CreateTestDatabaseAsync();
 
         var version = await GetInstalledVersionFromTestDbAsync();
         Assert.Null(version);
+    }
+
+    [Fact]
+    public async Task DatabaseExists_NoHistoryTable_WithCollectObjects_ReturnsFallback()
+    {
+        // A PerformanceMonitor database whose LEDGER WAS LOST (someone dropped config.installation_history).
+        // Answering null here would read as "fresh install": the install scripts run over the live schema,
+        // every migration is skipped, and the target version is stamped SUCCESS -- stranding them
+        // permanently. It must fall back to the "attempt every upgrade" sentinel instead.
+        await TestDatabaseHelper.CreateTestDatabaseAsync();
+
+        using (var connection = new SqlConnection(TestDatabaseHelper.GetConnectionString()))
+        {
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
+            using var cmd = new SqlCommand(@"
+                USE PerformanceMonitor_Test;
+                IF SCHEMA_ID(N'collect') IS NULL
+                BEGIN
+                    EXECUTE(N'CREATE SCHEMA collect;');
+                END;
+                IF OBJECT_ID(N'collect.wait_stats', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE collect.wait_stats (id integer NOT NULL);
+                END;", connection);
+            await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        var version = await GetInstalledVersionFromTestDbAsync();
+        Assert.Equal(InstallationService.UnknownVersionSentinel, version);
     }
 
     [Fact]
@@ -120,7 +152,28 @@ public class VersionDetectionTests : IAsyncLifetime
                 SELECT OBJECT_ID(N'{testDbName}.config.installation_history', N'U');", connection);
             var tableExists = await tableCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
             if (tableExists == null || tableExists == DBNull.Value)
-                return null;
+            {
+                // No history table. A PerformanceMonitor database whose ledger was LOST must not read as
+                // "fresh install" -- that skips every migration and then stamps the target version SUCCESS,
+                // stranding them permanently. Tell it apart from an empty pre-created database by whether
+                // it actually holds collect objects, and fall back to the #538 "attempt every upgrade"
+                // sentinel for the damaged case. Mirrors InstallationService.GetInstalledVersionAsync.
+                using var collectCheckCmd = new SqlCommand($@"
+                    SELECT
+                        COUNT_BIG(*)
+                    FROM {testDbName}.sys.tables AS t
+                    JOIN {testDbName}.sys.schemas AS s
+                      ON s.schema_id = t.schema_id
+                    WHERE s.name = N'collect';", connection);
+
+                var collectTables = await collectCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+                long collectCount =
+                    collectTables == null || collectTables == DBNull.Value
+                        ? 0L
+                        : Convert.ToInt64(collectTables);
+
+                return collectCount > 0 ? InstallationService.UnknownVersionSentinel : null;
+            }
 
             // Get most recent successful version
             using var versionCmd = new SqlCommand($@"

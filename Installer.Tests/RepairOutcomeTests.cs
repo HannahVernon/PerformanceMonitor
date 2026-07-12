@@ -62,6 +62,22 @@ public class RepairOutcomeTests
             repairRan: true, installedVersion: installed, targetVersion: target, criticalFileFailed: false));
     }
 
+    [Fact]
+    public void UnknownVersionSentinel_IsNeverExpected()
+    {
+        /*
+        "1.0.0" is GetInstalledVersionAsync's guess for "installed, but I cannot read the version" -- not
+        a fact. It sorts below every real version, so trusting it would answer "an upgrade is pending"
+        unconditionally and report every REAL repair failure as expected, exiting 0. A schema-current
+        3.1.0 server whose history rows are all FAILED, with genuinely broken procedures, must not pass.
+        */
+        Assert.False(RepairOutcome.FailuresAreExpected(
+            repairRan: true,
+            installedVersion: InstallationService.UnknownVersionSentinel,
+            targetVersion: "3.1.0",
+            criticalFileFailed: false));
+    }
+
     [Theory]
     [InlineData("3.0.0", "3.1.0.0")]
     [InlineData("2.9", "3.1.0")]
