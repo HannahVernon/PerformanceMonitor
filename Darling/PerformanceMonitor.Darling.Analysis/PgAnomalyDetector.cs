@@ -481,6 +481,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                 ["baseline_stddev"] = effectiveStdDev,
                 ["deviation_sigma"] = decision.Sigma,
                 ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples,
                 ["confidence"] = 1.0,
@@ -737,6 +738,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                     ["baseline_stddev_ms"] = effectiveStdDev,
                     ["deviation_sigma"] = readDecision.Sigma,
                     ["baseline_low_quality"] = readDecision.LowQualityBaseline ? 1 : 0,
+                    ["fallback_exceedance"] = readDecision.FallbackExceedance,
                     ["baseline_samples"] = baseline.SampleCount
                 };
                 AddBaselineContext(metadata, baseline);
@@ -764,6 +766,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                     ["baseline_stddev_ms"] = effectiveStdDev,
                     ["deviation_sigma"] = writeDecision.Sigma,
                     ["baseline_low_quality"] = writeDecision.LowQualityBaseline ? 1 : 0,
+                    ["fallback_exceedance"] = writeDecision.FallbackExceedance,
                     ["baseline_samples"] = baseline.SampleCount
                 };
                 AddBaselineContext(metadata, baseline);
@@ -826,6 +829,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                 ["baseline_stddev"] = effectiveStdDev,
                 ["deviation_sigma"] = decision.Sigma,
                 ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -888,6 +892,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                 ["baseline_stddev"] = effectiveStdDev,
                 ["deviation_sigma"] = decision.Sigma,
                 ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -951,6 +956,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                 ["baseline_stddev"] = effectiveStdDev,
                 ["deviation_sigma"] = decision.Sigma,
                 ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -1015,6 +1021,7 @@ ORDER BY ms_delta DESC LIMIT 1";
                 ["baseline_stddev"] = effectiveStdDev,
                 ["deviation_sigma"] = decision.Sigma,
                 ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };

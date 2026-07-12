@@ -36,7 +36,11 @@ public static class AnomalyGate
     /// <param name="Fire">Whether the anomaly should be emitted.</param>
     /// <param name="Sigma">Capped deviation-in-sigmas for display (0 when the baseline has no dispersion).</param>
     /// <param name="LowQualityBaseline">True when the decision took the absolute-fallback path (thin baseline).</param>
-    public readonly record struct ZDecision(bool Fire, double Sigma, bool LowQualityBaseline);
+    /// <param name="FallbackExceedance">Peak ÷ the absolute-fallback bar — set only on the low-quality
+    /// path (0 otherwise). On that path the stored <c>Sigma</c> is the real (small) z, which the scorer's
+    /// 2σ gate would zero out; the scorer grades the fire off THIS exceedance instead so the finding
+    /// still surfaces. See <c>FactScorer.ScoreAnomalyFact</c>.</param>
+    public readonly record struct ZDecision(bool Fire, double Sigma, bool LowQualityBaseline, double FallbackExceedance);
 
     /// <summary>
     /// Decides whether a z-score anomaly fires. Callers pass the baseline's <paramref name="mean"/>,
@@ -67,10 +71,15 @@ public static class AnomalyGate
             // effectiveStdDev > 0 is guaranteed when trustworthy (IsTrustworthy requires it).
             var deviation = (peak - mean) / effectiveStdDev;
             var fire = deviation >= deviationThreshold && peak >= magnitudeFloor;
-            return new ZDecision(fire, Math.Min(deviation, sigmaCap), LowQualityBaseline: false);
+            return new ZDecision(fire, Math.Min(deviation, sigmaCap), LowQualityBaseline: false, FallbackExceedance: 0.0);
         }
 
-        // Untrustworthy baseline → absolute-threshold fallback (NOT silence).
-        return new ZDecision(peak >= absoluteFallbackBar, sigma, LowQualityBaseline: true);
+        // Untrustworthy baseline → absolute-threshold fallback (NOT silence). The exceedance (>= 1.0 on a
+        // fire) is carried so the scorer can grade it off the absolute bar instead of the untrustworthy z.
+        return new ZDecision(
+            peak >= absoluteFallbackBar,
+            sigma,
+            LowQualityBaseline: true,
+            FallbackExceedance: absoluteFallbackBar > 0 ? peak / absoluteFallbackBar : 0.0);
     }
 }

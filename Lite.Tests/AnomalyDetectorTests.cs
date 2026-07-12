@@ -376,6 +376,9 @@ public class AnomalyDetectorTests : IDisposable
         var cpu = anomalies.FirstOrDefault(f => f.Key == "ANOMALY_CPU_SPIKE");
         Assert.NotNull(cpu);
         Assert.Equal(1.0, cpu!.Metadata["baseline_low_quality"]); // fired via the absolute fallback
+        // The exceedance the scorer grades off (finding 1): peak 95% ÷ the 90% CpuFallbackPct bar (>= 1.0
+        // on a fire). Without this, the scorer's 2σ gate would zero the small fallback z and drop the finding.
+        Assert.Equal(95.0 / 90.0, cpu.Metadata["fallback_exceedance"], precision: 4);
     }
 
     [Fact]
@@ -411,6 +414,7 @@ public class AnomalyDetectorTests : IDisposable
         Assert.NotNull(cpu);
         Assert.Equal(0.0, cpu!.Metadata["baseline_low_quality"]); // trusted z-path
         Assert.True(cpu.Metadata["deviation_sigma"] >= 2.0);
+        Assert.Equal(0.0, cpu.Metadata["fallback_exceedance"]); // trusted path carries no fallback exceedance
     }
 
     // ── Wait profile (change 1): one ANOMALY_WAIT_PROFILE, minority-but-real wait captured ──

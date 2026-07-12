@@ -78,6 +78,78 @@ public class FactScorerTests
         Assert.False(string.IsNullOrWhiteSpace(advice.Remediation));
     }
 
+    /* ── Bounded-metric low-quality (thin-baseline) fallback scoring (finding 1) ── */
+
+    // When the quality gate fires on a thin/untrustworthy baseline (baseline_low_quality=1) the stored
+    // deviation_sigma is the real (small) z — the 2σ gate would zero it and InferenceEngine would drop the
+    // finding. The scorer grades off the absolute exceedance (peak ÷ the fallback bar) instead: floor 0.5
+    // AT the bar, ramping to 1.0 at 2× the bar. Same shared FactScorer as Lite — pinned here for parity.
+    [Theory]
+    [InlineData("ANOMALY_CPU_SPIKE", 1.0, 0.5)]        // exactly at the bar → the 0.5 floor
+    [InlineData("ANOMALY_MEMORY_PRESSURE", 1.25, 0.625)]
+    [InlineData("ANOMALY_READ_LATENCY", 1.5, 0.75)]    // 1.5× the bar → midway
+    [InlineData("ANOMALY_WRITE_LATENCY", 2.0, 1.0)]    // 2× the bar → saturated
+    [InlineData("ANOMALY_BATCH_REQUESTS", 5.0, 1.0)]   // far past → clamped to 1.0
+    public void Score_LowQualityFallback_GradesOffExceedance_NotSigma(
+        string key, double exceedance, double expected)
+    {
+        var fact = new Fact
+        {
+            Source = "anomaly",
+            Key = key,
+            Metadata = new()
+            {
+                ["deviation_sigma"] = 0.7,          // a real, sub-2σ z the gate must ignore
+                ["baseline_low_quality"] = 1.0,
+                ["fallback_exceedance"] = exceedance,
+                ["confidence"] = 1.0
+            }
+        };
+        new FactScorer().ScoreAll(new List<Fact> { fact });
+        Assert.Equal(expected, fact.BaseSeverity, precision: 4);
+    }
+
+    // The finding's exact regression: memory 96% on a thin baseline (95% fallback bar) used to score 0
+    // (small z → 2σ gate → 0 → InferenceEngine drops it → NO finding). It must now clear the 0.5 entry.
+    [Fact]
+    public void Score_Memory96PercentOnThinBaseline_ClearsInferenceEntryPoint()
+    {
+        var fact = new Fact
+        {
+            Source = "anomaly",
+            Key = "ANOMALY_MEMORY_PRESSURE",
+            Metadata = new()
+            {
+                ["deviation_sigma"] = 0.4,
+                ["baseline_low_quality"] = 1.0,
+                ["fallback_exceedance"] = 96.0 / 95.0,
+                ["confidence"] = 1.0
+            }
+        };
+        new FactScorer().ScoreAll(new List<Fact> { fact });
+        Assert.True(fact.BaseSeverity >= 0.5, "a thin-baseline memory-96% fallback must surface, not vanish");
+    }
+
+    // The trustworthy z-path is unchanged: with baseline_low_quality=0 a sub-2σ deviation still scores 0.
+    [Fact]
+    public void Score_TrustworthyBaseline_SubTwoSigma_StillScoresZero()
+    {
+        var fact = new Fact
+        {
+            Source = "anomaly",
+            Key = "ANOMALY_MEMORY_PRESSURE",
+            Metadata = new()
+            {
+                ["deviation_sigma"] = 1.5,
+                ["baseline_low_quality"] = 0.0,
+                ["fallback_exceedance"] = 0.0,
+                ["confidence"] = 1.0
+            }
+        };
+        new FactScorer().ScoreAll(new List<Fact> { fact });
+        Assert.Equal(0.0, fact.BaseSeverity, precision: 4);
+    }
+
     /* ── Layer 2: Amplifier tests ── */
 
     [Fact]

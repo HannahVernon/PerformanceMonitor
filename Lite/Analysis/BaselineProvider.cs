@@ -463,7 +463,8 @@ GROUP BY hour_of_day, day_of_week",
             StdDev = Math.Sqrt(pooledVariance),
             SampleCount = totalSamples,
             // A calendar day recurs across the 24 hour buckets, so summing would double-count;
-            // MAX is a conservative lower bound (avoids an extra global DISTINCT-days query).
+            // MAX is a ~5 ceiling (each (hour, dow) bucket holds at most ~5 same-weekday dates in a
+            // 30-day window) — a cheap proxy that avoids an extra global DISTINCT-days query.
             DistinctDays = allBuckets.Max(b => b.DistinctDays),
             AbsStdDevFloor = allBuckets[0].AbsStdDevFloor,
             Tier = BaselineTier.Flat
@@ -517,8 +518,8 @@ public class BaselineBucket
     /// quantity-only warmup gate lacked (a bucket with many samples but few distinct days is one
     /// busy day, not a trend). Carried through collapse by CollapseToHourOnly (SUM — each calendar
     /// day lands in exactly one day-of-week bucket, so the sum is exact) and CollapseToFlat (MAX —
-    /// a calendar day recurs across the 24 hour buckets, so MAX is a conservative lower bound that
-    /// avoids a second global query).
+    /// a calendar day recurs across the 24 hour buckets; MAX is a ~5 ceiling, not the true pooled
+    /// distinct-day count, but a cheap proxy that avoids a second global query).
     /// </summary>
     public long DistinctDays { get; init; }
 
@@ -531,15 +532,17 @@ public class BaselineBucket
     public double AbsStdDevFloor { get; init; }
 
     // Baseline-quality tier gates (see IsTrustworthy). Day-mins are tier-aware: a Full (hour × dow)
-    // bucket only sees ~4 same-weekday occurrences in a 30-day window, so a flat >=15 would collapse
-    // every Full bucket; a Flat bucket pools every day and can demand more. Sample-mins mirror the
-    // provider's per-tier selection floors.
+    // bucket only sees ~5 same-weekday dates in a 30-day window, so its day-min is a modest 3. The Flat
+    // tier's DistinctDays is a MAX-over-hour-buckets proxy (CollapseToFlat) capped at that SAME ~5
+    // ceiling, so it can't demand more than a Full bucket — a >=15 floor was structurally unreachable and
+    // left the Flat trust branch permanently dead, so match Full at 3. Sample-mins mirror the provider's
+    // per-tier selection floors.
     private const long FullSampleMin = 10;
     private const long FullDayMin = 3;
     private const long HourOnlySampleMin = 10;
     private const long HourOnlyDayMin = 10;
     private const long FlatSampleMin = 3;
-    private const long FlatDayMin = 15;
+    private const long FlatDayMin = 3;
 
     public static BaselineBucket Empty => new()
     {
