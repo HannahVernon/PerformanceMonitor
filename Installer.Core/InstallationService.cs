@@ -565,6 +565,21 @@ END;";
 
                 result.FilesSucceeded++;
             }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                /*
+                A cancel, surfaced as one -- the same pattern as the clean-install branch above, and here for
+                the same reason. A cancelled SqlCommand faults with SqlException, not
+                OperationCanceledException, so the general catch below counted a Cancel mid-file as a file
+                FAILURE and the run returned Success=false. The loop-top ThrowIfCancellationRequested only
+                re-surfaces the cancel if control reaches the top of the loop again -- which it does NOT for a
+                critical file (it `break`s) or for the LAST file (the loop just ends), so those two cancels
+                fell through to "completed with N error(s)" and the caller's FAILURE path instead of its
+                CANCELLATION path. Converting here, ahead of the general catch, keeps the failure accounting
+                honest: a cancel is not a file failure, and it is not recorded as one.
+                */
+                throw new OperationCanceledException(cancellationToken);
+            }
             catch (Exception ex)
             {
                 LogDebug(progress, $"  {fileName}: FAILED — {ex.GetType().Name}: {ex.Message}");

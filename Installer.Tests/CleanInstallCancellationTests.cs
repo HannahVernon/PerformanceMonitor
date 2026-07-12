@@ -57,4 +57,17 @@ public class CleanInstallCancellationTests
                 cleanInstall: false,
                 cancellationToken: cts.Token));
     }
+
+    /*
+    COVERAGE BOUNDARY, stated honestly. These pin the PRE-file windows -- a token already cancelled trips
+    the guard at the top of ExecuteInstallationAsync (and the loop-top guard) before any command runs, so
+    they never exercise a cancel that lands INSIDE a running SqlCommand.
+
+    That third window -- a cancel mid-file, which faults as SqlException rather than OperationCanceledException
+    and used to be miscounted as a file failure -- is handled by a dedicated `catch when
+    (cancellationToken.IsCancellationRequested)` that mirrors the clean-install branch. It can only be
+    exercised end to end against a live server (a connection that opens, then a cancel during execution),
+    which these DB-free tests must not do. It is covered by click-through item: cancel a normal install while
+    a file is executing and confirm the dialog shows "cancelled", not "completed with N error(s)".
+    */
 }
