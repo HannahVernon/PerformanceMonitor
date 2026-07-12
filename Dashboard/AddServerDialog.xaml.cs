@@ -754,10 +754,18 @@ namespace PerformanceMonitorDashboard
                         "CLI installer's --reinstall (destructive).";
 
                 case InstallBlock.InstalledIsNewerThanBuild:
+                    /*
+                    Everything is blocked here, clean install included -- Connected_StatusUnknown collapses
+                    the panel the checkbox lives in. So this message has to carry the whole escape route, or
+                    the user is simply stuck.
+                    */
                     return $"PerformanceMonitor v{NormalizeVersion(installedVersion!)} is installed, which is newer than this " +
                         $"Dashboard (v{NormalizeVersion(appVersion)}).\n\n" +
-                        "Install and repair are blocked: running the older installer would revert this server's " +
-                        "objects to the older definitions and record it at the lower version. Update this Dashboard first.";
+                        "Install, upgrade and repair are blocked: running the older installer would revert this " +
+                        "server's objects to the older definitions and record it at the lower version.\n\n" +
+                        "Update this Dashboard to v" + NormalizeVersion(installedVersion!) + " or later. If you " +
+                        "genuinely need to move this server BACK to an older version, the CLI installer's " +
+                        "--reinstall does that (it drops the database first, so there is nothing left to downgrade).";
 
                 case InstallBlock.None:
                     return null;

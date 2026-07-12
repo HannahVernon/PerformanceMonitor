@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 Erik Darling, Darling Data LLC
  *
  * This file is part of the SQL Server Performance Monitor.
@@ -29,8 +29,14 @@ public static class InstallationService
     /// It is NOT a fact, and callers that DECIDE something from a version must not treat it as one —
     /// it compares less than any target, so anything keyed on "is an upgrade pending?" would answer
     /// yes unconditionally. See <see cref="RepairOutcome"/>.
+    ///
+    /// Deliberately OUTSIDE the real version space. It used to be "1.0.0", which is a shipped tag — and
+    /// the "your recorded version is unreadable" message tells operators to correct the SUCCESS row by
+    /// hand, where "1.0.0" is exactly the value someone would type to force a full re-run. They would
+    /// then be told their version could not be read. No release is 0.0.0, and it still sorts below every
+    /// real version, so upgrade discovery still offers every hop.
     /// </summary>
-    public const string UnknownVersionSentinel = "1.0.0";
+    public const string UnknownVersionSentinel = "0.0.0";
 
     private static readonly char[] NewLineChars = ['\r', '\n'];
 
@@ -957,89 +963,81 @@ END;";
                 WHERE name = N'PerformanceMonitor';", connection);
 
             var dbExists = await dbCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (dbExists == null || dbExists == DBNull.Value)
+            bool databaseExists = dbExists != null && dbExists != DBNull.Value;
+
+            if (!databaseExists)
             {
                 LogDebug(progress, "GetInstalledVersionAsync: database does not exist → clean install");
-                return null;
+                return InstalledVersionClassifier.Classify(false, false, 0L, null);
             }
-            LogDebug(progress, "GetInstalledVersionAsync: database exists, checking installation_history table");
 
             /*Check if installation_history table exists*/
             using var tableCheckCmd = new SqlCommand(@"
                 USE PerformanceMonitor;
                 SELECT OBJECT_ID(N'config.installation_history', N'U');", connection);
 
-            var tableExists = await tableCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (tableExists == null || tableExists == DBNull.Value)
+            var tableOid = await tableCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            bool historyTableExists = tableOid != null && tableOid != DBNull.Value;
+
+            long collectTableCount = 0L;
+            if (!historyTableExists)
             {
                 /*
-                The database exists but has no history table. That is TWO very different situations, and
-                answering null for both is a stranding bug:
-
-                  - An empty database someone pre-created for us (common, to control the file paths).
-                    Nothing is installed, migrations would fail against tables that do not exist, and
-                    null -> "fresh install" is exactly right.
-
-                  - A PerformanceMonitor database whose ledger was lost: someone dropped
-                    config.installation_history, or a restore/migration left it behind. (Not "an ancient
-                    pre-history install" -- the table has shipped since the first commit.) Here null reads
-                    as "fresh install":
-                    the install scripts run over the LIVE schema, FilterUpgrades(null, ...) offers zero
-                    hops so every migration is skipped, and the target version is then stamped SUCCESS.
-                    Version detection reads that back and never offers those hops again -- permanently
-                    stranded, which is the precise bug this whole path exists to prevent.
-
-                Tell them apart by whether the database actually holds collect objects. For the damaged
-                case fall back to the same "1.0.0" sentinel the #538 guard below uses -- "unknown, attempt
-                every upgrade" -- which is the safe direction: the upgrade scripts are all IF NOT EXISTS
-                guarded, so replaying them no-ops where already applied and lands the schema where it belongs.
+                No ledger. Count the collect objects so the classifier can tell a PerformanceMonitor
+                database that LOST its history apart from an empty database someone pre-created for us.
+                Answering "no version" for the first is the stranding bug this whole path exists to
+                prevent; answering "installed" for the second would run migrations against tables that do
+                not exist. See InstalledVersionClassifier.
                 */
                 using var collectCheckCmd = new SqlCommand(@"
                     SELECT
                         COUNT_BIG(*)
                     FROM PerformanceMonitor.sys.tables AS t
-                    JOIN PerformanceMonitor.sys.schemas AS s
+                    INNER JOIN PerformanceMonitor.sys.schemas AS s
                       ON s.schema_id = t.schema_id
                     WHERE s.name = N'collect';", connection);
 
                 var collectTables = await collectCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-                long collectCount =
+                collectTableCount =
                     collectTables == null || collectTables == DBNull.Value
                         ? 0L
                         : Convert.ToInt64(collectTables);
-
-                if (collectCount > 0)
-                {
-                    LogDebug(progress, $"GetInstalledVersionAsync: installation_history missing but {collectCount} collect table(s) present → damaged install, fallback to 1.0.0 (#538 guard)");
-                    return UnknownVersionSentinel;
-                }
-
-                LogDebug(progress, "GetInstalledVersionAsync: database exists but holds no collect objects → clean install");
-                return null;
             }
 
-            /*Get most recent successful installation version*/
-            using var versionCmd = new SqlCommand(@"
-                SELECT TOP 1 installer_version
-                FROM PerformanceMonitor.config.installation_history
-                WHERE installation_status = 'SUCCESS'
-                ORDER BY installation_date DESC;", connection);
-
-            var version = await versionCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (version != null && version != DBNull.Value)
+            string? latestSuccessVersion = null;
+            if (historyTableExists)
             {
-                LogDebug(progress, $"GetInstalledVersionAsync: found installed version {version}");
-                return version.ToString();
+                /*Get most recent successful installation version*/
+                using var versionCmd = new SqlCommand(@"
+                    SELECT TOP (1)
+                        installer_version
+                    FROM PerformanceMonitor.config.installation_history
+                    WHERE installation_status = 'SUCCESS'
+                    ORDER BY installation_date DESC;", connection);
+
+                var version = await versionCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (version != null && version != DBNull.Value)
+                {
+                    latestSuccessVersion = version.ToString();
+                }
             }
 
             /*
-            Fallback: database and history table exist but no SUCCESS rows.
-            This can happen if a prior install didn't write history (#538/#539).
-            Return "1.0.0" so all idempotent upgrade scripts are attempted
-            rather than treating this as a fresh install (which would drop the database).
+            The DECISION lives in InstalledVersionClassifier so it can be pinned by tests CI actually
+            runs -- this method needs a live SQL Server, and that suite is excluded from CI.
             */
-            LogDebug(progress, "GetInstalledVersionAsync: no SUCCESS rows — fallback to 1.0.0 (#538 guard)");
-            return UnknownVersionSentinel;
+            string? resolved = InstalledVersionClassifier.Classify(
+                databaseExists,
+                historyTableExists,
+                collectTableCount,
+                latestSuccessVersion);
+
+            LogDebug(
+                progress,
+                $"GetInstalledVersionAsync: dbExists={databaseExists}, historyTable={historyTableExists}, " +
+                $"collectTables={collectTableCount}, successRow={latestSuccessVersion ?? "(none)"} → {resolved ?? "(clean install)"}");
+
+            return resolved;
         }
         catch (SqlException ex)
         {

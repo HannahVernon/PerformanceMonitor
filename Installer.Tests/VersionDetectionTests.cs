@@ -1,4 +1,4 @@
-using Installer.Core;
+﻿using Installer.Core;
 using Installer.Tests.Helpers;
 using Microsoft.Data.SqlClient;
 
@@ -88,12 +88,12 @@ public class VersionDetectionTests : IAsyncLifetime
     {
         // This is the #538 regression test.
         // When installation_history exists but has NO SUCCESS rows,
-        // the installer must return "1.0.0" (not null), so it attempts
+        // the installer must return the unknown sentinel (not null), so it attempts
         // upgrades rather than treating the existing database as a fresh install.
         await TestDatabaseHelper.CreateInstallationWithNoSuccessRowsAsync();
 
         var version = await GetInstalledVersionFromTestDbAsync();
-        Assert.Equal("1.0.0", version);
+        Assert.Equal(InstallationService.UnknownVersionSentinel, version);
     }
 
     [Fact]
@@ -103,7 +103,7 @@ public class VersionDetectionTests : IAsyncLifetime
         await TestDatabaseHelper.CreateInstallationWithOnlyFailedRowsAsync();
 
         var version = await GetInstalledVersionFromTestDbAsync();
-        Assert.Equal("1.0.0", version);
+        Assert.Equal(InstallationService.UnknownVersionSentinel, version);
     }
 
     [Fact]
@@ -128,8 +128,13 @@ public class VersionDetectionTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Replicates the same SQL logic as InstallationService.GetInstalledVersionAsync
-    /// but queries PerformanceMonitor_Test instead of the hardcoded PerformanceMonitor.
+    /// Gathers the same FACTS as InstallationService.GetInstalledVersionAsync against the test database
+    /// (production hardcodes the "PerformanceMonitor" name), then hands them to the SAME decision —
+    /// InstalledVersionClassifier — that production uses.
+    ///
+    /// The decision is deliberately not re-implemented here. It used to be, and the copy had already
+    /// drifted: only the queries are test-local now, so a change to what the facts MEAN cannot pass this
+    /// suite while breaking production.
     /// </summary>
     private static async Task<string?> GetInstalledVersionFromTestDbAsync()
     {
@@ -140,53 +145,66 @@ public class VersionDetectionTests : IAsyncLifetime
             using var connection = new SqlConnection(TestDatabaseHelper.GetConnectionString());
             await connection.OpenAsync(TestContext.Current.CancellationToken);
 
-            // Check if database exists
+            // Does the database exist?
             using var dbCheckCmd = new SqlCommand($@"
                 SELECT database_id FROM sys.databases WHERE name = N'{testDbName}';", connection);
             var dbExists = await dbCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
-            if (dbExists == null || dbExists == DBNull.Value)
-                return null;
+            bool databaseExists = dbExists != null && dbExists != DBNull.Value;
 
-            // Check if installation_history table exists
-            using var tableCheckCmd = new SqlCommand($@"
-                SELECT OBJECT_ID(N'{testDbName}.config.installation_history', N'U');", connection);
-            var tableExists = await tableCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
-            if (tableExists == null || tableExists == DBNull.Value)
+            if (!databaseExists)
             {
-                // No history table. A PerformanceMonitor database whose ledger was LOST must not read as
-                // "fresh install" -- that skips every migration and then stamps the target version SUCCESS,
-                // stranding them permanently. Tell it apart from an empty pre-created database by whether
-                // it actually holds collect objects, and fall back to the #538 "attempt every upgrade"
-                // sentinel for the damaged case. Mirrors InstallationService.GetInstalledVersionAsync.
+                return InstalledVersionClassifier.Classify(false, false, 0L, null);
+            }
+
+            // Does config.installation_history exist?
+            using var tableCheckCmd = new SqlCommand($@"
+                USE {testDbName};
+                SELECT OBJECT_ID(N'config.installation_history', N'U');", connection);
+            var tableOid = await tableCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+            bool historyTableExists = tableOid != null && tableOid != DBNull.Value;
+
+            // How many collect objects? (Tells a ledger-lost install apart from an empty database.)
+            long collectTableCount = 0L;
+            if (!historyTableExists)
+            {
                 using var collectCheckCmd = new SqlCommand($@"
                     SELECT
                         COUNT_BIG(*)
                     FROM {testDbName}.sys.tables AS t
-                    JOIN {testDbName}.sys.schemas AS s
+                    INNER JOIN {testDbName}.sys.schemas AS s
                       ON s.schema_id = t.schema_id
                     WHERE s.name = N'collect';", connection);
 
                 var collectTables = await collectCheckCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
-                long collectCount =
+                collectTableCount =
                     collectTables == null || collectTables == DBNull.Value
                         ? 0L
                         : Convert.ToInt64(collectTables);
-
-                return collectCount > 0 ? InstallationService.UnknownVersionSentinel : null;
             }
 
-            // Get most recent successful version
-            using var versionCmd = new SqlCommand($@"
-                SELECT TOP 1 installer_version
-                FROM {testDbName}.config.installation_history
-                WHERE installation_status = 'SUCCESS'
-                ORDER BY installation_date DESC;", connection);
-            var version = await versionCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
-            if (version != null && version != DBNull.Value)
-                return version.ToString();
+            // Most recent SUCCESS row, if any.
+            string? latestSuccessVersion = null;
+            if (historyTableExists)
+            {
+                using var versionCmd = new SqlCommand($@"
+                    SELECT TOP (1)
+                        installer_version
+                    FROM {testDbName}.config.installation_history
+                    WHERE installation_status = 'SUCCESS'
+                    ORDER BY installation_date DESC;", connection);
 
-            // Fallback: database + table exist but no SUCCESS rows → return "1.0.0"
-            return "1.0.0";
+                var version = await versionCmd.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+                if (version != null && version != DBNull.Value)
+                {
+                    latestSuccessVersion = version.ToString();
+                }
+            }
+
+            return InstalledVersionClassifier.Classify(
+                databaseExists,
+                historyTableExists,
+                collectTableCount,
+                latestSuccessVersion);
         }
         catch
         {
