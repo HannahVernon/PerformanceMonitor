@@ -452,8 +452,17 @@ namespace PerformanceMonitorDashboard
 
         private async System.Threading.Tasks.Task<(bool Connected, string? ErrorMessage, bool MfaCancelled)> RunConnectionTestAsync(Button triggerButton)
         {
+            /*
+            Disable BOTH entry points, not just the one that was clicked. Test Connection stayed live during
+            a SAVE's test, so two of these could overlap -- and then the second one borrowed the FIRST one's
+            "Testing connection..." label and dutifully restored it at the end, leaving that message on
+            screen forever with nothing running behind it. (It is also what re-armed Save mid-save and gave
+            the double-DialogResult its way in; _saveInProgress catches that, but two concurrent connection
+            tests are nonsense in the first place.) One test at a time; the finally re-arms both.
+            */
             triggerButton.IsEnabled = false;
             SaveButton.IsEnabled = false;
+            TestConnectionButton.IsEnabled = false;
 
             /*
             StatusText may already be carrying something the user still needs -- most importantly the
@@ -516,6 +525,7 @@ namespace PerformanceMonitorDashboard
                 {
                     triggerButton.IsEnabled = true;
                     SaveButton.IsEnabled = true;
+                    TestConnectionButton.IsEnabled = true;
 
                     /*
                     Give back what we borrowed -- but only if it is still ours. A retype or a newer detection
@@ -569,6 +579,15 @@ namespace PerformanceMonitorDashboard
             string testedServerName = ServerNameTextBox.Text.Trim();
 
             var (connected, errorMessage, mfaCancelled) = await RunConnectionTestAsync(TestConnectionButton);
+
+            /*
+            The dialog was closed while this test ran. Round 19 swept exactly this out of SaveAsync and left
+            the same shape sitting in its two siblings: without it, the failure and MFA-cancel boxes below
+            pop up with no dialog behind them -- one of them helpfully telling the user to "Click Test to try
+            again" on a window that no longer exists -- and the success path runs a full two-round-trip
+            detection against a destroyed one.
+            */
+            if (_dialogClosed) return;
 
             if (connected)
             {
@@ -646,6 +665,14 @@ namespace PerformanceMonitorDashboard
 
         /* Null until THIS server's version has actually been read. See RestoreAfterInstall. */
         private DialogState? _preInstallState;
+
+        /*
+        Which of the two reasons nulled _preInstallState: a clean install throwing the verdict away on
+        purpose, or the run ending before the version was ever read. They get different words, and reset
+        per run -- a flag that outlives its run is how the repair handoff ended up describing an upgrade
+        that had already been applied.
+        */
+        private bool _verdictDiscardedByCleanInstall;
 
         /*
         THE structural guard. Every critical found in rounds 6-10 was one bug wearing different clothes:
@@ -936,16 +963,40 @@ namespace PerformanceMonitorDashboard
             ResetScheduleCheckBox.IsChecked = false;
 
             /*
-            If the run ended BEFORE this server's version was read -- cancel or a connect failure during
-            the install-time re-read -- we have no verdict for it, and the fields still describe whatever
-            was checked last. Do not restore a Connected_* state: that renders the previous server's
-            verdict under this one's name. Say we do not know.
+            We have no verdict to restore, for one of two reasons -- and they need DIFFERENT words. Either
+            the run ended before this server's version was read (a cancel or a connect failure during the
+            install-time re-read), or a clean install deliberately discarded it because it was about to drop
+            the database. Telling a user whose database we just dropped that "the installed version was not
+            read" is simply false, and it is the wrong thing to be reading at that moment.
+
+            Either way, do not restore a Connected_* state: that renders the previous server's verdict under
+            this one's name. Say we do not know.
             */
             if (_preInstallState == null)
             {
-                BlockInstall(
-                    $"{message}\n\nThis server's installed version was not read, so its status is unknown. " +
-                    "Click Test Connection to check it.");
+                string reason =
+                    _verdictDiscardedByCleanInstall
+                        ? "A clean install was requested, which drops the database, so this server's status " +
+                          "is unknown until it is re-checked."
+                        : "This server's installed version was not read, so its status is unknown.";
+
+                BlockInstall($"{message}\n\n{reason} Click Test Connection to check it.");
+
+                /*
+                And SHOW THE LOG. BlockInstall lands in Connected_StatusUnknown, which collapses
+                InstallationPanel -- so this branch used to return having hidden InstallLogTextBox, which is
+                the only place the actual SQL error text lives. On the clean-install path that is the worst
+                possible moment to hide it: the database has already been dropped (CleanInstallAsync runs
+                before the file loop, so any cancel or failure after that point arrives here with the
+                database gone), and the user was left with a single exception message to work out why. The
+                branch below has said "show the log either way" since it was written; this one just didn't.
+
+                Advanced Options stays disabled: the install button is collapsed in this state anyway, so
+                the options are not actionable, and the ticks were cleared on the way in.
+                */
+                InstallationPanel.Visibility = Visibility.Visible;
+                InstallStatusText.Text = message;
+                AdvancedOptionsExpander.IsEnabled = false;
                 return;
             }
 
@@ -970,7 +1021,15 @@ namespace PerformanceMonitorDashboard
             if (InstallInProgress) return;
 
             int epoch = ++_detectEpoch;
-            bool Superseded() => epoch != _detectEpoch || InstallInProgress;
+
+            /*
+            _dialogClosed belongs in here, not at the call sites. "The dialog is gone" is just another reason
+            this detection's answer is no longer wanted, and Superseded() is already the one question every
+            publish point in this method asks before committing anything -- so putting it here covers all of
+            them at once, including the second DB round-trip, instead of a guard per caller that the next
+            caller forgets.
+            */
+            bool Superseded() => epoch != _detectEpoch || InstallInProgress || _dialogClosed;
 
             try
             {
@@ -1501,6 +1560,9 @@ namespace PerformanceMonitorDashboard
             _launchState = _currentState;
             _preInstallState = null;
 
+            /* Per-run, like _handoffStatusText. A stale one would misexplain the NEXT run's failure. */
+            _verdictDiscardedByCleanInstall = false;
+
             TransitionToState(DialogState.Installing);
             InstallLogTextBox.Clear();
             InstallProgressBar.Value = 0;
@@ -1532,11 +1594,20 @@ namespace PerformanceMonitorDashboard
                 try
                 {
                     /*
-                    Refresh the server facts too, not just the version. _coreServerInfo came from the last
-                    Test Connection, and after a retarget it describes a different box -- so the summary
+                    Refresh the server facts too, not just the version. The cached ones came from the last
+                    Test Connection, and after a retarget they describe a different box -- so the summary
                     report would name THIS server with the previous one's SQL version and edition.
+
+                    Landed in LOCALS and published as a SET, exactly as the detect path does. This method
+                    used to write _coreServerInfo, then await, then write _installedVersion, then stamp --
+                    three of the four coupled facts, committed separately across an await, and never the
+                    fourth (_serverVersion kept whatever the last detection left). It is not exploitable,
+                    because the box is frozen for the whole run and every other handler bails on
+                    InstallInProgress. But "not exploitable because something else happens to be disabled"
+                    is enablement standing in for an invariant, and that is the exact substitution this file
+                    has been bitten by over and over. Publish them together and it is true by construction.
                     */
-                    _coreServerInfo = await InstallationService.TestConnectionAsync(
+                    var installTimeInfo = await InstallationService.TestConnectionAsync(
                         installerConnStr,
                         cancellationToken: cancellationToken);
 
@@ -1546,24 +1617,28 @@ namespace PerformanceMonitorDashboard
                     junk database and a FAILED history row on a server the gate exists to refuse. Re-reading
                     the fact and then not using it was the whole hole.
                     */
-                    if (_coreServerInfo is not { IsConnected: true })
+                    if (installTimeInfo is not { IsConnected: true })
                     {
                         throw new InvalidOperationException("Could not connect to this server.");
                     }
 
-                    if (!_coreServerInfo.IsSupportedVersion)
+                    if (!installTimeInfo.IsSupportedVersion)
                     {
                         throw new InvalidOperationException(
-                            $"{_coreServerInfo.ProductMajorVersionName} is not supported. PerformanceMonitor requires SQL Server 2016 or later.");
+                            $"{installTimeInfo.ProductMajorVersionName} is not supported. PerformanceMonitor requires SQL Server 2016 or later.");
                     }
 
-                    _installedVersion = await InstallationService.GetInstalledVersionAsync(
+                    string? installTimeVersion = await InstallationService.GetInstalledVersionAsync(
                         installerConnStr,
                         throwOnError: true,
                         cancellationToken: cancellationToken);
 
-                    /* Stamp with the server we just read -- this is the connection we will write to. */
-                    RecordVerdictFor(installTimeServerName);
+                    /* Stamped with the server we just read -- this is the connection we will write to. */
+                    PublishProbedServer(
+                        installTimeInfo,
+                        installTimeInfo.SqlServerVersion.Split('\n')[0].Trim(),
+                        installTimeServerName,
+                        installTimeVersion);
                 }
                 catch (Exception) when (cancellationToken.IsCancellationRequested)
                 {
@@ -1797,6 +1872,14 @@ namespace PerformanceMonitorDashboard
                     */
                     _preInstallState = null;
                     _verdictServerName = null;
+
+                    /*
+                    Remember WHY we forgot it. Both causes of a null _preInstallState land in the same
+                    branch of RestoreAfterInstall, which told every one of them "this server's installed
+                    version was not read" -- which on THIS path is simply false. It was read; we discarded
+                    it on purpose, because we are about to drop the database out from under it.
+                    */
+                    _verdictDiscardedByCleanInstall = true;
                 }
 
                 _installResult = await InstallationService.ExecuteInstallationAsync(
