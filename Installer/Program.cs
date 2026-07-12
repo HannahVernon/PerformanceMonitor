@@ -728,6 +728,49 @@ namespace PerformanceMonitorInstaller
                     return (int)InstallationResultCode.VersionCheckFailed;
                 }
 
+                /*
+                Validate the recorded version before doing anything with it. --repair skips
+                ExecuteAllUpgradesAsync, which is the only thing that would otherwise parse it, and then
+                writes it straight back as installer_version -- so without this an unreadable value gets
+                re-persisted, after which every non-repair run aborts forever and only --repair "works".
+
+                And refuse to run an older installer over a newer database: the install scripts would
+                revert every CREATE OR ALTER proc and view to this binary's older definitions, and the
+                history row would record the LOWER version as SUCCESS. That produces zero hops and zero
+                failures, so nothing downstream catches it. Repair is no exception -- it runs the same
+                install scripts.
+                */
+                if (currentVersion != null)
+                {
+                    var installedCore = ScriptProvider.TryParseVersionCore(currentVersion);
+                    var binaryCore = ScriptProvider.TryParseVersionCore(version);
+
+                    if (installedCore == null)
+                    {
+                        Console.WriteLine();
+                        WriteError($"The version recorded on this server ('{currentVersion}') is not a valid version.");
+                        Console.WriteLine("Aborting: without a comparable version we cannot tell which migrations still need to run.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+                    }
+
+                    if (binaryCore != null && installedCore > binaryCore)
+                    {
+                        Console.WriteLine();
+                        WriteError($"Installed version v{installedCore} is newer than this installer (v{binaryCore}).");
+                        Console.WriteLine("Aborting: running an older installer over a newer database would revert its objects to");
+                        Console.WriteLine("the older definitions and record it at the lower version. Use a matching or newer installer.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+                    }
+                }
+
                 if (currentVersion != null && repairMode)
                 {
                     /*

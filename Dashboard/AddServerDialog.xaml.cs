@@ -595,46 +595,26 @@ namespace PerformanceMonitorDashboard
                     return;
                 }
 
+                string? blockReason = GetInstallBlockReason(_installedVersion, appVersion);
+                if (blockReason != null)
+                {
+                    BlockInstall(blockReason);
+                    return;
+                }
+
                 if (_installedVersion == null)
                 {
                     TransitionToState(DialogState.Connected_NoDatabase);
                     return;
                 }
 
-                string normalizedInstalled = NormalizeVersion(_installedVersion);
-                string normalizedApp = NormalizeVersion(appVersion);
+                /* Both parse and installed <= app, or GetInstallBlockReason would have blocked above. */
+                var installedCore = ScriptProvider.TryParseVersionCore(_installedVersion)!;
+                var appCore = ScriptProvider.TryParseVersionCore(appVersion)!;
 
-                if (!Version.TryParse(normalizedInstalled, out var installedVer) ||
-                    !Version.TryParse(normalizedApp, out var appVer))
-                {
-                    /* If the two versions cannot be compared, we cannot know which migrations apply. */
-                    BlockInstall(
-                        $"Could not interpret the installed PerformanceMonitor version ('{_installedVersion}').\n\n" +
-                        "Install and upgrade are blocked: without a comparable version we cannot tell which " +
-                        "migrations still need to run.");
-                }
-                else if (installedVer < appVer)
-                {
-                    TransitionToState(DialogState.Connected_NeedsUpgrade);
-                }
-                else if (installedVer > appVer)
-                {
-                    /*
-                    The server is on a NEWER build than this Dashboard. Installing would run the older
-                    binary's scripts over a newer schema -- every CREATE OR ALTER proc and view reverts
-                    to its older body -- and then record the LOWER version as SUCCESS. A silent
-                    downgrade. Block it; the fix is to update this Dashboard.
-                    */
-                    BlockInstall(
-                        $"PerformanceMonitor v{normalizedInstalled} is installed, which is newer than this " +
-                        $"Dashboard (v{normalizedApp}).\n\n" +
-                        "Install and repair are blocked: running the older installer would revert this server's " +
-                        "objects to the older definitions and record it at the lower version. Update this Dashboard first.");
-                }
-                else
-                {
-                    TransitionToState(DialogState.Connected_Current);
-                }
+                TransitionToState(installedCore < appCore
+                    ? DialogState.Connected_NeedsUpgrade
+                    : DialogState.Connected_Current);
             }
             catch (Exception ex)
             {
@@ -648,6 +628,46 @@ namespace PerformanceMonitorDashboard
         {
             _installBlockedReason = reason;
             TransitionToState(DialogState.Connected_StatusUnknown);
+        }
+
+        /*
+        Decide whether installing against this installed version is safe, and if not, why. Returns null
+        when it is safe (including "no database", which is a fresh install).
+
+        Both the Test Connection path and the install click run this. It cannot be computed once and
+        cached: the server box stays editable and BuildInstallerConnectionString() rebuilds the
+        connection string live, so a verdict from the last detection may belong to a different server.
+        Refreshing the version alone is not enough either -- the "installed is NEWER than this build"
+        case produces zero hops and zero failures, so nothing downstream catches it, and the install
+        would silently revert a newer database to this binary's older object definitions and record
+        the lower version as SUCCESS.
+        */
+        private static string? GetInstallBlockReason(string? installedVersion, string appVersion)
+        {
+            if (installedVersion == null)
+            {
+                return null;
+            }
+
+            var installedCore = ScriptProvider.TryParseVersionCore(installedVersion);
+            var appCore = ScriptProvider.TryParseVersionCore(appVersion);
+
+            if (installedCore == null || appCore == null)
+            {
+                return $"Could not interpret the installed PerformanceMonitor version ('{installedVersion}').\n\n" +
+                    "Install and upgrade are blocked: without a comparable version we cannot tell which " +
+                    "migrations still need to run.";
+            }
+
+            if (installedCore > appCore)
+            {
+                return $"PerformanceMonitor v{installedCore} is installed, which is newer than this " +
+                    $"Dashboard (v{appCore}).\n\n" +
+                    "Install and repair are blocked: running the older installer would revert this server's " +
+                    "objects to the older definitions and record it at the lower version. Update this Dashboard first.";
+            }
+
+            return null;
         }
 
         private void TransitionToState(DialogState newState)
@@ -729,6 +749,9 @@ namespace PerformanceMonitorDashboard
                     InstallUpgradeButton.Visibility = Visibility.Collapsed;
                     SkipInstallText.Visibility = Visibility.Collapsed;
                     DatabaseStatusPanel.Visibility = Visibility.Visible;
+                    /* Reachable from Installing (the install-time re-check blocks), which disabled the form. */
+                    CancelInstallButton.IsEnabled = false;
+                    SetFormEnabled(true);
                     SaveButton.IsEnabled = true;
                     break;
 
@@ -804,37 +827,22 @@ namespace PerformanceMonitorDashboard
             }
 
             /*
-            Re-read the installed version against the connection we are about to WRITE to. The cached
-            _installedVersion comes from the last Test Connection, but the server box stays editable and
-            BuildInstallerConnectionString() rebuilds the connection string live -- so retyping the box
-            and clicking straight through would install into a different server while still reasoning
-            about the previous one's version. Since the cached version is what suppresses hops, that
-            would run zero migrations and then stamp SUCCESS at the wrong version, stranding the real
-            server's upgrades. Fail loudly here for the same reason discovery does.
+            Freeze the UI and arm cancellation BEFORE the first await. TransitionToState(Installing)
+            collapses DatabaseStatusPanel, which is the Border InstallUpgradeButton lives in -- and that
+            collapse is the ONLY thing that makes the button unclickable, since SetFormEnabled never
+            touches it. Awaiting the version re-read in front of it would leave the button live for the
+            whole connect timeout (unbounded for interactive Entra auth), and this handler is async void:
+            a second click starts a second concurrent install that clobbers _installCts and
+            _installResult, races two clean installs, and leaves Cancel pointing at the wrong run.
+            Creating the CTS first also means Cancel and ESC work DURING the probe rather than no-oping
+            on a null and letting the install continue after the dialog has closed.
             */
-            try
-            {
-                _installedVersion = await InstallationService.GetInstalledVersionAsync(
-                    BuildInstallerConnectionString(),
-                    throwOnError: true);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(
-                    $"Could not determine the installed PerformanceMonitor version on this server: {ex.Message}\n\n" +
-                    "Install and upgrade are blocked: proceeding could reinstall over an existing database " +
-                    "and skip its pending migrations.",
-                    "Database Status Unknown",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
-            }
-
             TransitionToState(DialogState.Installing);
             InstallLogTextBox.Clear();
             InstallProgressBar.Value = 0;
-            InstallStatusText.Text = "Preparing installation...";
+            InstallStatusText.Text = "Checking installed version...";
 
+            _installCts?.Dispose();
             _installCts = new CancellationTokenSource();
             var cancellationToken = _installCts.Token;
 
@@ -843,6 +851,46 @@ namespace PerformanceMonitorDashboard
                 var provider = ScriptProvider.FromEmbeddedResources();
                 string installerConnStr = BuildInstallerConnectionString();
                 string appVersion = GetAppVersion();
+
+                /*
+                Re-read the installed version against the connection we are about to WRITE to, and
+                re-run the safety verdict on the result. The cached _installedVersion and
+                _installBlockedReason come from the last Test Connection, but the server box stays
+                editable and the connection string is rebuilt live -- so retyping it and clicking
+                straight through would install into a different server while still reasoning about the
+                previous one. Refreshing the version alone is not enough: the "installed is NEWER than
+                this build" verdict produces zero hops and zero failures, so nothing downstream catches
+                it, and the install would silently downgrade the server and record the lower version.
+                */
+                try
+                {
+                    _installedVersion = await InstallationService.GetInstalledVersionAsync(
+                        installerConnStr,
+                        throwOnError: true,
+                        cancellationToken: cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    await Dispatcher.InvokeAsync(() => BlockInstall(
+                        $"Could not determine the installed PerformanceMonitor version on this server: {ex.Message}\n\n" +
+                        "Install and upgrade are blocked: proceeding could reinstall over an existing database " +
+                        "and skip its pending migrations."));
+                    return;
+                }
+
+                string? blockReason = GetInstallBlockReason(_installedVersion, appVersion);
+                if (blockReason != null)
+                {
+                    await Dispatcher.InvokeAsync(() => BlockInstall(blockReason));
+                    return;
+                }
+
+                InstallStatusText.Text = "Preparing installation...";
+
                 bool cleanInstall = CleanInstallCheckBox.IsChecked == true;
 
                 /*
@@ -1072,6 +1120,28 @@ namespace PerformanceMonitorDashboard
                     }
 
                     TransitionToState(DialogState.InstallComplete);
+
+                    /*
+                    A successful repair leaves the migrations UNAPPLIED by design, so the user has to run
+                    the upgrade next. InstallComplete collapses DatabaseStatusPanel, which is the Border
+                    InstallUpgradeButton lives in -- so without re-showing it, the completion message
+                    points at a button that is not on screen and the obvious next click is Save & Connect,
+                    leaving exactly the half-migrated database this feature exists to escape.
+
+                    Guarded on _currentState because InstallComplete chains to MonitoringCredentials for
+                    SQL auth; there the credentials step owns the panel and the log still carries the
+                    "upgrade still pending" line.
+                    */
+                    if (_installResult.Success && repairFromVersion != null &&
+                        _currentState == DialogState.InstallComplete)
+                    {
+                        DatabaseStatusText.Text =
+                            $"Objects were reinstalled. PerformanceMonitor is still at v{NormalizeVersion(repairFromVersion)} " +
+                            "-- the pending upgrade has not been applied. Click Upgrade Now to apply it.";
+                        InstallUpgradeButton.Content = "Upgrade Now";
+                        InstallUpgradeButton.Visibility = Visibility.Visible;
+                        DatabaseStatusPanel.Visibility = Visibility.Visible;
+                    }
                 });
             }
             catch (OperationCanceledException)

@@ -192,6 +192,47 @@ public class UpgradeOrderingTests
         Assert.Equal("targetVersion", ex.ParamName);
     }
 
+    [Theory]
+    [InlineData("3.1.0", 3, 1, 0)]
+    [InlineData("3.1.0.4", 3, 1, 0)]
+    [InlineData("3.1", 3, 1, 0)]
+    [InlineData("3.2.0-rc1", 3, 2, 0)]
+    [InlineData("3.2.0+abc123", 3, 2, 0)]
+    [InlineData("3.2.0-rc1+abc123", 3, 2, 0)]
+    [InlineData("  3.2.0  ", 3, 2, 0)]
+    public void TryParseVersionCore_ParsesRealVersions(string input, int major, int minor, int build)
+    {
+        Assert.Equal(new Version(major, minor, build), ScriptProvider.TryParseVersionCore(input));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("Unreachable")]
+    [InlineData("Not installed")]
+    [InlineData("v1.2.3")]
+    [InlineData("-rc1")]
+    [InlineData("+sha")]
+    public void TryParseVersionCore_ReturnsNullRatherThanThrowing(string? input)
+    {
+        // Callers that need to DECIDE something about a version (is it newer than me? is it
+        // readable?) must get null, not an exception -- unlike FilterUpgrades, which throws.
+        Assert.Null(ScriptProvider.TryParseVersionCore(input));
+    }
+
+    [Fact]
+    public void TryParseVersionCore_OrdersNewerAboveOlder()
+    {
+        // This comparison is what stops an older installer from running over a newer database and
+        // recording the lower version as SUCCESS -- a silent downgrade that produces zero hops and
+        // zero failures, so nothing else catches it.
+        var installed = ScriptProvider.TryParseVersionCore("3.2.0");
+        var binary = ScriptProvider.TryParseVersionCore("3.1.0.0");
+
+        Assert.True(installed > binary);
+    }
+
     [Fact]
     public async Task ExecuteAllUpgrades_UnreadableVersion_ReportsFailureRatherThanSkipping()
     {

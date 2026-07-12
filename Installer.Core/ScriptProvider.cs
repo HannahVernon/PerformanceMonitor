@@ -106,11 +106,16 @@ public abstract class ScriptProvider
 
     /// <summary>
     /// Parses a version to its three-part numeric core, stripping any SemVer build (<c>+sha</c>) or
-    /// pre-release (<c>-rc1</c>) suffix. Mirrors <c>SingleInstanceDecision.ParseProductVersion</c>,
-    /// re-stated here to keep Installer.Core dependency-free.
+    /// pre-release (<c>-rc1</c>) suffix. Returns null when there is no parseable core, rather than
+    /// throwing — for callers that need to *decide* something about a version rather than use it.
+    /// Mirrors <c>SingleInstanceDecision.ParseProductVersion</c>, re-stated here to keep
+    /// Installer.Core dependency-free.
     /// </summary>
-    private static Version ParseVersionCore(string version, string paramName)
+    public static Version? TryParseVersionCore(string? version)
     {
+        if (string.IsNullOrWhiteSpace(version))
+            return null;
+
         string core = version.Trim();
 
         int plus = core.IndexOf('+', StringComparison.Ordinal);
@@ -121,6 +126,15 @@ public abstract class ScriptProvider
         if (dash >= 0)
             core = core[..dash];
 
+        if (!Version.TryParse(core, out var parsed))
+            return null;
+
+        /* TryParse leaves Build at -1 for a two-part version like "3.1", which the Version ctor rejects. */
+        return new Version(parsed.Major, parsed.Minor, Math.Max(parsed.Build, 0));
+    }
+
+    private static Version ParseVersionCore(string version, string paramName)
+    {
         /*
         A version that is present but has no numeric core is a caller bug -- a status string like
         "Unreachable" reaching us instead of a version. Returning an empty list would run zero
@@ -128,13 +142,10 @@ public abstract class ScriptProvider
         SUCCESS at the target version. Version detection only reads the most recent SUCCESS row, so
         every skipped hop would be stranded permanently. Fail loudly instead.
         */
-        if (!Version.TryParse(core, out var parsed))
-            throw new ArgumentException(
+        return TryParseVersionCore(version)
+            ?? throw new ArgumentException(
                 $"'{version}' is not a valid version. Upgrade discovery needs a version, not a status string.",
                 paramName);
-
-        /* TryParse leaves Build at -1 for a two-part version like "3.1", which the Version ctor rejects. */
-        return new Version(parsed.Major, parsed.Minor, Math.Max(parsed.Build, 0));
     }
 
     /// <summary>
