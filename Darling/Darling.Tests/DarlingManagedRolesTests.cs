@@ -129,7 +129,13 @@ public sealed class DarlingManagedRolesTests
         {
             ["config_monitored_servers"] = new[] { "encrypted_password" },
             ["config_command"] = new[] { "args_json" },
-            ["config_notification"] = new[] { "smtp_encrypted_password", "smtp_username", "teams_url", "slack_url" },
+            /* generic_url is a bearer secret like the sibling webhook URLs, and generic_headers holds the
+               Authorization token itself (#1506 / V26) — both must stay column-REVOKEd from the viewer role. */
+            ["config_notification"] = new[]
+            {
+                "smtp_encrypted_password", "smtp_username", "teams_url", "slack_url",
+                "generic_url", "generic_headers",
+            },
         };
 
         /* Exactly the three known secret-bearing tables, with the expected secret columns. */

@@ -69,6 +69,7 @@ public static class PgMigrations
         new Migration(23, "collection-log-hypertable", V23Sql),
         new Migration(24, "job-history-collector", V24Sql),
         new Migration(25, "agent-status-collector", V25Sql),
+        new Migration(26, "generic-webhook-channel", V26Sql),
     };
 
     /// <summary>
@@ -847,6 +848,29 @@ CREATE TABLE IF NOT EXISTS collect.agent_status (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_status_time ON collect.agent_status(server_id, collection_time);";
+
+    /// <summary>
+    /// V26 — the generic webhook channel (#1506): a third delivery channel beside Teams/Slack that POSTs an
+    /// operator-authored JSON body to any endpoint, so an alert can drive automation we ship no adapter for
+    /// (PagerDuty, Opsgenie, n8n, or a GitHub <c>repository_dispatch</c> that re-runs a workflow). It is the
+    /// deliberate alternative to executing a script/exe on alert — same automation reach, no process-execution
+    /// surface. Additive ALTERs on the V17 control-plane table, schema-qualified <c>config.*</c> and
+    /// <c>IF NOT EXISTS</c> per the file's ALTER idiom (V7/V9/V15/V16/V18), so a re-run is a harmless no-op.
+    /// The channel is enabled by a non-empty <c>generic_url</c> — the same derivation Teams/Slack use — so the
+    /// empty-string defaults leave an upgraded store with the channel off.
+    ///
+    /// <para><b>Two of these columns are secrets.</b> <c>generic_url</c> is a bearer secret exactly like
+    /// <c>teams_url</c>/<c>slack_url</c>, and <c>generic_headers</c> holds the <c>Authorization</c> token
+    /// itself — both are carved out of the read-only <c>viewer</c> role's column grants in
+    /// <c>DarlingManagedRoles.ViewerRestrictedConfigTables</c>. That list's union-equals-the-table invariant is
+    /// gated live by the build, so adding these columns without carving them there FAILS the gate rather than
+    /// silently exposing a token to a viewer seat.</para>
+    /// </summary>
+    private const string V26Sql = @"
+ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_url text NOT NULL DEFAULT '';
+ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_headers text NOT NULL DEFAULT '';
+ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_body_template text NOT NULL DEFAULT '';
+ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_proxy text NOT NULL DEFAULT '';";
 
     private const string VersionTableSql = @"
 CREATE TABLE IF NOT EXISTS darling_schema_version (

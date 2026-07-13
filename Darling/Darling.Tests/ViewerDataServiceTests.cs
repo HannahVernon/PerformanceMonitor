@@ -383,24 +383,28 @@ public sealed class ViewerSchemaVersionGateTests
         /* V24/V25 (#1433): job_history + agent_status table-existence sentinels (engine-agnostic). */
         Assert.Contains("job_history", sql, StringComparison.Ordinal);
         Assert.Contains("agent_status", sql, StringComparison.Ordinal);
+
+        /* V26 (#1506): the generic webhook's generic_url column on config_notification. */
+        Assert.Contains("generic_url", sql, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(true, true, true, true, true, true, true, true, true, 25)]     // fully migrated V25 (job_history + agent_status, #1433)
-    [InlineData(true, true, true, true, true, true, true, true, false, 24)]     // V24: job_history present, agent_status not yet
-    [InlineData(true, true, true, true, true, true, true, false, false, 23)]    // V23 (collection_log hypertable, or plain-PG at V23)
-    [InlineData(true, true, true, true, true, true, false, false, false, 22)]   // Timescale store still at V22 (index present, collection_log not yet a hypertable)
-    [InlineData(true, true, true, true, true, false, false, false, false, 21)]  // pre-V22: has default_trace_events, no V22 index
-    [InlineData(true, true, true, true, false, false, false, false, false, 20)] // pre-V21: no default_trace_events
-    [InlineData(true, true, true, false, false, false, false, false, false, 19)]// pre-V20: no alert-tuning knobs
-    [InlineData(true, true, false, false, false, false, false, false, false, 18)]// pre-V19: no analysis_state
-    [InlineData(true, false, false, false, false, false, false, false, false, 17)]// pre-V18: no delivery-override column
-    [InlineData(false, false, false, false, false, false, false, false, false, 16)]// pre-V17: no config control plane at all
+    [InlineData(true, true, true, true, true, true, true, true, true, true, 26)] // fully migrated V26 (generic webhook, #1506)
+    [InlineData(true, true, true, true, true, true, true, true, true, false, 25)] // V25: agent_status present, generic webhook not yet
+    [InlineData(true, true, true, true, true, true, true, true, false, false, 24)] // V24: job_history present, agent_status not yet
+    [InlineData(true, true, true, true, true, true, true, false, false, false, 23)]    // V23 (collection_log hypertable, or plain-PG at V23)
+    [InlineData(true, true, true, true, true, true, false, false, false, false, 22)]   // Timescale store still at V22 (index present, collection_log not yet a hypertable)
+    [InlineData(true, true, true, true, true, false, false, false, false, false, 21)]  // pre-V22: has default_trace_events, no V22 index
+    [InlineData(true, true, true, true, false, false, false, false, false, false, 20)] // pre-V21: no default_trace_events
+    [InlineData(true, true, true, false, false, false, false, false, false, false, 19)]// pre-V20: no alert-tuning knobs
+    [InlineData(true, true, false, false, false, false, false, false, false, false, 18)]// pre-V19: no analysis_state
+    [InlineData(true, false, false, false, false, false, false, false, false, false, 17)]// pre-V18: no delivery-override column
+    [InlineData(false, false, false, false, false, false, false, false, false, false, 16)]// pre-V17: no config control plane at all
     public void MapProbedSchemaVersion_TakesTheHighestSatisfiedSentinel(
-        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus, int expected)
+        bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus, bool hasGenericWebhook, int expected)
     {
         Assert.Equal(expected, ViewerDataService.MapProbedSchemaVersion(
-            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState, hasAlertTuningKnobs, hasDefaultTraceEvents, hasIndexObjectStatsLatestIndex, hasCollectionLogHypertableOrPlainPg, hasJobHistory, hasAgentStatus));
+            hasConfigControlPlane, hasAlertDeliveryOverride, hasAnalysisState, hasAlertTuningKnobs, hasDefaultTraceEvents, hasIndexObjectStatsLatestIndex, hasCollectionLogHypertableOrPlainPg, hasJobHistory, hasAgentStatus, hasGenericWebhook));
     }
 
     [Fact]
@@ -410,7 +414,7 @@ public sealed class ViewerSchemaVersionGateTests
            but must NOT be reported as 23 — the composite only counts once the engine-agnostic V22 index is
            present. Here: pre-V22 (no index) with the composite true still maps to 21 (its real V21 sentinel),
            proving the composite is gated behind V22 rather than treated as a newest-first arm. */
-        Assert.Equal(21, ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, false, true, false, false));
+        Assert.Equal(21, ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, false, true, false, false, false));
     }
 
     [Fact]
@@ -420,11 +424,11 @@ public sealed class ViewerSchemaVersionGateTests
         Assert.Equal(StorageVersion.SchemaVersion, ViewerDataService.RequiredStoreSchemaVersion);
 
         /* Pin: a fully-migrated store (all sentinels present) must map to exactly the required version. If a
-           future migration bumps StorageVersion past 23, this fails until a matching sentinel + map arm is
+           future migration bumps StorageVersion past 26, this fails until a matching sentinel + map arm is
            added — the guard against the probe silently under-reporting a newer store as skewed. */
         Assert.Equal(
             ViewerDataService.RequiredStoreSchemaVersion,
-            ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, true, true, true, true));
+            ViewerDataService.MapProbedSchemaVersion(true, true, true, true, true, true, true, true, true, true));
     }
 }
 

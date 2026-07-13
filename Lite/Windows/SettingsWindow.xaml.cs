@@ -217,12 +217,12 @@ public partial class SettingsWindow : Window
         SaveTimeDisplayMode();
         bool alertsValid = SaveAlertSettings();
         SaveSmtpSettings();
-        SaveWebhookSettings();
+        bool webhooksValid = SaveWebhookSettings();
 
         _saved = true;
         if (mcpChanged) McpSettingsChanged = true;
 
-        if (!alertsValid || !mcpValid) return;
+        if (!alertsValid || !mcpValid || !webhooksValid) return;
 
         var message = mcpChanged
             ? "Settings saved. MCP changes take effect after restarting the application."
@@ -949,7 +949,7 @@ public partial class SettingsWindow : Window
     }
 
     // ============================================
-    // Webhooks (Teams / Slack)
+    // Webhooks (Teams / Slack / Generic)
     // ============================================
 
     private void LoadWebhookSettings()
@@ -960,22 +960,61 @@ public partial class SettingsWindow : Window
         SlackWebhookEnabledCheckBox.IsChecked = App.SlackWebhookEnabled;
         SlackWebhookUrlBox.Text = App.SlackWebhookUrl;
         SlackProxyAddressBox.Text = App.SlackProxyAddress;
+        GenericWebhookEnabledCheckBox.IsChecked = App.GenericWebhookEnabled;
+        GenericWebhookUrlBox.Text = App.GenericWebhookUrl;
+        GenericWebhookHeadersBox.Text = App.GenericWebhookHeadersJson;
+        /* Blank means "use the built-in default" — show it, so the operator has something to edit
+           rather than a blank box they have to guess the shape of. */
+        GenericWebhookBodyBox.Text = string.IsNullOrWhiteSpace(App.GenericWebhookBodyTemplate)
+            ? WebhookAlertService.DefaultGenericBodyTemplate
+            : App.GenericWebhookBodyTemplate;
+        GenericWebhookProxyAddressBox.Text = App.GenericWebhookProxyAddress;
         UpdateTeamsControlStates();
         UpdateSlackControlStates();
+        UpdateGenericControlStates();
     }
 
-    private void SaveWebhookSettings()
+    /// <summary>
+    /// Persists the webhook settings. Returns false when the generic channel is enabled with a headers JSON
+    /// or body template that cannot produce a valid request — the values are still saved (so the operator
+    /// doesn't lose their typing), but they're told, because a broken template silently drops every alert.
+    /// Follows <see cref="SaveAlertSettings"/>'s bool contract: the caller suppresses the "Settings saved" toast.
+    /// </summary>
+    private bool SaveWebhookSettings()
     {
+        /* Cleartext warning (#1506): an http:// generic-webhook URL carrying headers sends the Authorization
+           token in the clear. Confirm before persisting a config that will transmit credentials unencrypted;
+           Yes proceeds, No cancels the webhook save (the typed values stay in the still-open dialog to fix).
+           NOT blocked — a plaintext POST to a trusted LAN listener is legitimate. */
+        if (GenericWebhookEnabledCheckBox.IsChecked == true
+            && WebhookAlertService.IsCleartextHttpWithHeaders(GenericWebhookUrlBox.Text?.Trim(), GenericWebhookHeadersBox.Text?.Trim())
+            && !ConfirmCleartextWebhook("Save"))
+        {
+            return false;
+        }
+
         App.TeamsWebhookEnabled = TeamsWebhookEnabledCheckBox.IsChecked == true;
         App.TeamsWebhookUrl = TeamsWebhookUrlBox.Text?.Trim() ?? "";
         App.TeamsProxyAddress = TeamsProxyAddressBox.Text?.Trim() ?? "";
         App.SlackWebhookEnabled = SlackWebhookEnabledCheckBox.IsChecked == true;
         App.SlackWebhookUrl = SlackWebhookUrlBox.Text?.Trim() ?? "";
         App.SlackProxyAddress = SlackProxyAddressBox.Text?.Trim() ?? "";
+        App.GenericWebhookEnabled = GenericWebhookEnabledCheckBox.IsChecked == true;
+        App.GenericWebhookUrl = GenericWebhookUrlBox.Text?.Trim() ?? "";
+        App.GenericWebhookHeadersJson = GenericWebhookHeadersBox.Text?.Trim() ?? "";
+        /* Persist the empty "use built-in default" sentinel unless the operator actually edited the body box
+           (LoadWebhookSettings pre-fills it with the default), so a future release can still improve it. */
+        App.GenericWebhookBodyTemplate = WebhookAlertService.IsDefaultBodyTemplate(GenericWebhookBodyBox.Text)
+            ? ""
+            : GenericWebhookBodyBox.Text?.Trim() ?? "";
+        App.GenericWebhookProxyAddress = GenericWebhookProxyAddressBox.Text?.Trim() ?? "";
 
-        /* Save webhook URLs to Credential Manager instead of settings.json */
+        /* Save webhook URLs to Credential Manager instead of settings.json. The generic channel's headers
+           JSON goes there too — it carries the Authorization bearer token (#1506). */
         App.SaveWebhookUrl("TeamsWebhook", App.TeamsWebhookUrl);
         App.SaveWebhookUrl("SlackWebhook", App.SlackWebhookUrl);
+        App.SaveWebhookUrl("GenericWebhook", App.GenericWebhookUrl);
+        App.SaveWebhookUrl("GenericWebhookHeaders", App.GenericWebhookHeadersJson);
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
         try
@@ -996,6 +1035,12 @@ public partial class SettingsWindow : Window
             root["slack_webhook_enabled"] = App.SlackWebhookEnabled;
             root["slack_proxy_address"] = App.SlackProxyAddress;
 
+            /* The generic channel's URL + headers are secrets and live in Credential Manager; only these
+               three are safe to persist in settings.json (#1506). */
+            root["generic_webhook_enabled"] = App.GenericWebhookEnabled;
+            root["generic_proxy_address"] = App.GenericWebhookProxyAddress;
+            root["generic_body_template"] = App.GenericWebhookBodyTemplate;
+
             /* Remove legacy plaintext webhook URLs from settings.json */
             if (root is JsonObject obj)
             {
@@ -1010,6 +1055,22 @@ public partial class SettingsWindow : Window
         {
             AppLogger.Error("Settings", $"Failed to save webhook settings: {ex.Message}");
         }
+
+        if (App.GenericWebhookEnabled)
+        {
+            var configError = WebhookAlertService.ValidateGenericConfig(
+                App.GenericWebhookHeadersJson, App.GenericWebhookBodyTemplate);
+
+            if (configError != null)
+            {
+                MessageBox.Show(
+                    $"The generic webhook is enabled but its configuration is not valid, so it will not deliver alerts:\n\n{configError}",
+                    "Generic Webhook", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void TeamsWebhookEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -1028,6 +1089,21 @@ public partial class SettingsWindow : Window
         TeamsWebhookUrlBox.IsEnabled = enabled;
         TeamsProxyAddressBox.IsEnabled = enabled;
         TestTeamsButton.IsEnabled = enabled;
+    }
+
+    private void GenericWebhookEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateGenericControlStates();
+    }
+
+    private void UpdateGenericControlStates()
+    {
+        bool enabled = GenericWebhookEnabledCheckBox.IsChecked == true;
+        GenericWebhookUrlBox.IsEnabled = enabled;
+        GenericWebhookHeadersBox.IsEnabled = enabled;
+        GenericWebhookBodyBox.IsEnabled = enabled;
+        GenericWebhookProxyAddressBox.IsEnabled = enabled;
+        TestGenericButton.IsEnabled = enabled;
     }
 
     private void UpdateSlackControlStates()
@@ -1097,6 +1173,67 @@ public partial class SettingsWindow : Window
         {
             TestSlackButton.Content = "Send Test Notification";
             TestSlackButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// Non-blocking confirm shown when an http:// generic-webhook URL carries headers — the Authorization
+    /// token would go on the wire in cleartext (#1506). Yes proceeds; No cancels the action. <paramref
+    /// name="action"/> is the verb ("Save" / "Send"). Not blocked outright: a plaintext POST to a trusted LAN
+    /// listener is a legitimate setup.
+    /// </summary>
+    private bool ConfirmCleartextWebhook(string action)
+    {
+        var result = MessageBox.Show(
+            "The webhook URL uses http://, so the Authorization header and any credentials are sent in cleartext " +
+            $"and can be intercepted on the network.\n\n{action} anyway?",
+            "Insecure Webhook URL", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        return result == MessageBoxResult.Yes;
+    }
+
+    /// <summary>
+    /// Tests the generic webhook with the values currently in the boxes (not the saved ones), like the
+    /// Teams/Slack test buttons. A malformed headers JSON or body template comes back as the error message
+    /// rather than an exception, so the operator fixes it here instead of discovering it when a real alert
+    /// silently fails to deliver.
+    /// </summary>
+    private async void TestGenericButton_Click(object sender, RoutedEventArgs e)
+    {
+        var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
+        var headers = GenericWebhookHeadersBox.Text?.Trim();
+
+        /* Warn before a cleartext http:// POST would send the Authorization header unencrypted (#1506). */
+        if (WebhookAlertService.IsCleartextHttpWithHeaders(url, headers) && !ConfirmCleartextWebhook("Send"))
+        {
+            return;
+        }
+
+        TestGenericButton.IsEnabled = false;
+        TestGenericButton.Content = "Sending...";
+
+        try
+        {
+            var body = GenericWebhookBodyBox.Text?.Trim();
+            var proxy = GenericWebhookProxyAddressBox.Text?.Trim();
+            var error = await WebhookAlertService.SendTestGenericAsync(url, headers, body, proxy, EmailAlertService.Branding);
+
+            if (error == null)
+            {
+                MessageBox.Show("Generic webhook test notification sent successfully!", "Test Webhook", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Failed to send generic webhook test notification:\n\n{error}", "Test Webhook Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to send generic webhook test notification:\n\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            TestGenericButton.Content = "Send Test Notification";
+            TestGenericButton.IsEnabled = true;
         }
     }
 

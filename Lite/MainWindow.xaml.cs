@@ -1480,34 +1480,41 @@ public partial class MainWindow : Window
                 bool hasErrors = healthSummary?.ErroringCollectors > 0;
                 server.HasCollectorErrors = hasErrors;
 
-                if (_previousConnectionStates.TryGetValue(server.Id, out var wasOnline))
-                {
-                    if (App.AlertsEnabled && App.NotifyConnectionChanges)
-                    {
-                        if (wasOnline && !isOnline)
-                        {
-                            _trayService?.ShowNotification(
-                                "Server Offline",
-                                $"{server.DisplayNameWithIntent} is unreachable: {status.ErrorMessage ?? "unknown error"}",
-                                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Error);
-                        }
-                        else if (!wasOnline && isOnline)
-                        {
-                            _trayService?.ShowNotification(
-                                "Server Online",
-                                $"{server.DisplayNameWithIntent} is back online",
-                                Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
-                        }
-                    }
+                /* null = never observed: a silent baseline (no edge, but a refresh). */
+                bool? previouslyOnline = _previousConnectionStates.TryGetValue(server.Id, out var prev) ? prev : null;
+                var connectionEdge = ConnectionEdgeDetector.Detect(previouslyOnline, isOnline);
 
-                    if (wasOnline != isOnline)
+                if (App.AlertsEnabled && App.NotifyConnectionChanges)
+                {
+                    /* Each edge now ALSO routes through Lite's alert path — email + webhook + a
+                       config_alert_log row (#1506) — alongside the tray balloon it always showed. The
+                       detector is the edge trigger: a server that stays down is offline→offline, so an
+                       outage produces ONE "Server Unreachable", not one per poll. */
+                    if (connectionEdge == ConnectionAlertEdge.Lost)
                     {
-                        needsRefresh = true;
+                        var reason = status.ErrorMessage ?? "unknown error";
+
+                        _trayService?.ShowNotification(
+                            "Server Offline",
+                            $"{server.DisplayNameWithIntent} is unreachable: {reason}",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Error);
+
+                        SendConnectionAlert(server, "Server Unreachable", reason, reason);
+                    }
+                    else if (connectionEdge == ConnectionAlertEdge.Restored)
+                    {
+                        _trayService?.ShowNotification(
+                            "Server Online",
+                            $"{server.DisplayNameWithIntent} is back online",
+                            Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
+
+                        SendConnectionAlert(server, "Server Restored", "Online", "Connection restored");
                     }
                 }
-                else
+
+                /* Refresh on a genuine change, and on the first sighting of this server. */
+                if (previouslyOnline is null || previouslyOnline != isOnline)
                 {
-                    /* First time seeing this server's status — need to refresh */
                     needsRefresh = true;
                 }
 

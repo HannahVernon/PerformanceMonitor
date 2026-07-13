@@ -62,6 +62,15 @@ namespace PerformanceMonitorDashboard.Services
         public string SlackWebhookUrl     => DashboardAlertCredentials.GetSlackWebhookUrl();
         public string SlackProxyAddress   => Prefs.SlackProxyAddress;
 
+        /* The generic webhook channel (#1506) ships to Lite and Darling only. The Dashboard is deprecated
+           (bug fixes only), so it gains no new settings surface to author these from — the channel stays
+           off, and the shared WebhookAlertService skips it on the disabled flag. */
+        public bool   GenericWebhookEnabled      => false;
+        public string GenericWebhookUrl          => "";
+        public string GenericWebhookHeadersJson  => "";
+        public string GenericWebhookBodyTemplate => "";
+        public string GenericWebhookProxyAddress => "";
+
         public double AnalysisNotifySeverity        => Math.Clamp(Prefs.AnalysisNotifySeverity, 0.0, 2.0);
         public int    AnalysisNotifyCooldownMinutes => Math.Clamp(Prefs.AnalysisNotifyCooldownMinutes, 30, 10080);
     }

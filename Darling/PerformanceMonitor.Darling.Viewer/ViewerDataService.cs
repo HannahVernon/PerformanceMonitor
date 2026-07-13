@@ -340,8 +340,9 @@ public sealed partial class ViewerDataService : IAsyncDisposable
     /// for the one index sentinel) — the version the viewer gates on at connect (finding B1). The authoritative
     /// <c>darling_schema_version</c> table is owner-only (a viewer/admin role can't read it, and even
     /// <c>MAX(version)</c> can itself throw 42501), so rather than read the version number this checks whether
-    /// the store carries the schema OBJECTS the recent migrations added — objects any role can see. Six
-    /// sentinels, newest first: V22's <c>idx_index_object_stats_latest</c> index (the FinOps Index Analysis
+    /// the store carries the schema OBJECTS the recent migrations added — objects any role can see. Newest
+    /// first: V26's <c>config_notification.generic_url</c> column (the generic webhook channel, #1506), V25's
+    /// <c>agent_status</c> table, V24's <c>job_history</c> table, V22's <c>idx_index_object_stats_latest</c> index (the FinOps Index Analysis
     /// supporting index — indexes are not listed in <c>information_schema</c>, so this one reads the
     /// world-readable <c>pg_indexes</c> catalog), V21's <c>default_trace_events</c> table (the shared Default
     /// Trace collector), V20's <c>notify_connection_changes</c> column (config_alert_settings), V19's
@@ -382,7 +383,8 @@ SELECT
         OR NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
     ),
     EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'job_history'),
-    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'agent_status')";
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'agent_status'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_notification' AND column_name = 'generic_url')";
 
     /// <summary>The store schema version this viewer build requires — the highest migration it knows
     /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
@@ -403,7 +405,7 @@ SELECT
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
             {
-                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5), reader.GetBoolean(6), reader.GetBoolean(7), reader.GetBoolean(8));
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5), reader.GetBoolean(6), reader.GetBoolean(7), reader.GetBoolean(8), reader.GetBoolean(9));
             }
 
             return null;
@@ -425,11 +427,18 @@ SELECT
     /// 19, else <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else
     /// <paramref name="hasConfigControlPlane"/> (V17) → 17, else 16 — the "older than the V17 config control
     /// plane" floor (the exact pre-17 version isn't probed, but it is below what the viewer needs). Pure, so it
-    /// is unit-tested without a live store; a schema bump past 25 trips the pinning test that keeps this in step
+    /// is unit-tested without a live store; a schema bump past 26 trips the pinning test that keeps this in step
     /// with <see cref="StorageVersion.SchemaVersion"/>.
     /// </summary>
-    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus)
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus, bool hasGenericWebhook)
     {
+        /* V26 (#1506 generic webhook): another engine-agnostic column-existence sentinel, so it takes the
+           newest-first arm. config_notification.generic_url exists only at V26 or later. */
+        if (hasGenericWebhook)
+        {
+            return 26;
+        }
+
         /* V24/V25 (#1433 Job History tab) are engine-agnostic table-existence sentinels, so they ARE
            standalone newest-first arms (unlike the V23 hypertable composite): agent_status (V25) present →
            25, else job_history (V24) present → 24, else fall through to the V22/V23 composite below. A

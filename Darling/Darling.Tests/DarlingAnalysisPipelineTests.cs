@@ -516,6 +516,11 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)", connection);
         public bool SlackWebhookEnabled => false;
         public string SlackWebhookUrl => "";
         public string SlackProxyAddress => "";
+        public bool GenericWebhookEnabled => false;
+        public string GenericWebhookUrl => "";
+        public string GenericWebhookHeadersJson => "";
+        public string GenericWebhookBodyTemplate => "";
+        public string GenericWebhookProxyAddress => "";
         public double AnalysisNotifySeverity { get; init; } = 1.5;
         public int AnalysisNotifyCooldownMinutes { get; init; } = 360;
     }

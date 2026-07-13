@@ -109,6 +109,7 @@ public sealed class ViewerNotificationSqlTests
     {
         "smtp_host", "smtp_port", "smtp_use_ssl", "smtp_username", "smtp_encrypted_password", "smtp_from_address",
         "smtp_recipients", "email_cooldown_minutes", "teams_url", "teams_proxy", "slack_url", "slack_proxy",
+        "generic_url", "generic_headers", "generic_body_template", "generic_proxy",
     };
 
     [Fact]
@@ -122,7 +123,7 @@ public sealed class ViewerNotificationSqlTests
             Assert.Contains(column, sql, StringComparison.Ordinal);
         }
 
-        for (var i = 1; i <= 12; i++)
+        for (var i = 1; i <= 16; i++)
         {
             Assert.Contains("$" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), sql, StringComparison.Ordinal);
         }

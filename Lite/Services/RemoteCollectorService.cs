@@ -147,12 +147,32 @@ public partial class RemoteCollectorService
     private int _logInsertFailures;
 
     /// <summary>
-    /// Per-server flag indicating that master DB enumeration has failed with an access-denied
-    /// error and should not be retried. Used on Azure SQL DB where per-database logins may not
-    /// have master access (e.g. Microsoft Dynamics 365 FO). See issue #857.
+    /// Per-server timestamp of the last master-enumeration failure that looked like a permission
+    /// problem, so database-scoped collectors fall back to the connection's own catalog instead of
+    /// re-probing master every cycle. Used on Azure SQL DB where per-database logins may not have
+    /// master access (e.g. Microsoft Dynamics 365 FO). See issue #857.
+    ///
+    /// This is a throttle, NOT a permanent verdict. It expires after <see cref="AzureMasterRecheckInterval"/>,
+    /// and is dropped outright when a server returns from an outage. Both escape hatches exist because
+    /// the original version latched until the process restarted: a login's rights can be granted after
+    /// the fact, and — the reason this changed — a momentary failure must never be able to wedge
+    /// database-scoped collection for the life of the app. See issue #1506.
     /// </summary>
-    private readonly Dictionary<int, bool> _azureMasterInaccessible = new();
-    private readonly object _azureMasterInaccessibleLock = new();
+    private readonly Dictionary<int, DateTime> _azureMasterInaccessibleSince = new();
+    private readonly object _azureMasterLock = new();
+
+    /// <summary>
+    /// How long a master-inaccessible verdict stands before master is probed again. Short enough that
+    /// a misjudged failure costs minutes of database-scoped collection rather than the whole session;
+    /// long enough that a login which genuinely cannot see master (#857) retries only 4x/hour.
+    /// </summary>
+    private static readonly TimeSpan AzureMasterRecheckInterval = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Servers observed offline and not yet seen online again. A server coming back is the signal to
+    /// drop cached judgements about it that its outage could have poisoned (#1506).
+    /// </summary>
+    private readonly HashSet<int> _serversSeenOffline = new();
 
     public RemoteCollectorService(
         DuckDbInitializer duckDb,
@@ -319,9 +339,12 @@ public partial class RemoteCollectorService
             if (serverStatus.IsOnline == false)
             {
                 skippedOffline++;
+                NoteServerOffline(server);
                 AppLogger.Debug("Scheduler", $"Skipping offline server '{server.DisplayName}'");
                 continue;
             }
+
+            NoteServerOnline(server);
             onlineServers.Add(server);
         }
 
@@ -667,6 +690,48 @@ WHERE server_id = $3";
     }
 
     /// <summary>
+    /// Records that a server is currently unreachable, so that its return can be recognised.
+    /// </summary>
+    internal void NoteServerOffline(ServerConnection server)
+    {
+        lock (_azureMasterLock)
+        {
+            _serversSeenOffline.Add(GetServerId(server));
+        }
+    }
+
+    /// <summary>
+    /// Handles a server coming back after an outage by dropping the master-inaccessible verdict.
+    ///
+    /// An outage and a permission problem are not distinguishable from the error number alone —
+    /// Azure SQL DB reports a firewall rejection (40615) and a login failure (18456) the same way
+    /// whether the cause is "this login may not read master" or "you cannot reach this server right
+    /// now". So a verdict formed during an outage is untrustworthy by construction, and the moment
+    /// the server answers again is the moment to throw it away and re-probe. Without this, a login
+    /// that CAN read master gets permanently misfiled as one that cannot, and database-scoped
+    /// collection stays broken until the app restarts (issue #1506).
+    /// </summary>
+    internal void NoteServerOnline(ServerConnection server)
+    {
+        var serverId = GetServerId(server);
+
+        bool returnedFromOutage;
+        lock (_azureMasterLock)
+        {
+            returnedFromOutage = _serversSeenOffline.Remove(serverId);
+            if (returnedFromOutage)
+            {
+                _azureMasterInaccessibleSince.Remove(serverId);
+            }
+        }
+
+        if (returnedFromOutage)
+        {
+            AppLogger.Info("Scheduler", $"[{server.DisplayName}] reachable again — re-probing master for database-scoped collectors.");
+        }
+    }
+
+    /// <summary>
     /// Enumerates online databases on an Azure SQL DB logical server.
     /// HAS_DBACCESS() returns false for user databases from master on Azure SQL DB,
     /// so we skip that filter — inaccessible databases should be handled by callers via try/catch.
@@ -674,7 +739,7 @@ WHERE server_id = $3";
     /// On Azure SQL DB, logins are sometimes granted access only to a specific user database and
     /// not to master (e.g. Microsoft Dynamics 365 FO). In that case, master enumeration fails with
     /// an access/login error; we fall back to returning the connection's initial catalog as a
-    /// single-database list, and cache that decision per server so we don't retry master each cycle.
+    /// single-database list, and throttle re-probes of master so we don't retry it every cycle.
     /// See issue #857.
     /// </summary>
     protected async Task<List<string>> GetAzureDatabaseListAsync(ServerConnection server, CancellationToken cancellationToken)
@@ -683,15 +748,15 @@ WHERE server_id = $3";
         var baseConnStr = _serverManager.CredentialResolver.GetConnectionString(server);
         var targetDb = new SqlConnectionStringBuilder(baseConnStr).InitialCatalog;
 
-        bool knownInaccessible;
-        lock (_azureMasterInaccessibleLock)
-        {
-            _azureMasterInaccessible.TryGetValue(serverId, out knownInaccessible);
-        }
+        /* Skip the throttle when there is nothing to fall back TO. With no target database the fallback
+           can only throw, and an error lands in collection_log either way — so honouring the throttle
+           here would buy one saved round-trip at the cost of 15 minutes of guaranteed failure with no
+           attempt to recover. Probe master instead: it might work now. */
+        var hasFallback = SingleDbOrEmpty(targetDb).Count > 0;
 
-        if (knownInaccessible)
+        if (hasFallback && IsMasterProbeThrottled(serverId))
         {
-            return SingleDbOrEmpty(targetDb);
+            return FallbackDatabaseList(server, targetDb, reason: "master previously inaccessible", quiet: true);
         }
 
         var connStr = new SqlConnectionStringBuilder(baseConnStr)
@@ -700,41 +765,132 @@ WHERE server_id = $3";
             InitialCatalog = "master"
         }.ConnectionString;
 
-        var (exclusionClause, exclusionParams) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "name");
-
-        var databases = new List<string>();
         try
         {
-            using var conn = new SqlConnection(connStr);
-            await conn.OpenAsync(cancellationToken);
-            using var cmd = new SqlCommand(
-                $"SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 {exclusionClause} ORDER BY name;",
-                conn)
-            { CommandTimeout = CommandTimeoutSeconds };
-            foreach (var p in exclusionParams) cmd.Parameters.Add(p);
-            using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                databases.Add(reader.GetString(0));
-            return databases;
+            /* Retry transient failures so a blip costs a slower cycle instead of an ERROR row — this
+               path had no retry at all before #1506. Note it cannot prevent a master-inaccessible
+               verdict: RetryHelper only retries errors SqlErrorClassification calls transient, and that
+               set is provably disjoint from the ones that form a verdict. The time-box and the
+               reconnect-clear are what make a wrong verdict survivable; this just makes one less likely
+               to be reached.
+
+               The exclusion filter is rebuilt inside the lambda on purpose: a SqlParameter cannot be
+               added to a second SqlCommand, so reusing one set across retries would throw on attempt 2. */
+            return await RetryHelper.ExecuteWithRetryAsync(
+                async () =>
+                {
+                    var (exclusionClause, exclusionParams) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "name");
+
+                    var databases = new List<string>();
+                    using var conn = new SqlConnection(connStr);
+                    await conn.OpenAsync(cancellationToken);
+                    using var cmd = new SqlCommand(
+                        $"SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 {exclusionClause} ORDER BY name;",
+                        conn)
+                    { CommandTimeout = CommandTimeoutSeconds };
+                    foreach (var p in exclusionParams) cmd.Parameters.Add(p);
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                        databases.Add(reader.GetString(0));
+
+                    ClearMasterInaccessible(serverId);
+                    return databases;
+                },
+                _logger,
+                $"enumerate databases on {server.DisplayName}",
+                cancellationToken: cancellationToken);
         }
-        catch (SqlException ex) when (IsMasterAccessDeniedError(ex))
+        catch (SqlException ex) when (IsMasterAccessDeniedError(ex.Number))
         {
-            lock (_azureMasterInaccessibleLock)
+            MarkMasterInaccessible(serverId);
+
+            return FallbackDatabaseList(server, targetDb, reason: $"master DB inaccessible (SQL error {ex.Number})");
+        }
+    }
+
+    /// <summary>
+    /// True while a recent master-inaccessible verdict still stands. The verdict expires so that a
+    /// server whose access was restored (or whose login was granted master rights) recovers on its
+    /// own, instead of collecting from a degraded database list until the app is restarted (#1506).
+    /// </summary>
+    internal bool IsMasterProbeThrottled(int serverId)
+    {
+        lock (_azureMasterLock)
+        {
+            if (!_azureMasterInaccessibleSince.TryGetValue(serverId, out var deniedAt))
             {
-                _azureMasterInaccessible[serverId] = true;
+                return false;
             }
 
-            var fallback = SingleDbOrEmpty(targetDb);
-            if (fallback.Count > 0)
+            if (DateTime.UtcNow - deniedAt < AzureMasterRecheckInterval)
             {
-                AppLogger.Info("Collector", $"  [{server.DisplayName}] master DB inaccessible (SQL error {ex.Number}) — collecting from '{targetDb}' only.");
+                return true;
             }
-            else
-            {
-                AppLogger.Warn("Collector", $"  [{server.DisplayName}] master DB inaccessible (SQL error {ex.Number}) and no target database in connection string — no data will be collected for database-scoped collectors.");
-            }
-            return fallback;
+
+            _azureMasterInaccessibleSince.Remove(serverId);
+            return false;
         }
+    }
+
+    private void ClearMasterInaccessible(int serverId)
+    {
+        lock (_azureMasterLock)
+        {
+            _azureMasterInaccessibleSince.Remove(serverId);
+        }
+    }
+
+    /// <summary>
+    /// Records a master-inaccessible verdict, stamped now. Used by the production catch path, and by
+    /// tests to reach the expiry and reconnect logic without a live Azure SQL DB connection —
+    /// deliberately the same method, so the tests exercise what actually ships.
+    /// </summary>
+    internal void MarkMasterInaccessible(int serverId, DateTime? deniedAtUtc = null)
+    {
+        lock (_azureMasterLock)
+        {
+            _azureMasterInaccessibleSince[serverId] = deniedAtUtc ?? DateTime.UtcNow;
+        }
+    }
+
+    /// <summary>
+    /// The database list to use when master cannot be enumerated: the connection's own catalog.
+    ///
+    /// When there isn't one, database-scoped collectors have nowhere to read from. That used to be a
+    /// warning and an empty list, which made every one of them report SUCCESS with zero rows — the
+    /// collection status bar kept saying "Running" while nothing at all was being collected. Throwing
+    /// puts the failure in collection_log where it is visible and actionable (#1506).
+    ///
+    /// The message deliberately avoids the phrase RunCollectorAsync's MFA filter matches, so this
+    /// lands in the general handler and is recorded as an ERROR rather than a silent SKIPPED.
+    /// </summary>
+    /// <param name="quiet">
+    /// Set on the throttled path, which runs for every database-scoped collector on every cycle. The
+    /// interesting event is forming the verdict, not re-reading it — logging both would put four lines
+    /// a minute in the log of a #857 user whose setup is working exactly as intended.
+    /// </param>
+    internal static List<string> FallbackDatabaseList(ServerConnection server, string? targetDb, string reason, bool quiet = false)
+    {
+        var fallback = SingleDbOrEmpty(targetDb);
+
+        if (fallback.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"{reason}, and this connection has no target database to fall back to " +
+                $"(it resolves to master). Set a Database for '{server.DisplayName}' so database-scoped " +
+                $"collectors have something to read.");
+        }
+
+        if (quiet)
+        {
+            AppLogger.Debug("Collector", $"  [{server.DisplayName}] {reason} — collecting from '{targetDb}' only.");
+        }
+        else
+        {
+            AppLogger.Info("Collector", $"  [{server.DisplayName}] {reason} — collecting from '{targetDb}' only.");
+        }
+
+        return fallback;
     }
 
     /// <summary>
@@ -793,26 +949,23 @@ WHERE server_id = $3";
     }
 
     /// <summary>
-    /// Error numbers indicating the login cannot open or read from master on Azure SQL DB.
-    /// Trigger a fallback to single-database mode when we see one of these.
+    /// Whether this error means the login cannot read master, in which case database-scoped collectors
+    /// fall back to the connection's own catalog (#857). The list — and the reason a reachability error
+    /// must never be on it (#1506) — is owned by <see cref="SqlErrorClassification"/>, shared with
+    /// Darling so the two cannot drift.
     /// </summary>
-    private static bool IsMasterAccessDeniedError(SqlException ex)
-    {
-        return ex.Number switch
-        {
-            229   => true, // Permission denied on object
-            230   => true, // Permission denied on column
-            916   => true, // Server principal is not able to access the database under the current security context
-            4060  => true, // Cannot open database requested by the login
-            18456 => true, // Login failed for user
-            40613 => true, // Database 'master' on server is not currently available
-            40615 => true, // Cannot open server — login denied (firewall/auth)
-            _     => false
-        };
-    }
+    internal static bool IsMasterAccessDeniedError(int errorNumber) =>
+        SqlErrorClassification.IsMasterAccessDenied(errorNumber);
 
     /// <summary>
     /// Opens a SQL connection to a specific database on an Azure SQL DB logical server.
+    ///
+    /// Deliberately NOT retried. This runs once per database per database-scoped collector, and the
+    /// caller already skips a database it cannot open. Backing off here would stall the whole cycle
+    /// behind a single unavailable database — an auto-paused serverless database answers 40613, which
+    /// is transient, so a retry would wait out the backoff on every paused database, every collector,
+    /// every minute. The next cycle is the retry, and it costs one minute of that database's data
+    /// rather than delaying every other server's.
     /// </summary>
     protected async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerConnection server, string databaseName, CancellationToken cancellationToken)
     {
@@ -824,8 +977,16 @@ WHERE server_id = $3";
         }.ConnectionString;
 
         var conn = new SqlConnection(connStr);
-        await conn.OpenAsync(cancellationToken);
-        return conn;
+        try
+        {
+            await conn.OpenAsync(cancellationToken);
+            return conn;
+        }
+        catch
+        {
+            conn.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -928,7 +1089,7 @@ WHERE server_id = $3";
     /// <summary>
     /// Gets the numeric server ID from the server connection.
     /// </summary>
-    protected static int GetServerId(ServerConnection server)
+    protected internal static int GetServerId(ServerConnection server)
     {
         return GetDeterministicHashCode(GetServerNameForStorage(server));
     }

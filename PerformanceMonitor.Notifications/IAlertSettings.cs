@@ -43,6 +43,31 @@ public interface IAlertSettings
     string SlackWebhookUrl { get; }
     string SlackProxyAddress { get; }
 
+    /* Generic webhook (#1506): POSTs an operator-authored JSON body to any endpoint, so an alert can
+       drive a system we ship no adapter for — PagerDuty, Opsgenie, n8n, or a GitHub repository_dispatch
+       that re-runs a workflow. Deliberately the answer to "run a script/exe on alert": it covers the
+       same automation need with no process-execution surface in a signed binary. */
+    bool   GenericWebhookEnabled { get; }
+    string GenericWebhookUrl { get; }
+
+    /// <summary>
+    /// A JSON object of request headers, e.g. <c>{"Authorization":"Bearer ghp_...","Accept":"application/vnd.github+json"}</c>.
+    /// Carries bearer tokens, so every app stores this alongside the URL as a SECRET (Lite/Dashboard:
+    /// Credential Manager; Darling: a column-REVOKEd control-plane column). Malformed JSON fails the
+    /// send with a logged error rather than throwing into the alert loop.
+    /// </summary>
+    string GenericWebhookHeadersJson { get; }
+
+    /// <summary>
+    /// The JSON request body, with <c>{{metric}}</c>, <c>{{server}}</c>, <c>{{value}}</c>,
+    /// <c>{{threshold}}</c>, <c>{{severity}}</c>, <c>{{context}}</c> and <c>{{timestamp}}</c>
+    /// placeholders substituted per alert. Empty falls back to
+    /// <see cref="WebhookAlertService.DefaultGenericBodyTemplate"/>.
+    /// </summary>
+    string GenericWebhookBodyTemplate { get; }
+
+    string GenericWebhookProxyAddress { get; }
+
     /* Scheduled-analysis notifications */
     double AnalysisNotifySeverity { get; }
     int    AnalysisNotifyCooldownMinutes { get; }
