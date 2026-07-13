@@ -124,6 +124,10 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<CpuTasksRow>? _seCpuTasksFilterMgr;
     private DataGridFilterManager<IoIssuesRow>? _seIoIssuesFilterMgr;
     private DataGridFilterManager<DefaultTraceEventRow>? _seDefaultTraceFilterMgr;
+    /* Configuration Changes tab: one filter manager per sub-tab grid. */
+    private DataGridFilterManager<ServerConfigChangeRow>? _serverConfigChangesFilterMgr;
+    private DataGridFilterManager<DatabaseConfigChangeRow>? _databaseConfigChangesFilterMgr;
+    private DataGridFilterManager<TraceFlagChangeRow>? _traceFlagChangesFilterMgr;
     private CancellationTokenSource? _actualPlanCts;
 
     public int UtcOffsetMinutes { get; }
@@ -220,7 +224,7 @@ public partial class ServerTab : UserControl
             CollectionHealthGrid, CollectionLogGrid, LatchStatsGrid, SpinlockStatsGrid,
             PlanCacheCompositionGrid, SchedulerIssuesGrid, SevereErrorsGrid, MemoryConditionsGrid,
             MemoryBrokerGrid, MemoryNodeOomGrid, SignificantWaitsGrid, CpuTasksGrid, IoIssuesGrid,
-            DefaultTraceGrid })
+            DefaultTraceGrid, ServerConfigChangesGrid, DatabaseConfigChangesGrid, TraceFlagChangesGrid })
         {
             grid.CopyingRowClipboardContent += DataGridClipboardBehavior.FixHeaderCopy;
         }
@@ -457,7 +461,7 @@ public partial class ServerTab : UserControl
         if (_isRefreshing) return;
         if (e.Source != MainTabControl && e.Source != QueriesSubTabControl
             && e.Source != MemorySubTabControl && e.Source != BlockingSubTabControl
-            && e.Source != SystemEventsSubTabControl) return;
+            && e.Source != SystemEventsSubTabControl && e.Source != ConfigChangesSubTabControl) return;
 
         UpdateCompareDropdownState();
 

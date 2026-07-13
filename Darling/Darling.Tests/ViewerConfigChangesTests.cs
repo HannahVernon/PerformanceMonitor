@@ -12,11 +12,12 @@ using System.Linq;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
 
-using Snap = PerformanceMonitor.Darling.Viewer.ViewerDataService;
+using Snap = PerformanceMonitor.Common.ConfigChangeDiff;
 
 namespace Darling.Tests;
 
@@ -113,13 +114,13 @@ public sealed class ViewerConfigChangesSqlTests
     public void DatabaseConfigChangeSettingNames_Match27CollectorColumns_InOrder()
     {
         var table = PgSchemaGenerator.CreateTable(DatabaseConfigCollector.Instance);
-        Assert.Equal(27, ViewerDataService.DatabaseConfigChangeSettingNames.Count);
-        foreach (var name in ViewerDataService.DatabaseConfigChangeSettingNames)
+        Assert.Equal(27, ConfigChangeDiff.DatabaseConfigChangeSettingNames.Count);
+        foreach (var name in ConfigChangeDiff.DatabaseConfigChangeSettingNames)
             Assert.Contains(name, table, StringComparison.Ordinal);
 
         /* The wide-row diff walks these positionally, so the order must match the SELECT's column order. */
-        Assert.Equal("state_desc", ViewerDataService.DatabaseConfigChangeSettingNames[0]);
-        Assert.Equal("is_optimized_locking_on", ViewerDataService.DatabaseConfigChangeSettingNames[^1]);
+        Assert.Equal("state_desc", ConfigChangeDiff.DatabaseConfigChangeSettingNames[0]);
+        Assert.Equal("is_optimized_locking_on", ConfigChangeDiff.DatabaseConfigChangeSettingNames[^1]);
     }
 
     [Fact]
@@ -147,7 +148,7 @@ public sealed class ViewerConfigChangesSqlTests
         var ddl = PgSchemaGenerator.CreateTable(DatabaseConfigCollector.Instance);
         Assert.Contains("capture_time", ddl, StringComparison.Ordinal);
         Assert.Contains("database_name", ddl, StringComparison.Ordinal);
-        foreach (var column in ViewerDataService.DatabaseConfigChangeSettingNames)
+        foreach (var column in ConfigChangeDiff.DatabaseConfigChangeSettingNames)
             Assert.Contains(column, ddl, StringComparison.Ordinal);
     }
 }
@@ -179,7 +180,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T1, "cost threshold for parallelism", 5, 5, true, true), /* unchanged */
         };
 
-        var changes = ViewerDataService.DiffServerConfigChanges(snapshots, T0, T3);
+        var changes = ConfigChangeDiff.DiffServerConfigChanges(snapshots, T0, T3);
         var change = Assert.Single(changes);
         Assert.Equal("max degree of parallelism", change.ConfigurationName);
         Assert.Equal(0L, change.OldValueConfigured);
@@ -191,7 +192,7 @@ public sealed class ViewerConfigChangesDiffTests
     public void ServerConfigChanges_SingleSnapshot_YieldsNothing()
     {
         var single = new List<Snap.ServerConfigSnapshot> { new(T0, "max server memory (MB)", 8000, 8000, true, true) };
-        Assert.Empty(ViewerDataService.DiffServerConfigChanges(single, T0, T3));
+        Assert.Empty(ConfigChangeDiff.DiffServerConfigChanges(single, T0, T3));
     }
 
     [Fact]
@@ -204,11 +205,11 @@ public sealed class ViewerConfigChangesDiffTests
         };
 
         /* Change at T2 is inside [T0, T3]. */
-        Assert.Single(ViewerDataService.DiffServerConfigChanges(two, T0, T3));
+        Assert.Single(ConfigChangeDiff.DiffServerConfigChanges(two, T0, T3));
         /* Window START after the change (start T3) excludes it. */
-        Assert.Empty(ViewerDataService.DiffServerConfigChanges(two, T3, T3));
+        Assert.Empty(ConfigChangeDiff.DiffServerConfigChanges(two, T3, T3));
         /* Window END before the change (end T1) excludes it. */
-        Assert.Empty(ViewerDataService.DiffServerConfigChanges(two, T0, T1));
+        Assert.Empty(ConfigChangeDiff.DiffServerConfigChanges(two, T0, T1));
     }
 
     [Fact]
@@ -222,7 +223,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T1, "max degree of parallelism", 8, 8, true, true),
         };
 
-        var change = Assert.Single(ViewerDataService.DiffServerConfigChanges(snapshots, T1, T3));
+        var change = Assert.Single(ConfigChangeDiff.DiffServerConfigChanges(snapshots, T1, T3));
         Assert.Equal(0L, change.OldValueConfigured);
         Assert.Equal(8L, change.NewValueConfigured);
         Assert.Equal(T1, change.ChangeTime);
@@ -237,7 +238,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T0, "max server memory (MB)", 8000, 8000, false, false),
             new(T1, "max server memory (MB)", 16000, 8000, false, false),
         };
-        var change = Assert.Single(ViewerDataService.DiffServerConfigChanges(restartNeeded, T0, T3));
+        var change = Assert.Single(ConfigChangeDiff.DiffServerConfigChanges(restartNeeded, T0, T3));
         Assert.True(change.RequiresRestart);
         Assert.Equal("Yes", change.RequiresRestartDisplay);
         Assert.Equal("No", change.DynamicDisplay);
@@ -249,7 +250,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T0, "cost threshold for parallelism", 50, 5, true, true),
             new(T1, "cost threshold for parallelism", 50, 50, true, true),
         };
-        var c2 = Assert.Single(ViewerDataService.DiffServerConfigChanges(inUseMove, T0, T3));
+        var c2 = Assert.Single(ConfigChangeDiff.DiffServerConfigChanges(inUseMove, T0, T3));
         Assert.False(c2.RequiresRestart);
         Assert.Equal("In-use value changed from 5 to 50", c2.ChangeDescription);
     }
@@ -260,7 +261,7 @@ public sealed class ViewerConfigChangesDiffTests
     public void DatabaseConfigChanges_UnpivotsWideRow_NamesTheChangedColumn_WithDescription()
     {
         const int rcsiIndex = 10; /* is_read_committed_snapshot_on */
-        Assert.Equal("is_read_committed_snapshot_on", ViewerDataService.DatabaseConfigChangeSettingNames[rcsiIndex]);
+        Assert.Equal("is_read_committed_snapshot_on", ConfigChangeDiff.DatabaseConfigChangeSettingNames[rcsiIndex]);
 
         var snapshots = new List<Snap.DatabaseConfigSnapshot>
         {
@@ -268,7 +269,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T1, "StackOverflow", DbValues((rcsiIndex, "true"))),  /* RCSI flipped on */
         };
 
-        var change = Assert.Single(ViewerDataService.DiffDatabaseConfigChanges(snapshots, T0, T3));
+        var change = Assert.Single(ConfigChangeDiff.DiffDatabaseConfigChanges(snapshots, T0, T3));
         Assert.Equal("StackOverflow", change.DatabaseName);
         Assert.Equal("is_read_committed_snapshot_on", change.SettingName);
         Assert.Equal("false", change.OldValue);
@@ -288,7 +289,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T1, "DbB", DbValues((3, "SIMPLE"))),    /* recovery_model changed */
         };
 
-        var change = Assert.Single(ViewerDataService.DiffDatabaseConfigChanges(snapshots, T0, T3));
+        var change = Assert.Single(ConfigChangeDiff.DiffDatabaseConfigChanges(snapshots, T0, T3));
         Assert.Equal("DbB", change.DatabaseName);
         Assert.Equal("recovery_model", change.SettingName);
         Assert.Equal("FULL", change.OldValue);
@@ -303,14 +304,14 @@ public sealed class ViewerConfigChangesDiffTests
             new(T0, "Db", DbValues((3, null))),
             new(T1, "Db", DbValues((3, "SIMPLE"))),
         };
-        Assert.Equal("Set to: SIMPLE", Assert.Single(ViewerDataService.DiffDatabaseConfigChanges(setValue, T0, T3)).ChangeDescription);
+        Assert.Equal("Set to: SIMPLE", Assert.Single(ConfigChangeDiff.DiffDatabaseConfigChanges(setValue, T0, T3)).ChangeDescription);
 
         var cleared = new List<Snap.DatabaseConfigSnapshot>
         {
             new(T0, "Db", DbValues((3, "SIMPLE"))),
             new(T1, "Db", DbValues((3, null))),
         };
-        Assert.Equal("Cleared (was: SIMPLE)", Assert.Single(ViewerDataService.DiffDatabaseConfigChanges(cleared, T0, T3)).ChangeDescription);
+        Assert.Equal("Cleared (was: SIMPLE)", Assert.Single(ConfigChangeDiff.DiffDatabaseConfigChanges(cleared, T0, T3)).ChangeDescription);
     }
 
     /* ---------------- trace flags (set-diff) ---------------- */
@@ -329,7 +330,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T2, 3226, true, false, true),
         };
 
-        var changes = ViewerDataService.DiffTraceFlagChanges(snapshots, T0, T3);
+        var changes = ConfigChangeDiff.DiffTraceFlagChanges(snapshots, T0, T3);
         Assert.Equal(3, changes.Count);
 
         var enabled = Assert.Single(changes, c => c.TraceFlag == 1117 && c.ChangeType == "enabled");
@@ -359,7 +360,7 @@ public sealed class ViewerConfigChangesDiffTests
             new(T0, 3226, true, true, false),
             new(T1, 3226, true, true, false),
         };
-        Assert.Empty(ViewerDataService.DiffTraceFlagChanges(stable, T0, T3));
+        Assert.Empty(ConfigChangeDiff.DiffTraceFlagChanges(stable, T0, T3));
 
         var enableAtT2 = new List<Snap.TraceFlagSnapshot>
         {
@@ -367,14 +368,14 @@ public sealed class ViewerConfigChangesDiffTests
             new(T1, 1117, true, true, false),
             new(T2, 3226, true, true, false),   /* 1117 gone at T2 => disabled at T2 */
         };
-        Assert.Single(ViewerDataService.DiffTraceFlagChanges(enableAtT2, T0, T3));   /* T2 in window */
-        Assert.Empty(ViewerDataService.DiffTraceFlagChanges(enableAtT2, T0, T1));    /* window ends at T1 */
-        Assert.Empty(ViewerDataService.DiffTraceFlagChanges(enableAtT2, T3, T3));    /* window starts at T3 */
+        Assert.Single(ConfigChangeDiff.DiffTraceFlagChanges(enableAtT2, T0, T3));   /* T2 in window */
+        Assert.Empty(ConfigChangeDiff.DiffTraceFlagChanges(enableAtT2, T0, T1));    /* window ends at T1 */
+        Assert.Empty(ConfigChangeDiff.DiffTraceFlagChanges(enableAtT2, T3, T3));    /* window starts at T3 */
     }
 
     private static string?[] DbValues(params (int Index, string? Value)[] overrides)
     {
-        var values = new string?[ViewerDataService.DatabaseConfigChangeSettingNames.Count];
+        var values = new string?[ConfigChangeDiff.DatabaseConfigChangeSettingNames.Count];
         for (var i = 0; i < values.Length; i++)
             values[i] = "false";
         foreach (var (index, value) in overrides)

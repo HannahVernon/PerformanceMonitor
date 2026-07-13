@@ -56,7 +56,9 @@ public sealed class DarlingMcpConfigHistoryTools
         {
             var windowStart = NaiveUtcNow().AddHours(-hours_back);
             var snapshots = await DarlingConfigHistoryReader.GetServerConfigSnapshotsAsync(postgres, resolved.Value.ServerId);
-            var changes = DarlingConfigHistoryReader.ComputeServerConfigChanges(snapshots, windowStart);
+            /* The tool reads the full unbounded history and only lower-bounds, so pass DateTime.MaxValue as the
+               (no-op) upper edge — the shared both-edges diff then reproduces the prior behavior exactly. */
+            var changes = ConfigChangeDiff.DiffServerConfigChanges(snapshots, windowStart, DateTime.MaxValue);
             if (changes.Count == 0)
                 return NoChanges(resolved.Value.ServerName, hours_back, DistinctCaptures(snapshots.Select(s => s.CaptureTime)));
 
@@ -102,7 +104,7 @@ public sealed class DarlingMcpConfigHistoryTools
         {
             var windowStart = NaiveUtcNow().AddHours(-hours_back);
             var snapshots = await DarlingConfigHistoryReader.GetDatabaseConfigSnapshotsAsync(postgres, resolved.Value.ServerId);
-            var changes = DarlingConfigHistoryReader.ComputeDatabaseConfigChanges(snapshots, windowStart);
+            var changes = ConfigChangeDiff.DiffDatabaseConfigChanges(snapshots, windowStart, DateTime.MaxValue);
             if (changes.Count == 0)
                 return NoChanges(resolved.Value.ServerName, hours_back, DistinctCaptures(snapshots.Select(s => s.CaptureTime)));
 
@@ -145,7 +147,7 @@ public sealed class DarlingMcpConfigHistoryTools
         {
             var windowStart = NaiveUtcNow().AddHours(-hours_back);
             var snapshots = await DarlingConfigHistoryReader.GetTraceFlagSnapshotsAsync(postgres, resolved.Value.ServerId);
-            var changes = DarlingConfigHistoryReader.ComputeTraceFlagChanges(snapshots, windowStart);
+            var changes = ConfigChangeDiff.DiffTraceFlagChanges(snapshots, windowStart, DateTime.MaxValue);
             if (changes.Count == 0)
                 return NoChanges(resolved.Value.ServerName, hours_back, DistinctCaptures(snapshots.Select(s => s.CaptureTime)));
 
