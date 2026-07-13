@@ -874,9 +874,20 @@ public partial class SettingsWindow : Window
         SlackWebhookUrlBox.Text = r.SlackUrl;
         SlackProxyAddressBox.Text = r.SlackProxy;
 
+        GenericWebhookEnabledCheckBox.IsChecked = !string.IsNullOrWhiteSpace(r.GenericUrl);
+        GenericWebhookUrlBox.Text = r.GenericUrl;
+        GenericWebhookHeadersBox.Text = r.GenericHeaders;
+        /* Blank means "use the built-in default" — show it, so the operator has something to edit rather
+           than a blank box whose shape they have to guess. */
+        GenericWebhookBodyBox.Text = string.IsNullOrWhiteSpace(r.GenericBodyTemplate)
+            ? WebhookAlertService.DefaultGenericBodyTemplate
+            : r.GenericBodyTemplate;
+        GenericWebhookProxyAddressBox.Text = r.GenericProxy;
+
         UpdateSmtpControlStates();
         UpdateTeamsControlStates();
         UpdateSlackControlStates();
+        UpdateGenericControlStates();
     }
 
     /// <summary>Builds the <see cref="NotificationRow"/> from the SMTP + webhook controls. A DISABLED channel
@@ -914,6 +925,22 @@ public partial class SettingsWindow : Window
         {
             row.SlackUrl = SlackWebhookUrlBox.Text?.Trim() ?? "";
             row.SlackProxy = SlackProxyAddressBox.Text?.Trim() ?? "";
+        }
+
+        if (GenericWebhookEnabledCheckBox.IsChecked == true)
+        {
+            row.GenericUrl = GenericWebhookUrlBox.Text?.Trim() ?? "";
+            row.GenericHeaders = GenericWebhookHeadersBox.Text?.Trim() ?? "";
+            row.GenericBodyTemplate = GenericWebhookBodyBox.Text?.Trim() ?? "";
+            row.GenericProxy = GenericWebhookProxyAddressBox.Text?.Trim() ?? "";
+
+            /* A malformed headers JSON / body template would let the service accept the channel and then
+               drop every alert with only a log line to show for it — block the Save instead (#1506). */
+            var configError = WebhookAlertService.ValidateGenericConfig(row.GenericHeaders, row.GenericBodyTemplate);
+            if (configError != null)
+            {
+                errors.Add(configError);
+            }
         }
 
         return row;
@@ -1023,6 +1050,18 @@ public partial class SettingsWindow : Window
         TestSlackButton.IsEnabled = enabled;
     }
 
+    private void GenericWebhookEnabledCheckBox_Changed(object sender, RoutedEventArgs e) => UpdateGenericControlStates();
+
+    private void UpdateGenericControlStates()
+    {
+        var enabled = GenericWebhookEnabledCheckBox.IsChecked == true;
+        GenericWebhookUrlBox.IsEnabled = enabled;
+        GenericWebhookHeadersBox.IsEnabled = enabled;
+        GenericWebhookBodyBox.IsEnabled = enabled;
+        GenericWebhookProxyAddressBox.IsEnabled = enabled;
+        TestGenericButton.IsEnabled = enabled;
+    }
+
     private async void TestTeamsButton_Click(object sender, RoutedEventArgs e)
     {
         TestTeamsButton.IsEnabled = false;
@@ -1082,6 +1121,45 @@ public partial class SettingsWindow : Window
         {
             TestSlackButton.Content = "Send Test Notification";
             TestSlackButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// Tests the generic webhook with the values currently in the boxes (not the stored ones), like the
+    /// Teams/Slack test buttons. A malformed headers JSON or body template comes back as the error message
+    /// rather than an exception, so the operator fixes it here instead of discovering it when a real alert
+    /// silently fails to deliver.
+    /// </summary>
+    private async void TestGenericButton_Click(object sender, RoutedEventArgs e)
+    {
+        TestGenericButton.IsEnabled = false;
+        TestGenericButton.Content = "Sending...";
+
+        try
+        {
+            var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
+            var headers = GenericWebhookHeadersBox.Text?.Trim();
+            var body = GenericWebhookBodyBox.Text?.Trim();
+            var proxy = GenericWebhookProxyAddressBox.Text?.Trim();
+            var error = await WebhookAlertService.SendTestGenericAsync(url, headers, body, proxy, s_branding);
+
+            if (error == null)
+            {
+                MessageBox.Show("Generic webhook test notification sent successfully!", "Test Webhook", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Failed to send generic webhook test notification:\n\n{error}", "Test Webhook Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to send generic webhook test notification:\n\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            TestGenericButton.Content = "Send Test Notification";
+            TestGenericButton.IsEnabled = true;
         }
     }
 
@@ -1221,6 +1299,12 @@ public partial class SettingsWindow : Window
         public string SlackWebhookUrl { get; private init; } = "";
         public string SlackProxyAddress { get; private init; } = "";
 
+        public bool GenericWebhookEnabled { get; private init; }
+        public string GenericWebhookUrl { get; private init; } = "";
+        public string GenericWebhookHeadersJson { get; private init; } = "";
+        public string GenericWebhookBodyTemplate { get; private init; } = "";
+        public string GenericWebhookProxyAddress { get; private init; } = "";
+
         public double AnalysisNotifySeverity { get; private init; }
         public int AnalysisNotifyCooldownMinutes { get; private init; }
 
@@ -1245,6 +1329,11 @@ public partial class SettingsWindow : Window
                 SlackWebhookEnabled = w.SlackWebhookEnabledCheckBox.IsChecked == true,
                 SlackWebhookUrl = w.SlackWebhookUrlBox.Text?.Trim() ?? "",
                 SlackProxyAddress = w.SlackProxyAddressBox.Text?.Trim() ?? "",
+                GenericWebhookEnabled = w.GenericWebhookEnabledCheckBox.IsChecked == true,
+                GenericWebhookUrl = w.GenericWebhookUrlBox.Text?.Trim() ?? "",
+                GenericWebhookHeadersJson = w.GenericWebhookHeadersBox.Text?.Trim() ?? "",
+                GenericWebhookBodyTemplate = w.GenericWebhookBodyBox.Text?.Trim() ?? "",
+                GenericWebhookProxyAddress = w.GenericWebhookProxyAddressBox.Text?.Trim() ?? "",
                 AnalysisNotifySeverity = w._appSettings.AnalysisNotifySeverity,
                 AnalysisNotifyCooldownMinutes = w._appSettings.AnalysisNotifyCooldownMinutes,
             };

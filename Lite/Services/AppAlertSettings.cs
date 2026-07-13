@@ -38,6 +38,12 @@ public sealed class AppAlertSettings : IAlertSettings
     public string SlackWebhookUrl     => App.SlackWebhookUrl;
     public string SlackProxyAddress   => App.SlackProxyAddress;
 
+    public bool   GenericWebhookEnabled      => App.GenericWebhookEnabled;
+    public string GenericWebhookUrl          => App.GenericWebhookUrl;
+    public string GenericWebhookHeadersJson  => App.GenericWebhookHeadersJson;
+    public string GenericWebhookBodyTemplate => App.GenericWebhookBodyTemplate;
+    public string GenericWebhookProxyAddress => App.GenericWebhookProxyAddress;
+
     public double AnalysisNotifySeverity        => App.AnalysisNotifySeverity;
     public int    AnalysisNotifyCooldownMinutes => App.AnalysisNotifyCooldownMinutes;
 }

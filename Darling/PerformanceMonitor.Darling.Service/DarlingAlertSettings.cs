@@ -143,6 +143,14 @@ public sealed class DarlingAlertSettings : IAlertEngineSettings, IAlertSettings
     public string SlackWebhookUrl => _config.Webhooks.SlackUrl;
     public string SlackProxyAddress => _config.Webhooks.SlackProxy;
 
+    /* Generic webhook (#1506) — enabled by a non-empty URL, the same no-speculative-enable-flag derivation
+       the sibling channels use. */
+    public bool GenericWebhookEnabled => !string.IsNullOrWhiteSpace(_config.Webhooks.GenericUrl);
+    public string GenericWebhookUrl => _config.Webhooks.GenericUrl;
+    public string GenericWebhookHeadersJson => _config.Webhooks.GenericHeaders;
+    public string GenericWebhookBodyTemplate => _config.Webhooks.GenericBodyTemplate;
+    public string GenericWebhookProxyAddress => _config.Webhooks.GenericProxy;
+
     /* Scheduled-analysis notifications (AN3): the shared AnalysisNotificationService's severity floor
        + per-finding re-notify cooldown. The severity floor is now a control-plane knob (config Stage
        1) read through the by-reference config seam — a store reload reflects it immediately; clamped

@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -19,7 +20,7 @@ using Microsoft.Extensions.Logging;
 namespace PerformanceMonitor.Notifications;
 
 /// <summary>
-/// Sends alert notifications to Microsoft Teams and/or Slack via incoming webhooks.
+/// Sends alert notifications to Microsoft Teams, Slack, and/or a generic JSON endpoint via webhooks.
 /// Color-coded accent bars match the existing email alert severity mapping.
 /// <para>
 /// Shared between Lite and Dashboard (Plan E E3c). Per-app branding (edition label +
@@ -29,6 +30,12 @@ namespace PerformanceMonitor.Notifications;
 /// MCP/health surfaces stay app-side: Dashboard keeps a reference to the injected
 /// instance.
 /// </para>
+/// <para>
+/// The generic channel (#1506) is the deliberate answer to "run a script/exe when an alert fires":
+/// it drives arbitrary automation (PagerDuty, Opsgenie, n8n, a GitHub <c>repository_dispatch</c> that
+/// re-runs a workflow) through an operator-authored JSON body + headers, with no process-execution
+/// surface in a signed binary.
+/// </para>
 /// </summary>
 public class WebhookAlertService
 {
@@ -36,6 +43,28 @@ public class WebhookAlertService
        at the email / in-app dialog instead. */
     private const string TsqlWebhookHint = "See email or in-app Alert Details for the copy-paste T-SQL.";
     private static readonly JsonSerializerOptions s_jsonOptions = new() { PropertyNamingPolicy = null };
+
+    /// <summary>
+    /// The generic channel's body template when the operator has not authored one — a flat JSON object
+    /// exercising every placeholder, which most endpoints (n8n, Zapier, a bare HTTP listener) accept as-is.
+    /// </summary>
+    public const string DefaultGenericBodyTemplate =
+        """
+        {
+          "severity": "{{severity}}",
+          "metric": "{{metric}}",
+          "server": "{{server}}",
+          "value": "{{value}}",
+          "threshold": "{{threshold}}",
+          "context": "{{context}}",
+          "timestamp": "{{timestamp}}"
+        }
+        """;
+
+    /* GitHub's REST API 403s any request without a User-Agent, and repository_dispatch is the motivating
+       use case (#1506), so the generic channel defaults one instead of handing the operator a 403 they
+       have to diagnose. An explicit User-Agent in the headers JSON overrides it. */
+    private const string DefaultUserAgent = "PerformanceMonitor";
 
     /* #1154: per-incident-fingerprint cooldown (was a per-(serverId, metricName)
        ConcurrentDictionary). Keyed per #1140 dedup fingerprint so a distinct incident in the
@@ -50,6 +79,8 @@ public class WebhookAlertService
     private string? _lastTeamsError;
     private int _consecutiveSlackFailures;
     private string? _lastSlackError;
+    private int _consecutiveGenericFailures;
+    private string? _lastGenericError;
 
     /// <param name="historyStore">
     /// Optional alert-history store used to seed the per-fingerprint webhook cooldown across an app
@@ -114,6 +145,11 @@ public class WebhookAlertService
                 sent |= await TrySendSlackAlertAsync(metricName, serverName, currentValue, thresholdValue, context);
             }
 
+            if (_settings.GenericWebhookEnabled && !string.IsNullOrWhiteSpace(_settings.GenericWebhookUrl))
+            {
+                sent |= await TrySendGenericAlertAsync(metricName, serverName, currentValue, thresholdValue, context);
+            }
+
             if (sent)
             {
                 _cooldown.Stamp(decision);
@@ -166,11 +202,47 @@ public class WebhookAlertService
         }
     }
 
+    /// <summary>
+    /// Sends a test notification to the generic endpoint. Returns null on success, error message on failure.
+    /// Surfaces a bad template / bad headers JSON as that error message, so the operator sees the problem in
+    /// the settings window instead of only in a log after the next real alert.
+    /// </summary>
+    public static async Task<string?> SendTestGenericAsync(
+        string webhookUrl,
+        string? headersJson,
+        string? bodyTemplate,
+        string? proxyAddress,
+        AlertBranding branding)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(webhookUrl))
+                return "Webhook URL is not configured.";
+
+            if (!TryParseHeaders(headersJson, out var headers, out var headerError))
+                return headerError;
+
+            var payload = BuildGenericPayload("Test Notification", "", "Webhook configuration verified", "", branding, isTest: true, bodyTemplate: bodyTemplate);
+
+            if (!IsWellFormedJson(payload, out var bodyError))
+                return bodyError;
+
+            return await PostWebhookAsync(webhookUrl, payload, proxyAddress, headers);
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
     public (int ConsecutiveFailures, string? LastError) GetTeamsHealth() =>
         (_consecutiveTeamsFailures, _lastTeamsError);
 
     public (int ConsecutiveFailures, string? LastError) GetSlackHealth() =>
         (_consecutiveSlackFailures, _lastSlackError);
+
+    public (int ConsecutiveFailures, string? LastError) GetGenericHealth() =>
+        (_consecutiveGenericFailures, _lastGenericError);
 
     #region Teams
 
@@ -472,6 +544,298 @@ public class WebhookAlertService
 
     #endregion
 
+    #region Generic
+
+    private async Task<bool> TrySendGenericAlertAsync(
+        string metricName,
+        string serverName,
+        string currentValue,
+        string thresholdValue,
+        AlertContext? context)
+    {
+        try
+        {
+            /* A malformed headers JSON / body template is an operator config error, not a transport
+               failure — but it still counts as a failure so the health surface and the log throttle
+               report a channel that is delivering nothing, and it must never throw into the alert loop. */
+            if (!TryParseHeaders(_settings.GenericWebhookHeadersJson, out var headers, out var headerError))
+            {
+                RecordGenericFailure(headerError!);
+                return false;
+            }
+
+            var payload = BuildGenericPayload(
+                metricName, serverName, currentValue, thresholdValue, _branding,
+                context: context, bodyTemplate: _settings.GenericWebhookBodyTemplate);
+
+            if (!IsWellFormedJson(payload, out var bodyError))
+            {
+                RecordGenericFailure(bodyError!);
+                return false;
+            }
+
+            var error = await PostWebhookAsync(
+                _settings.GenericWebhookUrl, payload, _settings.GenericWebhookProxyAddress, headers);
+
+            if (error != null)
+            {
+                RecordGenericFailure(error);
+                return false;
+            }
+
+            if (_consecutiveGenericFailures > 0)
+                _logger.LogInformation($"Generic webhook recovered after {_consecutiveGenericFailures} failure(s)");
+
+            _consecutiveGenericFailures = 0;
+            _lastGenericError = null;
+            _logger.LogInformation($"Generic webhook sent for {metricName} on {serverName}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _consecutiveGenericFailures++;
+            _lastGenericError = ex.Message;
+            _logger.LogError($"Generic webhook error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /* The Teams/Slack log-throttle shape (loud for the first 3, then every 50th) — factored out only
+       because the generic channel fails from three places (headers, body, transport). */
+    private void RecordGenericFailure(string error)
+    {
+        _consecutiveGenericFailures++;
+        _lastGenericError = error;
+
+        if (_consecutiveGenericFailures <= 3)
+            _logger.LogError($"GENERIC WEBHOOK FAILED ({_consecutiveGenericFailures}x): {error}");
+        else if (_consecutiveGenericFailures % 50 == 0)
+            _logger.LogError($"GENERIC WEBHOOK STILL FAILING: {_consecutiveGenericFailures} failures. Last: {error}");
+    }
+
+    /// <summary>
+    /// Substitutes the alert's values into the operator's JSON body template. Every placeholder expands to
+    /// JSON-ESCAPED text: the tokens sit inside JSON string literals in the template
+    /// (<c>"server": "{{server}}"</c>), so a server name, wait type, or error message containing a quote or
+    /// backslash would otherwise terminate the literal early and corrupt — or inject into — the posted JSON.
+    /// <see cref="JsonEncodedText"/> yields exactly the escaped INNER text (no surrounding quotes), which is
+    /// what a token inside a literal needs.
+    /// </summary>
+    internal static string BuildGenericPayload(
+        string metricName,
+        string serverName,
+        string currentValue,
+        string thresholdValue,
+        AlertBranding branding,
+        bool isTest = false,
+        AlertContext? context = null,
+        string? bodyTemplate = null)
+    {
+        var (_, badgeText, _) = AlertSeverity.ForMetric(metricName, context?.SeverityOverride);
+        var template = string.IsNullOrWhiteSpace(bodyTemplate) ? DefaultGenericBodyTemplate : bodyTemplate!;
+
+        var contextText = isTest
+            ? $"Webhook configuration is working correctly. Sent by {branding.EditionName}."
+            : RenderContextForTemplate(context, branding);
+
+        var values = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["metric"] = EscapeForJson(isTest ? $"TEST — {metricName}" : metricName),
+            ["server"] = EscapeForJson(serverName),
+            ["value"] = EscapeForJson(currentValue),
+            ["threshold"] = EscapeForJson(thresholdValue),
+            ["severity"] = EscapeForJson(isTest ? "TEST" : badgeText),
+            ["context"] = EscapeForJson(contextText),
+            ["timestamp"] = EscapeForJson(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)),
+        };
+
+        /* Single pass: a MatchEvaluator's output is NOT re-scanned, so a value that itself contains the
+           literal text of another token (e.g. a server name "{{timestamp}}") is left verbatim rather than
+           re-expanded — which chained .Replace() calls would do, letting one field pull another's contents
+           into itself. An unknown "{{foo}}" isn't in the alternation, so it stays literal (today's behavior). */
+        return s_genericPlaceholders.Replace(template, m => values[m.Groups[1].Value]);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex s_genericPlaceholders =
+        new(@"\{\{(metric|server|value|threshold|severity|context|timestamp)\}\}",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Flattens the structured alert context into one plain-text line for <c>{{context}}</c> — the generic
+    /// endpoint has no card schema to render into. Follows the Teams/Slack rule: remediation T-SQL is never
+    /// inlined, it points at the email / in-app dialog.
+    /// </summary>
+    private static string RenderContextForTemplate(AlertContext? context, AlertBranding branding)
+    {
+        if (context?.Details is not { Count: > 0 })
+        {
+            return $"Sent by {branding.EditionName}";
+        }
+
+        var parts = new List<string>();
+
+        foreach (var detail in context.Details)
+        {
+            if (detail.IsCodeBlock)
+            {
+                parts.Add($"{detail.Heading}: {TsqlWebhookHint}");
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(detail.Body))
+            {
+                parts.Add($"{detail.Heading}: {detail.Body.Replace("\n\n", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal)}");
+                continue;
+            }
+
+            foreach (var (label, value) in detail.Fields)
+            {
+                parts.Add($"{detail.Heading} — {label}: {value}");
+            }
+        }
+
+        return parts.Count == 0 ? $"Sent by {branding.EditionName}" : string.Join(" | ", parts);
+    }
+
+    /// <summary>
+    /// Escapes a value for interpolation INSIDE a JSON string literal — the escaped inner text, without the
+    /// surrounding quotes. HTML-sensitive and non-ASCII characters escape to <c>\uXXXX</c>; over-escaping is
+    /// still valid JSON and keeps the payload ASCII-safe.
+    /// <para>
+    /// Uses <see cref="JsonSerializer"/> rather than <see cref="JsonEncodedText.Encode(string)"/> deliberately:
+    /// SQL Server nvarchar/sysname can hold a LONE SURROGATE (e.g. an object or login name containing
+    /// <c>NCHAR(0xD800)</c>, or a RAISERROR message), and <c>JsonEncodedText.Encode</c> THROWS
+    /// <see cref="ArgumentException"/> on invalid UTF-16 — which would let a low-privileged user drop the
+    /// generic webhook for the very incident they cause while email/Teams/Slack (which use
+    /// <c>JsonSerializer</c>) still deliver. The serializer relaxes invalid UTF-16 to U+FFFD and never throws,
+    /// matching the sibling channels. The result is a quoted JSON string; strip the two surrounding quotes to
+    /// get the inner text a token inside a literal needs.
+    /// </para>
+    /// </summary>
+    private static string EscapeForJson(string? value)
+    {
+        var quoted = JsonSerializer.Serialize(value ?? "");
+        return quoted.Substring(1, quoted.Length - 2);
+    }
+
+    /// <summary>
+    /// Validates the generic channel's headers JSON + body template without sending anything — for the
+    /// settings windows' Save path, so a typo is caught where the operator can fix it rather than silently
+    /// dropping every future alert. Returns null when the config is usable, else the error to show.
+    /// Both inputs are optional: empty headers mean "no custom headers", an empty template means
+    /// <see cref="DefaultGenericBodyTemplate"/>.
+    /// </summary>
+    public static string? ValidateGenericConfig(string? headersJson, string? bodyTemplate)
+    {
+        if (!TryParseHeaders(headersJson, out _, out var headerError))
+        {
+            return headerError;
+        }
+
+        /* Render with placeholder-shaped stand-ins: substitution is what can break the JSON, so validating
+           the raw template would miss a token sitting outside a string literal. */
+        var rendered = BuildGenericPayload(
+            "Test Notification", "Test Server", "0", "0",
+            new AlertBranding("Performance Monitor", null), isTest: true, bodyTemplate: bodyTemplate);
+
+        return IsWellFormedJson(rendered, out var bodyError) ? null : bodyError;
+    }
+
+    /// <summary>
+    /// Parses the operator's headers JSON object into request headers. An empty/whitespace value is valid
+    /// (no custom headers). Malformed JSON, a non-object root, or a non-string value returns false with a
+    /// clear message the caller reports — the alert loop never sees an exception.
+    /// </summary>
+    internal static bool TryParseHeaders(
+        string? headersJson,
+        out Dictionary<string, string> headers,
+        out string? error)
+    {
+        headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(headersJson))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(headersJson);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                error = "Webhook headers must be a JSON object, e.g. {\"Authorization\": \"Bearer <token>\"}.";
+                return false;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    error = $"Webhook header '{property.Name}' must have a string value.";
+                    return false;
+                }
+
+                var value = property.Value.GetString() ?? "";
+
+                /* Reject CR/LF in the name or value. HttpRequestHeaders.TryAddWithoutValidation lets a CR/LF
+                   in a VALUE through onto the wire, splitting one header into two — so a bearer token pasted
+                   with a stray newline would silently smuggle a garbage header. Caught here (which runs at
+                   Save/Test via ValidateGenericConfig) the operator sees it immediately. */
+                if (HasControlChar(property.Name) || HasControlChar(value))
+                {
+                    error = $"Webhook header '{property.Name}' may not contain control characters (e.g. CR or LF).";
+                    return false;
+                }
+
+                headers[property.Name] = value;
+            }
+
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            error = $"Webhook headers are not valid JSON: {ex.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>True when the string contains any C0/C1 control character (CR, LF, tab, NUL, …).</summary>
+    private static bool HasControlChar(string s)
+    {
+        foreach (var c in s)
+        {
+            if (char.IsControl(c))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Validates the substituted body before it goes on the wire, so a typo in the operator's template is
+    /// reported as a config error (in the settings test, or the channel's health) rather than as an opaque
+    /// 400 from the endpoint.
+    /// </summary>
+    private static bool IsWellFormedJson(string payload, out string? error)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(payload);
+            error = null;
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            error = $"Webhook body template did not produce valid JSON: {ex.Message}";
+            return false;
+        }
+    }
+
+    #endregion
+
     #region Shared
 
     /// <summary>
@@ -519,18 +883,64 @@ public class WebhookAlertService
     /// <summary>
     /// Posts a JSON payload to a webhook URL. Returns null on success, error message on failure.
     /// </summary>
-    private static async Task<string?> PostWebhookAsync(string webhookUrl, string jsonPayload, string? proxyAddress)
+    /// <param name="headers">
+    /// The generic channel's operator-authored request headers. <c>null</c> — what Teams/Slack pass — sends
+    /// exactly today's request (no custom headers, no User-Agent); those two endpoints need neither.
+    /// </param>
+    private static async Task<string?> PostWebhookAsync(
+        string webhookUrl,
+        string jsonPayload,
+        string? proxyAddress,
+        IReadOnlyDictionary<string, string>? headers = null)
     {
         var client = GetHttpClient(proxyAddress);
         using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, webhookUrl) { Content = content };
 
-        var response = await client.PostAsync(webhookUrl, content);
+        if (headers != null)
+        {
+            ApplyHeaders(request, content, headers);
+        }
+
+        using var response = await client.SendAsync(request);
 
         if (response.IsSuccessStatusCode)
             return null;
 
+        /* Cap the destination's error body: it goes into the log + the health getter, and an unbounded read
+           lets a hostile/misconfigured endpoint bloat both (and, if it echoes request headers, spill more of
+           them). The first 2 KB is plenty to diagnose a 4xx/5xx. */
         var body = await response.Content.ReadAsStringAsync();
+        if (body.Length > 2048)
+            body = string.Concat(body.AsSpan(0, 2048), "…(truncated)");
+
         return $"HTTP {(int)response.StatusCode}: {body}";
+    }
+
+    /// <summary>
+    /// Applies the operator's headers to the request, routing content headers (a Content-Type override) onto
+    /// the content — setting one on <see cref="HttpRequestMessage.Headers"/> is rejected, so a naive add would
+    /// silently drop it. Values are added without validation: they are the operator's own, and a strict parse
+    /// would reject perfectly good tokens.
+    /// </summary>
+    private static void ApplyHeaders(HttpRequestMessage request, HttpContent content, IReadOnlyDictionary<string, string> headers)
+    {
+        foreach (var (name, value) in headers)
+        {
+            if (request.Headers.TryAddWithoutValidation(name, value))
+            {
+                continue;
+            }
+
+            /* A content header (e.g. Content-Type) — StringContent already set one, so replace it. */
+            content.Headers.Remove(name);
+            content.Headers.TryAddWithoutValidation(name, value);
+        }
+
+        if (!request.Headers.Contains("User-Agent"))
+        {
+            request.Headers.TryAddWithoutValidation("User-Agent", DefaultUserAgent);
+        }
     }
 
     #endregion
