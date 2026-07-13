@@ -128,6 +128,8 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<ServerConfigChangeRow>? _serverConfigChangesFilterMgr;
     private DataGridFilterManager<DatabaseConfigChangeRow>? _databaseConfigChangesFilterMgr;
     private DataGridFilterManager<TraceFlagChangeRow>? _traceFlagChangesFilterMgr;
+    /* Expensive Queries: the LAST Queries sub-tab (index 6) — one filter manager for the unified grid. */
+    private DataGridFilterManager<UnifiedExpensiveQueryRow>? _expensiveQueriesFilterMgr;
     private CancellationTokenSource? _actualPlanCts;
 
     public int UtcOffsetMinutes { get; }

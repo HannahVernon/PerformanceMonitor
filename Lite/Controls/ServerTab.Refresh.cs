@@ -233,6 +233,11 @@ public partial class ServerTab : UserControl
                         AppLogger.Info("ServerTab", $"[{_server.DisplayName}] Heatmap: {hmData.TimeBuckets.Length} time buckets, {hmData.Intensities.GetLength(0)}x{hmData.Intensities.GetLength(1)} grid");
                         UpdateQueryHeatmapChart(hmData);
                         break;
+                    case 6: // Expensive Queries — cross-source ranked list (avg CPU)
+                        var expQueriesSub = await Task.Run(() => _dataService.GetUnifiedExpensiveQueriesAsync(_serverId, hoursBack, fromDate: fromDate, toDate: toDate, databaseNames: SelectedDatabaseFilter));
+                        _expensiveQueriesFilterMgr!.UpdateData(expQueriesSub);
+                        SetDefaultSortIfNone(ExpensiveQueriesGrid, "AvgWorkerTimeMs", ListSortDirection.Descending);
+                        break;
                 }
                 return;
             }
@@ -242,6 +247,7 @@ public partial class ServerTab : UserControl
             var queryStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStats", () => Task.Run(() => _dataService.GetTopQueriesByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes, SelectedDatabaseFilter)));
             var procStatsTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcStats", () => Task.Run(() => _dataService.GetTopProceduresByCpuAsync(_serverId, hoursBack, 50, fromDate, toDate, UtcOffsetMinutes, SelectedDatabaseFilter)));
             var queryStoreTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryStore", () => Task.Run(() => _dataService.GetQueryStoreTopQueriesAsync(_serverId, hoursBack, 50, fromDate, toDate, SelectedDatabaseFilter)));
+            var expensiveQueriesTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ExpensiveQueries", () => Task.Run(() => _dataService.GetUnifiedExpensiveQueriesAsync(_serverId, hoursBack, fromDate: fromDate, toDate: toDate, databaseNames: SelectedDatabaseFilter)));
             var queryDurationTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QueryDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryDurationTrendAsync(_serverId, hoursBack, fromDate, toDate, SelectedDatabaseFilter))));
             var procDurationTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.ProcDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetProcedureDurationTrendAsync(_serverId, hoursBack, fromDate, toDate, SelectedDatabaseFilter))));
             var queryStoreDurationTrendTask = Helpers.MethodProfiler.TimeAsync("QueryPerformance.QsDurationTrends", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetQueryStoreDurationTrendAsync(_serverId, hoursBack, fromDate, toDate, SelectedDatabaseFilter))));
@@ -253,7 +259,7 @@ public partial class ServerTab : UserControl
             }));
 
             await System.Threading.Tasks.Task.WhenAll(
-                snapshotsTask, queryStatsTask, procStatsTask, queryStoreTask,
+                snapshotsTask, queryStatsTask, procStatsTask, queryStoreTask, expensiveQueriesTask,
                 queryDurationTrendTask, procDurationTrendTask, queryStoreDurationTrendTask, executionCountTrendTask,
                 heatmapTask);
 
@@ -286,6 +292,8 @@ public partial class ServerTab : UserControl
                 var cStart3 = fromDate ?? cEnd3.AddHours(-hoursBack);
                 await RefreshQueryStoreComparisonAsync(cStart3, cEnd3);
             }
+            _expensiveQueriesFilterMgr!.UpdateData(expensiveQueriesTask.Result);
+            SetDefaultSortIfNone(ExpensiveQueriesGrid, "AvgWorkerTimeMs", ListSortDirection.Descending);
 
             UpdateQueryDurationTrendChart(queryDurationTrendTask.Result, hoursBack, fromDate, toDate);
             UpdateProcDurationTrendChart(procDurationTrendTask.Result, hoursBack, fromDate, toDate);

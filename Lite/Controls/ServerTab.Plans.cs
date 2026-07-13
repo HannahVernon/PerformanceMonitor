@@ -315,6 +315,15 @@ public partial class ServerTab : UserControl
                     catch { }
                 }
                 break;
+            case UnifiedExpensiveQueryRow exp:
+                /* The unified Expensive Queries row carries its stored plan IN-ROW, so "View Plan" opens it
+                   directly with zero extra reads (there is no single per-source key to re-fetch by). Query
+                   Store rows carry no stored plan (Lite's query_store_stats keeps none) — HasQueryPlan is
+                   false and the "no plan available" message fires below. */
+                planXml = exp.QueryPlanXml;
+                queryText = exp.QueryText;
+                label = $"Est Plan - {exp.ObjectName}";
+                break;
             case QueryStatsComparisonItem comp:
                 queryText = comp.QueryText;
                 label = $"Est Plan - {comp.QueryHash}";
@@ -391,6 +400,19 @@ public partial class ServerTab : UserControl
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
                     catch { }
+                }
+                break;
+            case UnifiedExpensiveQueryRow exp:
+                label = $"Actual Plan - {exp.ObjectName}";
+                /* Only the statement sources (Query Stats / Query Store) carry runnable text; procedure rows
+                   carry just the 3-part object name, so they leave queryText null and hit the "no query text"
+                   guard below — exactly like Lite's Top Procedures grid, which has no Get-Actual-Plan case.
+                   The in-row stored plan (when present) seeds the data-modification detector. */
+                if (exp.IsStatementSource)
+                {
+                    queryText = exp.QueryText;
+                    databaseName = exp.DatabaseName;
+                    planXml = exp.QueryPlanXml;
                 }
                 break;
             case QueryStatsComparisonItem comp:
