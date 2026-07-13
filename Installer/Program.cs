@@ -20,9 +20,33 @@ namespace PerformanceMonitorInstaller
 {
     class Program
     {
+        /*
+        The unknown sentinel PARSES, so interpolating it printed "Existing installation detected: v0.0.0"
+        -- a guess stated as a fact, and one the same run then contradicts a few lines later with "this
+        server's recorded version could not be read". It is not a version; do not print it as one.
+        */
+        static string DescribeInstalledVersion(string? version) =>
+            RepairOutcome.IsVersionUnknown(version)
+                ? "Existing installation detected, but its recorded version could not be read."
+                : $"Existing installation detected: v{version}";
+
         static async Task<int> Main(string[] args)
         {
-            var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "Unknown";
+            /*
+            GetName().Version is never null for a loaded assembly, so the old "?? Unknown" could not fire:
+            a build with no AssemblyVersion reports 0.0.0.0, which PARSES -- InstallGuard waves it through,
+            and a fresh install writes it into installation_history as the version of record. It then reads
+            back as version 0.0.0, which is UnknownVersionSentinel, so every later run takes that server's
+            real version as unreadable and replays every migration. A version-less build must land on
+            something UNPARSEABLE so InstallGuard blocks it (UnreadableBuildVersion). Same hole, same fix,
+            as the Dashboard's GetAppVersion -- the two surfaces write to the same ledger.
+            */
+            var asmVersion = Assembly.GetExecutingAssembly().GetName().Version;
+            var version =
+                asmVersion != null && (asmVersion.Major | asmVersion.Minor | asmVersion.Build) != 0
+                    ? asmVersion.ToString()
+                    : "Unknown";
+
             var infoVersion = Assembly.GetExecutingAssembly()
                 .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? version;
 
@@ -44,6 +68,9 @@ namespace PerformanceMonitorInstaller
 
             Options:
               --reinstall       Drop existing database and perform clean install
+              --repair          Reinstall schema objects without running upgrade scripts. Use when an
+                                upgrade fails on a missing or damaged object; non-destructive, and the
+                                pending upgrade still needs to run afterwards
               --encrypt=X       Connection encryption: mandatory (default), optional, strict
               --trust-cert      Trust server certificate without validation (default: require valid cert)
               --data-path DIR   Server-side directory for the data (.mdf) file (first install only)
@@ -64,6 +91,7 @@ namespace PerformanceMonitorInstaller
                 Console.WriteLine("Options:");
                 Console.WriteLine("  -h, --help           Show this help message");
                 Console.WriteLine("  --reinstall          Drop existing database and perform clean install");
+                Console.WriteLine("  --repair             Reinstall schema objects, skipping upgrade scripts (non-destructive)");
                 Console.WriteLine("  --uninstall          Remove database, Agent jobs, and XE sessions");
                 Console.WriteLine("  --reset-schedule     Reset collection schedule to recommended defaults");
                 Console.WriteLine("  --troubleshoot       Run installation diagnostics (99_installer_troubleshooting.sql)");
@@ -96,7 +124,26 @@ namespace PerformanceMonitorInstaller
 
             bool automatedMode = args.Length > 0;
             bool reinstallMode = args.Any(a => a.Equals("--reinstall", StringComparison.OrdinalIgnoreCase));
+            bool repairMode = args.Any(a => a.Equals("--repair", StringComparison.OrdinalIgnoreCase));
             bool uninstallMode = args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase));
+
+            /*
+            --repair means "restore the objects, destroy nothing". Pairing it with a mode that drops the
+            database is a contradiction, and the destructive mode would otherwise win silently: --uninstall
+            is dispatched further down BEFORE any repair logic, and in automated mode it skips its own
+            confirmation. So both destructive companions are rejected here, not just --reinstall -- the
+            --uninstall gap was the parity hole in only guarding one of them.
+            */
+            if (repairMode && reinstallMode)
+            {
+                WriteError("--repair and --reinstall are mutually exclusive: --reinstall drops the database, leaving nothing to repair.");
+                return (int)InstallationResultCode.InvalidArguments;
+            }
+            if (repairMode && uninstallMode)
+            {
+                WriteError("--repair and --uninstall are mutually exclusive: --uninstall drops the database, leaving nothing to repair.");
+                return (int)InstallationResultCode.InvalidArguments;
+            }
             bool resetSchedule = args.Any(a => a.Equals("--reset-schedule", StringComparison.OrdinalIgnoreCase));
             bool troubleshootMode = args.Any(a => a.Equals("--troubleshoot", StringComparison.OrdinalIgnoreCase));
             bool trustCert = args.Any(a => a.Equals("--trust-cert", StringComparison.OrdinalIgnoreCase));
@@ -318,6 +365,20 @@ namespace PerformanceMonitorInstaller
                     {
                         Console.WriteLine("Error: Password is required for SQL Server Authentication.");
                         Console.WriteLine("Provide password as third argument or set PM_SQL_PASSWORD environment variable.");
+
+                        /*
+                        The common trap: a password that begins with "--" (e.g. "--h7!x") is indistinguishable
+                        from a flag, so the positional filter above dropped it and we landed here reporting
+                        "no password" for a password that WAS supplied. Only say so when a "--"-token that is
+                        not a recognized flag actually appeared -- otherwise this is just a forgotten password.
+                        */
+                        if (HasUnrecognizedDoubleDashArg(args))
+                        {
+                            Console.WriteLine();
+                            Console.WriteLine("Note: an argument beginning with \"--\" was treated as a flag and ignored. A password");
+                            Console.WriteLine("      cannot be passed on the command line if it starts with \"--\"; set PM_SQL_PASSWORD.");
+                        }
+
                         return (int)InstallationResultCode.InvalidArguments;
                     }
 
@@ -612,6 +673,8 @@ namespace PerformanceMonitorInstaller
             bool installationSuccessful = false;
             bool retry;
             DateTime installationStartTime = DateTime.Now;
+            /* Declared out here so the history write below can tell what version the database is still at. */
+            string? currentVersion = null;
             do
             {
                 retry = false;
@@ -622,6 +685,8 @@ namespace PerformanceMonitorInstaller
                 installationErrors.Clear();
                 installationSuccessful = false;
                 installationStartTime = DateTime.Now;
+                /* Reset with its siblings so a clean-install iteration can never reuse the prior one's version. */
+                currentVersion = null;
 
                 /*
                 Ask about clean install (automated mode preserves database unless --reinstall flag is used)
@@ -646,6 +711,26 @@ namespace PerformanceMonitorInstaller
                     Console.Write("Drop existing PerformanceMonitor database if it exists? (Y/N, default N): ");
                     string? cleanInstall = Console.ReadLine();
                     dropExisting = cleanInstall?.Trim().Equals("Y", StringComparison.OrdinalIgnoreCase) ?? false;
+                }
+
+                /*
+                Validate this binary's OWN version BEFORE the clean-install branch, not inside the upgrade
+                one. It is what a FRESH install writes to installation_history.installer_version, so
+                letting an unparseable value through poisons a brand-new server's ledger at birth -- after
+                which both this installer and the Dashboard refuse to touch it ever again. --reinstall IS
+                a fresh install, so scoping this to the upgrade path missed the exact case it names.
+                */
+                if (ScriptProvider.TryParseVersionCore(version) == null)
+                {
+                    Console.WriteLine();
+                    WriteError($"This installer reports its own version as '{version}', which is not a valid version.");
+                    Console.WriteLine("Aborting: an install would record that value as the server's version.");
+                    Console.WriteLine("This is a build problem, not a problem with the server.");
+                    if (!automatedMode)
+                    {
+                        WaitForExit();
+                    }
+                    return (int)InstallationResultCode.VersionCheckFailed;
                 }
 
                 if (dropExisting)
@@ -682,7 +767,6 @@ namespace PerformanceMonitorInstaller
                 /*
                 Upgrade mode - check for existing installation and apply upgrades
                 */
-                string? currentVersion = null;
                 try
                 {
                     currentVersion = await InstallationService.GetInstalledVersionAsync(connectionString, throwOnError: true).ConfigureAwait(false);
@@ -714,10 +798,100 @@ namespace PerformanceMonitorInstaller
                     return (int)InstallationResultCode.VersionCheckFailed;
                 }
 
-                if (currentVersion != null)
+                /*
+                Same decision the Dashboard makes -- shared via InstallGuard so the two cannot drift, and
+                pinned by tests that actually run in CI. --repair skips ExecuteAllUpgradesAsync, which is
+                the only thing that would otherwise parse the recorded version before writing it straight
+                back, and the newer-than-us case produces zero hops AND zero failures, so nothing
+                downstream catches it. Repair is no exception -- it runs the same install scripts.
+                */
+                switch (InstallGuard.Check(currentVersion, version))
+                {
+                    case InstallBlock.UnreadableBuildVersion:
+                        /* Also checked above, before the clean-install branch. Handled here so the switch
+                           is exhaustive and cannot silently fall through if that check ever moves. */
+                        Console.WriteLine();
+                        WriteError($"This installer reports its own version as '{version}', which is not a valid version.");
+                        Console.WriteLine("Aborting: an install would record that value as the server's version.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+
+                    case InstallBlock.UnreadableInstalledVersion:
+                        Console.WriteLine();
+                        WriteError($"The version recorded on this server ('{currentVersion}') is not a valid version.");
+                        Console.WriteLine("Aborting: without a comparable version we cannot tell which migrations still need to run.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+
+                    case InstallBlock.InstalledIsNewerThanBuild:
+                        Console.WriteLine();
+                        WriteError($"Installed version v{currentVersion} is newer than this installer (v{version}).");
+                        Console.WriteLine("Aborting: running an older installer over a newer database would revert its objects to");
+                        Console.WriteLine("the older definitions and record it at the lower version. Use a matching or newer installer.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+
+                    case InstallBlock.None:
+                        break;
+
+                    default:
+                        /*
+                        Never default to "safe to install". A new InstallBlock member silently becoming an
+                        allow is the one failure mode this whole guard exists to prevent.
+                        */
+                        Console.WriteLine();
+                        WriteError($"Unhandled install-guard result. Aborting rather than assuming it is safe.");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.VersionCheckFailed;
+                }
+
+                /*
+                Refuse to repair what is not there. Falling through would run a FULL fresh install and
+                stamp the target version -- a whole new database and Agent jobs on a mistyped server, and,
+                if the database exists but its history table does not, a target-version stamp that strands
+                every migration in between. An operator who typed --repair asked for the opposite.
+                */
+                if (repairMode && currentVersion == null)
                 {
                     Console.WriteLine();
-                    Console.WriteLine($"Existing installation detected: v{currentVersion}");
+                    WriteError("--repair found no existing PerformanceMonitor installation to repair on this server.");
+                    Console.WriteLine("Repair reinstalls the objects of an existing installation; it will not create one.");
+                    Console.WriteLine("Re-run without --repair to install, or check the server name.");
+                    if (!automatedMode)
+                    {
+                        WaitForExit();
+                    }
+                    return (int)InstallationResultCode.VersionCheckFailed;
+                }
+
+                if (currentVersion != null && repairMode)
+                {
+                    /*
+                    Repair reinstalls the schema objects (install scripts are idempotent) without
+                    running migrations, so a hop that failed on a missing or damaged object can be
+                    recovered without dropping the database. The pending upgrade runs afterwards.
+                    */
+                    Console.WriteLine();
+                    Console.WriteLine(DescribeInstalledVersion(currentVersion));
+                    Console.WriteLine("Repair mode: skipping upgrade scripts. Objects will be reinstalled at their");
+                    Console.WriteLine("current definitions; the pending upgrade still needs to run afterwards.");
+                }
+                else if (currentVersion != null)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine(DescribeInstalledVersion(currentVersion));
                     Console.WriteLine("Checking for applicable upgrades...");
 
                     var (upgSuccessCount, upgFailureCount, upgradeCount) =
@@ -735,25 +909,30 @@ namespace PerformanceMonitorInstaller
                     {
                         Console.WriteLine();
                         Console.WriteLine($"Upgrades complete: {upgradeSuccessCount} succeeded, {upgradeFailureCount} failed");
-
-                        /*Abort if any upgrade scripts failed -- proceeding would reinstall over a partially-upgraded database*/
-                        if (upgradeFailureCount > 0)
-                        {
-                            Console.WriteLine();
-                            Console.WriteLine("================================================================================");
-                            WriteError("Installation aborted: upgrade scripts must succeed before installation can proceed.");
-                            Console.WriteLine("Fix the errors above and re-run the installer.");
-                            Console.WriteLine("================================================================================");
-                            if (!automatedMode)
-                            {
-                                WaitForExit();
-                            }
-                            return (int)InstallationResultCode.UpgradesFailed;
-                        }
                     }
-                    else
+                    else if (upgradeFailureCount == 0)
                     {
                         Console.WriteLine("No pending upgrades found.");
+                    }
+
+                    /*
+                    Abort if any upgrade failed -- proceeding would reinstall over a partially-upgraded
+                    database. Checked outside the upgradeCount block because discovery itself can fail
+                    before any hop runs (an unreadable installed version reports a failure with an
+                    upgrade count of zero), and that must not read as "no pending upgrades".
+                    */
+                    if (upgradeFailureCount > 0)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine("================================================================================");
+                        WriteError("Installation aborted: upgrade scripts must succeed before installation can proceed.");
+                        Console.WriteLine("Fix the errors above and re-run the installer.");
+                        Console.WriteLine("================================================================================");
+                        if (!automatedMode)
+                        {
+                            WaitForExit();
+                        }
+                        return (int)InstallationResultCode.UpgradesFailed;
                     }
                 }
                 else
@@ -964,26 +1143,74 @@ namespace PerformanceMonitorInstaller
             */
             totalSuccessCount = upgradeSuccessCount + installSuccessCount;
             totalFailureCount = upgradeFailureCount + installFailureCount;
-            installationSuccessful = totalFailureCount == 0;
+
+            /*
+            A repair on a database with pending migrations is EXPECTED to fail some install files, and
+            that is not a failed repair. The install scripts compile against the CURRENT schema -- e.g.
+            install/23_process_blocked_process_xml.sql reads collect.blocking_BlockedProcessReport.monitor_loop,
+            a column the 3.0.0-to-3.1.0 migration adds -- and ALTER PROCEDURE binds columns at compile
+            time, so those procedures cannot compile until the upgrade runs (Msg 207). A failed
+            CREATE OR ALTER leaves the old body intact, so nothing is damaged, and the upgrade's own
+            install pass recompiles them.
+
+            Reporting that as PartialInstallation (exit 4) is actively dangerous: a script gating on
+            %ERRORLEVEL% treats a good repair as a failure, and the operator reading "repair failed"
+            reaches for --reinstall, which DROPS the database -- the exact destructive outcome this
+            feature exists to avoid. A critical file (01_/02_/03_) failing is different: that aborts the
+            whole pass, so the repair reinstalled nothing and really did fail.
+            */
+            bool repairRan = repairMode && currentVersion != null;
+
+            /*
+            Shared with the Dashboard so the two cannot drift -- see RepairOutcome. A critical file
+            failing already returned CriticalScriptFailed above, so it cannot reach here; pass false.
+            */
+            bool repairFailuresExcused = RepairOutcome.FailuresAreExpected(
+                repairRan,
+                currentVersion,
+                version,
+                criticalFileFailed: false);
+
+            installationSuccessful = totalFailureCount == 0 || repairFailuresExcused;
 
             /*
             Log installation history to database
             */
-            try
+            /*
+            A repair reinstalls objects without running migrations, so it must NOT record the target
+            version -- that would strand every pending hop, which is exactly what the upgrade abort
+            above exists to prevent.
+
+            It writes NO history row at all. A repair changes no version, and installation_history is
+            the version ledger -- echoing back a version we merely READ is how a guess becomes a fact.
+            Concretely: GetInstalledVersionAsync returns the unknown sentinel as a #538 fallback when the database
+            exists but has no SUCCESS row, meaning "unknown, try every upgrade". Persisting that as a
+            SUCCESS row would turn the guess into truth. Writing nothing leaves the previous row as the
+            version of record, so the pending upgrade is still offered afterwards.
+            */
+            if (repairMode && currentVersion != null)
             {
-                await InstallationService.LogInstallationHistoryAsync(
-                    connectionString,
-                    version,
-                    infoVersion,
-                    installationStartTime,
-                    totalSuccessCount,
-                    totalFailureCount,
-                    installationSuccessful
-                ).ConfigureAwait(false);
+                Console.WriteLine();
+                Console.WriteLine("Repair does not change the recorded version, so no installation history row was written.");
             }
-            catch (Exception ex)
+            else
             {
-                Console.WriteLine($"Warning: Could not log installation history: {ex.Message}");
+                try
+                {
+                    await InstallationService.LogInstallationHistoryAsync(
+                        connectionString,
+                        version,
+                        infoVersion,
+                        installationStartTime,
+                        totalSuccessCount,
+                        totalFailureCount,
+                        installationSuccessful
+                    ).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Could not log installation history: {ex.Message}");
+                }
             }
 
             Console.WriteLine();
@@ -991,7 +1218,25 @@ namespace PerformanceMonitorInstaller
             Console.WriteLine("Installation Summary");
             Console.WriteLine("================================================================================");
 
-            if (installationSuccessful)
+            if (repairFailuresExcused && totalFailureCount > 0)
+            {
+                /*
+                A repair with a pending upgrade exits 0 -- but it did NOT install cleanly, and saying
+                "Installation completed successfully! / All collector stored procedures" over N procedures
+                that demonstrably failed to compile is a lie the very next paragraph contradicts. The exit
+                code is the contract for scripts; the banner is for the human, and the human needs the truth.
+
+                Gated on there BEING failures: repairFailuresExcused only means "if it failed, that is
+                expected", so a clean repair is still a clean install and gets the ordinary banner.
+                */
+                WriteWarning($"Repair completed with {totalFailureCount} expected error(s).");
+                Console.WriteLine();
+                Console.WriteLine("Those errors are expected: the install scripts compile against the CURRENT");
+                Console.WriteLine("schema, and this server's pending upgrade has not run yet, so a few procedures");
+                Console.WriteLine("cannot compile until it does. A failed CREATE OR ALTER leaves the previous");
+                Console.WriteLine("definition intact -- nothing was damaged, and the upgrade recompiles them.");
+            }
+            else if (installationSuccessful)
             {
                 WriteSuccess("Installation completed successfully!");
                 Console.WriteLine();
@@ -1015,6 +1260,58 @@ namespace PerformanceMonitorInstaller
             {
                 WriteWarning($"Installation completed with {totalFailureCount} error(s).");
                 Console.WriteLine("Review errors above and check PerformanceMonitor.config.collection_log for details.");
+            }
+
+            /*
+            The repair handoff. Without it the operator is told "N error(s), review errors above" with no
+            next step and reaches for --reinstall, which drops the database.
+            */
+            if (repairRan)
+            {
+                /*
+                Keyed on HasPendingUpgrade, NOT on FailuresAreExpected. They answer different questions,
+                and they disagree for the unknown sentinel: an unreadable version cannot excuse a file
+                failure, but it absolutely can have every hop pending. Reusing the one flag printed
+                "already at the current version, so there is no upgrade to apply" two lines under
+                "still at v1.0.0" -- for a server with eleven migrations waiting.
+                */
+                bool versionUnknown = RepairOutcome.IsVersionUnknown(currentVersion);
+                bool pendingUpgrade = RepairOutcome.HasPendingUpgrade(currentVersion, version);
+
+                Console.WriteLine();
+                Console.WriteLine("================================================================================");
+
+                if (versionUnknown)
+                {
+                    Console.WriteLine("Repair complete. No version was recorded.");
+                    Console.WriteLine("This server's recorded version could not be read, so it is unknown which migrations");
+                    Console.WriteLine("have run.");
+                    if (totalFailureCount > 0)
+                    {
+                        Console.WriteLine($"{totalFailureCount} object(s) failed. Some may simply be waiting on a migration.");
+                    }
+                    Console.WriteLine();
+                    Console.WriteLine("Next: re-run WITHOUT --repair to attempt every upgrade, then re-check.");
+                }
+                else if (pendingUpgrade)
+                {
+                    Console.WriteLine($"Repair complete. This server is still at v{currentVersion} and no version was recorded.");
+                    if (totalFailureCount > 0)
+                    {
+                        Console.WriteLine($"{totalFailureCount} object(s) could not be compiled because the pending upgrade has not");
+                        Console.WriteLine("run yet. This is expected -- they reference columns the upgrade adds, and the");
+                        Console.WriteLine("upgrade will recompile them.");
+                    }
+                    Console.WriteLine();
+                    Console.WriteLine("Next: re-run WITHOUT --repair to apply the pending upgrade.");
+                }
+                else
+                {
+                    Console.WriteLine($"Repair complete. This server is at v{currentVersion} and no version was recorded.");
+                    Console.WriteLine("It was already at the current version, so there is no upgrade to apply.");
+                }
+
+                Console.WriteLine("================================================================================");
             }
 
             /*
@@ -1337,6 +1634,40 @@ namespace PerformanceMonitorInstaller
         {
             var invalid = Path.GetInvalidFileNameChars();
             return string.Concat(input.Select(c => invalid.Contains(c) ? '_' : c));
+        }
+
+        /*
+        The flags the positional-argument filter knows to skip. Kept only to DIAGNOSE the dropped-password
+        trap: a "--"-token that is not one of these was almost certainly a value the filter silently ate.
+        If a new flag is added and not listed here, the only cost is a spurious hint in an error path -- so
+        this is a diagnostic aid, not a parsing authority (the actual flag handling matches each flag by
+        name inline in Main).
+        */
+        private static readonly string[] RecognizedFlags =
+        {
+            "--data-path", "--encrypt", "--entra", "--help", "--log-path", "--managed-identity",
+            "--reinstall", "--repair", "--reset-schedule", "--service-principal", "--troubleshoot",
+            "--trust-cert", "--uninstall"
+        };
+
+        private static bool HasUnrecognizedDoubleDashArg(string[] args)
+        {
+            foreach (string arg in args)
+            {
+                if (!arg.StartsWith("--", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                /* Compare the flag name only, so the --flag=value form is matched too. */
+                string flagName = arg.Split('=')[0];
+                if (!RecognizedFlags.Contains(flagName, StringComparer.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /*

@@ -116,6 +116,145 @@ public class UpgradeOrderingTests
         Assert.Empty(upgrades);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void BlankCurrentVersion_ReturnsEmpty(string currentVersion)
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        var upgrades = ScriptProvider.FromDirectory(dir.RootPath).GetApplicableUpgrades(currentVersion, "2.2.0");
+
+        Assert.Empty(upgrades);
+    }
+
+    [Theory]
+    [InlineData("Unreachable")]
+    [InlineData("Not installed")]
+    [InlineData("2.x")]
+    public void UnparseableCurrentVersion_Throws(string currentVersion)
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        var provider = ScriptProvider.FromDirectory(dir.RootPath);
+
+        // An empty result means "no upgrades needed". If a status string silently produced one,
+        // every migration would be skipped and the caller would still stamp the DB as current.
+        var ex = Assert.Throws<ArgumentException>(
+            () => provider.GetApplicableUpgrades(currentVersion, "2.2.0"));
+
+        Assert.Equal("currentVersion", ex.ParamName);
+    }
+
+    [Theory]
+    [InlineData("2.2.0-rc1")]
+    [InlineData("2.2.0+abc123")]
+    [InlineData("2.2.0-rc1+abc123")]
+    public void SemVerSuffixOnTargetVersion_IsStripped(string targetVersion)
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql")
+            .WithUpgrade("2.1.0", "2.2.0", "01_compress.sql");
+
+        // A pre-release <InformationalVersion> must not make every upgrade abort. Without the
+        // suffix strip, "2.2.0-rc1" fails to parse and throws.
+        var upgrades = ScriptProvider.FromDirectory(dir.RootPath).GetApplicableUpgrades("2.0.0", targetVersion);
+
+        Assert.Equal(2, upgrades.Count);
+    }
+
+    [Fact]
+    public void TwoPartVersion_IsTreatedAsThreePart()
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql")
+            .WithUpgrade("2.1.0", "2.2.0", "01_compress.sql");
+
+        // Version.TryParse("2.0") leaves Build == -1, which the Version(int,int,int) ctor rejects.
+        var upgrades = ScriptProvider.FromDirectory(dir.RootPath).GetApplicableUpgrades("2.0", "2.2");
+
+        Assert.Equal(2, upgrades.Count);
+    }
+
+    [Fact]
+    public void UnparseableTargetVersion_Throws()
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        var provider = ScriptProvider.FromDirectory(dir.RootPath);
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => provider.GetApplicableUpgrades("2.0.0", "not-a-version"));
+
+        Assert.Equal("targetVersion", ex.ParamName);
+    }
+
+    [Theory]
+    [InlineData("3.1.0", 3, 1, 0)]
+    [InlineData("3.1.0.4", 3, 1, 0)]
+    [InlineData("3.1", 3, 1, 0)]
+    [InlineData("3.2.0-rc1", 3, 2, 0)]
+    [InlineData("3.2.0+abc123", 3, 2, 0)]
+    [InlineData("3.2.0-rc1+abc123", 3, 2, 0)]
+    [InlineData("  3.2.0  ", 3, 2, 0)]
+    public void TryParseVersionCore_ParsesRealVersions(string input, int major, int minor, int build)
+    {
+        Assert.Equal(new Version(major, minor, build), ScriptProvider.TryParseVersionCore(input));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("Unreachable")]
+    [InlineData("Not installed")]
+    [InlineData("v1.2.3")]
+    [InlineData("-rc1")]
+    [InlineData("+sha")]
+    public void TryParseVersionCore_ReturnsNullRatherThanThrowing(string? input)
+    {
+        // Callers that need to DECIDE something about a version (is it newer than me? is it
+        // readable?) must get null, not an exception -- unlike FilterUpgrades, which throws.
+        Assert.Null(ScriptProvider.TryParseVersionCore(input));
+    }
+
+    [Fact]
+    public void TryParseVersionCore_OrdersNewerAboveOlder()
+    {
+        // This comparison is what stops an older installer from running over a newer database and
+        // recording the lower version as SUCCESS -- a silent downgrade that produces zero hops and
+        // zero failures, so nothing else catches it.
+        var installed = ScriptProvider.TryParseVersionCore("3.2.0");
+        var binary = ScriptProvider.TryParseVersionCore("3.1.0.0");
+
+        Assert.True(installed > binary);
+    }
+
+    [Fact]
+    public async Task ExecuteAllUpgrades_UnreadableVersion_ReportsFailureRatherThanSkipping()
+    {
+        using var dir = new TempDirectoryBuilder()
+            .WithUpgrade("2.0.0", "2.1.0", "01_columns.sql");
+
+        // Callers abort when totalFailureCount > 0. Returning (0, 0, 0) here would read as
+        // "nothing to upgrade", and the caller would go on to stamp the database as current at
+        // the target version -- stranding every skipped hop. The connection string is never used:
+        // discovery fails before any database work.
+        var (successCount, failureCount, upgradeCount) = await InstallationService.ExecuteAllUpgradesAsync(
+            ScriptProvider.FromDirectory(dir.RootPath),
+            "Server=unused;Database=unused;",
+            "Unreachable",
+            "2.2.0",
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, successCount);
+        Assert.Equal(1, failureCount);
+        Assert.Equal(0, upgradeCount);
+    }
+
     [Fact]
     public void OrderedByFromVersion()
     {
