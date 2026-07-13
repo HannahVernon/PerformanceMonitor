@@ -123,7 +123,10 @@ public partial class ServerTab : UserControl
             case 11: await RefreshConfigurationAsync(hoursBack, fromDate, toDate); break;
             case 12: await RefreshDailySummaryAsync(hoursBack, fromDate, toDate); break;
             case 13: await RefreshLatchSpinlockAsync(hoursBack, fromDate, toDate); break;
-            case 14: await RefreshCollectionHealthAsync(hoursBack, fromDate, toDate); break;
+            case 14: await RefreshCpuSchedulerAsync(hoursBack, fromDate, toDate); break;
+            case 15: await RefreshPlanCacheAsync(hoursBack, fromDate, toDate); break;
+            case 16: await RefreshSessionStatsAsync(hoursBack, fromDate, toDate); break;
+            case 17: await RefreshCollectionHealthAsync(hoursBack, fromDate, toDate); break;
         }
     }
 
