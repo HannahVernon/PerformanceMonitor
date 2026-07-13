@@ -63,14 +63,7 @@ namespace PerformanceMonitorDashboard
             await Task.WhenAll(tasks);
         }
 
-        private static string NormalizeVersion(string version)
-        {
-            int plusIndex = version.IndexOf('+');
-            string trimmed = plusIndex >= 0 ? version[..plusIndex] : version;
-            return Version.TryParse(trimmed, out var v)
-                ? new Version(v.Major, v.Minor, v.Build).ToString()
-                : trimmed;
-        }
+        private static string NormalizeVersion(string version) => VersionText.Normalize(version);
 
         private void ServersDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
@@ -260,24 +253,13 @@ namespace PerformanceMonitorDashboard
                 string appVersion = Assembly.GetExecutingAssembly()
                     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                     ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
-                /* Strip git hash suffix if present (e.g., "2.5.0+abc123" → "2.5.0") */
-                int plusIndex = appVersion.IndexOf('+');
-                if (plusIndex >= 0) appVersion = appVersion[..plusIndex];
 
-                /* Normalize both to 3-part for comparison */
-                string Normalize(string v)
-                {
-                    if (Version.TryParse(v, out var parsed))
-                        return new Version(parsed.Major, parsed.Minor, parsed.Build).ToString();
-                    return v;
-                }
+                string normalizedInstalled = VersionText.Normalize(installedVersion);
+                string normalizedApp = VersionText.Normalize(appVersion);
 
-                string normalizedInstalled = Normalize(installedVersion);
-                string normalizedApp = Normalize(appVersion);
-
-                if (Version.TryParse(normalizedInstalled, out var installed) &&
-                    Version.TryParse(normalizedApp, out var app) &&
-                    installed < app)
+                Version? installed = VersionText.Parse(installedVersion);
+                Version? app = VersionText.Parse(appVersion);
+                if (installed != null && app != null && installed < app)
                 {
                     var result = MessageBox.Show(
                         $"'{server.DisplayNameWithIntent}' has v{normalizedInstalled} installed.\n\nv{normalizedApp} is available. Open the server editor to upgrade?",
