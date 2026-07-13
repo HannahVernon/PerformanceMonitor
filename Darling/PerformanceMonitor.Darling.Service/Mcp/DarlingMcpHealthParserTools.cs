@@ -27,7 +27,7 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 /// the Dashboard reads its server-side-parsed <c>collect.HealthParser_*</c> tables, these PARSE ON READ: the
 /// raw <c>system_health_events</c> the collector captured are shredded by the shared
 /// <see cref="SystemHealthParser"/> (PerformanceMonitor.Common — reused, NOT re-implemented) and gated by
-/// <see cref="DarlingSystemHealthSignificance"/>, exactly as the viewer's System Events tab does. The
+/// <see cref="SystemHealthSignificance"/>, exactly as the viewer's System Events tab does. The
 /// result is the same SIGNIFICANT warning set the Dashboard surfaces (its collector runs sp_HealthParser at
 /// <c>@warnings_only = 1</c>); System Health is the one UNGATED category (its corruption/contention counter
 /// series plots every snapshot, matching the viewer's <c>GetSystemHealthAsync</c>).
@@ -117,7 +117,7 @@ public sealed class DarlingMcpHealthParserTools
 
             var rows = xmls
                 .Select(SystemHealthParser.ParseSevereError)
-                .Where(r => r != null && DarlingSystemHealthSignificance.IsSignificant(r))
+                .Where(r => r != null && SystemHealthSignificance.IsSignificant(r))
                 .Select(r => r!)
                 .ToList();
             if (rows.Count == 0) return McpHelpers.Status("empty", "No severe errors found in the requested time range.");
@@ -156,7 +156,7 @@ public sealed class DarlingMcpHealthParserTools
             var c = await CollectAsync(postgres, server_name, hours_back, limit,
                 SystemHealthParser.SpServerDiagnosticsEvent,
                 SystemHealthParser.ParseIoIssues,
-                DarlingSystemHealthSignificance.IsSignificant);
+                SystemHealthSignificance.IsSignificant);
             if (c.EarlyReturn != null) return c.EarlyReturn;
             if (c.Rows.Count == 0) return McpHelpers.Status("empty", "No I/O issues found in the requested time range.");
 
@@ -193,7 +193,7 @@ public sealed class DarlingMcpHealthParserTools
             var c = await CollectAsync(postgres, server_name, hours_back, limit,
                 SystemHealthParser.SchedulerMonitorEvent,
                 xml => One(SystemHealthParser.ParseSchedulerIssue(xml)),
-                DarlingSystemHealthSignificance.IsSignificant);
+                SystemHealthSignificance.IsSignificant);
             if (c.EarlyReturn != null) return c.EarlyReturn;
             if (c.Rows.Count == 0) return McpHelpers.Status("empty", "No scheduler issues found in the requested time range.");
 
@@ -232,7 +232,7 @@ public sealed class DarlingMcpHealthParserTools
             var c = await CollectAsync(postgres, server_name, hours_back, limit,
                 SystemHealthParser.SpServerDiagnosticsEvent,
                 xml => One(SystemHealthParser.ParseMemoryConditions(xml)),
-                DarlingSystemHealthSignificance.IsSignificant);
+                SystemHealthSignificance.IsSignificant);
             if (c.EarlyReturn != null) return c.EarlyReturn;
             if (c.Rows.Count == 0) return McpHelpers.Status("empty", "No memory condition events found in the requested time range.");
 
@@ -294,7 +294,7 @@ public sealed class DarlingMcpHealthParserTools
             var c = await CollectAsync(postgres, server_name, hours_back, limit,
                 SystemHealthParser.SpServerDiagnosticsEvent,
                 xml => One(SystemHealthParser.ParseCpuTasks(xml)),
-                DarlingSystemHealthSignificance.IsSignificant);
+                SystemHealthSignificance.IsSignificant);
             if (c.EarlyReturn != null) return c.EarlyReturn;
             if (c.Rows.Count == 0) return McpHelpers.Status("empty", "No CPU task events found in the requested time range.");
 
@@ -335,7 +335,7 @@ public sealed class DarlingMcpHealthParserTools
             var c = await CollectAsync(postgres, server_name, hours_back, limit,
                 SystemHealthParser.MemoryBrokerEvent,
                 xml => One(SystemHealthParser.ParseMemoryBroker(xml)),
-                DarlingSystemHealthSignificance.IsSignificant);
+                SystemHealthSignificance.IsSignificant);
             if (c.EarlyReturn != null) return c.EarlyReturn;
             if (c.Rows.Count == 0) return McpHelpers.Status("empty", "No memory broker events found in the requested time range.");
 
@@ -380,7 +380,7 @@ public sealed class DarlingMcpHealthParserTools
             var c = await CollectAsync(postgres, server_name, hours_back, limit,
                 SystemHealthParser.MemoryNodeOomEvent,
                 xml => One(SystemHealthParser.ParseMemoryNodeOom(xml)),
-                DarlingSystemHealthSignificance.IsSignificant);
+                SystemHealthSignificance.IsSignificant);
             if (c.EarlyReturn != null) return c.EarlyReturn;
             if (c.Rows.Count == 0) return McpHelpers.Status("empty", "No memory node OOM events found in the requested time range.");
 
@@ -438,7 +438,7 @@ public sealed class DarlingMcpHealthParserTools
     /// <paramref name="eventType"/> over the window, shreds each blob with <paramref name="shred"/> (the
     /// reused <see cref="SystemHealthParser"/> — 0..n records per event), and keeps only the rows
     /// <paramref name="significant"/> accepts. The seven gated categories pass their
-    /// <see cref="DarlingSystemHealthSignificance"/> predicate; System Health passes an EventTime-present
+    /// <see cref="SystemHealthSignificance"/> predicate; System Health passes an EventTime-present
     /// predicate (ungated, matching the viewer's chart read).
     /// </summary>
     private static async Task<Collected<T>> CollectAsync<T>(

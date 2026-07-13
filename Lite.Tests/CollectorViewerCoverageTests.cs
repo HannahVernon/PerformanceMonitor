@@ -46,15 +46,12 @@ public sealed class CollectorViewerCoverageTests
     ///
     /// Note: <c>session_stats</c> is deliberately NOT here — despite lacking a dedicated "Session Stats"
     /// tab, its <c>v_session_stats</c> view IS read by the FinOps workload and server-info readers, so it
-    /// has a consumer. The genuinely-unread session table is <c>session_summary_stats</c>.
+    /// has a consumer. The server-wide summary table <c>session_summary_stats</c> now has its own Session
+    /// Stats tab + reader (as do <c>cpu_scheduler_stats</c> and <c>plan_cache_stats</c>), so those three
+    /// shipped and were removed from this list — only the System Events pair remains unbuilt.
     /// </summary>
     private static readonly HashSet<string> KnownStoreOnlyOrUnbuiltTables = new(StringComparer.OrdinalIgnoreCase)
     {
-        "latch_stats",           // UNBUILT UI (parity board Tier 1) -- remove when the Latches & Spinlocks tab ships
-        "spinlock_stats",        // UNBUILT UI (parity board Tier 1) -- remove when the Latches & Spinlocks tab ships
-        "cpu_scheduler_stats",   // UNBUILT UI (parity board Tier 1) -- remove when the CPU Scheduler split ships
-        "plan_cache_stats",      // UNBUILT UI (parity board Tier 1) -- remove when the Plan Cache sub-tab ships
-        "session_summary_stats", // UNBUILT UI (parity board Tier 1) -- remove when the session-summary (idle/leak) surface ships
         "system_health_events",  // UNBUILT UI (parity board Tier 1) -- remove when the System Events tab ships
         "default_trace_events",  // UNBUILT UI (parity board Tier 1) -- remove when the System Events / default-trace lane ships
     };
