@@ -18,6 +18,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Storage;
 
 namespace PerformanceMonitor.Darling.Service;
@@ -406,9 +407,14 @@ public sealed class DarlingCollectorRunner
     {
         var targetDb = new SqlConnectionStringBuilder(server.ConnectionString).InitialCatalog;
 
-        if (IsMasterProbeThrottled(server.ServerId))
+        /* Skip the throttle when there is nothing to fall back TO — see Lite's twin. With no target
+           database the fallback can only throw, so honouring the throttle would guarantee 15 minutes
+           of failure without ever attempting to recover. */
+        var hasFallback = SingleDbOrEmpty(targetDb).Count > 0;
+
+        if (hasFallback && IsMasterProbeThrottled(server.ServerId))
         {
-            return FallbackDatabaseList(server, targetDb, reason: "master previously inaccessible");
+            return FallbackDatabaseList(server, targetDb, reason: "master previously inaccessible", quiet: true);
         }
 
         var masterConnectionString = new SqlConnectionStringBuilder(server.ConnectionString)
@@ -441,7 +447,7 @@ public sealed class DarlingCollectorRunner
             _azureMasterInaccessibleSince.TryRemove(server.ServerId, out _);
             return databases;
         }
-        catch (SqlException ex) when (IsMasterAccessDeniedError(ex))
+        catch (SqlException ex) when (IsMasterAccessDeniedError(ex.Number))
         {
             _azureMasterInaccessibleSince[server.ServerId] = DateTime.UtcNow;
 
@@ -476,7 +482,11 @@ public sealed class DarlingCollectorRunner
     /// warning and an empty list, which made every one of them report success having collected zero
     /// rows. Throwing puts the failure where it can actually be seen (#1506).
     /// </summary>
-    private List<string> FallbackDatabaseList(ServerRuntime server, string? targetDb, string reason)
+    /// <param name="quiet">
+    /// Set on the throttled path, which runs for every database-scoped collector on every cycle. Only
+    /// forming the verdict is worth an Information line; re-reading it is not.
+    /// </param>
+    private List<string> FallbackDatabaseList(ServerRuntime server, string? targetDb, string reason, bool quiet = false)
     {
         var fallback = SingleDbOrEmpty(targetDb);
 
@@ -488,8 +498,17 @@ public sealed class DarlingCollectorRunner
                 $"have something to read.");
         }
 
-        _logger?.LogInformation("[{Server}] {Reason} — collecting from '{Database}' only.",
-            server.Config.DisplayName, reason, targetDb);
+        if (quiet)
+        {
+            _logger?.LogDebug("[{Server}] {Reason} — collecting from '{Database}' only.",
+                server.Config.DisplayName, reason, targetDb);
+        }
+        else
+        {
+            _logger?.LogInformation("[{Server}] {Reason} — collecting from '{Database}' only.",
+                server.Config.DisplayName, reason, targetDb);
+        }
+
         return fallback;
     }
 
@@ -519,31 +538,13 @@ public sealed class DarlingCollectorRunner
     /// trigger the single-database fallback (verbatim from Lite).
     /// </summary>
     /// <summary>
-    /// Error numbers meaning this login cannot read master on Azure SQL DB.
-    ///
-    /// These must be about the login's *rights*, never the server's *reachability*. 40613 ("not
-    /// currently available — retry later") and 40615 ("client IP is not allowed to access the
-    /// server") were on this list and are the cause of #1506: both are temporary conditions, and
-    /// treating them as a permanent verdict about master left collection degraded until restart.
-    /// A firewall rejection in particular says nothing about master — and falling back to a user
-    /// database is pointless, since the same rule blocks that connection too.
-    ///
-    /// 4060 and 18456 stay: a contained user that exists only in a user database really does get
-    /// them when opening master (#857). The verdict they produce now expires, because they can be
-    /// thrown transiently as well.
+    /// Whether this error means the login cannot read master, in which case database-scoped collectors
+    /// fall back to the connection's own catalog (#857). The list — and the reason a reachability error
+    /// must never be on it (#1506) — is owned by <see cref="SqlErrorClassification"/>, shared with Lite
+    /// so the two cannot drift. This bug reached Darling because the list was duplicated here.
     /// </summary>
-    private static bool IsMasterAccessDeniedError(SqlException ex)
-    {
-        return ex.Number switch
-        {
-            229 => true,   // Permission denied on object
-            230 => true,   // Permission denied on column
-            916 => true,   // Server principal is not able to access the database under the current security context
-            4060 => true,  // Cannot open database requested by the login
-            18456 => true, // Login failed for user
-            _ => false
-        };
-    }
+    internal static bool IsMasterAccessDeniedError(int errorNumber) =>
+        SqlErrorClassification.IsMasterAccessDenied(errorNumber);
 
     private static SqlCommand CreateCollectorCommand(CollectorQuery plan, SqlConnection connection, int commandTimeoutSeconds)
     {

@@ -88,6 +88,51 @@ public class AzureMasterFallbackTests
             "permanent master-access verdict. Pick one — see #1506.");
     }
 
+    /// <summary>
+    /// The silent half of the bug. On Azure SQL DB with no explicit database, InitialCatalog resolves
+    /// to master, and a single-database fallback list of "master" is empty — so every database-scoped
+    /// collector iterated nothing, wrote zero rows, and reported SUCCESS. The status bar read
+    /// "Collection: Running / Collectors: N OK" while absolutely nothing was being collected.
+    /// </summary>
+    [Theory]
+    [InlineData("master")] // the InitialCatalog default when no database is configured
+    [InlineData("")]
+    [InlineData(null)]
+    public void No_Database_To_Fall_Back_To_Throws_Rather_Than_Collecting_Nothing(string? targetDb)
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => RemoteCollectorService.FallbackDatabaseList(Server(), targetDb, reason: "master DB inaccessible"));
+
+        /* The message has to tell them what to actually do about it. */
+        Assert.Contains("Set a Database", ex.Message);
+    }
+
+    /// <summary>
+    /// RunCollectorAsync catches InvalidOperationException TWICE: once filtered on
+    /// `ex.Message.Contains("MFA authentication cancelled")` — which records the benign status
+    /// SKIPPED — and once in the general handler, which records ERROR. If the new throw's wording
+    /// ever drifted into matching that filter, the failure would be logged as a routine skip and the
+    /// silence this fix exists to break would come straight back.
+    /// </summary>
+    [Fact]
+    public void Throw_Is_Not_Mistaken_For_An_Mfa_Cancellation()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => RemoteCollectorService.FallbackDatabaseList(Server(), "master", reason: "master DB inaccessible"));
+
+        Assert.DoesNotContain("MFA authentication cancelled", ex.Message);
+    }
+
+    [Fact]
+    public void A_Configured_Database_Is_Used_As_The_Fallback()
+    {
+        var databases = RemoteCollectorService.FallbackDatabaseList(
+            Server(), "AdventureWorks", reason: "master DB inaccessible");
+
+        /* The #857 path: master is unreadable, but the connection names a database, so collect there. */
+        Assert.Equal(new[] { "AdventureWorks" }, databases);
+    }
+
     [Fact]
     public void Fresh_Verdict_Suppresses_Re_Probing_Master()
     {
@@ -122,8 +167,11 @@ public class AzureMasterFallbackTests
         service.NoteServerOffline(server);
         service.NoteServerOnline(server);
 
-        /* The reporter's exact path: firewall rule restored, server answers again, and database-scoped
-           collection resumes on the next cycle instead of waiting for an app restart. */
+        /* Firewall rule restored, server answers again, verdict dropped — so database-scoped collection
+           resumes on the next cycle instead of waiting for an app restart.
+
+           This pins the offline->online RULE, not the wiring: RunDueCollectorsAsync is what calls these
+           two on the real edge, and it needs a live ServerManager + ScheduleManager to drive. */
         Assert.False(service.IsMasterProbeThrottled(serverId));
     }
 

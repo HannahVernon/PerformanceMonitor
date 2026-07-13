@@ -12,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -21,31 +22,12 @@ namespace PerformanceMonitorLite.Services;
 public static class RetryHelper
 {
     /// <summary>
-    /// SQL Server error numbers considered transient and retryable.
-    ///
-    /// Internal rather than private so tests can assert this stays disjoint from the error numbers
-    /// treated as permanent verdicts elsewhere. Calling one error both "retry this" and "give up on
-    /// this forever" is what caused issue #1506, and the invariant is easier to pin than to remember.
+    /// SQL Server error numbers considered transient and retryable. Owned by the shared
+    /// <see cref="SqlErrorClassification"/> so Lite and Darling cannot drift on it, and so it stays
+    /// provably disjoint from the errors treated as permanent verdicts — an error that means both
+    /// "retry this" and "give up forever" is exactly what caused issue #1506.
     /// </summary>
-    internal static readonly HashSet<int> TransientErrorNumbers = new()
-    {
-        -2,     // Timeout
-        -1,     // General network error
-        2,      // Timeout (alternative)
-        53,     // Named pipe / network not found
-        233,    // Connection closed
-        10053,  // Transport-level error (connection was forcibly closed)
-        10054,  // Connection reset by peer
-        10060,  // Connection timed out
-        10061,  // Connection refused
-        40143,  // Azure SQL transient
-        40197,  // Azure SQL transient - service encountered an error
-        40501,  // Azure SQL - service is currently busy
-        40613,  // Azure SQL - database not currently available
-        49918,  // Azure SQL - not enough resources to process request
-        49919,  // Azure SQL - cannot process create/update request
-        49920   // Azure SQL - cannot process request (too many operations)
-    };
+    internal static IReadOnlySet<int> TransientErrorNumbers => SqlErrorClassification.TransientErrorNumbers;
 
     /// <summary>
     /// Default maximum number of retry attempts.
