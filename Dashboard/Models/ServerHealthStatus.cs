@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Models
 {
@@ -568,12 +569,7 @@ namespace PerformanceMonitorDashboard.Models
             }
         }
 
-        private static string NormalizeVersion(string version)
-        {
-            if (Version.TryParse(version, out var parsed))
-                return new Version(parsed.Major, parsed.Minor, parsed.Build).ToString();
-            return version;
-        }
+        private static string NormalizeVersion(string version) => VersionText.Normalize(version);
 
         // Overall health - worst severity across all metrics
         public HealthSeverity OverallSeverity

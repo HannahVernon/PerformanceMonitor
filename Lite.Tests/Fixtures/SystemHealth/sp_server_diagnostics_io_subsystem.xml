@@ -1,0 +1,16 @@
+<event name="sp_server_diagnostics_component_result" package="sqlserver" timestamp="2026-07-05T12:05:00.000Z">
+  <data name="component"><type name="sql_server_diagnostics_component" package="sqlserver" /><value>4</value><text>IO_SUBSYSTEM</text></data>
+  <data name="state"><value>2</value><text>WARNING</text></data>
+  <data name="data">
+    <type name="xml" package="package0" />
+    <value>
+      <ioSubsystem ioLatchTimeouts="2" intervalLongIos="5" totalLongIos="42">
+        <longestPendingRequests>
+          <pendingRequest duration="1000" filePath="D:\data\prod.mdf" fileId="1" databaseId="6" />
+          <pendingRequest duration="500" filePath="D:\data\prod.mdf" fileId="1" databaseId="6" />
+          <pendingRequest duration="750" filePath="E:\log\prod.ldf" fileId="2" databaseId="6" />
+        </longestPendingRequests>
+      </ioSubsystem>
+    </value>
+  </data>
+</event>
