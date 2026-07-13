@@ -1172,18 +1172,13 @@ namespace PerformanceMonitorDashboard
                 string appVersion = Assembly.GetExecutingAssembly()
                     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                     ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
-                int plusIndex = appVersion.IndexOf('+');
-                if (plusIndex >= 0) appVersion = appVersion[..plusIndex];
 
-                static string Normalize(string v) =>
-                    Version.TryParse(v, out var p) ? new Version(p.Major, p.Minor, p.Build).ToString() : v;
+                string normalizedInstalled = VersionText.Normalize(installedVersion);
+                string normalizedApp = VersionText.Normalize(appVersion);
 
-                string normalizedInstalled = Normalize(installedVersion);
-                string normalizedApp = Normalize(appVersion);
-
-                if (Version.TryParse(normalizedInstalled, out var installed) &&
-                    Version.TryParse(normalizedApp, out var app) &&
-                    installed < app)
+                Version? installed = VersionText.Parse(installedVersion);
+                Version? app = VersionText.Parse(appVersion);
+                if (installed != null && app != null && installed < app)
                 {
                     var result = MessageBox.Show(
                         $"'{server.DisplayNameWithIntent}' has v{normalizedInstalled} installed.\n\nv{normalizedApp} is available. Open the server editor to upgrade?",
