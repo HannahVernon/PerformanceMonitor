@@ -54,9 +54,16 @@ public sealed class DarlingCollectorRunner
        _capturePlans, so a future live reload is honored on the NEXT cycle without rebuilding. */
     private readonly Func<bool> _collectSchemaChanges;
 
-    /* Azure SQL DB logins without master access fall back to single-database mode, cached per
-       server so master isn't retried every cycle (#857 — mirrors Lite). */
-    private readonly ConcurrentDictionary<int, bool> _azureMasterInaccessible = new();
+    /* Azure SQL DB logins without master access fall back to single-database mode, throttled per
+       server so master isn't retried every cycle (#857 — mirrors Lite).
+
+       Stores WHEN the verdict was formed, not just that it was: it expires after
+       AzureMasterRecheckInterval, and OnServerReconnected drops it outright. Both escape hatches
+       exist because this used to latch until the process was restarted, so a transient Azure error
+       could permanently demote a healthy server to single-database collection (#1506). */
+    private readonly ConcurrentDictionary<int, DateTime> _azureMasterInaccessibleSince = new();
+
+    private static readonly TimeSpan AzureMasterRecheckInterval = TimeSpan.FromMinutes(15);
 
     public const int CommandTimeoutSeconds = 60;
 
@@ -374,17 +381,34 @@ public sealed class DarlingCollectorRunner
     }
 
     /// <summary>
+    /// Drops any cached master-inaccessible verdict for a server that has just reconnected.
+    ///
+    /// Azure SQL DB reports "this login may not read master" and "you cannot reach this server right
+    /// now" with overlapping error numbers, so a verdict formed while a server was failing is not
+    /// trustworthy. The moment it answers again is the moment to discard that verdict and re-probe.
+    /// Without this, a transient outage permanently misfiles a login that CAN read master, and
+    /// database-scoped collection stays degraded until the service restarts (#1506).
+    /// </summary>
+    public void OnServerReconnected(int serverId)
+    {
+        if (_azureMasterInaccessibleSince.TryRemove(serverId, out _))
+        {
+            _logger?.LogInformation("[server_id {ServerId}] reconnected — re-probing master for database-scoped collectors.", serverId);
+        }
+    }
+
+    /// <summary>
     /// Lists databases on an Azure SQL DB logical server, mirroring Lite's #857 behavior: try
     /// master enumeration first (with the per-server exclusion filter), and on a master-access
-    /// error fall back to the connection's own database, caching that decision per server.
+    /// error fall back to the connection's own database, throttling re-probes per server.
     /// </summary>
     private async Task<List<string>> GetAzureDatabaseListAsync(ServerRuntime server, CancellationToken cancellationToken)
     {
         var targetDb = new SqlConnectionStringBuilder(server.ConnectionString).InitialCatalog;
 
-        if (_azureMasterInaccessible.TryGetValue(server.ServerId, out var knownInaccessible) && knownInaccessible)
+        if (IsMasterProbeThrottled(server.ServerId))
         {
-            return SingleDbOrEmpty(targetDb);
+            return FallbackDatabaseList(server, targetDb, reason: "master previously inaccessible");
         }
 
         var masterConnectionString = new SqlConnectionStringBuilder(server.ConnectionString)
@@ -413,25 +437,60 @@ public sealed class DarlingCollectorRunner
             {
                 databases.Add(reader.GetString(0));
             }
+
+            _azureMasterInaccessibleSince.TryRemove(server.ServerId, out _);
             return databases;
         }
         catch (SqlException ex) when (IsMasterAccessDeniedError(ex))
         {
-            _azureMasterInaccessible[server.ServerId] = true;
+            _azureMasterInaccessibleSince[server.ServerId] = DateTime.UtcNow;
 
-            var fallback = SingleDbOrEmpty(targetDb);
-            if (fallback.Count > 0)
-            {
-                _logger?.LogInformation("[{Server}] master DB inaccessible (SQL error {Number}) — collecting from '{Database}' only.",
-                    server.Config.DisplayName, ex.Number, targetDb);
-            }
-            else
-            {
-                _logger?.LogWarning("[{Server}] master DB inaccessible (SQL error {Number}) and no target database in connection string — no data will be collected for database-scoped collectors.",
-                    server.Config.DisplayName, ex.Number);
-            }
-            return fallback;
+            return FallbackDatabaseList(server, targetDb, reason: $"master DB inaccessible (SQL error {ex.Number})");
         }
+    }
+
+    /// <summary>
+    /// True while a recent master-inaccessible verdict still stands. It expires so a server whose
+    /// access was restored recovers on its own rather than staying degraded until restart (#1506).
+    /// </summary>
+    private bool IsMasterProbeThrottled(int serverId)
+    {
+        if (!_azureMasterInaccessibleSince.TryGetValue(serverId, out var deniedAt))
+        {
+            return false;
+        }
+
+        if (DateTime.UtcNow - deniedAt < AzureMasterRecheckInterval)
+        {
+            return true;
+        }
+
+        _azureMasterInaccessibleSince.TryRemove(serverId, out _);
+        return false;
+    }
+
+    /// <summary>
+    /// The database list to use when master cannot be enumerated: the connection's own catalog.
+    ///
+    /// When there isn't one, database-scoped collectors have nowhere to read from. That used to be a
+    /// warning and an empty list, which made every one of them report success having collected zero
+    /// rows. Throwing puts the failure where it can actually be seen (#1506).
+    /// </summary>
+    private List<string> FallbackDatabaseList(ServerRuntime server, string? targetDb, string reason)
+    {
+        var fallback = SingleDbOrEmpty(targetDb);
+
+        if (fallback.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"{reason}, and this connection has no target database to fall back to (it resolves to " +
+                $"master). Set a database for '{server.Config.DisplayName}' so database-scoped collectors " +
+                $"have something to read.");
+        }
+
+        _logger?.LogInformation("[{Server}] {Reason} — collecting from '{Database}' only.",
+            server.Config.DisplayName, reason, targetDb);
+        return fallback;
     }
 
     private async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerRuntime server, string databaseName, CancellationToken cancellationToken)
@@ -459,6 +518,20 @@ public sealed class DarlingCollectorRunner
     /// Error numbers indicating the login cannot open or read from master on Azure SQL DB —
     /// trigger the single-database fallback (verbatim from Lite).
     /// </summary>
+    /// <summary>
+    /// Error numbers meaning this login cannot read master on Azure SQL DB.
+    ///
+    /// These must be about the login's *rights*, never the server's *reachability*. 40613 ("not
+    /// currently available — retry later") and 40615 ("client IP is not allowed to access the
+    /// server") were on this list and are the cause of #1506: both are temporary conditions, and
+    /// treating them as a permanent verdict about master left collection degraded until restart.
+    /// A firewall rejection in particular says nothing about master — and falling back to a user
+    /// database is pointless, since the same rule blocks that connection too.
+    ///
+    /// 4060 and 18456 stay: a contained user that exists only in a user database really does get
+    /// them when opening master (#857). The verdict they produce now expires, because they can be
+    /// thrown transiently as well.
+    /// </summary>
     private static bool IsMasterAccessDeniedError(SqlException ex)
     {
         return ex.Number switch
@@ -468,8 +541,6 @@ public sealed class DarlingCollectorRunner
             916 => true,   // Server principal is not able to access the database under the current security context
             4060 => true,  // Cannot open database requested by the login
             18456 => true, // Login failed for user
-            40613 => true, // Database 'master' on server is not currently available
-            40615 => true, // Cannot open server — login denied (firewall/auth)
             _ => false
         };
     }

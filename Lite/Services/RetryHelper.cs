@@ -22,8 +22,12 @@ public static class RetryHelper
 {
     /// <summary>
     /// SQL Server error numbers considered transient and retryable.
+    ///
+    /// Internal rather than private so tests can assert this stays disjoint from the error numbers
+    /// treated as permanent verdicts elsewhere. Calling one error both "retry this" and "give up on
+    /// this forever" is what caused issue #1506, and the invariant is easier to pin than to remember.
     /// </summary>
-    private static readonly HashSet<int> TransientErrorNumbers = new()
+    internal static readonly HashSet<int> TransientErrorNumbers = new()
     {
         -2,     // Timeout
         -1,     // General network error
