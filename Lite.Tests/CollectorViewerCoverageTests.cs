@@ -50,8 +50,6 @@ public sealed class CollectorViewerCoverageTests
     /// </summary>
     private static readonly HashSet<string> KnownStoreOnlyOrUnbuiltTables = new(StringComparer.OrdinalIgnoreCase)
     {
-        "latch_stats",           // UNBUILT UI (parity board Tier 1) -- remove when the Latches & Spinlocks tab ships
-        "spinlock_stats",        // UNBUILT UI (parity board Tier 1) -- remove when the Latches & Spinlocks tab ships
         "cpu_scheduler_stats",   // UNBUILT UI (parity board Tier 1) -- remove when the CPU Scheduler split ships
         "plan_cache_stats",      // UNBUILT UI (parity board Tier 1) -- remove when the Plan Cache sub-tab ships
         "session_summary_stats", // UNBUILT UI (parity board Tier 1) -- remove when the session-summary (idle/leak) surface ships

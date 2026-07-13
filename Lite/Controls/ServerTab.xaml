@@ -2006,6 +2006,90 @@
                 </Grid>
             </TabItem>
 
+            <!-- Latches & Spinlocks Tab — the Lite port of Darling's consolidated Latch/Spinlock tab
+                 (data already collected into latch_stats / spinlock_stats). The latch wait-time trend and
+                 the spinlock collisions trend for the TOP 5 contenders stack vertically, each above a
+                 collapsed Expander holding its per-class latest-snapshot grid. Loads on tab activation via
+                 the RefreshVisibleTabAsync switch (index 13), mirroring the tempdb tab. -->
+            <TabItem Header="Latches &amp; Spinlocks">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Latch wait-time trend (top 5 classes by delta wait) + per-class latest-snapshot grid. -->
+                    <ScottPlot:WpfPlot Grid.Row="0" x:Name="LatchStatsChart"/>
+                    <Expander Grid.Row="1" Header="Latch classes (latest snapshot)" IsExpanded="False" Margin="0,4,0,0">
+                        <DataGrid x:Name="LatchStatsGrid"
+                                  AutoGenerateColumns="False" IsReadOnly="True"
+                                  RowStyle="{StaticResource GridRowStyle}"
+                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                  MaxHeight="220" Margin="0,4,0,0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Binding="{Binding LatchClass}" Width="*">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LatchClass" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Latch Class" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding DeltaWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DeltaWaitTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="&#x0394; Wait (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding DeltaWaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DeltaWaitingRequestsCount" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="&#x0394; Waiting Reqs" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding WaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Wait Time (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding MaxWaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MaxWaitTimeMs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Max Wait (ms)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding WaitingRequestsCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="140">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="WaitingRequestsCount" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Waiting Reqs (total)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Expander>
+
+                    <!-- Spinlock collisions trend (top 5 spinlocks by delta collisions) + per-spinlock snapshot grid. -->
+                    <ScottPlot:WpfPlot Grid.Row="2" x:Name="SpinlockStatsChart" Margin="0,8,0,0"/>
+                    <Expander Grid.Row="3" Header="Spinlocks (latest snapshot)" IsExpanded="False" Margin="0,4,0,0">
+                        <DataGrid x:Name="SpinlockStatsGrid"
+                                  AutoGenerateColumns="False" IsReadOnly="True"
+                                  RowStyle="{StaticResource GridRowStyle}"
+                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                  MaxHeight="220" Margin="0,4,0,0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Binding="{Binding SpinlockName}" Width="*">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SpinlockName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Spinlock" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding DeltaCollisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DeltaCollisions" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="&#x0394; Collisions" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding DeltaSpins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DeltaSpins" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="&#x0394; Spins" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding SpinsPerCollision, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SpinsPerCollision" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Spins/Collision" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding Collisions, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="130">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Collisions" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Collisions (total)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding Spins, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Spins" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Spins (total)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding SleepTime, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SleepTime" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Sleep Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Binding="{Binding Backoffs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100">
+                                    <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Backoffs" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Backoffs" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Expander>
+                </Grid>
+            </TabItem>
+
             <!-- Collection Health Tab -->
             <TabItem Header="Collection Health">
                 <Grid Margin="8">
