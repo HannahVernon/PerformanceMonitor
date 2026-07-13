@@ -38,6 +38,7 @@ public partial class ServerTab : UserControl
         _collectionLogFilterMgr = new DataGridFilterManager<CollectionLogRow>(CollectionLogGrid);
         _latchStatsFilterMgr = new DataGridFilterManager<LatchStatsSnapshotRow>(LatchStatsGrid);
         _spinlockStatsFilterMgr = new DataGridFilterManager<SpinlockStatsSnapshotRow>(SpinlockStatsGrid);
+        _planCacheCompositionFilterMgr = new DataGridFilterManager<PlanCacheSnapshotRow>(PlanCacheCompositionGrid);
 
         _filterManagers[QuerySnapshotsGrid] = _querySnapshotsFilterMgr;
         _filterManagers[QueryStatsGrid] = _queryStatsFilterMgr;
@@ -54,6 +55,7 @@ public partial class ServerTab : UserControl
         _filterManagers[CollectionLogGrid] = _collectionLogFilterMgr;
         _filterManagers[LatchStatsGrid] = _latchStatsFilterMgr;
         _filterManagers[SpinlockStatsGrid] = _spinlockStatsFilterMgr;
+        _filterManagers[PlanCacheCompositionGrid] = _planCacheCompositionFilterMgr;
     }
 
     private void EnsureFilterPopup()

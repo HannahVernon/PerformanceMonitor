@@ -113,6 +113,7 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
     private DataGridFilterManager<LatchStatsSnapshotRow>? _latchStatsFilterMgr;
     private DataGridFilterManager<SpinlockStatsSnapshotRow>? _spinlockStatsFilterMgr;
+    private DataGridFilterManager<PlanCacheSnapshotRow>? _planCacheCompositionFilterMgr;
     private CancellationTokenSource? _actualPlanCts;
 
     public int UtcOffsetMinutes { get; }
@@ -206,7 +207,8 @@ public partial class ServerTab : UserControl
         foreach (var grid in new DataGrid[] { QuerySnapshotsGrid, QueryStatsGrid, ProcedureStatsGrid,
             QueryStoreGrid, BlockedProcessReportGrid, DeadlockGrid, RunningJobsGrid,
             ServerConfigGrid, DatabaseConfigGrid, DatabaseScopedConfigGrid, TraceFlagsGrid,
-            CollectionHealthGrid, CollectionLogGrid, LatchStatsGrid, SpinlockStatsGrid })
+            CollectionHealthGrid, CollectionLogGrid, LatchStatsGrid, SpinlockStatsGrid,
+            PlanCacheCompositionGrid })
         {
             grid.CopyingRowClipboardContent += DataGridClipboardBehavior.FixHeaderCopy;
         }
@@ -269,6 +271,12 @@ public partial class ServerTab : UserControl
 
         /* Latch/spinlock charts: theme + hover up front (own partial, mirrors Darling's tab file) */
         InitializeLatchSpinlockCharts();
+
+        /* CPU Scheduler / Plan Cache / Session Stats charts: theme + hover up front (own partials,
+           mirror Darling's tab files) so they don't flash white before the tabs' first load. */
+        InitializeCpuSchedulerChart();
+        InitializePlanCacheChart();
+        InitializeSessionStatsChart();
 
         /* Query heatmap hover popup */
         _heatmapPopupText = new TextBlock
@@ -591,5 +599,8 @@ public partial class ServerTab : UserControl
         _currentWaitsDurationHover?.Dispose();
         _currentWaitsBlockedHover?.Dispose();
         DisposeLatchSpinlockHelpers();
+        DisposeCpuSchedulerHelpers();
+        DisposePlanCacheHelpers();
+        DisposeSessionStatsHelpers();
     }
 }
