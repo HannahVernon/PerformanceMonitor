@@ -19,6 +19,9 @@ using System.Windows.Input;
 using Installer.Core;
 using Installer.Core.Models;
 using Microsoft.Data.SqlClient;
+// The state machine and its pure predicates live in Installer.Core (ServerSetupState / ServerSetupPolicy)
+// so CI can test them; the dialog is not CI-wired. Aliased so the flow reads as "DialogState" in situ.
+using DialogState = Installer.Core.ServerSetupState;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
@@ -29,18 +32,6 @@ namespace PerformanceMonitorDashboard
 {
     public partial class AddServerDialog : Window
     {
-        private enum DialogState
-        {
-            Initial,
-            Connected_NoDatabase,
-            Connected_NeedsUpgrade,
-            Connected_Current,
-            Connected_StatusUnknown,
-            Installing,
-            InstallComplete,
-            MonitoringCredentials
-        }
-
         /*
         Non-null when installing would be unsafe, and why. Four causes, all of which would otherwise act
         on a database whose real state we do not know:
@@ -651,7 +642,7 @@ namespace PerformanceMonitorDashboard
         newly-reachable "Clean install" tick drops the database out from under the first one).
         Disabling the buttons is not enough: the detection paths re-enable them in their finally blocks.
         */
-        private bool InstallInProgress => _currentState == DialogState.Installing;
+        private bool InstallInProgress => ServerSetupPolicy.IsInstalling(_currentState);
 
         /*
         Two detections can be in flight at once (Test Connection re-arms its button in a finally before
@@ -909,7 +900,7 @@ namespace PerformanceMonitorDashboard
                 return;
             }
 
-            if (IsServerVerdictState(_currentState) && !VerdictMatchesServerBox())
+            if (ServerSetupPolicy.IsServerVerdictState(_currentState) && !VerdictMatchesServerBox())
             {
                 /* Re-entering the state lets the stamp guard demote it. */
                 TransitionToState(_currentState);
@@ -956,47 +947,6 @@ namespace PerformanceMonitorDashboard
         private bool VerdictMatchesServerBox() =>
             _verdictServerName != null &&
             string.Equals(_verdictServerName, ServerNameTextBox.Text.Trim(), StringComparison.OrdinalIgnoreCase);
-
-        private static bool IsServerVerdictState(DialogState state) =>
-            state is DialogState.Connected_NoDatabase
-                  or DialogState.Connected_NeedsUpgrade
-                  or DialogState.Connected_Current;
-
-        /*
-        Did the button the user actually clicked promise to act on an EXISTING installation? Only
-        Connected_NoDatabase says "Install Now"; every other launchable state promises otherwise --
-        including InstallComplete/MonitoringCredentials, where the repair handoff deliberately puts a live
-        "Upgrade Now" in front of the user.
-        */
-        private static bool PromisesExistingInstall(DialogState launchState) => launchState switch
-        {
-            DialogState.Connected_NeedsUpgrade => true,      // "Upgrade Now"
-            DialogState.Connected_Current => true,           // "Reinstall Objects"
-            DialogState.InstallComplete => true,             // repair handoff: "Upgrade Now"
-            DialogState.MonitoringCredentials => true,       // repair handoff, SQL auth: "Upgrade Now"
-            _ => false,                                      // Connected_NoDatabase: "Install Now"
-        };
-
-        /*
-        Which connected state the FACTS imply. Used by detection and, crucially, re-derived from the
-        install-time re-read before the install begins.
-
-        Restoring "the state we came from" is wrong: the server box stays editable, so the state we came
-        from may belong to a different server. Retype it from an up-to-date server to one four migrations
-        behind, click, let the upgrade abort, and restoring Connected_Current would render "PerformanceMonitor
-        v2.5.0 is up to date." over a half-upgraded database, with Save enabled -- the user saves and moves on.
-        */
-        private static DialogState DeriveConnectedState(string? installedVersion, string appVersion)
-        {
-            if (installedVersion == null)
-            {
-                return DialogState.Connected_NoDatabase;
-            }
-
-            return RepairOutcome.HasPendingUpgrade(installedVersion, appVersion)
-                ? DialogState.Connected_NeedsUpgrade
-                : DialogState.Connected_Current;
-        }
 
         /*
         Return to the state the install was launched from -- NOT Initial.
@@ -1319,7 +1269,7 @@ namespace PerformanceMonitorDashboard
                     return;
                 }
 
-                TransitionToState(DeriveConnectedState(_installedVersion, appVersion));
+                TransitionToState(ServerSetupPolicy.DeriveConnectedState(_installedVersion, appVersion));
             }
             catch (Exception ex)
             {
@@ -1425,7 +1375,7 @@ namespace PerformanceMonitorDashboard
             enabled. That exact lie has been reached three different ways across nine review rounds, so it
             is stopped here, once, rather than at each consumer.
             */
-            if (IsServerVerdictState(newState) && !VerdictMatchesServerBox())
+            if (ServerSetupPolicy.IsServerVerdictState(newState) && !VerdictMatchesServerBox())
             {
                 /*
                 Remembered so the demotion can be UNDONE. The verdict was never wrong -- it was
@@ -1458,9 +1408,11 @@ namespace PerformanceMonitorDashboard
             panel holding these checkboxes: a rendering accident standing in for a consent check, on the
             code path that drops a database.
 
-            Installing is the sole exception -- the run is about to READ these ticks.
+            Installing is the sole exception -- the run is about to READ these ticks. That "sole exception"
+            is StateConsumesModeSelections, in ServerSetupPolicy, pinned by a test over every state so a new
+            state cannot silently join the exception and carry a live tick onto a server.
             */
-            if (newState != DialogState.Installing)
+            if (!ServerSetupPolicy.StateConsumesModeSelections(newState))
             {
                 CleanInstallCheckBox.IsChecked = false;
                 RepairCheckBox.IsChecked = false;
@@ -1834,7 +1786,7 @@ namespace PerformanceMonitorDashboard
                 Repair checkbox. The server box stays editable and the re-read above runs against whatever
                 is in it NOW, so a retarget to a bare instance reaches all three.
                 */
-                bool promisedAnExistingInstall = PromisesExistingInstall(_launchState);
+                bool promisedAnExistingInstall = ServerSetupPolicy.PromisesExistingInstall(_launchState);
 
                 if ((RepairCheckBox.IsChecked == true || promisedAnExistingInstall) &&
                     CleanInstallCheckBox.IsChecked != true &&
@@ -1901,7 +1853,7 @@ namespace PerformanceMonitorDashboard
                 _preInstallState out of InstallComplete/MonitoringCredentials (reachable via the repair
                 handoff), which RestoreAfterInstall would otherwise re-enter with Advanced Options unfrozen.
                 */
-                _preInstallState = DeriveConnectedState(_installedVersion, appVersion);
+                _preInstallState = ServerSetupPolicy.DeriveConnectedState(_installedVersion, appVersion);
 
                 InstallStatusText.Text = "Preparing installation...";
 
