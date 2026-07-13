@@ -2667,6 +2667,102 @@
                 </TabControl>
             </TabItem>
 
+            <!-- Configuration Changes Tab (Tier-1 parity) — the Lite port of the Darling viewer's Configuration
+                 Changes tab, appended as the new LAST top-level tab (index 19, after System Events — nothing
+                 renumbered, so switch case 19 equals this 0-based XAML index). Three sub-tab GRIDS show
+                 server-config / database-config / trace-flag DRIFT over the selected window, COMPUTED by diffing
+                 the store's APPEND-ONLY config snapshots via the shared PerformanceMonitor.Common.ConfigChangeDiff
+                 (LocalDataService.ConfigChanges.cs). Dashboard enrichment Lite does not collect is OMITTED (not
+                 fabricated): server-config Setting Description, database-config Setting Type. requires_restart is
+                 KEPT (derivable: is_dynamic = 0 AND configured != in-use). Config is captured on connect/restart,
+                 so a change appears only when at least two captures bracket it in the window. -->
+            <TabItem Header="Configuration Changes">
+                <TabControl x:Name="ConfigChangesSubTabControl" Background="Transparent" BorderThickness="0"
+                            ItemContainerStyle="{DynamicResource SubTabItemStyle}">
+
+                    <!-- Server Config Changes Sub-Tab (sys.configurations snapshot diff) -->
+                    <TabItem Header="Server Config Changes">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,4,0,8">
+                                <TextBlock Text="Server Configuration Changes (sp_configure drift)" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                                <Button Content="Refresh" Click="ConfigChangesRefresh_Click" Margin="12,0,0,0" Padding="12,4" MinWidth="70"/>
+                                <TextBlock x:Name="ServerConfigChangesCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <Grid Grid.Row="1">
+                                <DataGrid x:Name="ServerConfigChangesGrid" AutoGenerateColumns="False" IsReadOnly="True" RowStyle="{StaticResource GridRowStyle}" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Binding="{Binding ChangeTimeLocal}" Width="150"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ChangeTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Change Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding ConfigurationName}" Width="260"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ConfigurationName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Configuration" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding OldValueConfigured}" Width="110" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="OldValueConfigured" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Old Configured" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding NewValueConfigured}" Width="110" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="NewValueConfigured" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="New Configured" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding OldValueInUse}" Width="100" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="OldValueInUse" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Old In Use" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding NewValueInUse}" Width="100" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="NewValueInUse" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="New In Use" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding RequiresRestartDisplay}" Width="80"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RequiresRestartDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Restart?" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding DynamicDisplay}" Width="80"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DynamicDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Dynamic" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding AdvancedDisplay}" Width="80"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AdvancedDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Advanced" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding ChangeDescription}" Width="*" MinWidth="250"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ChangeDescription" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Change Description" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock x:Name="ServerConfigChangesNoDataMessage" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="480" FontStyle="Italic" Foreground="{DynamicResource ForegroundDimBrush}" Text="No server configuration changes in the selected time window (needs at least two config captures bracketing a change)."/>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- Database Config Changes Sub-Tab (sys.databases wide-row snapshot diff) -->
+                    <TabItem Header="Database Config Changes">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,4,0,8">
+                                <TextBlock Text="Database Configuration Changes (recovery model, RCSI, compat level, etc.)" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                                <Button Content="Refresh" Click="ConfigChangesRefresh_Click" Margin="12,0,0,0" Padding="12,4" MinWidth="70"/>
+                                <TextBlock x:Name="DatabaseConfigChangesCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <Grid Grid.Row="1">
+                                <DataGrid x:Name="DatabaseConfigChangesGrid" AutoGenerateColumns="False" IsReadOnly="True" RowStyle="{StaticResource GridRowStyle}" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Binding="{Binding ChangeTimeLocal}" Width="150"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ChangeTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Change Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding DatabaseName}" Width="180"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DatabaseName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Database" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding SettingName}" Width="230"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SettingName" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Setting Name" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding OldValue}" Width="160"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="OldValue" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Old Value" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding NewValue}" Width="160"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="NewValue" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="New Value" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding ChangeDescription}" Width="*" MinWidth="250"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ChangeDescription" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Change Description" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock x:Name="DatabaseConfigChangesNoDataMessage" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="480" FontStyle="Italic" Foreground="{DynamicResource ForegroundDimBrush}" Text="No database configuration changes in the selected time window (needs at least two config captures bracketing a change)."/>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- Trace Flag Changes Sub-Tab (DBCC TRACESTATUS set-diff) -->
+                    <TabItem Header="Trace Flag Changes">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,4,0,8">
+                                <TextBlock Text="Trace Flag Changes (enabled / disabled / scope changed)" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="14" Foreground="{DynamicResource ForegroundBrush}"/>
+                                <Button Content="Refresh" Click="ConfigChangesRefresh_Click" Margin="12,0,0,0" Padding="12,4" MinWidth="70"/>
+                                <TextBlock x:Name="TraceFlagChangesCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center" FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <Grid Grid.Row="1">
+                                <DataGrid x:Name="TraceFlagChangesGrid" AutoGenerateColumns="False" IsReadOnly="True" RowStyle="{StaticResource GridRowStyle}" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Binding="{Binding ChangeTimeLocal}" Width="150"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ChangeTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Change Time" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding TraceFlag}" Width="100" ElementStyle="{StaticResource NumericCell}"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TraceFlag" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Trace Flag" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding PreviousStatusDisplay}" Width="110"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="PreviousStatusDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Previous Status" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding NewStatusDisplay}" Width="110"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="NewStatusDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="New Status" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding Scope}" Width="90"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Scope" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Scope" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding GlobalDisplay}" Width="80"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="GlobalDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Global" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding SessionDisplay}" Width="80"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SessionDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Session" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                        <DataGridTextColumn Binding="{Binding ChangeDescription}" Width="*" MinWidth="230"><DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ChangeDescription" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Change Description" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header></DataGridTextColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock x:Name="TraceFlagChangesNoDataMessage" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="480" FontStyle="Italic" Foreground="{DynamicResource ForegroundDimBrush}" Text="No trace flag changes in the selected time window (needs at least two config captures bracketing an enable/disable)."/>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </TabItem>
+
         </TabControl>
     </Grid>
 </UserControl>

@@ -157,13 +157,13 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
     public void DatabaseConfigSettingNames_Match27CollectorColumns_InOrder()
     {
         var table = PgSchemaGenerator.CreateTable(DatabaseConfigCollector.Instance);
-        Assert.Equal(27, Reader.DatabaseConfigSettingNames.Count);
-        foreach (var name in Reader.DatabaseConfigSettingNames)
+        Assert.Equal(27, ConfigChangeDiff.DatabaseConfigChangeSettingNames.Count);
+        foreach (var name in ConfigChangeDiff.DatabaseConfigChangeSettingNames)
             Assert.Contains(name, table, StringComparison.Ordinal);
 
         /* The change-diff walks these positionally, so their order must match the SELECT's column order. */
-        Assert.Equal("state_desc", Reader.DatabaseConfigSettingNames[0]);
-        Assert.Equal("is_optimized_locking_on", Reader.DatabaseConfigSettingNames[^1]);
+        Assert.Equal("state_desc", ConfigChangeDiff.DatabaseConfigChangeSettingNames[0]);
+        Assert.Equal("is_optimized_locking_on", ConfigChangeDiff.DatabaseConfigChangeSettingNames[^1]);
     }
 
     /* ---------------- C# snapshot-diff logic (no live PG) ---------------- */
@@ -175,7 +175,7 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
     [Fact]
     public void ServerConfigChanges_DetectsValueMove_NewestFirst()
     {
-        var snapshots = new List<Reader.ServerConfigSnapshotRow>
+        var snapshots = new List<ConfigChangeDiff.ServerConfigSnapshot>
         {
             new(T0, "max degree of parallelism", 0, 0, true, true),
             new(T1, "max degree of parallelism", 4, 4, true, true),   /* changed */
@@ -183,7 +183,7 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
             new(T1, "cost threshold for parallelism", 5, 5, true, true), /* unchanged */
         };
 
-        var changes = Reader.ComputeServerConfigChanges(snapshots, T0);
+        var changes = ConfigChangeDiff.DiffServerConfigChanges(snapshots, T0, DateTime.MaxValue);
         var change = Assert.Single(changes);
         Assert.Equal("max degree of parallelism", change.ConfigurationName);
         Assert.Equal(0L, change.OldValueConfigured);
@@ -194,23 +194,23 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
     [Fact]
     public void ServerConfigChanges_SingleSnapshot_YieldsNothing_AndWindowFilters()
     {
-        var single = new List<Reader.ServerConfigSnapshotRow> { new(T0, "max server memory (MB)", 8000, 8000, true, true) };
-        Assert.Empty(Reader.ComputeServerConfigChanges(single, T0));
+        var single = new List<ConfigChangeDiff.ServerConfigSnapshot> { new(T0, "max server memory (MB)", 8000, 8000, true, true) };
+        Assert.Empty(ConfigChangeDiff.DiffServerConfigChanges(single, T0, DateTime.MaxValue));
 
-        var twoOld = new List<Reader.ServerConfigSnapshotRow>
+        var twoOld = new List<ConfigChangeDiff.ServerConfigSnapshot>
         {
             new(T0, "max server memory (MB)", 8000, 8000, true, true),
             new(T1, "max server memory (MB)", 16000, 16000, true, true),
         };
         /* The change is at T1 — a window starting at T2 excludes it. */
-        Assert.Empty(Reader.ComputeServerConfigChanges(twoOld, T2));
-        Assert.Single(Reader.ComputeServerConfigChanges(twoOld, T0));
+        Assert.Empty(ConfigChangeDiff.DiffServerConfigChanges(twoOld, T2, DateTime.MaxValue));
+        Assert.Single(ConfigChangeDiff.DiffServerConfigChanges(twoOld, T0, DateTime.MaxValue));
     }
 
     [Fact]
     public void TraceFlagChanges_DetectsEnableDisableModify()
     {
-        var snapshots = new List<Reader.TraceFlagSnapshotRow>
+        var snapshots = new List<ConfigChangeDiff.TraceFlagSnapshot>
         {
             /* T0: 3226 global on. */
             new(T0, 3226, true, true, false),
@@ -221,7 +221,7 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
             new(T2, 3226, true, false, true),
         };
 
-        var changes = Reader.ComputeTraceFlagChanges(snapshots, T0);
+        var changes = ConfigChangeDiff.DiffTraceFlagChanges(snapshots, T0, DateTime.MaxValue);
         Assert.Equal(3, changes.Count);
         Assert.Contains(changes, c => c.TraceFlag == 1117 && c.ChangeType == "enabled" && c.ChangeTime == T1);
         Assert.Contains(changes, c => c.TraceFlag == 1117 && c.ChangeType == "disabled" && c.ChangeTime == T2);
@@ -232,15 +232,15 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
     public void DatabaseConfigChanges_UnpivotsWideRow_NamesTheChangedColumn()
     {
         const int rcsiIndex = 10; /* is_read_committed_snapshot_on */
-        Assert.Equal("is_read_committed_snapshot_on", Reader.DatabaseConfigSettingNames[rcsiIndex]);
+        Assert.Equal("is_read_committed_snapshot_on", ConfigChangeDiff.DatabaseConfigChangeSettingNames[rcsiIndex]);
 
-        var snapshots = new List<Reader.DatabaseConfigSnapshotRow>
+        var snapshots = new List<ConfigChangeDiff.DatabaseConfigSnapshot>
         {
             new(T0, "StackOverflow", DbValues()),
             new(T1, "StackOverflow", DbValues((rcsiIndex, "true"))),  /* RCSI flipped on */
         };
 
-        var changes = Reader.ComputeDatabaseConfigChanges(snapshots, T0);
+        var changes = ConfigChangeDiff.DiffDatabaseConfigChanges(snapshots, T0, DateTime.MaxValue);
         var change = Assert.Single(changes);
         Assert.Equal("StackOverflow", change.DatabaseName);
         Assert.Equal("is_read_committed_snapshot_on", change.SettingName);
@@ -252,7 +252,7 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
     [Fact]
     public void DatabaseConfigChanges_PerDatabase_UnchangedYieldsNothing()
     {
-        var snapshots = new List<Reader.DatabaseConfigSnapshotRow>
+        var snapshots = new List<ConfigChangeDiff.DatabaseConfigSnapshot>
         {
             new(T0, "DbA", DbValues()),
             new(T1, "DbA", DbValues()),          /* no change */
@@ -260,7 +260,7 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
             new(T1, "DbB", DbValues((3, "SIMPLE"))),  /* recovery_model changed */
         };
 
-        var changes = Reader.ComputeDatabaseConfigChanges(snapshots, T0);
+        var changes = ConfigChangeDiff.DiffDatabaseConfigChanges(snapshots, T0, DateTime.MaxValue);
         var change = Assert.Single(changes);
         Assert.Equal("DbB", change.DatabaseName);
         Assert.Equal("recovery_model", change.SettingName);
@@ -270,7 +270,7 @@ public sealed class DarlingMcpConfigHistoryToolsSurfaceAndSqlTests
 
     private static string?[] DbValues(params (int Index, string? Value)[] overrides)
     {
-        var values = new string?[Reader.DatabaseConfigSettingNames.Count];
+        var values = new string?[ConfigChangeDiff.DatabaseConfigChangeSettingNames.Count];
         for (var i = 0; i < values.Length; i++)
             values[i] = "false";
         foreach (var (index, value) in overrides)

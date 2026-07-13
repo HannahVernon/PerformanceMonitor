@@ -49,6 +49,10 @@ public partial class ServerTab : UserControl
         _seCpuTasksFilterMgr = new DataGridFilterManager<CpuTasksRow>(CpuTasksGrid);
         _seIoIssuesFilterMgr = new DataGridFilterManager<IoIssuesRow>(IoIssuesGrid);
         _seDefaultTraceFilterMgr = new DataGridFilterManager<DefaultTraceEventRow>(DefaultTraceGrid);
+        /* Configuration Changes grids (one per sub-tab). */
+        _serverConfigChangesFilterMgr = new DataGridFilterManager<ServerConfigChangeRow>(ServerConfigChangesGrid);
+        _databaseConfigChangesFilterMgr = new DataGridFilterManager<DatabaseConfigChangeRow>(DatabaseConfigChangesGrid);
+        _traceFlagChangesFilterMgr = new DataGridFilterManager<TraceFlagChangeRow>(TraceFlagChangesGrid);
 
         _filterManagers[QuerySnapshotsGrid] = _querySnapshotsFilterMgr;
         _filterManagers[QueryStatsGrid] = _queryStatsFilterMgr;
@@ -75,6 +79,9 @@ public partial class ServerTab : UserControl
         _filterManagers[CpuTasksGrid] = _seCpuTasksFilterMgr;
         _filterManagers[IoIssuesGrid] = _seIoIssuesFilterMgr;
         _filterManagers[DefaultTraceGrid] = _seDefaultTraceFilterMgr;
+        _filterManagers[ServerConfigChangesGrid] = _serverConfigChangesFilterMgr;
+        _filterManagers[DatabaseConfigChangesGrid] = _databaseConfigChangesFilterMgr;
+        _filterManagers[TraceFlagChangesGrid] = _traceFlagChangesFilterMgr;
     }
 
     private void EnsureFilterPopup()
