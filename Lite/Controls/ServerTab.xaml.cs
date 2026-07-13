@@ -300,6 +300,10 @@ public partial class ServerTab : UserControl
            mirrors Darling's SystemHealthCharts). */
         InitializeSystemHealthCharts();
 
+        /* Blocking Stats severity charts: theme + hover up front (own partial, mirrors Darling's
+           Blocking Stats sub-tab) so the four charts don't flash white before the sub-tab's first load. */
+        InitializeBlockingStatsCharts();
+
         /* Query heatmap hover popup */
         _heatmapPopupText = new TextBlock
         {
@@ -626,5 +630,6 @@ public partial class ServerTab : UserControl
         DisposePlanCacheHelpers();
         DisposeSessionStatsHelpers();
         DisposeSystemHealthChartHelpers();
+        DisposeBlockingStatsHelpers();
     }
 }
