@@ -365,6 +365,20 @@ namespace PerformanceMonitorInstaller
                     {
                         Console.WriteLine("Error: Password is required for SQL Server Authentication.");
                         Console.WriteLine("Provide password as third argument or set PM_SQL_PASSWORD environment variable.");
+
+                        /*
+                        The common trap: a password that begins with "--" (e.g. "--h7!x") is indistinguishable
+                        from a flag, so the positional filter above dropped it and we landed here reporting
+                        "no password" for a password that WAS supplied. Only say so when a "--"-token that is
+                        not a recognized flag actually appeared -- otherwise this is just a forgotten password.
+                        */
+                        if (HasUnrecognizedDoubleDashArg(args))
+                        {
+                            Console.WriteLine();
+                            Console.WriteLine("Note: an argument beginning with \"--\" was treated as a flag and ignored. A password");
+                            Console.WriteLine("      cannot be passed on the command line if it starts with \"--\"; set PM_SQL_PASSWORD.");
+                        }
+
                         return (int)InstallationResultCode.InvalidArguments;
                     }
 
@@ -1620,6 +1634,40 @@ namespace PerformanceMonitorInstaller
         {
             var invalid = Path.GetInvalidFileNameChars();
             return string.Concat(input.Select(c => invalid.Contains(c) ? '_' : c));
+        }
+
+        /*
+        The flags the positional-argument filter knows to skip. Kept only to DIAGNOSE the dropped-password
+        trap: a "--"-token that is not one of these was almost certainly a value the filter silently ate.
+        If a new flag is added and not listed here, the only cost is a spurious hint in an error path -- so
+        this is a diagnostic aid, not a parsing authority (the actual flag handling matches each flag by
+        name inline in Main).
+        */
+        private static readonly string[] RecognizedFlags =
+        {
+            "--data-path", "--encrypt", "--entra", "--help", "--log-path", "--managed-identity",
+            "--reinstall", "--repair", "--reset-schedule", "--service-principal", "--troubleshoot",
+            "--trust-cert", "--uninstall"
+        };
+
+        private static bool HasUnrecognizedDoubleDashArg(string[] args)
+        {
+            foreach (string arg in args)
+            {
+                if (!arg.StartsWith("--", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                /* Compare the flag name only, so the --flag=value form is matched too. */
+                string flagName = arg.Split('=')[0];
+                if (!RecognizedFlags.Contains(flagName, StringComparer.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /*

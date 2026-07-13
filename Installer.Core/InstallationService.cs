@@ -278,19 +278,95 @@ END;
 
 IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'PerformanceMonitor')
 BEGIN
-    ALTER DATABASE PerformanceMonitor SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    /*
+    SINGLE_USER evicts other connections so the DROP can proceed -- but it is non-modifiable on Azure SQL
+    Managed Instance (EngineEdition 8), where the whole batch would die on this line before the DROP. MI
+    has no force-disconnect; an installer teardown relies on there being no other sessions, which is
+    normally true. So gate the eviction to box SQL Server and let MI DROP directly.
+    */
+    IF SERVERPROPERTY('EngineEdition') <> 8
+        ALTER DATABASE PerformanceMonitor SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
     DROP DATABASE PerformanceMonitor;
 END;";
 
         using var command = new SqlCommand(cleanupSql, connection);
         command.CommandTimeout = ShortTimeoutSeconds;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            /*
+            SET SINGLE_USER and DROP are separate autocommitted statements. If the DROP then fails (another
+            session racing into the single-user slot, Msg 3702) or the client CommandTimeout / a cancel
+            fires an attention AFTER SINGLE_USER committed, the database is left online but stranded in
+            SINGLE_USER -- semi-bricked. Un-brick before propagating. It must run on a FRESH connection: a
+            client-attention timeout is invisible to a server-side TRY/CATCH, so this cannot be a
+            BEGIN CATCH in the batch above. Close this connection first to release the single-user slot the
+            failed run may still hold, so the restore is not blocked by it. The bare throw preserves the
+            original outcome -- a cancel's OperationCanceledException (converted upstream) or the failure's
+            SqlException.
+            */
+            connection.Close();
+            await TryRestoreDatabaseAccessAsync(connectionString, progress).ConfigureAwait(false);
+            throw;
+        }
 
         progress?.Report(new InstallationProgress
         {
             Message = "Clean install completed (jobs, XE sessions, and database removed)",
             Status = "Success"
         });
+    }
+
+    /// <summary>
+    /// Best-effort recovery for a clean install whose DROP DATABASE failed or timed out after
+    /// SET SINGLE_USER had already committed, leaving the database stranded in SINGLE_USER. Puts it back to
+    /// MULTI_USER so it is usable rather than semi-bricked.
+    ///
+    /// Swallows its own errors -- it must never mask the failure that triggered it -- and runs uncancellably
+    /// on a fresh master connection, so it still executes after a client-attention timeout or a cancel
+    /// (both of which a server-side TRY/CATCH cannot see). No-op on Azure SQL Managed Instance, where
+    /// SINGLE_USER cannot be set in the first place, and a no-op when the database no longer exists (the
+    /// DROP actually succeeded) or is already MULTI_USER (SET MULTI_USER over MULTI_USER is harmless).
+    /// </summary>
+    /// <returns>
+    /// true if the restore ran without error (either it set MULTI_USER, or it was a no-op because the drop
+    /// actually succeeded / this is Managed Instance) — i.e. the database is not left stranded as far as we
+    /// can tell. false if the restore attempt itself failed, so the caller can warn that the database may
+    /// still be in SINGLE_USER. Never throws.
+    /// </returns>
+    public static async Task<bool> TryRestoreDatabaseAccessAsync(
+        string connectionString,
+        IProgress<InstallationProgress>? progress = null)
+    {
+        try
+        {
+            var builder = new SqlConnectionStringBuilder(connectionString) { InitialCatalog = "master" };
+            using var connection = new SqlConnection(builder.ConnectionString);
+            await connection.OpenAsync().ConfigureAwait(false);
+
+            /*
+            Plain SET MULTI_USER, deliberately NOT WITH ROLLBACK IMMEDIATE. In the one race where another
+            session has grabbed the single-user slot, this blocks on the exclusive lock (up to the timeout)
+            and then fails best-effort rather than force-killing whoever raced in. The common case -- our own
+            timed-out session in master context, nobody in the slot -- is restored cleanly.
+            */
+            using var cmd = new SqlCommand(
+                @"IF SERVERPROPERTY('EngineEdition') <> 8 AND DB_ID(N'PerformanceMonitor') IS NOT NULL
+    ALTER DATABASE PerformanceMonitor SET MULTI_USER;",
+                connection);
+            cmd.CommandTimeout = ShortTimeoutSeconds;
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            /* Best-effort: the original failure is what the caller must see, never this one. */
+            LogDebug(progress, $"TryRestoreDatabaseAccessAsync: MULTI_USER restore failed (ignored) — {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
