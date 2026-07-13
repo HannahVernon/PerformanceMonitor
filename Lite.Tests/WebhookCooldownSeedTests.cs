@@ -89,6 +89,11 @@ public class WebhookCooldownSeedTests
         public bool SlackWebhookEnabled { get; set; }
         public string SlackWebhookUrl { get; set; } = "";
         public string SlackProxyAddress => "";
+        public bool GenericWebhookEnabled { get; set; }
+        public string GenericWebhookUrl { get; set; } = "";
+        public string GenericWebhookHeadersJson { get; set; } = "";
+        public string GenericWebhookBodyTemplate { get; set; } = "";
+        public string GenericWebhookProxyAddress => "";
         public double AnalysisNotifySeverity => 1.5;
         public int AnalysisNotifyCooldownMinutes => 360;
     }

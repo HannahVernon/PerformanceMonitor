@@ -37,24 +37,26 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public sealed partial class ViewerDataService
 {
-    /* The 12 SmtpConfig + WebhooksConfig columns in the SAME order the service reads them
+    /* The 16 SmtpConfig + WebhooksConfig columns in the SAME order the service reads them
        (StoreConfigProvider.ReadNotificationAsync), so the parity test pins one list against both ends. */
     private const string NotificationColumns =
         "smtp_host, smtp_port, smtp_use_ssl, smtp_username, smtp_encrypted_password, smtp_from_address, " +
-        "smtp_recipients, email_cooldown_minutes, teams_url, teams_proxy, slack_url, slack_proxy";
+        "smtp_recipients, email_cooldown_minutes, teams_url, teams_proxy, slack_url, slack_proxy, " +
+        "generic_url, generic_headers, generic_body_template, generic_proxy";
 
     /// <summary>The single global notification row (id=1), for the Settings window prefill + migrate-in check.</summary>
     public const string NotificationSelectSql =
         "SELECT " + NotificationColumns + " FROM config_notification WHERE id = 1";
 
-    /* The non-secret subset of NotificationColumns a read-only viewer role CAN read. The four secret
-       columns (smtp_encrypted_password, smtp_username, teams_url, slack_url — a webhook URL is a bearer
-       secret) are column-REVOKEd from the viewer role (#1262 /
-       DarlingManagedRoles.ViewerRestrictedConfigTables), so selecting them raises SQLSTATE 42501 for a
-       read-only seat and — in the Settings load — one such throw would blank every later section. */
+    /* The non-secret subset of NotificationColumns a read-only viewer role CAN read. The six secret
+       columns (smtp_encrypted_password, smtp_username, teams_url, slack_url, generic_url — a webhook URL
+       is a bearer secret — and generic_headers, which holds the Authorization token itself) are
+       column-REVOKEd from the viewer role (#1262 / DarlingManagedRoles.ViewerRestrictedConfigTables), so
+       selecting them raises SQLSTATE 42501 for a read-only seat and — in the Settings load — one such
+       throw would blank every later section. */
     private const string NotificationNonSecretColumns =
         "smtp_host, smtp_port, smtp_use_ssl, smtp_from_address, smtp_recipients, " +
-        "email_cooldown_minutes, teams_proxy, slack_proxy";
+        "email_cooldown_minutes, teams_proxy, slack_proxy, generic_body_template, generic_proxy";
 
     /// <summary>The secret-free notification projection a read-only <c>viewer</c> seat reads (D7 degradation):
     /// the four carved secret columns are omitted, so it never 42501s for a viewer. The secret fields come back
@@ -63,10 +65,10 @@ public sealed partial class ViewerDataService
         "SELECT " + NotificationNonSecretColumns + " FROM config_notification WHERE id = 1";
 
     /// <summary>Upserts the single global notification row (Settings window Save). ON CONFLICT rewrites every
-    /// column and bumps <c>config_version</c> via the V17 trigger. $1..$12 in <see cref="NotificationColumns"/> order.</summary>
+    /// column and bumps <c>config_version</c> via the V17 trigger. $1..$16 in <see cref="NotificationColumns"/> order.</summary>
     public const string NotificationUpsertSql = @"
 INSERT INTO config_notification (id, " + NotificationColumns + @", modified_at)
-VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, (now() AT TIME ZONE 'UTC'))
+VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, (now() AT TIME ZONE 'UTC'))
 ON CONFLICT (id) DO UPDATE SET
     smtp_host = EXCLUDED.smtp_host,
     smtp_port = EXCLUDED.smtp_port,
@@ -80,6 +82,10 @@ ON CONFLICT (id) DO UPDATE SET
     teams_proxy = EXCLUDED.teams_proxy,
     slack_url = EXCLUDED.slack_url,
     slack_proxy = EXCLUDED.slack_proxy,
+    generic_url = EXCLUDED.generic_url,
+    generic_headers = EXCLUDED.generic_headers,
+    generic_body_template = EXCLUDED.generic_body_template,
+    generic_proxy = EXCLUDED.generic_proxy,
     modified_at = (now() AT TIME ZONE 'UTC')";
 
     /// <summary>Reads the single global notification row, or null when the store has not seeded it yet. A
@@ -119,6 +125,10 @@ ON CONFLICT (id) DO UPDATE SET
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.TeamsProxy });          // $10
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.SlackUrl });            // $11
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.SlackProxy });          // $12
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.GenericUrl });          // $13
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.GenericHeaders });      // $14
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.GenericBodyTemplate }); // $15
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = row.GenericProxy });        // $16
         await ExecuteWriteAsync(command, cancellationToken);
     }
 
@@ -136,15 +146,20 @@ ON CONFLICT (id) DO UPDATE SET
         TeamsProxy = reader.GetString(9),
         SlackUrl = reader.GetString(10),
         SlackProxy = reader.GetString(11),
+        GenericUrl = reader.GetString(12),
+        GenericHeaders = reader.GetString(13),
+        GenericBodyTemplate = reader.GetString(14),
+        GenericProxy = reader.GetString(15),
     };
 
     /// <summary>
     /// Reads a <see cref="NotificationRow"/> from the secret-free projection
     /// (<see cref="NotificationSelectNoSecretSql"/>) a read-only <c>viewer</c> seat uses (D7): identical to
-    /// <see cref="ReadNotificationRow"/> but the four carved secret columns (<c>smtp_username</c>,
-    /// <c>smtp_encrypted_password</c>, <c>teams_url</c>, <c>slack_url</c>) are not selected, so they stay
-    /// null/empty and every column after each shifts ordinal. The viewer can't author those secrets on a
-    /// read-only seat anyway, so the empty values are harmless — the non-secret fields still prefill.
+    /// <see cref="ReadNotificationRow"/> but the six carved secret columns (<c>smtp_username</c>,
+    /// <c>smtp_encrypted_password</c>, <c>teams_url</c>, <c>slack_url</c>, <c>generic_url</c>,
+    /// <c>generic_headers</c>) are not selected, so they stay null/empty and every column after each shifts
+    /// ordinal. The viewer can't author those secrets on a read-only seat anyway, so the empty values are
+    /// harmless — the non-secret fields still prefill.
     /// </summary>
     private static NotificationRow ReadNotificationRowNoSecret(NpgsqlDataReader reader) => new()
     {
@@ -160,6 +175,10 @@ ON CONFLICT (id) DO UPDATE SET
         TeamsProxy = reader.GetString(6),
         SlackUrl = "",                /* carved */
         SlackProxy = reader.GetString(7),
+        GenericUrl = "",              /* carved */
+        GenericHeaders = "",          /* carved — holds the Authorization bearer token (#1506) */
+        GenericBodyTemplate = reader.GetString(8),
+        GenericProxy = reader.GetString(9),
     };
 }
 
@@ -189,6 +208,13 @@ public sealed class NotificationRow
     public string SlackUrl { get; set; } = "";
     public string SlackProxy { get; set; } = "";
 
+    /* Generic webhook (#1506 / V26). GenericUrl and GenericHeaders are secrets — the headers JSON carries
+       the Authorization bearer token — and are column-REVOKEd from the read-only viewer role. */
+    public string GenericUrl { get; set; } = "";
+    public string GenericHeaders { get; set; } = "";
+    public string GenericBodyTemplate { get; set; } = "";
+    public string GenericProxy { get; set; } = "";
+
     /// <summary>A row equal to the V17 seed defaults — the migrate-in "is the service section still at defaults?" baseline.</summary>
     public static NotificationRow Defaults() => new();
 
@@ -208,6 +234,10 @@ public sealed class NotificationRow
             && string.Equals(TeamsUrl, other.TeamsUrl, StringComparison.Ordinal)
             && string.Equals(TeamsProxy, other.TeamsProxy, StringComparison.Ordinal)
             && string.Equals(SlackUrl, other.SlackUrl, StringComparison.Ordinal)
-            && string.Equals(SlackProxy, other.SlackProxy, StringComparison.Ordinal);
+            && string.Equals(SlackProxy, other.SlackProxy, StringComparison.Ordinal)
+            && string.Equals(GenericUrl, other.GenericUrl, StringComparison.Ordinal)
+            && string.Equals(GenericHeaders, other.GenericHeaders, StringComparison.Ordinal)
+            && string.Equals(GenericBodyTemplate, other.GenericBodyTemplate, StringComparison.Ordinal)
+            && string.Equals(GenericProxy, other.GenericProxy, StringComparison.Ordinal);
     }
 }

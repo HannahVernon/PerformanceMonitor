@@ -713,6 +713,28 @@ public sealed class WebhooksConfig
 
     [JsonPropertyName("slackProxy")]
     public string SlackProxy { get; set; } = "";
+
+    /* Generic webhook (#1506): POSTs an operator-authored JSON body to any endpoint, so an alert can drive
+       automation we ship no adapter for (PagerDuty, Opsgenie, n8n, a GitHub repository_dispatch that re-runs
+       a workflow). Enabled by a non-empty URL, like the sibling channels. */
+
+    [JsonPropertyName("genericUrl")]
+    public string GenericUrl { get; set; } = "";
+
+    /// <summary>
+    /// A JSON object of request headers, e.g. <c>{"Authorization":"Bearer ghp_..."}</c>. A bearer secret —
+    /// carved out of the read-only viewer role's column grants alongside <c>generic_url</c>
+    /// (<c>DarlingManagedRoles.ViewerRestrictedConfigTables</c>).
+    /// </summary>
+    [JsonPropertyName("genericHeaders")]
+    public string GenericHeaders { get; set; } = "";
+
+    /// <summary>The JSON body, with <c>{{metric}}</c>/<c>{{server}}</c>/… placeholders; empty uses the shared default.</summary>
+    [JsonPropertyName("genericBodyTemplate")]
+    public string GenericBodyTemplate { get; set; } = "";
+
+    [JsonPropertyName("genericProxy")]
+    public string GenericProxy { get; set; } = "";
 }
 
 public sealed class MonitoredServer

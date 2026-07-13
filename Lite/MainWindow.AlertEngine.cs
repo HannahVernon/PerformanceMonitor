@@ -13,6 +13,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using PerformanceMonitor.Notifications;
+using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 /* The whole per-check loop (CPU → blocking → deadlocks → poison waits → long-running queries →
    tempdb → volume free space → anomalous jobs → failed jobs) lives in the shared
@@ -106,6 +107,71 @@ public partial class MainWindow : Window
             if ((curBadgeLowDisk && !prevBadgeLowDisk) || (curBadgeFailedJob && !prevBadgeFailedJob))
                 _alertStateService.ClearAcknowledgementForNewCondition(badgeServer.Id);
             RefreshServerBadgeExtras(badgeServer.Id);
+        }
+    }
+
+    /// <summary>
+    /// Delivers a connection-edge alert — email + webhook + the <c>config_alert_log</c> row — for one server
+    /// (#1506). Called from <see cref="CheckConnectionsAndNotify"/>'s existing edge-triggered transitions,
+    /// which keep showing their tray balloon; this is purely ADDITIVE, and closes the gap where Lite was the
+    /// only app of the three that could not tell you your server had gone down unless you were watching the
+    /// tray (the Dashboard emails on the same edge, and Darling's <c>DarlingSelfAlertEvaluator</c> emails and
+    /// webhooks it).
+    ///
+    /// <para>The metric names — "Server Unreachable" / "Server Restored" — are the ones the shared severity
+    /// map and <see cref="PerformanceMonitor.Common.AlertMetricClassifier"/> already understand, so the alert
+    /// renders CRITICAL-red / RESOLVED-green and the history grid classifies the restore as a resolution
+    /// without any new naming.</para>
+    ///
+    /// <para><b>Fires once per edge.</b> The caller's <c>_previousConnectionStates</c> dictionary is the edge
+    /// trigger: a server that stays offline is offline→offline and does not re-enter this method, so an
+    /// 8-hour outage produces ONE "Server Unreachable", not one per poll. There is deliberately no cooldown
+    /// re-fire here — an edge is a single event.</para>
+    ///
+    /// <para>Suppression matches Lite's other alerts: a mute rule flags the row muted and skips the channels
+    /// (<see cref="EmailAlertService.TrySendAlertEmailAsync"/>'s own contract — the history row is still
+    /// written), and a silenced server delivers nothing at all, the same "Silence All Alerts covers the
+    /// connection edge too" rule the Dashboard applies. Never throws: the send is fire-and-forget (SMTP/HTTP
+    /// off a UI-timer tick) and <c>TrySendAlertEmailAsync</c> absorbs its own failures.</para>
+    /// </summary>
+    private void SendConnectionAlert(ServerConnection server, string metricName, string currentValue, string detailText)
+    {
+        try
+        {
+            /* The name every other Lite alert keys on: the sweep's serverName is summary.DisplayName, which
+               MainWindow builds from DisplayNameWithIntent — so mute rules and history rows written here
+               match the ones the engine writes for the same server. */
+            var serverName = server.DisplayNameWithIntent;
+            var serverId = RemoteCollectorService.GetDeterministicHashCode(
+                RemoteCollectorService.GetServerNameForStorage(server));
+
+            /* A silenced/acknowledged server suppresses the new channels, exactly as it suppresses the sweep's
+               (ShouldShowAlerts is the engine's Suppressed input). The tray balloon in the caller is left
+               alone — it never consulted this, and this change must not regress it. */
+            if (!_alertStateService.ShouldShowAlerts(serverId.ToString()))
+            {
+                return;
+            }
+
+            bool isMuted = _muteRuleService.IsAlertMuted(new AlertMuteContext
+            {
+                ServerName = serverName,
+                MetricName = metricName
+            });
+
+            _ = _emailAlertService.TrySendAlertEmailAsync(
+                metricName,
+                serverName,
+                currentValue,
+                "Online",
+                serverId,
+                context: null,
+                muted: isMuted,
+                detailText: detailText);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("ConnectionAlerts", $"Connection alert delivery failed for {metricName}: {ex.Message}");
         }
     }
 

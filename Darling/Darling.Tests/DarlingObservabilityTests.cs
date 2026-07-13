@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyFiveVersions_V23CollectionLogHypertable_V24JobHistory_V25AgentStatus()
+    public void MigrationScripts_TwentySixVersions_V24JobHistory_V25AgentStatus_V26GenericWebhook()
     {
-        Assert.Equal(25, PgMigrations.Scripts.Count);
+        Assert.Equal(26, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -60,7 +60,16 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(23, PgMigrations.Scripts[22].Version);
         Assert.Equal(24, PgMigrations.Scripts[23].Version);
         Assert.Equal(25, PgMigrations.Scripts[24].Version);
-        Assert.Equal(25, StorageVersion.SchemaVersion);
+        Assert.Equal(26, PgMigrations.Scripts[25].Version);
+        Assert.Equal(26, StorageVersion.SchemaVersion);
+
+        /* V26 (#1506) adds the generic webhook channel's four columns to the V17 control-plane table.
+           Schema-qualified config.* and IF NOT EXISTS, per the file's additive-ALTER idiom. */
+        var v26 = PgMigrations.Scripts[25].Sql;
+        Assert.Contains("ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_url", v26, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_headers", v26, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_body_template", v26, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_notification ADD COLUMN IF NOT EXISTS generic_proxy", v26, StringComparison.Ordinal);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so

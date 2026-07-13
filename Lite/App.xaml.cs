@@ -172,8 +172,21 @@ public partial class App : Application
     public static string SlackWebhookUrl { get; set; } = "";
     public static string SlackProxyAddress { get; set; } = "";
 
+    /* Generic webhook settings (#1506) — POSTs an operator-authored JSON body to any endpoint, so an
+       alert can drive automation we ship no adapter for (PagerDuty, Opsgenie, n8n, or a GitHub
+       repository_dispatch that re-runs a workflow). The URL and the headers JSON both carry bearer
+       tokens, so — like the Teams/Slack URLs — they live in Credential Manager, never in settings.json;
+       only the enable flag, the proxy, and the body template are plain prefs. */
+    public static bool GenericWebhookEnabled { get; set; } = false;
+    public static string GenericWebhookUrl { get; set; } = "";
+    public static string GenericWebhookHeadersJson { get; set; } = "";
+    public static string GenericWebhookBodyTemplate { get; set; } = "";
+    public static string GenericWebhookProxyAddress { get; set; } = "";
+
     private const string TeamsWebhookCredentialKey = "TeamsWebhook";
     private const string SlackWebhookCredentialKey = "SlackWebhook";
+    private const string GenericWebhookCredentialKey = "GenericWebhook";
+    private const string GenericWebhookHeadersCredentialKey = "GenericWebhookHeaders";
 
     /// <summary>
     /// Gets a webhook URL from Windows Credential Manager.
@@ -590,6 +603,12 @@ public partial class App : Application
             if (root.TryGetProperty("slack_webhook_enabled", out v)) SlackWebhookEnabled = v.GetBoolean();
             if (root.TryGetProperty("slack_proxy_address", out v)) SlackProxyAddress = v.GetString() ?? "";
 
+            /* Generic webhook settings (#1506). The URL + headers JSON are secrets and load from Credential
+               Manager below; only these three are plain prefs. */
+            if (root.TryGetProperty("generic_webhook_enabled", out v)) GenericWebhookEnabled = v.GetBoolean();
+            if (root.TryGetProperty("generic_proxy_address", out v)) GenericWebhookProxyAddress = v.GetString() ?? "";
+            if (root.TryGetProperty("generic_body_template", out v)) GenericWebhookBodyTemplate = v.GetString() ?? "";
+
             /* Migrate webhook URLs from plaintext settings.json to Credential Manager */
             if (root.TryGetProperty("teams_webhook_url", out v))
             {
@@ -608,9 +627,12 @@ public partial class App : Application
                 }
             }
 
-            /* Load webhook URLs from Credential Manager */
+            /* Load webhook URLs from Credential Manager. The generic channel's headers JSON rides the same
+               secure store as a URL — it carries the Authorization bearer token (#1506). */
             TeamsWebhookUrl = GetWebhookUrl(TeamsWebhookCredentialKey);
             SlackWebhookUrl = GetWebhookUrl(SlackWebhookCredentialKey);
+            GenericWebhookUrl = GetWebhookUrl(GenericWebhookCredentialKey);
+            GenericWebhookHeadersJson = GetWebhookUrl(GenericWebhookHeadersCredentialKey);
 
             /* SMTP settings */
             if (root.TryGetProperty("smtp_enabled", out v)) SmtpEnabled = v.GetBoolean();
