@@ -726,6 +726,83 @@
                             </DataGrid>
                         </Grid>
                     </TabItem>
+                    <!-- Current Active Queries (LIVE, on-demand): a service-mediated live DMV snapshot of what is
+                         running on the monitored server RIGHT NOW (the fetch_active_queries command), distinct from
+                         the stored "Active Queries" tab above (the collector's hourly snapshots). Refresh fires the
+                         command; a read-only seat / timeout / unreachable server degrade to a status message. The
+                         grid mirrors the stored one's columns (no per-column filters — the live grid is a
+                         point-in-time read, not a windowed store read); the Estimated / Actual plan buttons reuse
+                         the stored grid's handlers on the plan the live DMV read carried inline. -->
+                    <TabItem Header="Current Active Queries">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Currently Running (Live)" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" Margin="0"/>
+                                <Button x:Name="RefreshCurrentActiveQueriesButton" Content="Refresh"
+                                        Click="RefreshCurrentActiveQueries_Click" Padding="12,4" Margin="16,0,8,0"
+                                        VerticalAlignment="Center"/>
+                                <TextBlock x:Name="CurrentActiveQueriesStatus"
+                                           Text="Click Refresh to fetch what is running on the server right now."
+                                           FontSize="12" Foreground="DarkGoldenrod" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <DataGrid Grid.Row="1" x:Name="CurrentActiveQueriesGrid" Style="{StaticResource DarkGrid}"
+                                      RowStyle="{StaticResource DarkGridRow}"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="SPID" Binding="{Binding SessionId}" ElementStyle="{StaticResource NumericCell}" Width="55"/>
+                                    <DataGridTextColumn Header="Collected" Binding="{Binding CollectionTimeLocal}" Width="140"/>
+                                    <DataGridTextColumn Header="Database" Binding="{Binding DatabaseName}" Width="120"/>
+                                    <DataGridTextColumn Header="Login" Binding="{Binding LoginName}" Width="110"/>
+                                    <DataGridTextColumn Header="Host" Binding="{Binding HostName}" Width="110"/>
+                                    <DataGridTextColumn Header="Program" Binding="{Binding ProgramName}" Width="140"/>
+                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="80"/>
+                                    <DataGridTextColumn Header="Elapsed" Binding="{Binding ElapsedTimeFormatted}" Width="120" SortMemberPath="TotalElapsedTimeMs"/>
+                                    <DataGridTextColumn Header="CPU (ms)" Binding="{Binding CpuTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                                    <DataGridTextColumn Header="Logical Reads" Binding="{Binding LogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="95"/>
+                                    <DataGridTextColumn Header="Reads" Binding="{Binding Reads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                                    <DataGridTextColumn Header="Writes" Binding="{Binding Writes, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                                    <DataGridTextColumn Header="Wait Type" Binding="{Binding WaitType}" Width="120"/>
+                                    <DataGridTextColumn Header="Wait (ms)" Binding="{Binding WaitTimeMs, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="80"/>
+                                    <DataGridTextColumn Header="Wait Resource" Binding="{Binding WaitResource}" Width="140"/>
+                                    <DataGridTextColumn Header="Blocking" Binding="{Binding BlockingSessionId}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                                    <DataGridTextColumn Header="DOP" Binding="{Binding Dop}" ElementStyle="{StaticResource NumericCell}" Width="45"/>
+                                    <DataGridTextColumn Header="Workers" Binding="{Binding ParallelWorkerCount}" ElementStyle="{StaticResource NumericCell}" Width="60"/>
+                                    <DataGridTextColumn Header="Memory (GB)" Binding="{Binding GrantedQueryMemoryGb, StringFormat=F2}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                                    <DataGridTextColumn Header="Isolation" Binding="{Binding TransactionIsolationLevel}" Width="140"/>
+                                    <DataGridTextColumn Header="Open Tran" Binding="{Binding OpenTransactionCount}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                                    <DataGridTextColumn Header="% Done" Binding="{Binding PercentComplete, StringFormat=F1}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                                    <DataGridTextColumn Header="Query Hash" Binding="{Binding QueryHash}" Width="150"/>
+                                    <DataGridTemplateColumn Header="Query Text" Width="500">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding QueryText}" TextWrapping="Wrap" MaxHeight="90" Margin="5,2"
+                                                           ToolTip="{Binding QueryText}"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Query Plan" Width="Auto" MinWidth="160">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                    <Button Content="Estimated" Click="OpenSnapshotEstimatedPlan_Click"
+                                                            IsEnabled="{Binding HasQueryPlan}"
+                                                            VerticalAlignment="Center"
+                                                            Padding="6,4" Margin="0,0,4,0"/>
+                                                    <Button Content="Actual" Click="OpenSnapshotActualPlan_Click"
+                                                            IsEnabled="{Binding HasLiveQueryPlan}"
+                                                            VerticalAlignment="Center"
+                                                            Padding="6,4"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </TabItem>
                     <!-- Top Queries by Duration (Lite ServerTab.xaml:404-702): ~44 columns, 4 BarChartCell
                          columns (Executions / Total CPU / Total Duration / Total Reads) with BarMax* bound
                          by RelativeSource to the host ViewerServerTab, plus the CPU-by-database expander. -->
