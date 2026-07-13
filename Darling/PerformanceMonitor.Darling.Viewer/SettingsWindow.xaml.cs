@@ -931,7 +931,11 @@ public partial class SettingsWindow : Window
         {
             row.GenericUrl = GenericWebhookUrlBox.Text?.Trim() ?? "";
             row.GenericHeaders = GenericWebhookHeadersBox.Text?.Trim() ?? "";
-            row.GenericBodyTemplate = GenericWebhookBodyBox.Text?.Trim() ?? "";
+            /* Persist the empty "use built-in default" sentinel unless the operator actually edited the body box
+               (the Settings load pre-fills it with the default), so a future release can still improve it. */
+            row.GenericBodyTemplate = WebhookAlertService.IsDefaultBodyTemplate(GenericWebhookBodyBox.Text)
+                ? ""
+                : GenericWebhookBodyBox.Text?.Trim() ?? "";
             row.GenericProxy = GenericWebhookProxyAddressBox.Text?.Trim() ?? "";
 
             /* A malformed headers JSON / body template would let the service accept the channel and then
@@ -1125,6 +1129,21 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>
+    /// Non-blocking confirm shown when an http:// generic-webhook URL carries headers — the Authorization
+    /// token would go on the wire in cleartext (#1506). Yes proceeds; No cancels the action. <paramref
+    /// name="action"/> is the verb ("Save" / "Send"). Not blocked outright: a plaintext POST to a trusted LAN
+    /// listener is a legitimate setup.
+    /// </summary>
+    private static bool ConfirmCleartextWebhook(string action)
+    {
+        var result = MessageBox.Show(
+            "The webhook URL uses http://, so the Authorization header and any credentials are sent in cleartext " +
+            $"and can be intercepted on the network.\n\n{action} anyway?",
+            "Insecure Webhook URL", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        return result == MessageBoxResult.Yes;
+    }
+
+    /// <summary>
     /// Tests the generic webhook with the values currently in the boxes (not the stored ones), like the
     /// Teams/Slack test buttons. A malformed headers JSON or body template comes back as the error message
     /// rather than an exception, so the operator fixes it here instead of discovering it when a real alert
@@ -1132,13 +1151,20 @@ public partial class SettingsWindow : Window
     /// </summary>
     private async void TestGenericButton_Click(object sender, RoutedEventArgs e)
     {
+        var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
+        var headers = GenericWebhookHeadersBox.Text?.Trim();
+
+        /* Warn before a cleartext http:// POST would send the Authorization header unencrypted (#1506). */
+        if (WebhookAlertService.IsCleartextHttpWithHeaders(url, headers) && !ConfirmCleartextWebhook("Send"))
+        {
+            return;
+        }
+
         TestGenericButton.IsEnabled = false;
         TestGenericButton.Content = "Sending...";
 
         try
         {
-            var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
-            var headers = GenericWebhookHeadersBox.Text?.Trim();
             var body = GenericWebhookBodyBox.Text?.Trim();
             var proxy = GenericWebhookProxyAddressBox.Text?.Trim();
             var error = await WebhookAlertService.SendTestGenericAsync(url, headers, body, proxy, s_branding);
@@ -1182,6 +1208,16 @@ public partial class SettingsWindow : Window
         var alertRow = BuildAlertRowFromControls(errors);
         SaveViewerLocalAlertFields(errors);
         var notifyRow = BuildNotificationRowFromControls(errors);
+
+        /* Cleartext warning (#1506): an http:// generic-webhook URL carrying headers sends the Authorization
+           token in the clear. Confirm before persisting anything; No cancels the save and the window stays open
+           to fix the URL. NOT blocked — a plaintext POST to a trusted LAN listener is legitimate. */
+        if (GenericWebhookEnabledCheckBox.IsChecked == true
+            && WebhookAlertService.IsCleartextHttpWithHeaders(GenericWebhookUrlBox.Text?.Trim(), GenericWebhookHeadersBox.Text?.Trim())
+            && !ConfirmCleartextWebhook("Save"))
+        {
+            return;
+        }
 
         /* Persist the viewer-LOCAL preferences immediately (valid values applied above), and capture the
            edited viewer preferences for MainWindow to save + re-seed tabs from. */

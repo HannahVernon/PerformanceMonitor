@@ -618,8 +618,9 @@ public class WebhookAlertService
     /// JSON-ESCAPED text: the tokens sit inside JSON string literals in the template
     /// (<c>"server": "{{server}}"</c>), so a server name, wait type, or error message containing a quote or
     /// backslash would otherwise terminate the literal early and corrupt — or inject into — the posted JSON.
-    /// <see cref="JsonEncodedText"/> yields exactly the escaped INNER text (no surrounding quotes), which is
-    /// what a token inside a literal needs.
+    /// The escaping goes through <see cref="JsonSerializer"/> (see <see cref="EscapeForJson"/>) — NOT
+    /// <c>JsonEncodedText.Encode</c>, which throws on the lone surrogates SQL Server names can carry — and the
+    /// two surrounding quotes are stripped to leave exactly the escaped INNER text a token inside a literal needs.
     /// </summary>
     internal static string BuildGenericPayload(
         string metricName,
@@ -739,6 +740,43 @@ public class WebhookAlertService
             new AlertBranding("Performance Monitor", null), isTest: true, bodyTemplate: bodyTemplate);
 
         return IsWellFormedJson(rendered, out var bodyError) ? null : bodyError;
+    }
+
+    /// <summary>
+    /// True when the text is the built-in default body template (newline-insensitive), or empty. The settings
+    /// windows pre-fill the body box with <see cref="DefaultGenericBodyTemplate"/> when nothing is stored, so
+    /// Save uses this to persist the empty "use the default" sentinel instead of freezing a copy of today's
+    /// default — which would otherwise lock that operator out of future default improvements.
+    /// </summary>
+    public static bool IsDefaultBodyTemplate(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        static string Normalize(string s) => s.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal).Trim();
+        return string.Equals(Normalize(text), Normalize(DefaultGenericBodyTemplate), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// True when the generic webhook would send credentials in the clear: an <c>http://</c> (not https) URL
+    /// carrying at least one header — the headers hold the <c>Authorization</c> bearer token, which a plaintext
+    /// POST exposes to anyone on the path. The settings windows use this to prompt a non-blocking confirm at
+    /// Save/Test (it is NOT blocked: a plaintext POST to a trusted LAN listener is legitimate). Returns false
+    /// for https, for a headerless http URL, and for a URL that does not parse (the send surfaces its own error).
+    /// </summary>
+    public static bool IsCleartextHttpWithHeaders(string? url, string? headersJson)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || !string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        /* Only warn when a header is actually present; a malformed headers JSON is caught by its own
+           validation path, so treat "doesn't parse" as "no header to expose here". */
+        return TryParseHeaders(headersJson, out var headers, out _) && headers.Count > 0;
     }
 
     /// <summary>
@@ -921,9 +959,9 @@ public class WebhookAlertService
     /// Applies the operator's headers to the request, routing content headers (a Content-Type override) onto
     /// the content — setting one on <see cref="HttpRequestMessage.Headers"/> is rejected, so a naive add would
     /// silently drop it. Values are added without validation: they are the operator's own, and a strict parse
-    /// would reject perfectly good tokens.
+    /// would reject perfectly good tokens (CR/LF is already rejected upstream in <see cref="TryParseHeaders"/>).
     /// </summary>
-    private static void ApplyHeaders(HttpRequestMessage request, HttpContent content, IReadOnlyDictionary<string, string> headers)
+    internal static void ApplyHeaders(HttpRequestMessage request, HttpContent content, IReadOnlyDictionary<string, string> headers)
     {
         foreach (var (name, value) in headers)
         {

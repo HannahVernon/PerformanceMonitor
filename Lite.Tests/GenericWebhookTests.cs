@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Net.Http;
 using System.Text.Json;
 using PerformanceMonitor.Notifications;
 using Xunit;
@@ -213,5 +215,55 @@ public class GenericWebhookTests
         /* An unquoted placeholder: the substituted text lands outside a string literal, so the body is not
            JSON. Caught at Save, rather than silently dropping every alert afterwards. */
         Assert.NotNull(WebhookAlertService.ValidateGenericConfig(null, """{"metric": {{metric}}}"""));
+    }
+
+    /* ---------------- ApplyHeaders (request/content header routing) ---------------- */
+
+    private static (HttpRequestMessage Request, HttpContent Content) ApplyHeaders(Dictionary<string, string> headers)
+    {
+        var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        var request = new HttpRequestMessage(HttpMethod.Post, "https://example.test/hook") { Content = content };
+        WebhookAlertService.ApplyHeaders(request, content, headers);
+        return (request, content);
+    }
+
+    [Fact]
+    public void ApplyHeaders_DefaultsUserAgent_WhenOperatorSetsNone()
+    {
+        /* GitHub's REST API 403s a request with no User-Agent, and repository_dispatch is the motivating
+           case — so one is defaulted rather than handing the operator a 403 to diagnose. */
+        var (request, _) = ApplyHeaders(new Dictionary<string, string> { ["Accept"] = "application/vnd.github+json" });
+
+        Assert.True(request.Headers.Contains("User-Agent"));
+        Assert.Equal("PerformanceMonitor", string.Join("", request.Headers.GetValues("User-Agent")));
+    }
+
+    [Fact]
+    public void ApplyHeaders_DoesNotOverrideAnOperatorUserAgent()
+    {
+        var (request, _) = ApplyHeaders(new Dictionary<string, string> { ["User-Agent"] = "my-agent/2.0" });
+
+        Assert.Equal("my-agent/2.0", string.Join("", request.Headers.GetValues("User-Agent")));
+    }
+
+    [Fact]
+    public void ApplyHeaders_RoutesContentTypeOntoTheContent_NotDroppedAsARequestHeader()
+    {
+        /* Content-Type is a CONTENT header — TryAddWithoutValidation on request.Headers rejects it, so a naive
+           add would silently drop the override. ApplyHeaders must move it onto the content, replacing the
+           default application/json StringContent set. (The framework won't even let you QUERY Content-Type on
+           request.Headers — it throws "misused header name" — which is the same rule that makes routing it onto
+           the content necessary; so the content-side assertion is the meaningful proof.) */
+        var (_, content) = ApplyHeaders(new Dictionary<string, string> { ["Content-Type"] = "application/vnd.github+json" });
+
+        Assert.Equal("application/vnd.github+json", content.Headers.ContentType?.ToString());
+    }
+
+    [Fact]
+    public void ApplyHeaders_AddsAnOrdinaryOperatorHeader()
+    {
+        var (request, _) = ApplyHeaders(new Dictionary<string, string> { ["Authorization"] = "Bearer ghp_token" });
+
+        Assert.Equal("Bearer ghp_token", string.Join("", request.Headers.GetValues("Authorization")));
     }
 }

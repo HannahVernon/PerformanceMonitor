@@ -982,6 +982,17 @@ public partial class SettingsWindow : Window
     /// </summary>
     private bool SaveWebhookSettings()
     {
+        /* Cleartext warning (#1506): an http:// generic-webhook URL carrying headers sends the Authorization
+           token in the clear. Confirm before persisting a config that will transmit credentials unencrypted;
+           Yes proceeds, No cancels the webhook save (the typed values stay in the still-open dialog to fix).
+           NOT blocked — a plaintext POST to a trusted LAN listener is legitimate. */
+        if (GenericWebhookEnabledCheckBox.IsChecked == true
+            && WebhookAlertService.IsCleartextHttpWithHeaders(GenericWebhookUrlBox.Text?.Trim(), GenericWebhookHeadersBox.Text?.Trim())
+            && !ConfirmCleartextWebhook("Save"))
+        {
+            return false;
+        }
+
         App.TeamsWebhookEnabled = TeamsWebhookEnabledCheckBox.IsChecked == true;
         App.TeamsWebhookUrl = TeamsWebhookUrlBox.Text?.Trim() ?? "";
         App.TeamsProxyAddress = TeamsProxyAddressBox.Text?.Trim() ?? "";
@@ -991,7 +1002,11 @@ public partial class SettingsWindow : Window
         App.GenericWebhookEnabled = GenericWebhookEnabledCheckBox.IsChecked == true;
         App.GenericWebhookUrl = GenericWebhookUrlBox.Text?.Trim() ?? "";
         App.GenericWebhookHeadersJson = GenericWebhookHeadersBox.Text?.Trim() ?? "";
-        App.GenericWebhookBodyTemplate = GenericWebhookBodyBox.Text?.Trim() ?? "";
+        /* Persist the empty "use built-in default" sentinel unless the operator actually edited the body box
+           (LoadWebhookSettings pre-fills it with the default), so a future release can still improve it. */
+        App.GenericWebhookBodyTemplate = WebhookAlertService.IsDefaultBodyTemplate(GenericWebhookBodyBox.Text)
+            ? ""
+            : GenericWebhookBodyBox.Text?.Trim() ?? "";
         App.GenericWebhookProxyAddress = GenericWebhookProxyAddressBox.Text?.Trim() ?? "";
 
         /* Save webhook URLs to Credential Manager instead of settings.json. The generic channel's headers
@@ -1162,6 +1177,21 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>
+    /// Non-blocking confirm shown when an http:// generic-webhook URL carries headers — the Authorization
+    /// token would go on the wire in cleartext (#1506). Yes proceeds; No cancels the action. <paramref
+    /// name="action"/> is the verb ("Save" / "Send"). Not blocked outright: a plaintext POST to a trusted LAN
+    /// listener is a legitimate setup.
+    /// </summary>
+    private bool ConfirmCleartextWebhook(string action)
+    {
+        var result = MessageBox.Show(
+            "The webhook URL uses http://, so the Authorization header and any credentials are sent in cleartext " +
+            $"and can be intercepted on the network.\n\n{action} anyway?",
+            "Insecure Webhook URL", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        return result == MessageBoxResult.Yes;
+    }
+
+    /// <summary>
     /// Tests the generic webhook with the values currently in the boxes (not the saved ones), like the
     /// Teams/Slack test buttons. A malformed headers JSON or body template comes back as the error message
     /// rather than an exception, so the operator fixes it here instead of discovering it when a real alert
@@ -1169,13 +1199,20 @@ public partial class SettingsWindow : Window
     /// </summary>
     private async void TestGenericButton_Click(object sender, RoutedEventArgs e)
     {
+        var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
+        var headers = GenericWebhookHeadersBox.Text?.Trim();
+
+        /* Warn before a cleartext http:// POST would send the Authorization header unencrypted (#1506). */
+        if (WebhookAlertService.IsCleartextHttpWithHeaders(url, headers) && !ConfirmCleartextWebhook("Send"))
+        {
+            return;
+        }
+
         TestGenericButton.IsEnabled = false;
         TestGenericButton.Content = "Sending...";
 
         try
         {
-            var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
-            var headers = GenericWebhookHeadersBox.Text?.Trim();
             var body = GenericWebhookBodyBox.Text?.Trim();
             var proxy = GenericWebhookProxyAddressBox.Text?.Trim();
             var error = await WebhookAlertService.SendTestGenericAsync(url, headers, body, proxy, EmailAlertService.Branding);
