@@ -114,6 +114,16 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<LatchStatsSnapshotRow>? _latchStatsFilterMgr;
     private DataGridFilterManager<SpinlockStatsSnapshotRow>? _spinlockStatsFilterMgr;
     private DataGridFilterManager<PlanCacheSnapshotRow>? _planCacheCompositionFilterMgr;
+    /* System Events tab: one filter manager per grid category (the two chart sub-tabs have no grid). */
+    private DataGridFilterManager<SchedulerIssueRow>? _seSchedulerFilterMgr;
+    private DataGridFilterManager<SevereErrorRow>? _seSevereErrorFilterMgr;
+    private DataGridFilterManager<MemoryConditionsRow>? _seMemoryConditionsFilterMgr;
+    private DataGridFilterManager<MemoryBrokerRow>? _seMemoryBrokerFilterMgr;
+    private DataGridFilterManager<MemoryNodeOomRow>? _seMemoryNodeOomFilterMgr;
+    private DataGridFilterManager<SignificantWaitRow>? _seSignificantWaitsFilterMgr;
+    private DataGridFilterManager<CpuTasksRow>? _seCpuTasksFilterMgr;
+    private DataGridFilterManager<IoIssuesRow>? _seIoIssuesFilterMgr;
+    private DataGridFilterManager<DefaultTraceEventRow>? _seDefaultTraceFilterMgr;
     private CancellationTokenSource? _actualPlanCts;
 
     public int UtcOffsetMinutes { get; }
@@ -208,7 +218,9 @@ public partial class ServerTab : UserControl
             QueryStoreGrid, BlockedProcessReportGrid, DeadlockGrid, RunningJobsGrid,
             ServerConfigGrid, DatabaseConfigGrid, DatabaseScopedConfigGrid, TraceFlagsGrid,
             CollectionHealthGrid, CollectionLogGrid, LatchStatsGrid, SpinlockStatsGrid,
-            PlanCacheCompositionGrid })
+            PlanCacheCompositionGrid, SchedulerIssuesGrid, SevereErrorsGrid, MemoryConditionsGrid,
+            MemoryBrokerGrid, MemoryNodeOomGrid, SignificantWaitsGrid, CpuTasksGrid, IoIssuesGrid,
+            DefaultTraceGrid })
         {
             grid.CopyingRowClipboardContent += DataGridClipboardBehavior.FixHeaderCopy;
         }
@@ -277,6 +289,10 @@ public partial class ServerTab : UserControl
         InitializeCpuSchedulerChart();
         InitializePlanCacheChart();
         InitializeSessionStatsChart();
+
+        /* System Events Corruption/Contention counter charts: theme + hover up front (own partial,
+           mirrors Darling's SystemHealthCharts). */
+        InitializeSystemHealthCharts();
 
         /* Query heatmap hover popup */
         _heatmapPopupText = new TextBlock
@@ -440,7 +456,8 @@ public partial class ServerTab : UserControl
         if (!IsLoaded || _dataService == null) return;
         if (_isRefreshing) return;
         if (e.Source != MainTabControl && e.Source != QueriesSubTabControl
-            && e.Source != MemorySubTabControl && e.Source != BlockingSubTabControl) return;
+            && e.Source != MemorySubTabControl && e.Source != BlockingSubTabControl
+            && e.Source != SystemEventsSubTabControl) return;
 
         UpdateCompareDropdownState();
 
@@ -602,5 +619,6 @@ public partial class ServerTab : UserControl
         DisposeCpuSchedulerHelpers();
         DisposePlanCacheHelpers();
         DisposeSessionStatsHelpers();
+        DisposeSystemHealthChartHelpers();
     }
 }
