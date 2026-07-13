@@ -36,14 +36,18 @@ public partial class ViewerServerTab
 {
     /* Queries sub-tab order — matches Lite's QueriesSubTabControl (W1f-2), plus the Darling-only unified
        Expensive Queries grid inserted after the three per-source grids (Dashboard parity), keeping Query
-       Heatmap last: Performance Trends, Active Queries, the three grids, Expensive Queries, Query Heatmap. */
+       Heatmap last, and the Darling-only LIVE "Current Active Queries" tab inserted right after the stored
+       "Active Queries" tab: Performance Trends, Active Queries, Current Active Queries (live), the three grids,
+       Expensive Queries, Query Heatmap. Every reference below uses the NAMED constant, so inserting the live
+       tab at index 2 only shifts these values — no literal-index caller needs touching. */
     private const int PerformanceTrendsSubTabIndex = 0;
     private const int ActiveQueriesSubTabIndex = 1;
-    private const int TopQueriesSubTabIndex = 2;
-    private const int TopProceduresSubTabIndex = 3;
-    private const int QueryStoreSubTabIndex = 4;
-    private const int ExpensiveQueriesSubTabIndex = 5;
-    private const int QueryHeatmapSubTabIndex = 6;
+    private const int CurrentActiveQueriesSubTabIndex = 2;
+    private const int TopQueriesSubTabIndex = 3;
+    private const int TopProceduresSubTabIndex = 4;
+    private const int QueryStoreSubTabIndex = 5;
+    private const int ExpensiveQueriesSubTabIndex = 6;
+    private const int QueryHeatmapSubTabIndex = 7;
 
     private string _queryStatsSlicerMetric = "TotalCpu";
     private List<TimeSliceBucket>? _queryStatsSlicerData;
@@ -125,6 +129,11 @@ public partial class ViewerServerTab
                 break;
             case ActiveQueriesSubTabIndex:
                 await LoadActiveQueriesAsync(startUtc, endUtc);
+                break;
+            case CurrentActiveQueriesSubTabIndex:
+                /* LIVE, on-demand only — never auto-fetch on tab selection or a toolbar-range refresh (a live
+                   server hit is an explicit operator action). The Refresh button drives the fetch; the tab keeps
+                   its last snapshot / hint until then. */
                 break;
             case TopProceduresSubTabIndex:
                 await LoadTopProceduresAsync(startUtc, endUtc);

@@ -1371,6 +1371,9 @@ LIMIT 1", connection);
 
         public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
             => _worker.RunExecuteActualPlanAsync(_servers, serverId, request, cancellationToken);
+
+        public Task<CommandOutcome> FetchActiveQueriesLiveAsync(int serverId, CancellationToken cancellationToken)
+            => _worker.RunFetchActiveQueriesLiveAsync(_servers, _runner, serverId, cancellationToken);
     }
 
     /// <summary>
@@ -1698,6 +1701,86 @@ LIMIT 1", connection);
         _logger.LogInformation("[{Server}] fetch_plan returned a {Length}-char plan", displayName, planXml.Length);
         return new CommandOutcome(true, "plan fetched",
             JsonSerializer.Serialize(new { success = true, planXml }));
+    }
+
+    /// <summary>The SQL command timeout (seconds) for the live active-queries DMV read. A "what is running now"
+    /// snapshot should return quickly; the shared collector query sets <c>LOCK_TIMEOUT 1000</c> and runs under
+    /// READ UNCOMMITTED, so 30s is a wide margin. Bounded well under the viewer's
+    /// <c>ActiveQueriesLiveTimeout</c> poll budget so the viewer sees a real "timed out" outcome rather than a
+    /// poll miss, and so a wedged read cannot pin the single-threaded command loop past the stale-command reaper.</summary>
+    public const int ActiveQueriesFetchTimeoutSeconds = 30;
+
+    /// <summary>
+    /// The <c>fetch_active_queries</c> command handler (headless-plan live-snapshot wave): reads the LIVE
+    /// running-request DMV snapshot from one monitored server on demand and returns the rows — the on-demand,
+    /// live counterpart of the collector's stored hourly snapshot, for the viewer's Current Active Queries tab.
+    /// The query and shredding are REUSED from the shared <see cref="QuerySnapshotsCollector"/> (via
+    /// <see cref="DarlingCollectorRunner.FetchRowsAsync"/>), so the live rows carry the SAME columns as the
+    /// stored ones. Read-only — <c>sys.dm_exec_requests</c>/<c>sessions</c> + the sql_text / query_plan DMFs — so
+    /// unlike <see cref="RunExecuteActualPlanAsync"/> it is not consent-class and takes NO collection gate (a DMV
+    /// read touches no collector state and writes nothing, so it runs concurrently with a scheduled sweep). The
+    /// up-front lookup gives a precise "not monitored" / "not connected" outcome (mirroring
+    /// <see cref="RunFetchPlanAsync"/>); a timeout / permission gap / SQL error is caught and reported as a
+    /// legible outcome rather than a raw exception (mirroring <see cref="RunExecuteActualPlanAsync"/>).
+    /// </summary>
+    private async Task<CommandOutcome> RunFetchActiveQueriesLiveAsync(
+        List<ServerLoopState> servers, DarlingCollectorRunner runner, int serverId, CancellationToken cancellationToken)
+    {
+        /* Resolve the runtime under the lock (the command loop reconciles the list concurrently); ServerRuntime is
+           immutable, so capturing the reference and using it after the lock is safe. Held only for the lookup. */
+        ServerLoopState? server;
+        ServerRuntime? runtime;
+        string displayName;
+        lock (_serversLock)
+        {
+            server = servers.Find(s => ServerIdHelper.GetDeterministicHashCode(s.Config.StorageName) == serverId);
+            runtime = server?.Runtime;
+            displayName = server?.Config.DisplayName ?? serverId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (server is null)
+        {
+            return new CommandOutcome(false, "server not monitored", JsonError($"no monitored server with server_id {serverId}"));
+        }
+
+        if (runtime is null)
+        {
+            return new CommandOutcome(false, "server not connected",
+                JsonError($"server '{displayName}' is not currently connected — the live active queries can only be read from a connected server"));
+        }
+
+        try
+        {
+            var rows = await runner.FetchRowsAsync(
+                QuerySnapshotsCollector.Instance, runtime, ActiveQueriesFetchTimeoutSeconds, cancellationToken);
+            _logger.LogInformation("[{Server}] fetch_active_queries returned {Count} running request(s)", displayName, rows.Count);
+            return new CommandOutcome(true, "active queries fetched", ActiveQueriesLivePayload.Serialize(rows, DateTime.UtcNow));
+        }
+        catch (OperationCanceledException)
+        {
+            /* Service shutdown mid-read — let the poller's catch stop the loop cleanly. */
+            throw;
+        }
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return new CommandOutcome(false, "timed out",
+                JsonError($"reading the live active queries on '{displayName}' did not finish within the {ActiveQueriesFetchTimeoutSeconds}s budget and was cancelled"));
+        }
+        catch (SqlException ex) when (IsPermissionError(ex))
+        {
+            return new CommandOutcome(false, "permission denied",
+                JsonError($"the monitoring login for '{displayName}' lacks permission to read the active-query DMVs (VIEW SERVER STATE is required). (SQL error {ex.Number}: {ex.Message})"));
+        }
+        catch (SqlException ex)
+        {
+            return new CommandOutcome(false, "sql error",
+                JsonError($"reading the live active queries on '{displayName}' failed (SQL error {ex.Number}): {ex.Message}"));
+        }
+        catch (Exception ex)
+        {
+            return new CommandOutcome(false, "error",
+                JsonError($"reading the live active queries on '{displayName}' failed: {ex.Message}"));
+        }
     }
 
     /// <summary>The store lookup that resolves the actual-plan command's <c>query_stats</c> IDENTIFIER (server_id +

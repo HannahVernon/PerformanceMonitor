@@ -302,6 +302,57 @@ public sealed class DarlingCollectorRunner
     }
 
     /// <summary>
+    /// Runs a collector definition against one monitored server's LIVE connection and RETURNS the shredded
+    /// rows WITHOUT writing them to the store — the read-only "fetch phase only" twin of <see cref="RunAsync"/>,
+    /// for an on-demand read (the live Current Active Queries snapshot the <c>fetch_active_queries</c> command
+    /// serves). It builds the SAME <see cref="CollectorContext"/> the scheduled sweep builds (the shared delta
+    /// calculator, the live capture-plan / schema-change providers, the server's excluded databases, the
+    /// ignored-wait defaults), so the live query is byte-identical to the collector's, then opens ONE SqlClient
+    /// connection and runs the definition's single query and shredder. It deliberately supports ONLY the
+    /// single-statement path (no per-database enumeration, no per-item enumeration, no supplemental query): it
+    /// exists for <see cref="QuerySnapshotsCollector"/>, whose Azure variant already reads what it needs from one
+    /// connection. A collector that does not apply to the target yields an empty list (mirrors
+    /// <see cref="RunAsync"/>). Cancellation is honored; a <c>SqlException</c> propagates to the caller, which
+    /// maps it to a legible command outcome (timeout / permission / error) exactly as the actual-plan handler does.
+    /// </summary>
+    public async Task<List<TRow>> FetchRowsAsync<TRow>(
+        ICollectorDefinition<TRow> definition,
+        ServerRuntime server,
+        int commandTimeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        if (!definition.AppliesTo(server.Target))
+        {
+            return new List<TRow>();
+        }
+
+        var context = new CollectorContext
+        {
+            ServerId = server.ServerId,
+            ServerName = server.StorageName,
+            CollectionTime = DateTime.UtcNow,
+            Deltas = _deltas,
+            Target = server.Target,
+            Watermark = null,
+            NumericWatermark = null,
+            HasCollectedBefore = false,
+            IgnoredWaitTypes = IgnoredWaitDefaults.All,
+            ExcludedDatabases = server.Config.ExcludedDatabases?.ToArray() ?? Array.Empty<string>(),
+            PerfmonCounterOverride = null,
+            CapturePlanXml = _capturePlans(),
+            CollectSchemaChangeEvents = _collectSchemaChanges(),
+        };
+
+        var plan = definition.BuildQuery(context);
+
+        using var connection = new SqlConnection(server.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        using var command = CreateCollectorCommand(plan, connection, commandTimeoutSeconds);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await definition.ReadAsync(reader, context, cancellationToken);
+    }
+
+    /// <summary>
     /// Gets the most recent value of a timestamp column from Postgres for incremental collection.
     /// Returns null on first run or if the query fails (caller uses a fallback window) — the
     /// Postgres twin of Lite's GetLastCollectedTimeAsync.

@@ -47,6 +47,9 @@ public sealed class DarlingCommandExecutorTests
 
         public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
             => throw new InvalidOperationException("host should not be called for this command");
+
+        public Task<CommandOutcome> FetchActiveQueriesLiveAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("host should not be called for this command");
     }
 
     /// <summary>Records the custom-retention argument a <c>purge_now</c> dispatch passed the host — for the
@@ -75,6 +78,9 @@ public sealed class DarlingCommandExecutorTests
 
         public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
             => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> FetchActiveQueriesLiveAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
     }
 
     /// <summary>A host that records the fetch_plan request it received and returns a canned plan — for the
@@ -102,6 +108,38 @@ public sealed class DarlingCommandExecutorTests
 
         public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
             => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> FetchActiveQueriesLiveAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+    }
+
+    /// <summary>A host that records the fetch_active_queries call it received and returns a canned rows payload —
+    /// for the fetch_active_queries claim/execute/report round-trip (the store path, without a live SQL Server).</summary>
+    private sealed class ActiveQueriesReturningHost : IDarlingCommandHost
+    {
+        public int ReceivedServerId { get; private set; } = int.MinValue;
+
+        public Task<CommandOutcome> SnapshotNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> AnalyzeNowAsync(int serverId, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> PurgeNowAsync(int? customRetentionDays, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> FetchPlanAsync(int serverId, PlanFetchRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> ExecuteActualPlanAsync(int serverId, ActualPlanRequest request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("not this command");
+
+        public Task<CommandOutcome> FetchActiveQueriesLiveAsync(int serverId, CancellationToken cancellationToken)
+        {
+            ReceivedServerId = serverId;
+            return Task.FromResult(new CommandOutcome(true, "active queries fetched",
+                "{\"success\":true,\"fetchedAtUtc\":\"2026-07-13T12:00:00Z\",\"rows\":[{\"SessionId\":57,\"QueryText\":\"SELECT 1\"}]}"));
+        }
     }
 
     private static ClaimedCommand Command(string type, int? target = null, string? args = null) =>
@@ -320,6 +358,35 @@ public sealed class DarlingCommandExecutorTests
     {
         Assert.Equal(CommandKind.FetchPlan,
             DarlingCommandExecutor.ResolvePlan(Command("Fetch_Plan", target: 1, args: "{\"planHandle\":\"0x06\"}")).Kind);
+    }
+
+    [Fact]
+    public void ResolvePlan_FetchActiveQueries_RequiresTarget_NeedsNoArgs()
+    {
+        /* No target -> fail (needs a server whose LIVE DMVs to read). */
+        Assert.Equal(CommandKind.Fail, DarlingCommandExecutor.ResolvePlan(Command("fetch_active_queries")).Kind);
+
+        /* Target present -> FetchActiveQueries, with NO args required (the whole request is "this server, now"). */
+        var plan = DarlingCommandExecutor.ResolvePlan(Command("fetch_active_queries", target: 7));
+        Assert.Equal(CommandKind.FetchActiveQueries, plan.Kind);
+        Assert.Equal("active queries fetched", plan.SuccessStatus);
+
+        /* Case-insensitive like every other command_type. */
+        Assert.Equal(CommandKind.FetchActiveQueries,
+            DarlingCommandExecutor.ResolvePlan(Command("Fetch_Active_Queries", target: 7)).Kind);
+    }
+
+    /// <summary>
+    /// Pins the command constant viewer↔executor: the viewer's <see cref="ViewerDataService.CommandFetchActiveQueries"/>
+    /// (what it enqueues) must resolve to <see cref="CommandKind.FetchActiveQueries"/> in the service executor, so the
+    /// two ends can never drift apart (the same guarantee the fetch_plan / purge_now round-trips give their constants).
+    /// </summary>
+    [Fact]
+    public void CommandFetchActiveQueries_ConstantMatchesExecutorCase()
+    {
+        var plan = DarlingCommandExecutor.ResolvePlan(
+            Command(PerformanceMonitor.Darling.Viewer.ViewerDataService.CommandFetchActiveQueries, target: 7));
+        Assert.Equal(CommandKind.FetchActiveQueries, plan.Kind);
     }
 
     [Theory]
@@ -634,6 +701,57 @@ public sealed class DarlingCommandExecutorTests
             Assert.Equal("plan fetched", reader.GetString(1));
             Assert.Contains("ShowPlanXML", reader.GetString(2), StringComparison.Ordinal);
             Assert.True(reader.IsDBNull(3), "args_json must be nulled on terminal state");
+        }
+
+        await CleanupSentinelAsync(connection, ct);
+    }
+
+    [Fact]
+    public async Task ExecuteAndReport_FetchActiveQueries_RoundTrip_DispatchesToHost_ReportsRows()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the fetch_active_queries command round-trip.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+        await CleanupSentinelAsync(connection, ct);
+
+        /* A real pending fetch_active_queries row — target-only, no args_json (the whole request is the server id). */
+        long commandId;
+        using (var insert = new NpgsqlCommand(
+            "INSERT INTO config.config_command (command_type, target_server_id, status) " +
+            "VALUES ('fetch_active_queries', $1, 'pending') RETURNING command_id", connection))
+        {
+            insert.Parameters.AddWithValue(SentinelServerId);
+            commandId = Convert.ToInt64(await insert.ExecuteScalarAsync(ct));
+        }
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        var host = new ActiveQueriesReturningHost();
+        var executor = new DarlingCommandExecutor(postgres, host, "test-instance", null);
+
+        var claimed = await executor.ClaimNextAsync(ct);
+        Assert.NotNull(claimed);
+        Assert.Equal("fetch_active_queries", claimed!.CommandType);
+        Assert.Equal(SentinelServerId, claimed.TargetServerId);
+        await executor.ExecuteAndReportAsync(claimed, ct);
+
+        /* The executor dispatched to the host with the target id (no args to parse). */
+        Assert.Equal(SentinelServerId, host.ReceivedServerId);
+
+        /* The reported terminal outcome carries the rows payload. */
+        using (var read = new NpgsqlCommand(
+            "SELECT status, result_status, result_json::text FROM config.config_command WHERE command_id = $1", connection))
+        {
+            read.Parameters.AddWithValue(commandId);
+            using var reader = await read.ExecuteReaderAsync(ct);
+            Assert.True(await reader.ReadAsync(ct));
+            Assert.Equal("succeeded", reader.GetString(0));
+            Assert.Equal("active queries fetched", reader.GetString(1));
+            Assert.Contains("\"rows\"", reader.GetString(2), StringComparison.Ordinal);
         }
 
         await CleanupSentinelAsync(connection, ct);
