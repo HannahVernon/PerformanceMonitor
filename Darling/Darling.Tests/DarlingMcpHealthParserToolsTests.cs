@@ -31,7 +31,7 @@ namespace Darling.Tests;
 /// tool's (server_name, hours_back, limit) contract, the event-xml + database-name read SQL pins (Postgres
 /// dialect, event_time window, event_type filter), column parity against the generated collector DDL, the
 /// Gemini-clean schema, and the two things that make this a faithful port — (1) the reuse of the shared
-/// <see cref="SystemHealthParser"/> shred, and (2) <see cref="DarlingSystemHealthSignificance"/>, the
+/// <see cref="SystemHealthParser"/> shred, and (2) <see cref="SystemHealthSignificance"/>, the
 /// service-side twin of the viewer's <see cref="SystemEventSignificance"/> (asserted equal, so the twin
 /// can't drift), producing the same SIGNIFICANT warning set.
 /// </summary>
@@ -159,7 +159,11 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
             Assert.Empty(DarlingMcpSchemaAssert.RequiredOf(t.InputSchema));   /* server_name / hours_back / limit all default */
     }
 
-    /* ---------------- service-side significance == the viewer's canonical predicates (anti-drift) ---------------- */
+    /* ---------------- significance predicates pinned on the ONE shared source (anti-drift) ----------------
+       The sp_HealthParser per-category predicates now live once in SystemHealthSignificance (Common); the MCP
+       tools and the viewer facade (SystemEventSignificance) both call it. The value assertions below pin the
+       shared class to its canonical sp_HealthParser results; the facade-vs-shared equalities guard that the
+       viewer entry point still delegates rather than growing an independent (drift-prone) copy. */
 
     [Fact]
     public void Significance_SchedulerIssue_MatchesViewer()
@@ -167,9 +171,9 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
         foreach (var status in new[] { "WARNING", "OK", "", null })
         {
             var r = new SchedulerIssueRecord { Status = status };
-            Assert.Equal(SystemEventSignificance.IsSignificant(r), DarlingSystemHealthSignificance.IsSignificant(r));
+            Assert.Equal(SystemEventSignificance.IsSignificant(r), SystemHealthSignificance.IsSignificant(r));
         }
-        Assert.True(DarlingSystemHealthSignificance.IsSignificant(new SchedulerIssueRecord { Status = "WARNING" }));
+        Assert.True(SystemHealthSignificance.IsSignificant(new SchedulerIssueRecord { Status = "WARNING" }));
     }
 
     [Fact]
@@ -178,11 +182,11 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
         foreach (var (sev, num) in new[] { (24, 823), (19, 50000), (18, 50000), (16, 50000), (25, 17830), (20, 18056) })
         {
             var r = new SevereErrorRecord { Severity = sev, ErrorNumber = num };
-            Assert.Equal(SystemEventSignificance.IsSignificant(r), DarlingSystemHealthSignificance.IsSignificant(r));
+            Assert.Equal(SystemEventSignificance.IsSignificant(r), SystemHealthSignificance.IsSignificant(r));
         }
-        Assert.Equal(19, DarlingSystemHealthSignificance.SevereErrorMinSeverity);
-        Assert.Contains(17830, DarlingSystemHealthSignificance.IgnoredSevereErrorNumbers);
-        Assert.Contains(18056, DarlingSystemHealthSignificance.IgnoredSevereErrorNumbers);
+        Assert.Equal(19, SystemHealthSignificance.SevereErrorMinSeverity);
+        Assert.Contains(17830, SystemHealthSignificance.IgnoredSevereErrorNumbers);
+        Assert.Contains(18056, SystemHealthSignificance.IgnoredSevereErrorNumbers);
     }
 
     [Fact]
@@ -191,9 +195,9 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
         foreach (var note in new[] { "RESOURCE_MEMPHYSICAL_LOW", "RESOURCE_MEMPHYSICAL_HIGH", null })
         {
             var mc = new MemoryConditionsRecord { LastNotification = note };
-            Assert.Equal(SystemEventSignificance.IsSignificant(mc), DarlingSystemHealthSignificance.IsSignificant(mc));
+            Assert.Equal(SystemEventSignificance.IsSignificant(mc), SystemHealthSignificance.IsSignificant(mc));
             var mb = new MemoryBrokerRecord { Notification = note };
-            Assert.Equal(SystemEventSignificance.IsSignificant(mb), DarlingSystemHealthSignificance.IsSignificant(mb));
+            Assert.Equal(SystemEventSignificance.IsSignificant(mb), SystemHealthSignificance.IsSignificant(mb));
         }
     }
 
@@ -201,8 +205,8 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
     public void Significance_MemoryNodeOom_MatchesViewer_AlwaysSignificant()
     {
         var r = new MemoryNodeOomRecord();
-        Assert.Equal(SystemEventSignificance.IsSignificant(r), DarlingSystemHealthSignificance.IsSignificant(r));
-        Assert.True(DarlingSystemHealthSignificance.IsSignificant(r));
+        Assert.Equal(SystemEventSignificance.IsSignificant(r), SystemHealthSignificance.IsSignificant(r));
+        Assert.True(SystemHealthSignificance.IsSignificant(r));
     }
 
     [Fact]
@@ -211,9 +215,9 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
         foreach (var (state, pending) in new (string?, int?)[] { ("WARNING", 10), ("WARNING", 15), ("WARNING", 9), ("WARNING", null), ("CLEAN", 100), (null, 100) })
         {
             var r = new CpuTasksRecord { State = state, PendingTasks = pending };
-            Assert.Equal(SystemEventSignificance.IsSignificant(r), DarlingSystemHealthSignificance.IsSignificant(r));
+            Assert.Equal(SystemEventSignificance.IsSignificant(r), SystemHealthSignificance.IsSignificant(r));
         }
-        Assert.Equal(10, DarlingSystemHealthSignificance.CpuTaskMinPendingTasks);
+        Assert.Equal(10, SystemHealthSignificance.CpuTaskMinPendingTasks);
     }
 
     [Fact]
@@ -222,7 +226,7 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
         foreach (var state in new[] { "WARNING", "CLEAN", "HAS_ISSUES", null })
         {
             var r = new IoIssuesRecord { State = state };
-            Assert.Equal(SystemEventSignificance.IsSignificant(r), DarlingSystemHealthSignificance.IsSignificant(r));
+            Assert.Equal(SystemEventSignificance.IsSignificant(r), SystemHealthSignificance.IsSignificant(r));
         }
     }
 
@@ -232,29 +236,29 @@ public sealed class DarlingMcpHealthParserToolsSurfaceAndSqlTests
     public void RoundTrip_ShredFixturesThenGate_KeepsOnlySignificantRows()
     {
         // The tools' pipeline: SystemHealthParser (Common, reused) shreds each fixture, then
-        // DarlingSystemHealthSignificance keeps the significant rows. Assert the same significant set the
+        // SystemHealthSignificance keeps the significant rows. Assert the same significant set the
         // viewer's System Events tab surfaces.
-        Assert.True(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.True(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseSchedulerIssue(LoadFixture("scheduler_monitor.xml"))!));            // WARNING
-        Assert.True(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.True(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseSevereError(LoadFixture("error_reported.xml"))!));                  // severity 24
-        Assert.True(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.True(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseMemoryNodeOom(LoadFixture("memory_node_oom.xml"))!));               // ungated
-        Assert.True(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.True(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_query_processing_warning.xml"))!)); // WARNING + 15 pending
 
         // The representative memory-conditions / broker fixtures are RESOURCE_MEMPHYSICAL_HIGH — dropped.
-        Assert.False(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.False(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseMemoryConditions(LoadFixture("sp_server_diagnostics_resource.xml"))!));
-        Assert.False(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.False(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseMemoryBroker(LoadFixture("memory_broker.xml"))!));
         // The clean QUERY_PROCESSING fixture is CLEAN / 0 pending — dropped.
-        Assert.False(DarlingSystemHealthSignificance.IsSignificant(
+        Assert.False(SystemHealthSignificance.IsSignificant(
             SystemHealthParser.ParseCpuTasks(LoadFixture("sp_server_diagnostics_query_processing.xml"))!));
 
         // I/O: both WARNING file rows are significant.
         var io = SystemHealthParser.ParseIoIssues(LoadFixture("sp_server_diagnostics_io_subsystem.xml"));
-        Assert.Equal(2, io.Count(DarlingSystemHealthSignificance.IsSignificant));
+        Assert.Equal(2, io.Count(SystemHealthSignificance.IsSignificant));
     }
 
     [Fact]
