@@ -98,6 +98,20 @@ public partial class ServerTab : UserControl
                 }
                 break;
 
+            case UnifiedExpensiveQueryRow exp:
+                /* Only the statement sources (Query Stats / Query Store) carry runnable text; procedure rows
+                   carry just the object name, so they no-op the repro exactly like Lite's Top Procedures grid
+                   (which has no QueryText property and returns empty). The stored plan rides IN-ROW, so no
+                   live fetch is needed. */
+                if (exp.IsStatementSource)
+                {
+                    queryText = exp.QueryText;
+                    databaseName = exp.DatabaseName;
+                    planXml = exp.QueryPlanXml;
+                    source = "Expensive Queries";
+                }
+                break;
+
             default:
                 /* Not a supported grid for repro scripts — copy query text if available */
                 var textProp = grid.CurrentItem.GetType().GetProperty("QueryText");
