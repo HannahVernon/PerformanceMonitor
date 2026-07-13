@@ -32,10 +32,13 @@ public static class TestDatabaseHelper
         using var connection = new SqlConnection(GetConnectionString());
         await connection.OpenAsync(TestContext.Current.CancellationToken);
 
+        // EngineEdition 8 = Azure SQL Managed Instance, where SINGLE_USER is non-modifiable. These tests
+        // target box SQL Server, but the gate keeps the pattern correct so it is safe to copy from.
         using var cmd = new SqlCommand($@"
             IF DB_ID(N'{TestDatabaseName}') IS NOT NULL
             BEGIN
-                ALTER DATABASE [{TestDatabaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                IF SERVERPROPERTY('EngineEdition') <> 8
+                    ALTER DATABASE [{TestDatabaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
                 DROP DATABASE [{TestDatabaseName}];
             END;", connection);
         await cmd.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);

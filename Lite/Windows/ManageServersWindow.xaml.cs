@@ -52,11 +52,7 @@ public partial class ManageServersWindow : Window
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
             ?? "0.0.0";
 
-        int plusIndex = raw.IndexOf('+');
-        string trimmed = plusIndex >= 0 ? raw[..plusIndex] : raw;
-        return System.Version.TryParse(trimmed, out var v)
-            ? new System.Version(v.Major, v.Minor, v.Build).ToString()
-            : trimmed;
+        return VersionText.Normalize(raw);
     }
 
     private void AddButton_Click(object sender, RoutedEventArgs e)

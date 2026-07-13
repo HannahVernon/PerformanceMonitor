@@ -41,20 +41,15 @@ public sealed class CollectorViewerCoverageTests
     /// <summary>
     /// Collector tables that Lite collects and stores but whose data no reader/viewer surfaces yet.
     /// Every entry is Tier-1 unbuilt UI: Lite already collects the data, the Darling viewer already has
-    /// the tab, and the Lite port is pending. Verified by inspection on 2026-07-12 — none of these is
-    /// referenced in <c>Lite/Services/LocalDataService*.cs</c> (nor anywhere else in Lite's viewer path).
+    /// the tab, and the Lite port is pending.
     ///
-    /// Note: <c>session_stats</c> is deliberately NOT here — despite lacking a dedicated "Session Stats"
-    /// tab, its <c>v_session_stats</c> view IS read by the FinOps workload and server-info readers, so it
-    /// has a consumer. The server-wide summary table <c>session_summary_stats</c> now has its own Session
-    /// Stats tab + reader (as do <c>cpu_scheduler_stats</c> and <c>plan_cache_stats</c>), so those three
-    /// shipped and were removed from this list — only the System Events pair remains unbuilt.
+    /// EMPTY (fully drained). The last two entries — <c>system_health_events</c> and
+    /// <c>default_trace_events</c> — shipped as the System Events tab (its nine parse-on-read grids read
+    /// <c>v_system_health_events</c>; the Default Trace lane reads <c>v_default_trace_events</c>), so the
+    /// ratchet retired them. Every collector table now has a Lite reader; a NEW collect-but-don't-show
+    /// table must add a reader/tab or re-open this list with a Tier-1 comment.
     /// </summary>
-    private static readonly HashSet<string> KnownStoreOnlyOrUnbuiltTables = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "system_health_events",  // UNBUILT UI (parity board Tier 1) -- remove when the System Events tab ships
-        "default_trace_events",  // UNBUILT UI (parity board Tier 1) -- remove when the System Events / default-trace lane ships
-    };
+    private static readonly HashSet<string> KnownStoreOnlyOrUnbuiltTables = new(StringComparer.OrdinalIgnoreCase);
 
     [Fact]
     public void EveryCollectorTable_HasALiteReader_OrIsAllowListed()

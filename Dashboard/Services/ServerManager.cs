@@ -272,15 +272,35 @@ namespace PerformanceMonitorDashboard.Services
             jobCmd.CommandTimeout = 30;
             await jobCmd.ExecuteNonQueryAsync();
 
-            // Close active connections before dropping
+            // Close active connections before dropping.
+            // EngineEdition 8 = Azure SQL Managed Instance, where SINGLE_USER is non-modifiable (the batch
+            // would die on that line); gate it to box SQL Server and let MI DROP directly. Mirrors
+            // InstallationService.CleanInstallAsync.
             using var killCmd = new SqlCommand(@"
                 IF DB_ID('PerformanceMonitor') IS NOT NULL
                 BEGIN
-                    ALTER DATABASE [PerformanceMonitor] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                    IF SERVERPROPERTY('EngineEdition') <> 8
+                        ALTER DATABASE [PerformanceMonitor] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
                     DROP DATABASE [PerformanceMonitor];
                 END", connection);
             killCmd.CommandTimeout = 30;
-            await killCmd.ExecuteNonQueryAsync();
+            try
+            {
+                await killCmd.ExecuteNonQueryAsync();
+            }
+            catch
+            {
+                // A DROP that fails or times out after SINGLE_USER committed strands the database
+                // semi-bricked. Un-brick best-effort on a fresh connection, then re-raise the original error.
+                connection.Close();
+                bool restored = await InstallationService.TryRestoreDatabaseAccessAsync(builder.ConnectionString);
+                if (!restored)
+                {
+                    Logger.Warning($"Drop failed on '{server.DisplayName}' and the database may be left in " +
+                        "SINGLE_USER mode; re-run the clean install to recover, or ALTER DATABASE ... SET MULTI_USER manually.");
+                }
+                throw;
+            }
 
             Logger.Info($"Dropped PerformanceMonitor database and Agent jobs on '{server.DisplayName}'");
         }

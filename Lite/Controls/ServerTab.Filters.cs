@@ -39,6 +39,16 @@ public partial class ServerTab : UserControl
         _latchStatsFilterMgr = new DataGridFilterManager<LatchStatsSnapshotRow>(LatchStatsGrid);
         _spinlockStatsFilterMgr = new DataGridFilterManager<SpinlockStatsSnapshotRow>(SpinlockStatsGrid);
         _planCacheCompositionFilterMgr = new DataGridFilterManager<PlanCacheSnapshotRow>(PlanCacheCompositionGrid);
+        /* System Events grids (the two chart sub-tabs have no grid, so register no filter manager). */
+        _seSchedulerFilterMgr = new DataGridFilterManager<SchedulerIssueRow>(SchedulerIssuesGrid);
+        _seSevereErrorFilterMgr = new DataGridFilterManager<SevereErrorRow>(SevereErrorsGrid);
+        _seMemoryConditionsFilterMgr = new DataGridFilterManager<MemoryConditionsRow>(MemoryConditionsGrid);
+        _seMemoryBrokerFilterMgr = new DataGridFilterManager<MemoryBrokerRow>(MemoryBrokerGrid);
+        _seMemoryNodeOomFilterMgr = new DataGridFilterManager<MemoryNodeOomRow>(MemoryNodeOomGrid);
+        _seSignificantWaitsFilterMgr = new DataGridFilterManager<SignificantWaitRow>(SignificantWaitsGrid);
+        _seCpuTasksFilterMgr = new DataGridFilterManager<CpuTasksRow>(CpuTasksGrid);
+        _seIoIssuesFilterMgr = new DataGridFilterManager<IoIssuesRow>(IoIssuesGrid);
+        _seDefaultTraceFilterMgr = new DataGridFilterManager<DefaultTraceEventRow>(DefaultTraceGrid);
 
         _filterManagers[QuerySnapshotsGrid] = _querySnapshotsFilterMgr;
         _filterManagers[QueryStatsGrid] = _queryStatsFilterMgr;
@@ -56,6 +66,15 @@ public partial class ServerTab : UserControl
         _filterManagers[LatchStatsGrid] = _latchStatsFilterMgr;
         _filterManagers[SpinlockStatsGrid] = _spinlockStatsFilterMgr;
         _filterManagers[PlanCacheCompositionGrid] = _planCacheCompositionFilterMgr;
+        _filterManagers[SchedulerIssuesGrid] = _seSchedulerFilterMgr;
+        _filterManagers[SevereErrorsGrid] = _seSevereErrorFilterMgr;
+        _filterManagers[MemoryConditionsGrid] = _seMemoryConditionsFilterMgr;
+        _filterManagers[MemoryBrokerGrid] = _seMemoryBrokerFilterMgr;
+        _filterManagers[MemoryNodeOomGrid] = _seMemoryNodeOomFilterMgr;
+        _filterManagers[SignificantWaitsGrid] = _seSignificantWaitsFilterMgr;
+        _filterManagers[CpuTasksGrid] = _seCpuTasksFilterMgr;
+        _filterManagers[IoIssuesGrid] = _seIoIssuesFilterMgr;
+        _filterManagers[DefaultTraceGrid] = _seDefaultTraceFilterMgr;
     }
 
     private void EnsureFilterPopup()

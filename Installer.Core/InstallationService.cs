@@ -20,6 +20,24 @@ namespace Installer.Core;
 /// </summary>
 public static class InstallationService
 {
+    /// <summary>
+    /// Returned by <see cref="GetInstalledVersionAsync"/> when the database is clearly a
+    /// PerformanceMonitor install but its recorded version cannot be read — no SUCCESS row, or no
+    /// history table at all. It is a GUESS meaning "unknown, attempt every upgrade", chosen because it
+    /// sorts below every real version so <c>FilterUpgrades</c> offers all of them: the safe direction.
+    ///
+    /// It is NOT a fact, and callers that DECIDE something from a version must not treat it as one —
+    /// it compares less than any target, so anything keyed on "is an upgrade pending?" would answer
+    /// yes unconditionally. See <see cref="RepairOutcome"/>.
+    ///
+    /// Deliberately OUTSIDE the real version space. It used to be "1.0.0", which is a shipped tag — and
+    /// the "your recorded version is unreadable" message tells operators to correct the SUCCESS row by
+    /// hand, where "1.0.0" is exactly the value someone would type to force a full re-run. They would
+    /// then be told their version could not be read. No release is 0.0.0, and it still sorts below every
+    /// real version, so upgrade discovery still offers every hop.
+    /// </summary>
+    public const string UnknownVersionSentinel = "0.0.0";
+
     private static readonly char[] NewLineChars = ['\r', '\n'];
 
     /// <summary>
@@ -260,19 +278,95 @@ END;
 
 IF EXISTS (SELECT 1 FROM sys.databases WHERE name = N'PerformanceMonitor')
 BEGIN
-    ALTER DATABASE PerformanceMonitor SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    /*
+    SINGLE_USER evicts other connections so the DROP can proceed -- but it is non-modifiable on Azure SQL
+    Managed Instance (EngineEdition 8), where the whole batch would die on this line before the DROP. MI
+    has no force-disconnect; an installer teardown relies on there being no other sessions, which is
+    normally true. So gate the eviction to box SQL Server and let MI DROP directly.
+    */
+    IF SERVERPROPERTY('EngineEdition') <> 8
+        ALTER DATABASE PerformanceMonitor SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
     DROP DATABASE PerformanceMonitor;
 END;";
 
         using var command = new SqlCommand(cleanupSql, connection);
         command.CommandTimeout = ShortTimeoutSeconds;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            /*
+            SET SINGLE_USER and DROP are separate autocommitted statements. If the DROP then fails (another
+            session racing into the single-user slot, Msg 3702) or the client CommandTimeout / a cancel
+            fires an attention AFTER SINGLE_USER committed, the database is left online but stranded in
+            SINGLE_USER -- semi-bricked. Un-brick before propagating. It must run on a FRESH connection: a
+            client-attention timeout is invisible to a server-side TRY/CATCH, so this cannot be a
+            BEGIN CATCH in the batch above. Close this connection first to release the single-user slot the
+            failed run may still hold, so the restore is not blocked by it. The bare throw preserves the
+            original outcome -- a cancel's OperationCanceledException (converted upstream) or the failure's
+            SqlException.
+            */
+            connection.Close();
+            await TryRestoreDatabaseAccessAsync(connectionString, progress).ConfigureAwait(false);
+            throw;
+        }
 
         progress?.Report(new InstallationProgress
         {
             Message = "Clean install completed (jobs, XE sessions, and database removed)",
             Status = "Success"
         });
+    }
+
+    /// <summary>
+    /// Best-effort recovery for a clean install whose DROP DATABASE failed or timed out after
+    /// SET SINGLE_USER had already committed, leaving the database stranded in SINGLE_USER. Puts it back to
+    /// MULTI_USER so it is usable rather than semi-bricked.
+    ///
+    /// Swallows its own errors -- it must never mask the failure that triggered it -- and runs uncancellably
+    /// on a fresh master connection, so it still executes after a client-attention timeout or a cancel
+    /// (both of which a server-side TRY/CATCH cannot see). No-op on Azure SQL Managed Instance, where
+    /// SINGLE_USER cannot be set in the first place, and a no-op when the database no longer exists (the
+    /// DROP actually succeeded) or is already MULTI_USER (SET MULTI_USER over MULTI_USER is harmless).
+    /// </summary>
+    /// <returns>
+    /// true if the restore ran without error (either it set MULTI_USER, or it was a no-op because the drop
+    /// actually succeeded / this is Managed Instance) — i.e. the database is not left stranded as far as we
+    /// can tell. false if the restore attempt itself failed, so the caller can warn that the database may
+    /// still be in SINGLE_USER. Never throws.
+    /// </returns>
+    public static async Task<bool> TryRestoreDatabaseAccessAsync(
+        string connectionString,
+        IProgress<InstallationProgress>? progress = null)
+    {
+        try
+        {
+            var builder = new SqlConnectionStringBuilder(connectionString) { InitialCatalog = "master" };
+            using var connection = new SqlConnection(builder.ConnectionString);
+            await connection.OpenAsync().ConfigureAwait(false);
+
+            /*
+            Plain SET MULTI_USER, deliberately NOT WITH ROLLBACK IMMEDIATE. In the one race where another
+            session has grabbed the single-user slot, this blocks on the exclusive lock (up to the timeout)
+            and then fails best-effort rather than force-killing whoever raced in. The common case -- our own
+            timed-out session in master context, nobody in the slot -- is restored cleanly.
+            */
+            using var cmd = new SqlCommand(
+                @"IF SERVERPROPERTY('EngineEdition') <> 8 AND DB_ID(N'PerformanceMonitor') IS NOT NULL
+    ALTER DATABASE PerformanceMonitor SET MULTI_USER;",
+                connection);
+            cmd.CommandTimeout = ShortTimeoutSeconds;
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            /* Best-effort: the original failure is what the caller must see, never this one. */
+            LogDebug(progress, $"TryRestoreDatabaseAccessAsync: MULTI_USER restore failed (ignored) — {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
@@ -379,12 +473,32 @@ END;";
             StartTime = DateTime.Now
         };
 
+        /* Cancelled before we have touched anything: a plain cancel, not a failure. */
+        cancellationToken.ThrowIfCancellationRequested();
+
         /*Perform clean install if requested*/
         if (cleanInstall)
         {
             try
             {
                 await CleanInstallAsync(connectionString, progress, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                /*
+                A CANCEL, surfaced as one. SqlCommand does not fault with OperationCanceledException when its
+                token trips -- it throws SqlException -- so the catch below used to swallow a cancelled clean
+                install as an ordinary "failure" and return NORMALLY. The caller's cancellation path never
+                ran. What the user got instead was "Installation completed with 1 error(s)" over a database
+                that CleanInstallAsync may have already dropped (it drops the Agent jobs, the XE sessions,
+                then SET SINGLE_USER WITH ROLLBACK IMMEDIATE and DROP DATABASE, all before a single install
+                file runs) -- and the dialog then re-stamped the verdict it had deliberately discarded and
+                armed a Save that skips the connection test entirely.
+
+                The first ThrowIfCancellationRequested in this method is AFTER the clean install, which is
+                exactly the window where cancelling is most destructive and least recoverable.
+                */
+                throw new OperationCanceledException(cancellationToken);
             }
             catch (Exception ex)
             {
@@ -526,6 +640,21 @@ END;";
                 });
 
                 result.FilesSucceeded++;
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                /*
+                A cancel, surfaced as one -- the same pattern as the clean-install branch above, and here for
+                the same reason. A cancelled SqlCommand faults with SqlException, not
+                OperationCanceledException, so the general catch below counted a Cancel mid-file as a file
+                FAILURE and the run returned Success=false. The loop-top ThrowIfCancellationRequested only
+                re-surfaces the cancel if control reaches the top of the loop again -- which it does NOT for a
+                critical file (it `break`s) or for the LAST file (the loop just ends), so those two cancels
+                fell through to "completed with N error(s)" and the caller's FAILURE path instead of its
+                CANCELLATION path. Converting here, ahead of the general catch, keeps the failure accounting
+                honest: a cancel is not a file failure, and it is not recorded as one.
+                */
+                throw new OperationCanceledException(cancellationToken);
             }
             catch (Exception ex)
             {
@@ -836,6 +965,23 @@ END;";
     /// Generate installation summary report file.
     /// </summary>
     /// <param name="outputDirectory">Directory to write the report. Null defaults to user profile.</param>
+    /*
+    Every character Windows forbids in a filename -> underscore, including the separators and ".." pieces
+    that a path-traversal string is built from. Mirrors Program.SanitizeFilename; Installer.Core cannot
+    reach that private CLI helper, and this is the shared writer both front ends call.
+    */
+    private static string SanitizeForFileName(string value)
+    {
+        char[] invalid = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(value.Length);
+        foreach (char c in value)
+        {
+            sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+        }
+
+        return sb.ToString();
+    }
+
     public static string GenerateSummaryReport(
         string serverName,
         string sqlServerVersion,
@@ -850,9 +996,33 @@ END;";
         var duration = result.EndTime - result.StartTime;
 
         string timestamp = result.StartTime.ToString("yyyyMMdd_HHmmss");
-        string fileName = $"PerformanceMonitor_Install_{serverName.Replace("\\", "_", StringComparison.Ordinal)}_{timestamp}.txt";
+
+        /*
+        Strip EVERY invalid filename char, not just the backslash. The server name is user-typed, and a
+        value like "x/../../Users/Public/foo" turned this Path.Combine into a write OUTSIDE reportDir --
+        forward slash is a separator, ".." is parent, ":" opens an NTFS alternate data stream, all of which
+        the old .Replace("\\","_") let straight through. The "PerformanceMonitor_Install_" prefix does not
+        contain it; ".." just escapes past it. The CLI's own error-log writer already sanitizes the same
+        input with GetInvalidFileNameChars (Program.SanitizeFilename); this report writer -- called by BOTH
+        the CLI and the Dashboard -- was the one that was missed.
+        */
+        string fileName = $"PerformanceMonitor_Install_{SanitizeForFileName(serverName)}_{timestamp}.txt";
         string reportDir = outputDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string reportPath = Path.Combine(reportDir, fileName);
+
+        /*
+        Belt and braces: even sanitized, refuse to write outside the intended directory. A future change to
+        the filename builder cannot turn this into an arbitrary-write without tripping here first.
+        */
+        string fullReportDir = Path.GetFullPath(reportDir);
+        string fullReportPath = Path.GetFullPath(reportPath);
+        if (!fullReportPath.StartsWith(
+                fullReportDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Refusing to write the installation report outside the report directory.");
+        }
 
         var sb = new StringBuilder();
 
@@ -945,47 +1115,81 @@ END;";
                 WHERE name = N'PerformanceMonitor';", connection);
 
             var dbExists = await dbCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (dbExists == null || dbExists == DBNull.Value)
+            bool databaseExists = dbExists != null && dbExists != DBNull.Value;
+
+            if (!databaseExists)
             {
                 LogDebug(progress, "GetInstalledVersionAsync: database does not exist → clean install");
-                return null;
+                return InstalledVersionClassifier.Classify(false, false, 0L, null);
             }
-            LogDebug(progress, "GetInstalledVersionAsync: database exists, checking installation_history table");
 
             /*Check if installation_history table exists*/
             using var tableCheckCmd = new SqlCommand(@"
                 USE PerformanceMonitor;
                 SELECT OBJECT_ID(N'config.installation_history', N'U');", connection);
 
-            var tableExists = await tableCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (tableExists == null || tableExists == DBNull.Value)
+            var tableOid = await tableCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            bool historyTableExists = tableOid != null && tableOid != DBNull.Value;
+
+            long collectTableCount = 0L;
+            if (!historyTableExists)
             {
-                LogDebug(progress, "GetInstalledVersionAsync: installation_history table does not exist → old or corrupted install");
-                return null;
+                /*
+                No ledger. Count the collect objects so the classifier can tell a PerformanceMonitor
+                database that LOST its history apart from an empty database someone pre-created for us.
+                Answering "no version" for the first is the stranding bug this whole path exists to
+                prevent; answering "installed" for the second would run migrations against tables that do
+                not exist. See InstalledVersionClassifier.
+                */
+                using var collectCheckCmd = new SqlCommand(@"
+                    SELECT
+                        COUNT_BIG(*)
+                    FROM PerformanceMonitor.sys.tables AS t
+                    INNER JOIN PerformanceMonitor.sys.schemas AS s
+                      ON s.schema_id = t.schema_id
+                    WHERE s.name = N'collect';", connection);
+
+                var collectTables = await collectCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                collectTableCount =
+                    collectTables == null || collectTables == DBNull.Value
+                        ? 0L
+                        : Convert.ToInt64(collectTables);
             }
 
-            /*Get most recent successful installation version*/
-            using var versionCmd = new SqlCommand(@"
-                SELECT TOP 1 installer_version
-                FROM PerformanceMonitor.config.installation_history
-                WHERE installation_status = 'SUCCESS'
-                ORDER BY installation_date DESC;", connection);
-
-            var version = await versionCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (version != null && version != DBNull.Value)
+            string? latestSuccessVersion = null;
+            if (historyTableExists)
             {
-                LogDebug(progress, $"GetInstalledVersionAsync: found installed version {version}");
-                return version.ToString();
+                /*Get most recent successful installation version*/
+                using var versionCmd = new SqlCommand(@"
+                    SELECT TOP (1)
+                        installer_version
+                    FROM PerformanceMonitor.config.installation_history
+                    WHERE installation_status = 'SUCCESS'
+                    ORDER BY installation_date DESC;", connection);
+
+                var version = await versionCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (version != null && version != DBNull.Value)
+                {
+                    latestSuccessVersion = version.ToString();
+                }
             }
 
             /*
-            Fallback: database and history table exist but no SUCCESS rows.
-            This can happen if a prior install didn't write history (#538/#539).
-            Return "1.0.0" so all idempotent upgrade scripts are attempted
-            rather than treating this as a fresh install (which would drop the database).
+            The DECISION lives in InstalledVersionClassifier so it can be pinned by tests CI actually
+            runs -- this method needs a live SQL Server, and that suite is excluded from CI.
             */
-            LogDebug(progress, "GetInstalledVersionAsync: no SUCCESS rows — fallback to 1.0.0 (#538 guard)");
-            return "1.0.0";
+            string? resolved = InstalledVersionClassifier.Classify(
+                databaseExists,
+                historyTableExists,
+                collectTableCount,
+                latestSuccessVersion);
+
+            LogDebug(
+                progress,
+                $"GetInstalledVersionAsync: dbExists={databaseExists}, historyTable={historyTableExists}, " +
+                $"collectTables={collectTableCount}, successRow={latestSuccessVersion ?? "(none)"} → {resolved ?? "(clean install)"}");
+
+            return resolved;
         }
         catch (SqlException ex)
         {
@@ -1126,8 +1330,27 @@ END;";
         int totalSuccessCount = 0;
         int totalFailureCount = 0;
 
-        var upgrades = provider.GetApplicableUpgrades(currentVersion, targetVersion,
-            warning => progress?.Report(new InstallationProgress { Message = warning, Status = "Warning" }));
+        List<UpgradeInfo> upgrades;
+        try
+        {
+            upgrades = provider.GetApplicableUpgrades(currentVersion, targetVersion,
+                warning => progress?.Report(new InstallationProgress { Message = warning, Status = "Warning" }));
+        }
+        catch (ArgumentException ex)
+        {
+            /*
+            Report as a failure rather than letting it surface as "no upgrades needed". Callers abort
+            when totalFailureCount > 0, so this keeps an unreadable version from silently skipping
+            every migration and then stamping the database as current.
+            */
+            progress?.Report(new InstallationProgress
+            {
+                Message = $"Cannot determine which upgrades to apply: {ex.Message}",
+                Status = "Error"
+            });
+
+            return (0, 1, 0);
+        }
 
         if (upgrades.Count == 0)
         {

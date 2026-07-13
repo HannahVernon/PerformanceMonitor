@@ -127,6 +127,7 @@ public partial class ServerTab : UserControl
             case 15: await RefreshPlanCacheAsync(hoursBack, fromDate, toDate); break;
             case 16: await RefreshSessionStatsAsync(hoursBack, fromDate, toDate); break;
             case 17: await RefreshCollectionHealthAsync(hoursBack, fromDate, toDate); break;
+            case 18: await RefreshSystemEventsAsync(hoursBack, fromDate, toDate); break;
         }
     }
 
