@@ -122,7 +122,8 @@ public partial class ServerTab : UserControl
             case 10: await RefreshRunningJobsAsync(hoursBack, fromDate, toDate); break;
             case 11: await RefreshConfigurationAsync(hoursBack, fromDate, toDate); break;
             case 12: await RefreshDailySummaryAsync(hoursBack, fromDate, toDate); break;
-            case 13: await RefreshCollectionHealthAsync(hoursBack, fromDate, toDate); break;
+            case 13: await RefreshLatchSpinlockAsync(hoursBack, fromDate, toDate); break;
+            case 14: await RefreshCollectionHealthAsync(hoursBack, fromDate, toDate); break;
         }
     }
 
