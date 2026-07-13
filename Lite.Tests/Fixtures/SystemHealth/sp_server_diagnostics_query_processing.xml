@@ -1,0 +1,16 @@
+<event name="sp_server_diagnostics_component_result" package="sqlserver" timestamp="2026-07-05T12:01:00.000Z">
+  <data name="component"><type name="sql_server_diagnostics_component" package="sqlserver" /><value>1</value><text>QUERY_PROCESSING</text></data>
+  <data name="state"><value>1</value><text>CLEAN</text></data>
+  <data name="data">
+    <type name="xml" package="package0" />
+    <value>
+      <queryProcessing maxWorkers="512" workersCreated="40" workersIdle="12" tasksCompletedWithinInterval="100" pendingTasks="0" oldestPendingTaskWaitingTime="0" hasUnresolvableDeadlockOccurred="0" hasDeadlockedSchedulersOccurred="0" trackingNonYieldingScheduler="0x0">
+        <topWaits>
+          <nonPreemptive>
+            <byCount />
+          </nonPreemptive>
+        </topWaits>
+      </queryProcessing>
+    </value>
+  </data>
+</event>

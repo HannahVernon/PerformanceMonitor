@@ -1,0 +1,14 @@
+<event name="memory_broker_ring_buffer_recorded" package="sqlserver" timestamp="2026-07-05T12:02:10.250Z">
+  <data name="id"><value>1</value></data>
+  <data name="pool_metadata_id"><value>0</value></data>
+  <data name="delta_time"><value>30000</value></data>
+  <data name="memory_ratio"><value>85</value></data>
+  <data name="new_target"><value>1048576</value></data>
+  <data name="overall"><value>2097152</value></data>
+  <data name="rate"><value>512</value></data>
+  <data name="currently_predicated"><value>900000</value></data>
+  <data name="currently_allocated"><value>1000000</value></data>
+  <data name="previously_allocated"><value>1100000</value></data>
+  <data name="broker"><value>MEMORYBROKER_FOR_CACHE</value></data>
+  <data name="notification"><value>RESOURCE_MEMPHYSICAL_HIGH</value></data>
+</event>
