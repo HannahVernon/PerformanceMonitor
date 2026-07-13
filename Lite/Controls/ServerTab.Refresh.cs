@@ -471,6 +471,17 @@ public partial class ServerTab : UserControl
                             _deadlockFilterMgr!.UpdateData(dlrDetails);
                         await LoadDeadlockSlicerAsync();
                         break;
+                    case 4: // Blocking Stats — blocking + deadlock severity (4 charts + summary strip)
+                        var bdsStats = Helpers.MethodProfiler.TimeAsync("Locking.BlockingDurationStats", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingDurationStatsAsync(_serverId, hoursBack, fromDate, toDate, SelectedDatabaseFilter))));
+                        var bdsCount = Helpers.MethodProfiler.TimeAsync("Locking.DeadlockTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate))));
+                        var bdsSeverity = Helpers.MethodProfiler.TimeAsync("Locking.DeadlockSeverityStats", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockSeverityStatsAsync(_serverId, hoursBack, fromDate, toDate))));
+                        await System.Threading.Tasks.Task.WhenAll(bdsStats, bdsCount, bdsSeverity);
+                        UpdateBlockingDurationChart(bdsStats.Result, hoursBack, fromDate, toDate);
+                        UpdateBlockingTotalDurationChart(bdsStats.Result, hoursBack, fromDate, toDate);
+                        UpdateDeadlockWaitChart(bdsSeverity.Result, hoursBack, fromDate, toDate);
+                        UpdateDeadlockTotalWaitChart(bdsSeverity.Result, hoursBack, fromDate, toDate);
+                        UpdateBlockingStatsSummary(bdsStats.Result, bdsCount.Result, bdsSeverity.Result);
+                        break;
                 }
                 /* Always keep alert badge current when Blocking tab is visible */
                 await RefreshAlertCountsAsync(hoursBack, fromDate, toDate);
@@ -485,11 +496,14 @@ public partial class ServerTab : UserControl
             var deadlockTrendTask = Helpers.MethodProfiler.TimeAsync("Locking.DeadlockTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockTrendAsync(_serverId, hoursBack, fromDate, toDate))));
             var currentWaitsDurationTask = Helpers.MethodProfiler.TimeAsync("Locking.WaitingTaskTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetWaitingTaskTrendAsync(_serverId, hoursBack, fromDate, toDate))));
             var currentWaitsBlockedTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockedSessionTrend", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockedSessionTrendAsync(_serverId, hoursBack, fromDate, toDate, SelectedDatabaseFilter))));
+            var blockingDurationStatsTask = Helpers.MethodProfiler.TimeAsync("Locking.BlockingDurationStats", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetBlockingDurationStatsAsync(_serverId, hoursBack, fromDate, toDate, SelectedDatabaseFilter))));
+            var deadlockSeverityStatsTask = Helpers.MethodProfiler.TimeAsync("Locking.DeadlockSeverityStats", () => Task.Run(() => SafeQueryAsync(() => _dataService.GetDeadlockSeverityStatsAsync(_serverId, hoursBack, fromDate, toDate))));
 
             await System.Threading.Tasks.Task.WhenAll(
                 blockedProcessTask, deadlockTask,
                 lockWaitTrendTask, blockingTrendTask, deadlockTrendTask,
-                currentWaitsDurationTask, currentWaitsBlockedTask);
+                currentWaitsDurationTask, currentWaitsBlockedTask,
+                blockingDurationStatsTask, deadlockSeverityStatsTask);
 
             /* Parse deadlock graphs off the UI thread (this was the Blocking-tab hitch). Time the
                remaining UI-thread render steps so any new hot spot is pinpointed (bind vs charts). */
@@ -506,6 +520,14 @@ public partial class ServerTab : UserControl
                 UpdateDeadlockTrendChart(deadlockTrendTask.Result, hoursBack, fromDate, toDate);
                 UpdateCurrentWaitsDurationChart(currentWaitsDurationTask.Result, hoursBack, fromDate, toDate);
                 UpdateCurrentWaitsBlockedChart(currentWaitsBlockedTask.Result, hoursBack, fromDate, toDate);
+                /* Blocking Stats severity sub-tab (4 charts + summary strip): the block-duration aggregate
+                   reconciles with the blocking-incident trend (same XE→DMV source), the deadlock severity with
+                   the deadlock count (same v_deadlocks window). */
+                UpdateBlockingDurationChart(blockingDurationStatsTask.Result, hoursBack, fromDate, toDate);
+                UpdateBlockingTotalDurationChart(blockingDurationStatsTask.Result, hoursBack, fromDate, toDate);
+                UpdateDeadlockWaitChart(deadlockSeverityStatsTask.Result, hoursBack, fromDate, toDate);
+                UpdateDeadlockTotalWaitChart(deadlockSeverityStatsTask.Result, hoursBack, fromDate, toDate);
+                UpdateBlockingStatsSummary(blockingDurationStatsTask.Result, deadlockTrendTask.Result, deadlockSeverityStatsTask.Result);
             }
 
             await LoadBlockingSlicerAsync();
