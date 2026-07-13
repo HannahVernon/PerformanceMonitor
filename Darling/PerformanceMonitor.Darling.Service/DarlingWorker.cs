@@ -1460,6 +1460,13 @@ LIMIT 1", connection);
             await _selfAlerts!.ApplyConnectionOutcomeAsync(
                 serverId, server.Config.DisplayName, online: true, error: null, cancellationToken);
 
+            /* Same edge, second consumer: discard anything we concluded about this server while it was
+               unreachable. An Azure SQL DB firewall rejection or failover is reported with the same error
+               numbers as "this login may not read master", so a verdict formed during the outage can be
+               wrong — and used to persist until the service restarted, quietly degrading database-scoped
+               collection (#1506). */
+            runner.OnServerReconnected(serverId);
+
             await DarlingObservability.UpsertServerAsync(_postgres!, runtime, _logger, cancellationToken);
 
             await DarlingXeSessions.EnsureAllAsync(runtime, _logger, cancellationToken);
