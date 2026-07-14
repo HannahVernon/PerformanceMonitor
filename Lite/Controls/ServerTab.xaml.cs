@@ -95,8 +95,6 @@ public partial class ServerTab : UserControl
     private bool _isUpdatingMemoryClerkSelection;
 
     /* Column filtering */
-    private Popup? _filterPopup;
-    private ColumnFilterPopup? _filterPopupContent;
     private readonly Dictionary<DataGrid, IDataGridFilterManager> _filterManagers = new();
     private DataGridFilterManager<QuerySnapshotRow>? _querySnapshotsFilterMgr;
     private DataGridFilterManager<QueryStatsRow>? _queryStatsFilterMgr;
