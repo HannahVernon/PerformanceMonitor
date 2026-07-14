@@ -126,6 +126,16 @@ public partial class ViewerServerTab
                     qs.QueryText, qs.DatabaseName, enrichedPlanXml, null,
                     "Query Store", productName: productName);
 
+            /* Query Store Regressions carries the query-text sample but no plan (the regression aggregates
+               OVER plans — plan_count deltas, not a single plan_id — so any one plan would mislead; the
+               plan-change story is in the double-click history window). Build a plan-less repro from the
+               sample, exactly what ReproScriptBuilder produces when the plan is unavailable. */
+            case ViewerQueryStoreRegressionRow reg:
+                if (string.IsNullOrEmpty(reg.QueryTextSample)) return null;
+                return ReproScriptBuilder.BuildReproScript(
+                    reg.QueryTextSample, reg.DatabaseName, null, null,
+                    "Query Store Regressions", productName: productName);
+
             /* The unified Expensive Queries row carries its STORED plan in-row (ignore enrichedPlanXml, like
                the Active Queries snapshot case). Only the statement sources (Query Stats / Query Store) have
                runnable text; the procedure sources carry only the object name, so IsStatementSource is false

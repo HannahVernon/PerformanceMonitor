@@ -47,6 +47,7 @@ public partial class ViewerServerTab
         QueryStatsGrid.MouseDoubleClick += QueryStatsGrid_MouseDoubleClick;
         ProcedureStatsGrid.MouseDoubleClick += ProcedureStatsGrid_MouseDoubleClick;
         QueryStoreGrid.MouseDoubleClick += QueryStoreGrid_MouseDoubleClick;
+        QueryStoreRegressionsGrid.MouseDoubleClick += QueryStoreRegressionsGrid_MouseDoubleClick;
     }
 
     /// <summary>Maps a Top-Queries grid row to its history-window key, or null when the row can't open one
@@ -69,6 +70,16 @@ public partial class ViewerServerTab
         => row is null || string.IsNullOrEmpty(row.DatabaseName) || row.QueryId == 0
             ? null
             : new QueryStoreHistoryKey(row.DatabaseName, row.QueryId, row.PlanId, row.QueryText);
+
+    /// <summary>Maps a Query Store Regressions grid row to a Query Store history-window key (the window is
+    /// query-scoped), or null when the row can't open one (missing database or a zero query_id) — mirrors the
+    /// Dashboard's <c>QueryStoreRegressionsDataGrid_MouseDoubleClick</c> guard. The regression row aggregates
+    /// over plans (it carries baseline/recent plan COUNTS, not a single plan_id), so plan_id is 0 — the same
+    /// "no specific plan to seed" value the Dashboard passes. Pure + static.</summary>
+    internal static QueryStoreHistoryKey? MapQueryStoreRegressionHistoryKey(ViewerQueryStoreRegressionRow? row)
+        => row is null || string.IsNullOrEmpty(row.DatabaseName) || row.QueryId == 0
+            ? null
+            : new QueryStoreHistoryKey(row.DatabaseName, row.QueryId, 0, row.QueryTextSample);
 
     private void QueryStatsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -99,6 +110,19 @@ public partial class ViewerServerTab
     private void QueryStoreGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (MapQueryStoreHistoryKey(QueryStoreGrid.SelectedItem as ViewerQueryStoreRow) is not { } key) return;
+
+        var (startUtc, endUtc) = GetWindowUtc();
+        var window = new QueryStoreHistoryWindow(
+            _dataService, _server.ServerId, key.DatabaseName, key.QueryId, key.PlanId, key.QueryText, startUtc, endUtc)
+        {
+            Owner = Window.GetWindow(this),
+        };
+        window.ShowDialog();
+    }
+
+    private void QueryStoreRegressionsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (MapQueryStoreRegressionHistoryKey(QueryStoreRegressionsGrid.SelectedItem as ViewerQueryStoreRegressionRow) is not { } key) return;
 
         var (startUtc, endUtc) = GetWindowUtc();
         var window = new QueryStoreHistoryWindow(
