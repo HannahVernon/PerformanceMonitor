@@ -151,7 +151,7 @@ public partial class ServerTab : UserControl
 
     /* ───────────────────────────── Per-tab refresh methods ───────────────────────────── */
 
-    /// <summary>Tab 0 — Wait Stats</summary>
+    /// <summary>Tab 1 — Wait Stats</summary>
     private async System.Threading.Tasks.Task RefreshWaitStatsAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -167,7 +167,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 1 — Queries</summary>
+    /// <summary>Tab 2 — Queries</summary>
     private async System.Threading.Tasks.Task RefreshQueriesAsync(int hoursBack, DateTime? fromDate, DateTime? toDate, bool subTabOnly = false)
     {
         try
@@ -307,7 +307,6 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 3 — CPU</summary>
     /// <summary>Tab 0 — Overview (Correlated Timeline Lanes)</summary>
     private async System.Threading.Tasks.Task RefreshOverviewAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
@@ -322,6 +321,7 @@ public partial class ServerTab : UserControl
         }
     }
 
+    /// <summary>Tab 4 — CPU</summary>
     private async System.Threading.Tasks.Task RefreshCpuAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -336,7 +336,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 4 — Memory</summary>
+    /// <summary>Tab 5 — Memory</summary>
     private async System.Threading.Tasks.Task RefreshMemoryAsync(int hoursBack, DateTime? fromDate, DateTime? toDate, bool subTabOnly = false)
     {
         try
@@ -393,7 +393,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 5 — File I/O</summary>
+    /// <summary>Tab 6 — File I/O</summary>
     private async System.Threading.Tasks.Task RefreshFileIoAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -412,7 +412,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 6 — TempDB</summary>
+    /// <summary>Tab 7 — TempDB</summary>
     private async System.Threading.Tasks.Task RefreshTempDbAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -432,7 +432,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 7 — Blocking</summary>
+    /// <summary>Tab 8 — Blocking</summary>
     private async System.Threading.Tasks.Task RefreshBlockingAsync(int hoursBack, DateTime? fromDate, DateTime? toDate, bool subTabOnly = false)
     {
         try
@@ -619,7 +619,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 8 — Perfmon</summary>
+    /// <summary>Tab 9 — Perfmon</summary>
     private async System.Threading.Tasks.Task RefreshPerfmonAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -635,7 +635,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 9 — Running Jobs</summary>
+    /// <summary>Tab 10 — Running Jobs</summary>
     private async System.Threading.Tasks.Task RefreshRunningJobsAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -650,7 +650,7 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 10 — Configuration</summary>
+    /// <summary>Tab 11 — Configuration</summary>
     private async System.Threading.Tasks.Task RefreshConfigurationAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try
@@ -673,13 +673,13 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>Tab 11 — Daily Summary (Performance Calendar month heatmap).</summary>
+    /// <summary>Tab 12 — Daily Summary (Performance Calendar month heatmap).</summary>
     private async System.Threading.Tasks.Task RefreshDailySummaryAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         await LoadCalendarMonthAsync(DailyCalendar.DisplayMonth);
     }
 
-    /// <summary>Tab 12 — Collection Health</summary>
+    /// <summary>Tab 17 — Collection Health</summary>
     private async System.Threading.Tasks.Task RefreshCollectionHealthAsync(int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         try

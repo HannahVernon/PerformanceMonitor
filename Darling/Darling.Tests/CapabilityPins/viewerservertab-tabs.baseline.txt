@@ -1,0 +1,61 @@
+Active Queries
+Blocked Process Reports
+Blocking
+Blocking Stats
+CPU
+CPU Scheduler
+CPU Tasks
+CPU Utilization
+Collection Health
+Collection Log
+Configuration
+Configuration Changes
+Contention Events
+Corruption Events
+Current Active Queries
+Current Waits
+Daily Summary
+Database Config Changes
+Database Configuration
+Deadlocks
+Default Trace
+Duration Trends
+Expensive Queries
+File I/O
+File I/O Latency
+File I/O Throughput
+Health Summary
+I/O Issues
+Latches &amp; Spinlocks
+Memory
+Memory Broker
+Memory Clerks
+Memory Conditions
+Memory Grants
+Memory Node OOM
+Memory Pressure Events
+Overview
+Perfmon
+Performance Trends
+Plan Cache
+Plan Viewer
+Queries
+Query Heatmap
+Query Store Regressions
+Query Store by Duration
+Running Jobs
+Scheduler Issues
+Scoped Configuration
+Server Config Changes
+Server Configuration
+Session Stats
+Severe Errors
+Significant Waits
+System Events
+Top Procedures by Duration
+Top Queries by Duration
+Trace Flag Changes
+Trace Flags
+Trends
+Wait Stats
+tempdb
