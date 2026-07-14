@@ -14,6 +14,8 @@ using System.Windows;
 using System.Windows.Controls;
 using PerformanceMonitorLite.Services;
 
+using PerformanceMonitor.Ui;
+
 namespace PerformanceMonitorLite.Controls;
 
 /// <summary>

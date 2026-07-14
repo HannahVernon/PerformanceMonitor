@@ -14,6 +14,8 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 
+using PerformanceMonitor.Ui;
+
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
