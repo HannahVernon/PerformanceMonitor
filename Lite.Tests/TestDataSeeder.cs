@@ -828,7 +828,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
             "query_snapshots", "tempdb_stats", "perfmon_stats",
             "blocked_process_reports", "deadlocks", "memory_grant_stats",
             "waiting_tasks", "servers", "running_jobs", "session_stats",
-            "trace_flags", "server_properties", "database_size_stats"
+            "trace_flags", "server_properties", "database_size_stats",
+            "plan_cache_stats", "memory_pressure_events"
         };
 
         using var readLock = _duckDb.AcquireReadLock();
@@ -1523,6 +1524,73 @@ VALUES ($1, $2, $3, $4, $5, $6)";
             cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
             cmd.Parameters.Add(new DuckDBParameter { Value = clerkType });
             cmd.Parameters.Add(new DuckDBParameter { Value = memoryMb });
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Seeds one plan_cache_stats snapshot row (a single cacheobjtype/objtype group) with the given
+    /// plan/size totals, so CollectPlanCacheFactsAsync SUMs it into a PLAN_CACHE_BLOAT fact. Stamped at
+    /// TestPeriodEnd (the latest-snapshot the collector reads).
+    /// </summary>
+    internal async Task SeedPlanCacheStatsAsync(int totalPlans, int singleUsePlans, int totalSizeMb, int singleUseSizeMb)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+INSERT INTO plan_cache_stats
+    (collection_id, collection_time, server_id, server_name,
+     cacheobjtype, objtype, total_plans, single_use_plans, total_size_mb, single_use_size_mb)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+
+        cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+        cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd });
+        cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+        cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+        cmd.Parameters.Add(new DuckDBParameter { Value = "Compiled Plan" });
+        cmd.Parameters.Add(new DuckDBParameter { Value = "Adhoc" });
+        cmd.Parameters.Add(new DuckDBParameter { Value = totalPlans });
+        cmd.Parameters.Add(new DuckDBParameter { Value = singleUsePlans });
+        cmd.Parameters.Add(new DuckDBParameter { Value = totalSizeMb });
+        cmd.Parameters.Add(new DuckDBParameter { Value = singleUseSizeMb });
+
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Seeds memory_pressure_events ring-buffer rows (each a notification + process/system indicator),
+    /// in-window at TestPeriodStart + offset, so CollectMemoryPressureEventFactsAsync classifies them.
+    /// </summary>
+    internal async Task SeedMemoryPressureEventsAsync(params (string notification, int processIndicator, int systemIndicator)[] events)
+    {
+        using var readLock = _duckDb.AcquireReadLock();
+        using var connection = _duckDb.CreateConnection();
+        await connection.OpenAsync();
+
+        for (var i = 0; i < events.Length; i++)
+        {
+            var (notification, processIndicator, systemIndicator) = events[i];
+            var t = TestPeriodStart.AddMinutes(30 + i * 5);
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO memory_pressure_events
+    (collection_id, collection_time, server_id, server_name,
+     sample_time, memory_notification, memory_indicators_process, memory_indicators_system)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
+            cmd.Parameters.Add(new DuckDBParameter { Value = t });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = TestServerName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = t });
+            cmd.Parameters.Add(new DuckDBParameter { Value = notification });
+            cmd.Parameters.Add(new DuckDBParameter { Value = processIndicator });
+            cmd.Parameters.Add(new DuckDBParameter { Value = systemIndicator });
 
             await cmd.ExecuteNonQueryAsync();
         }

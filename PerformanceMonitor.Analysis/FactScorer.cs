@@ -284,7 +284,9 @@ public class FactScorer
     }
 
     /// <summary>
-    /// Scores memory facts: grant waiters (MEMORY_GRANT_PENDING) and security-cache growth (MEMORY_CLERKS).
+    /// Scores memory facts: grant waiters (MEMORY_GRANT_PENDING), security-cache growth (MEMORY_CLERKS),
+    /// plan-cache single-use bloat (PLAN_CACHE_BLOAT), and ring-buffer physical-memory-pressure
+    /// notifications (MEMORY_PRESSURE_EVENTS).
     /// </summary>
     private static double ScoreMemoryFact(Fact fact)
     {
@@ -294,8 +296,59 @@ public class FactScorer
             "MEMORY_GRANT_PENDING" => ApplyThresholdFormula(fact.Value, 1, 5),
             // Security cache (TokenAndPermUserStore) growth — WARNING at >= 1 GB. See ScoreSecurityCache.
             "MEMORY_CLERKS" => ScoreSecurityCache(fact),
+            // Plan-cache single-use bloat — % single-use plans, size-guarded. See ScorePlanCacheBloat.
+            "PLAN_CACHE_BLOAT" => ScorePlanCacheBloat(fact),
+            // Ring-buffer physical-memory-pressure notifications — max indicator band. See
+            // ScoreMemoryPressureEvents.
+            "MEMORY_PRESSURE_EVENTS" => ScoreMemoryPressureEvents(fact),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores plan-cache single-use bloat off the PLAN_CACHE_BLOAT fact (Value = single_use_percent =
+    /// single_use_plans * 100 / total_plans over the LATEST plan_cache_stats snapshot). Tiers mirror the
+    /// Dashboard's report.plan_cache_bloat bloat_level CASE
+    /// (install/47_create_reporting_views.sql lines 1485-1487): &gt; 50 CRITICAL, &gt; 30 HIGH, &gt; 20
+    /// MEDIUM, else NORMAL. Base maxes at 1.0 (WARNING) like every base fact — the &gt; 50 "CRITICAL"
+    /// tier caps at 1.0 here; the CRITICAL band is earned only via corroboration.
+    ///
+    /// <para>NOISE-CONTROL GUARD (not in the Dashboard's raw report view, appropriate for a SCORED
+    /// recommendation): only score when the single-use footprint is materially large
+    /// (single_use_size_mb &gt;= 100). A tiny or idle cache can show a high single-use % on a handful of
+    /// MB — that is not memory bloat worth a card, so it stays context-only (score 0) below the size
+    /// floor. The percentage still rides in Value for the AI surface either way.</para>
+    /// </summary>
+    private static double ScorePlanCacheBloat(Fact fact)
+    {
+        // Real memory bloat only — a high % on a trivially small single-use footprint is noise.
+        if (fact.Metadata.GetValueOrDefault("single_use_size_mb") < 100.0) return 0.0;
+
+        var singleUsePercent = fact.Value; // single_use_plans * 100 / total_plans (latest snapshot)
+        if (singleUsePercent > 50) return 1.0;   // CRITICAL - single-use plans > 50% (install/47:1485)
+        if (singleUsePercent > 30) return 0.75;  // HIGH     - single-use plans > 30% (install/47:1486)
+        if (singleUsePercent > 20) return 0.5;   // MEDIUM   - single-use plans > 20% (install/47:1487)
+        return 0.0;
+    }
+
+    /// <summary>
+    /// Scores ring-buffer physical-memory-pressure notifications off the MEMORY_PRESSURE_EVENTS fact
+    /// (Value = the max of memory_indicators_process / memory_indicators_system over the analysis
+    /// window; the collector emits it only when a genuine MEDIUM+ indicator is present). Bands mirror the
+    /// Dashboard's report.memory_pressure_events severity CASE
+    /// (install/47_create_reporting_views.sql lines 229-236), which keys severity purely off the
+    /// indicators: process/system &gt;= 3 → HIGH, &gt;= 2 → MEDIUM, else LOW. A real
+    /// RESOURCE_MEMPHYSICAL_LOW is a genuine memory-pressure event, so HIGH earns the WARNING band (0.9);
+    /// MEDIUM is a softer 0.5. These are incident-ish facts (a real event, not a standing config), so
+    /// 0.5+ roots via the InferenceEngine's incident threshold — no ConfigAdvisoryRootKey. The LOW floor
+    /// scores 0 as a defensive backstop (the collector already gates it out).
+    /// </summary>
+    private static double ScoreMemoryPressureEvents(Fact fact)
+    {
+        var maxIndicator = fact.Value; // max(process, system) memory-pressure indicator in the window
+        if (maxIndicator >= 3) return 0.9;  // HIGH   - indicator >= 3 (install/47:230-231)
+        if (maxIndicator >= 2) return 0.5;  // MEDIUM - indicator >= 2 (install/47:232-233)
+        return 0.0;                         // LOW    - not a scored concern (install/47:234)
     }
 
     /// <summary>

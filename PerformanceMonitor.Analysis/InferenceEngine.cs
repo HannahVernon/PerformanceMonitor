@@ -61,6 +61,12 @@ public class InferenceEngine
         // missing indexes and actionable plan warnings each root their own standalone advisory card.
         "MISSING_INDEX",
         "PLAN_WARNING",
+        // Tier-2: plan-cache single-use bloat is a STANDING cache-composition state (not a momentary
+        // incident), so it roots its own standalone advisory card at any positive severity — it should
+        // surface on a quiet, healthy server the same way a standing misconfig does. The FactScorer only
+        // scores it at >= 0.5 (MEDIUM+) behind a size guard, so this is belt-and-suspenders with the 0.5
+        // incident threshold, and keeps the standing-state key in the same rooting set as the others.
+        "PLAN_CACHE_BLOAT",
     };
 
     private readonly RelationshipGraph _graph;

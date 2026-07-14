@@ -87,6 +87,8 @@ public sealed partial class PgFactCollector : IFactCollector
         await CollectBadActorFactsAsync(context, facts);
         await CollectPerfmonFactsAsync(context, facts);
         await CollectMemoryClerkFactsAsync(context, facts);
+        await CollectPlanCacheFactsAsync(context, facts);
+        await CollectMemoryPressureEventFactsAsync(context, facts);
         await CollectDatabaseConfigFactsAsync(context, facts);
         await CollectFileAutogrowthFactsAsync(context, facts);
         await CollectProcedureStatsFactsAsync(context, facts);
@@ -129,6 +131,8 @@ public sealed partial class PgFactCollector : IFactCollector
         BadActorSql,
         PerfmonSql,
         MemoryClerkSql,
+        PlanCacheStatsSql,
+        MemoryPressureEventsSql,
         DatabaseConfigSql,
         FileAutogrowthSql,
         ProcedureStatsSql,
