@@ -44,6 +44,61 @@ public sealed class McpHealthTools
         }
     }
 
+    [McpServerTool(Name = "get_daily_summary"), Description("Gets a daily health summary: overall composite health band (Healthy/Warning/Critical), total wait time, top wait type, unique query count, deadlocks, blocking events, memory pressure (and severe memory pressure), high-CPU samples, collection errors, and actionable alert count for one day. Use this for a quick overview to decide which areas need investigation.")]
+    public static async Task<string> GetDailySummary(
+        LocalDataService dataService,
+        ServerManager serverManager,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Summary date (yyyy-MM-dd), interpreted as a UTC day. Default is today.")] string? summary_date = null)
+    {
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
+
+        DateTime? date = null;
+        if (!string.IsNullOrEmpty(summary_date))
+        {
+            if (!DateTime.TryParse(summary_date, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed))
+                return $"Invalid date format '{summary_date}'. Use yyyy-MM-dd format (e.g., 2026-07-09).";
+            date = parsed;
+        }
+
+        try
+        {
+            var row = await dataService.GetDailySummaryAsync(resolved.Value.ServerId, date);
+            if (row == null || !row.HasData)
+            {
+                var missDate = row?.SummaryDate ?? date ?? DateTime.UtcNow.Date;
+                return McpHelpers.Status(
+                    "empty",
+                    $"No data collected for {resolved.Value.ServerName} on {missDate:yyyy-MM-dd}.",
+                    new { summary_date = missDate.ToString("yyyy-MM-dd"), overall_health = row?.OverallHealth });
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                summary_date = row.SummaryDate.ToString("yyyy-MM-dd"),
+                overall_health = row.OverallHealth,
+                health_band = row.HealthBand.ToString(),
+                total_wait_time_sec = row.TotalWaitTimeSec,
+                top_wait_type = row.TopWaitType,
+                unique_queries = row.UniqueQueries,
+                deadlock_count = row.DeadlockCount,
+                blocking_events = row.BlockingEvents,
+                high_cpu_events = row.HighCpuEvents,
+                memory_pressure_events = row.MemoryPressureEvents,
+                memory_critical_events = row.MemoryCriticalEvents,
+                collection_errors = row.CollectionErrors,
+                alert_count = row.AlertCount,
+                max_block_duration_ms = row.MaxBlockDurationMs
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_daily_summary", ex);
+        }
+    }
+
     [McpServerTool(Name = "get_collection_health"), Description("Shows the health status of all data collectors for a server — whether they're running successfully, failing, or stale. Check this before investigating data to ensure collectors are working properly.")]
     public static async Task<string> GetCollectionHealth(
         LocalDataService dataService,

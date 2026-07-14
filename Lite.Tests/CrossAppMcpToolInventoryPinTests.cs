@@ -49,25 +49,12 @@ public sealed class CrossAppMcpToolInventoryPinTests
         ("get_blocked_process_reports", "get_blocking"),
     };
 
-    // Lite-missing MCP tools -- parity board Tier 2; remove when ported
-    private static readonly HashSet<string> KnownLiteMissingMcpTools = new(StringComparer.Ordinal)
-    {
-        // latch / spinlock (Lite already collects latch_stats + spinlock_stats but exposes no tool)
-        "get_latch_stats", "get_spinlock_stats",
-        // plan-cache bloat + cpu-scheduler pressure (Lite already collects both)
-        "get_plan_cache_bloat", "get_cpu_scheduler_pressure",
-        // resource semaphore (Lite has only get_memory_grants)
-        "get_resource_semaphore",
-        // default-trace events + daily summary
-        "get_default_trace_events", "get_daily_summary",
-        // config-change history
-        "get_server_config_changes", "get_database_config_changes", "get_trace_flag_changes",
-        // system_health parser (x8; Lite already collects system_health_events)
-        "get_health_parser_system_health", "get_health_parser_severe_errors",
-        "get_health_parser_scheduler_issues", "get_health_parser_memory_node_oom",
-        "get_health_parser_memory_conditions", "get_health_parser_memory_broker",
-        "get_health_parser_io_issues", "get_health_parser_cpu_tasks",
-    };
+    // Lite-missing MCP tools -- parity board Tier 2; the ratchet only shrinks. All 18 formerly-Darling-only
+    // tools have been ported to Lite (latch/spinlock, plan-cache bloat + cpu-scheduler pressure, resource
+    // semaphore, default-trace events, daily summary, the three config-change tools, and the eight
+    // system_health parser tools), so this list is now empty. A NEW Darling-only tool must be either ported
+    // to Lite or added back here.
+    private static readonly HashSet<string> KnownLiteMissingMcpTools = new(StringComparer.Ordinal);
 
     [Fact]
     public void DarlingMcpTools_AreASupersetOfLite_ExceptKnownNamingDrift()

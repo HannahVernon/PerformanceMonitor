@@ -38,6 +38,7 @@ internal static class McpInstructions
         | `list_servers` | Lists all monitored SQL Server instances with status and last collection time | none |
         | `get_collection_health` | Shows collector health: running, failing, or stale | `server_name` |
         | `get_server_summary` | Quick health overview: CPU %, memory, blocking/deadlock counts | `server_name` |
+        | `get_daily_summary` | Daily composite health band + wait/query/deadlock/blocking/CPU/memory/alert rollup for one day | `server_name`, `summary_date` (yyyy-MM-dd, default today) |
 
         ### Wait Statistics Tools
         | Tool | Purpose | Key Parameters |
@@ -51,6 +52,18 @@ internal static class McpInstructions
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
         | `get_cpu_utilization` | SQL Server CPU vs other process CPU over time | `server_name`, `hours_back` (default 4) |
+        | `get_cpu_scheduler_pressure` | Latest scheduler snapshot: runnable queue depth, worker-thread utilization, queued/blocked requests, pressure warnings | `server_name`, `hours_back` (default 24) |
+
+        ### Contention Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_latch_stats` | Latest latch-contention snapshot by class (waits + last-interval delta waits) | `server_name`, `hours_back` (default 24) |
+        | `get_spinlock_stats` | Latest spinlock-contention snapshot (collisions, spins, backoffs) | `server_name`, `hours_back` (default 24) |
+
+        ### Plan Cache Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_plan_cache_bloat` | Single-use vs multi-use plan composition per cache/object type, with bloat-level classification | `server_name`, `hours_back` (default 24) |
 
         ### Query Performance Tools
         | Tool | Purpose | Key Parameters |
@@ -78,6 +91,7 @@ internal static class McpInstructions
         | `get_memory_trend` | Memory usage over time | `server_name`, `hours_back` |
         | `get_memory_clerks` | Top memory consumers by clerk type | `server_name` |
         | `get_memory_grants` | Active/recent memory grants (detect grant pressure) | `server_name`, `hours_back` (default 1), `limit` |
+        | `get_resource_semaphore` | Latest resource-semaphore snapshot: workspace memory vs target/max ceiling, waiter/timeout/forced-grant pressure | `server_name`, `hours_back` (default 24) |
         | `get_memory_pressure_events` | Ring buffer memory pressure notifications (sp_pressuredetector source) | `server_name`, `hours_back` |
 
         ### I/O Tools
@@ -123,6 +137,22 @@ internal static class McpInstructions
         | `get_database_config` | Database-level settings: RCSI, recovery model, auto-shrink, Query Store, etc. | `server_name`, `database_name` |
         | `get_database_scoped_config` | Database-scoped configuration (MAXDOP, legacy CE, parameter sniffing) | `server_name`, `database_name` |
         | `get_trace_flags` | Active trace flags with global/session scope | `server_name` |
+        | `get_server_config_changes` | sp_configure change history (diff of on-connect snapshots) | `server_name`, `hours_back` (default 168) |
+        | `get_database_config_changes` | sys.databases change history (recovery model, RCSI, compat level, etc.) | `server_name`, `hours_back` (default 168) |
+        | `get_trace_flag_changes` | Trace flag enable/disable history (diff of on-connect snapshots) | `server_name`, `hours_back` (default 168) |
+
+        ### System Health & Default Trace Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_default_trace_events` | Significant Default Trace events: file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits | `server_name`, `hours_back` (default 24), `limit` (default 100) |
+        | `get_health_parser_system_health` | Parsed sp_server_diagnostics health counters (spinlocks, latch warnings, dumps, CPU, bad pages) | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_severe_errors` | Severe errors (severity >= 19) from system_health | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_io_issues` | I/O warnings from system_health (15-second I/O, long/pending I/O) | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_scheduler_issues` | Non-yielding schedulers and scheduler-monitor warnings | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_conditions` | Low-memory snapshots (RESOURCE_MEMPHYSICAL_LOW) with the memory-manager report | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_cpu_tasks` | CPU task/worker-thread snapshots (QUERY_PROCESSING) with deadlock/blocking flags | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_broker` | Memory broker ratio changes and target adjustments | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_node_oom` | Per-NUMA-node out-of-memory events | `server_name`, `hours_back`, `limit` |
 
         ### Server Information Tools
         | Tool | Purpose | Key Parameters |
