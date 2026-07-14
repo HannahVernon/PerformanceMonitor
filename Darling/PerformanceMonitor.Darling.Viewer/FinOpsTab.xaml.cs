@@ -206,65 +206,10 @@ public partial class FinOpsTab : UserControl
        InitializeFinOpsTab (FinOpsTab.Loaders.cs). */
     private readonly Dictionary<DataGrid, IDataGridFilterManager> _filterManagers = new();
 
-    private Popup? _filterPopup;
-    private ColumnFilterPopup? _filterPopupContent;
-    private DataGrid? _currentFilterGrid;
+    /* Host/apply plumbing lives in the shared Ui controller. Lazy (a field initializer can't reference the
+       instance field _filterManagers); the XAML-wired FilterButton_Click forwards to it. */
+    private ColumnFilterPopupController? _filterPopupControllerField;
+    private ColumnFilterPopupController FilterPopupController => _filterPopupControllerField ??= new ColumnFilterPopupController(_filterManagers);
 
-    private void EnsureFilterPopup()
-    {
-        if (_filterPopup == null)
-        {
-            _filterPopupContent = new ColumnFilterPopup();
-            _filterPopup = new Popup
-            {
-                Child = _filterPopupContent,
-                StaysOpen = false,
-                Placement = PlacementMode.Bottom,
-                AllowsTransparency = true
-            };
-        }
-    }
-
-    private void FilterButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button button || button.Tag is not string columnName) return;
-
-        /* Walk up the visual tree to find the parent DataGrid. */
-        var dataGrid = FindParentDataGridFromElement(button);
-        if (dataGrid == null || !_filterManagers.TryGetValue(dataGrid, out var manager)) return;
-
-        _currentFilterGrid = dataGrid;
-
-        EnsureFilterPopup();
-
-        /* Rewire events to the current grid. */
-        _filterPopupContent!.FilterApplied -= FilterPopup_FilterApplied;
-        _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
-        _filterPopupContent.FilterApplied += FilterPopup_FilterApplied;
-        _filterPopupContent.FilterCleared += FilterPopup_FilterCleared;
-
-        /* Initialize with existing filter state. */
-        manager.Filters.TryGetValue(columnName, out var existingFilter);
-        _filterPopupContent.Initialize(columnName, existingFilter);
-
-        _filterPopup!.PlacementTarget = button;
-        _filterPopup.IsOpen = true;
-    }
-
-    private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
-    {
-        if (_filterPopup != null)
-            _filterPopup.IsOpen = false;
-
-        if (_currentFilterGrid != null && _filterManagers.TryGetValue(_currentFilterGrid, out var manager))
-        {
-            manager.SetFilter(e.FilterState);
-        }
-    }
-
-    private void FilterPopup_FilterCleared(object? sender, EventArgs e)
-    {
-        if (_filterPopup != null)
-            _filterPopup.IsOpen = false;
-    }
+    private void FilterButton_Click(object sender, RoutedEventArgs e) => FilterPopupController.HandleFilterButtonClick(sender);
 }
