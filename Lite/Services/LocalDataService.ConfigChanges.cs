@@ -54,6 +54,8 @@ internal static class ConfigChangeRowFormat
 public sealed class ServerConfigChangeRow(ConfigChangeDiff.ServerConfigChange change)
 {
     public string ChangeTimeLocal => ConfigChangeRowFormat.Local(change.ChangeTime);
+    /// <summary>Raw naive-UTC change time (capture_time) for the MCP layer's ISO output.</summary>
+    public DateTime ChangeTime => change.ChangeTime;
     public string ConfigurationName => change.ConfigurationName;
     public long? OldValueConfigured => change.OldValueConfigured;
     public long? NewValueConfigured => change.NewValueConfigured;
@@ -71,6 +73,8 @@ public sealed class ServerConfigChangeRow(ConfigChangeDiff.ServerConfigChange ch
 public sealed class DatabaseConfigChangeRow(ConfigChangeDiff.DatabaseConfigChange change)
 {
     public string ChangeTimeLocal => ConfigChangeRowFormat.Local(change.ChangeTime);
+    /// <summary>Raw naive-UTC change time (capture_time) for the MCP layer's ISO output.</summary>
+    public DateTime ChangeTime => change.ChangeTime;
     public string DatabaseName => change.DatabaseName;
     public string SettingName => change.SettingName;
     public string? OldValue => change.OldValue;
@@ -83,6 +87,8 @@ public sealed class DatabaseConfigChangeRow(ConfigChangeDiff.DatabaseConfigChang
 public sealed class TraceFlagChangeRow(ConfigChangeDiff.TraceFlagChange change)
 {
     public string ChangeTimeLocal => ConfigChangeRowFormat.Local(change.ChangeTime);
+    /// <summary>Raw naive-UTC change time (capture_time) for the MCP layer's ISO output.</summary>
+    public DateTime ChangeTime => change.ChangeTime;
     public int TraceFlag => change.TraceFlag;
     public string PreviousStatusDisplay => change.PreviousStatusDisplay;
     public string NewStatusDisplay => change.NewStatusDisplay;
