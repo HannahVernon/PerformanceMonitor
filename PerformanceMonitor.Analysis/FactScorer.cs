@@ -379,6 +379,20 @@ public class FactScorer
             case "CONFIG_MIN_MAX_MEMORY_NARROW":
                 return 0.4;
 
+            // Priority boost enabled (value_in_use == 1) — a Dashboard WARNING (install/50_configuration_issues_analyzer.sql
+            // line 368: "Priority boost is enabled ... not recommended"): it hands SQL Server threads an
+            // above-normal Windows scheduling priority, starving OS-critical threads. It is rare and
+            // clearly-wrong (not a routine tuning choice like MAXDOP/CTFP), so it scores the WARNING band
+            // (0.9) — surfacing prominently when present — rather than the low 0.4 config-advisory base.
+            case "CONFIG_PRIORITY_BOOST":
+                return fact.Value == 1 ? 0.9 : 0.0;
+
+            // Lightweight pooling / fiber mode enabled (value_in_use == 1) — a Dashboard WARNING
+            // (install/50:401: "Lightweight pooling (fiber mode) is enabled ... issues with OLEDB and other
+            // components"). Same rationale: rare, clearly-wrong, WARNING band (0.9).
+            case "CONFIG_LIGHTWEIGHT_POOLING":
+                return fact.Value == 1 ? 0.9 : 0.0;
+
             // WS5 server-health advisories (advise-only — no Apply). Each carries the bad/good
             // signal in Value so it scores its 0.4 advisory base only when bad and 0 otherwise;
             // the noise-control gating (Express / small-RAM for LPIM, dumps>0, IFI-known) lives in

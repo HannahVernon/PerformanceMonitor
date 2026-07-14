@@ -2015,6 +2015,22 @@ public static class FactAdvice
             Remediation:
                 "For tempdb-driven PAGEIOLATCH_EX, fix the spilling queries — update statistics with FULLSCAN to correct the cardinality estimates that produced too-small grants, or rewrite the operator that spills. For modification-workload pressure, batch large operations into smaller chunks so the buffer pool can flush between batches. If the storage itself is slow (write latency consistently above 10 ms on data, 2 ms on log), no amount of query tuning will recover it — the storage is the bottleneck and needs hardware-side investigation.");
 
+        t["CONFIG_PRIORITY_BOOST"] = new AdviceBlock(
+            Headline:
+                "Priority boost is enabled — SQL Server threads run at above-normal Windows scheduling priority, which can starve OS-critical threads",
+            Investigation:
+                "`sp_configure 'priority boost'` raises the Windows scheduling priority of SQL Server's threads above normal. Microsoft recommends against it for essentially all servers: it can starve OS threads (network, disk, cluster heartbeat), destabilize the instance, and cause connectivity or failover problems — with no reliable throughput gain. It is almost always a leftover from bad tuning advice rather than a deliberate, measured choice.",
+            Remediation:
+                "Disable it: `EXECUTE sp_configure 'priority boost', 0; RECONFIGURE;` — the change takes effect after a SQL Server service restart. There is effectively no workload for which priority boost is the right fix.");
+
+        t["CONFIG_LIGHTWEIGHT_POOLING"] = new AdviceBlock(
+            Headline:
+                "Lightweight pooling (fiber mode) is enabled — it breaks OLEDB and other in-process components and is not recommended",
+            Investigation:
+                "`sp_configure 'lightweight pooling'` (fiber mode) switches SQL Server to fiber-based scheduling. It disables features that assume thread-based scheduling — most OLEDB providers (linked servers, some CLR, extended stored procedures) fail or misbehave — and its narrow high-end NUMA / context-switch benefit almost never applies. Microsoft recommends leaving it off for essentially all workloads.",
+            Remediation:
+                "Disable it: `EXECUTE sp_configure 'lightweight pooling', 0; RECONFIGURE;` — takes effect after a service restart. Only consider re-enabling it under a specific, measured high-end OLTP/NUMA scenario with vendor guidance, and never with linked servers / OLEDB in use.");
+
         t["RESOURCE_SEMAPHORE"] = new AdviceBlock(
             Headline:
                 "RESOURCE_SEMAPHORE waits — queries are queueing for memory grants because the workspace pool is exhausted",

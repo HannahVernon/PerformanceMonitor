@@ -486,6 +486,55 @@ public class FactScorerTests
         Assert.Equal(0.0, facts.First(f => f.Key == "MEMORY_CLERKS").Severity, precision: 4);
     }
 
+    // batch-2b — priority boost enabled is a Dashboard WARNING (install/50:368). CONFIG_PRIORITY_BOOST
+    // bands WARNING (0.9) when value_in_use == 1, and scores 0 when disabled.
+    [Fact]
+    public void Score_ConfigPriorityBoost_Enabled_BandsWarning()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_PRIORITY_BOOST", Value = 1, Metadata = new() { ["value_in_use"] = 1 } },
+        };
+        new FactScorer().ScoreAll(facts);
+        var f = facts.First(f => f.Key == "CONFIG_PRIORITY_BOOST");
+        Assert.True(f.Severity >= 0.75 && f.Severity < 1.5, "priority boost bands WARNING when enabled");
+    }
+
+    [Fact]
+    public void Score_ConfigPriorityBoost_Disabled_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_PRIORITY_BOOST", Value = 0, Metadata = new() { ["value_in_use"] = 0 } },
+        };
+        new FactScorer().ScoreAll(facts);
+        Assert.Equal(0.0, facts.First(f => f.Key == "CONFIG_PRIORITY_BOOST").Severity, precision: 4);
+    }
+
+    // Lightweight pooling enabled is a Dashboard WARNING (install/50:401) — same shape.
+    [Fact]
+    public void Score_ConfigLightweightPooling_Enabled_BandsWarning()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_LIGHTWEIGHT_POOLING", Value = 1, Metadata = new() { ["value_in_use"] = 1 } },
+        };
+        new FactScorer().ScoreAll(facts);
+        var f = facts.First(f => f.Key == "CONFIG_LIGHTWEIGHT_POOLING");
+        Assert.True(f.Severity >= 0.75 && f.Severity < 1.5, "lightweight pooling bands WARNING when enabled");
+    }
+
+    [Fact]
+    public void Score_ConfigLightweightPooling_Disabled_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "config", Key = "CONFIG_LIGHTWEIGHT_POOLING", Value = 0, Metadata = new() { ["value_in_use"] = 0 } },
+        };
+        new FactScorer().ScoreAll(facts);
+        Assert.Equal(0.0, facts.First(f => f.Key == "CONFIG_LIGHTWEIGHT_POOLING").Severity, precision: 4);
+    }
+
     // ARM 1 — Query Store off on a user database is an INFO advisory carried by the DB_CONFIG fact,
     // detected as query_store_on_count < database_count (install/50:83 severity=INFO). Low 0.3 base =
     // INFO band, and DB_CONFIG roots at any positive severity (a ConfigAdvisoryRootKey).

@@ -45,6 +45,12 @@ public class InferenceEngine
         "CONFIG_CTFP",
         "CONFIG_MAX_MEMORY_MB",
         "CONFIG_MIN_MAX_MEMORY_NARROW",
+        // batch-2b: priority boost / lightweight pooling enabled — Dashboard WARNINGs. Score the
+        // WARNING band (0.9, FactScorer) and root a standalone card here so a rare, clearly-wrong
+        // scheduling setting surfaces on a quiet, healthy server (redundant with the 0.5 incident
+        // threshold at 0.9, but keeps every CONFIG_* fact in one rooting set).
+        "CONFIG_PRIORITY_BOOST",
+        "CONFIG_LIGHTWEIGHT_POOLING",
         // WS5: server-health advisories (advise-only). Each scores its 0.4 advisory base only when
         // bad (FactScorer) and roots its own standalone card here, bypassing the 0.5 incident
         // threshold — a standing server-health gap should surface on a quiet, healthy server.
