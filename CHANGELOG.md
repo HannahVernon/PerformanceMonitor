@@ -307,7 +307,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1484]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1484
 [#1488]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1488
 [#1486]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1486
-[#1519]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/PRNUM
 [#1517]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1517
 [#1510]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1510
 [#1507]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1507
