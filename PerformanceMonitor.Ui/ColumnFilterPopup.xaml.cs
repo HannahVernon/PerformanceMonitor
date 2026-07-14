@@ -6,17 +6,13 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
-// Copied from Lite/Controls/ColumnFilterPopup.xaml.cs for the copy-parity program (copy-don't-promote:
-// the Darling viewer owns its own copy; Lite/Dashboard are untouched). Byte-identical logic; only the
-// namespace differs and Lite's vestigial Models using is dropped.
-
 using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using PerformanceMonitor.Common;
 
-namespace PerformanceMonitor.Darling.Viewer;
+namespace PerformanceMonitor.Ui;
 
 public partial class ColumnFilterPopup : UserControl
 {
