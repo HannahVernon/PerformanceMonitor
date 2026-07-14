@@ -1480,6 +1480,13 @@ public static class FactAdvice
         Add("page_verify_not_checksum_count", "page verify not set to CHECKSUM");
         Add("auto_create_stats_off_count", "auto-create statistics off");
         Add("auto_update_stats_off_count", "auto-update statistics off");
+        // Query Store off = user DBs (database_count) minus those with it on (query_store_on_count);
+        // the QS-off scorer arm (INFO, install/50:83) roots off the same two counts.
+        var qsOff = f.Metadata.TryGetValue("database_count", out var dbc) && dbc > 0
+                 && f.Metadata.TryGetValue("query_store_on_count", out var qOn)
+                    ? (long)(dbc - qOn) : 0L;
+        if (qsOff > 0)
+            items.Add($"{qsOff:N0} with Query Store off");
         if (items.Count == 0)
             return fallback;
 
@@ -1489,6 +1496,11 @@ public static class FactAdvice
             "indexes and churns I/O re-growing what it shrank), AUTO_CLOSE off, page verify set to CHECKSUM so " +
             "corruption is detected, auto-create and auto-update statistics on, and RCSI on where the blocking " +
             "is readers-versus-writers. The Database Configuration view lists exactly which databases each applies to.";
+        if (qsOff > 0)
+            rem +=
+                " Where Query Store is off, enable it (ALTER DATABASE <db> SET QUERY_STORE = ON; then " +
+                "OPERATION_MODE = READ_WRITE) so query performance history is captured for troubleshooting " +
+                "and plan-regression detection.";
 
         return fallback with
         {
@@ -1956,6 +1968,14 @@ public static class FactAdvice
             Remediation:
                 "If a plan regression co-fired, force the historically faster plan as the fast fix. If parameter sensitivity co-fired, do NOT force a plan — that locks in the wrong plan for the other parameter values; use OPTION (RECOMPILE) on the affected statement, or branch the procedure by parameter value. For an ad-hoc reporting spike matching neither, Resource Governor or moving the report off-peak is the durable fix.");
 
+        t["RUNNABLE_TASKS"] = new AdviceBlock(
+            Headline:
+                "Runnable-task queue is backed up — tasks are ready to run but waiting for a CPU scheduler",
+            Investigation:
+                "Every runnable task is a query that has everything it needs EXCEPT a free scheduler — the CPUs are the bottleneck, not I/O or locks. The count is the latest cpu_scheduler_stats snapshot's total across all schedulers (the runnable_tasks_warning flag trips when the queue reaches roughly one task per core). Open the CPU tab and the Wait Stats tab: SOS_SCHEDULER_YIELD co-elevation confirms scheduler starvation, and a THREADPOOL wait means it has escalated to worker-thread exhaustion. Cross-check the top CPU-consuming queries for the window.",
+            Remediation:
+                "CPU pressure — tune the CPU-heavy queries first (almost always cheaper than adding cores); the top consumers for the window are attached. Excessive parallelism is a frequent driver: if CXPACKET or high-DOP queries co-fired, lower MAXDOP / raise the Cost Threshold for Parallelism so small queries stop going parallel and monopolizing schedulers. If the queries are already tuned and the queue stays deep, the box is genuinely under-provisioned for the load — add CPU.");
+
         // ─────────────────────────────────────────────────────────────────
         // Memory pressure
         // ─────────────────────────────────────────────────────────────────
@@ -1983,6 +2003,14 @@ public static class FactAdvice
                 "Memory grants are reserved up front for sorts, hashes, and parallel operators. When the workspace pool fills, large queries queue behind it and small ones can starve. Open the Memory Grants sub-tab under Memory to see grant pressure over the analysis window, and the Memory Pressure Events sub-tab for the corresponding ring-buffer notifications. If MEMORY_GRANT_PENDING co-fired, its live waiter count and per-snapshot granted-vs-used memory are attached.",
             Remediation:
                 "The usual cause is over-granting: a query gets a grant much larger than it actually uses because cardinality estimation was wrong. Pull the offending queries' plans and compare the operator-level row estimates against actuals; update statistics with FULLSCAN on the affected tables, or add filtered indexes if a subset of the data drives the bad estimate. Per-query stopgap: `OPTION (MAX_GRANT_PERCENT = X)` caps a single offender's grant without affecting others. Resource Governor workload-group caps are the durable answer if one workload chronically starves the others.");
+
+        t["MEMORY_CLERKS"] = new AdviceBlock(
+            Headline:
+                "The TokenAndPermUserStore security cache has grown large — it can cause memory pressure and CPU spent on cache lookups",
+            Investigation:
+                "TokenAndPermUserStore caches security tokens for permission checks. Under lots of ad-hoc queries, dynamic SQL, or frequent security-context switching (EXECUTE AS, cross-database ownership chaining) it can balloon into gigabytes, crowding out useful plans and making every permission check walk a huge cache. The USERSTORE_TOKENPERM clerk size for this server is attached; the Memory → Memory Clerks view shows it alongside the other top clerks.",
+            Remediation:
+                "Clear it during a maintenance window with DBCC FREESYSTEMCACHE('TokenAndPermUserStore') for immediate relief. For a durable fix, cut the churn that grows it: parameterize ad-hoc queries so plans and security tokens are reused, and reduce security-context switching (EXECUTE AS, cross-database ownership chaining). If the growth recurs, investigate what is generating the volume of distinct security contexts.");
 
         t["RESOURCE_SEMAPHORE_QUERY_COMPILE"] = new AdviceBlock(
             Headline:

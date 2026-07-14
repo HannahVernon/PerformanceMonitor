@@ -521,6 +521,179 @@ public class FactScorerTests : IDisposable
         Assert.False(rqAmp.Matched);
     }
 
+    // ── Tier-2 parity arms (batch 1): runnable-queue / security-cache / QS-off ──────────────────
+    // All three are additions to the SHARED FactScorer, so they fire identically for Lite, Dashboard,
+    // and Darling findings. Sourced thresholds are cited per arm against the deprecated Dashboard SQL.
+
+    // ARM 3 — runnable-task-queue depth roots a STANDALONE finding off the collected cpu_scheduler_stats
+    // snapshot, tiered to the Dashboard's report.cpu_scheduler_pressure CASE (install/47:1839-1841):
+    // > 50 CRITICAL-tier (base 1.0), > 20 HIGH (0.75), > 10 MEDIUM (0.5 — the 0.5 root entry point).
+    // Base maxes at 1.0 (top of WARNING) like every base fact; CRITICAL band is reached only via the
+    // #1494 runnable-queue -> THREADPOOL amplifier, which still fires independently.
+    [Theory]
+    [InlineData(60, 1.0)]   // > 50 -> CRITICAL tier (install/47:1839)
+    [InlineData(30, 0.75)]  // > 20 -> HIGH tier     (install/47:1840)
+    [InlineData(15, 0.5)]   // > 10 -> MEDIUM tier   (install/47:1841)
+    public void Score_RunnableTasks_TiersMatchDashboard(double total, double expected)
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "cpu", Key = "RUNNABLE_TASKS", Value = total,
+                Metadata = new() { ["total_runnable_tasks"] = total, ["runnable_tasks_warning"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var rt = facts.First(f => f.Key == "RUNNABLE_TASKS");
+        // No amplifiers on RUNNABLE_TASKS and it is not tuning-class, so Severity == base.
+        Assert.Equal(expected, rt.Severity, precision: 4);
+        Assert.True(rt.Severity >= 0.5, "a non-NORMAL runnable queue must clear the 0.5 root threshold");
+    }
+
+    // A shallow queue below the > 10 bar with the warning flag CLEAR does not score (context-only).
+    [Fact]
+    public void Score_RunnableTasks_BelowThreshold_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "cpu", Key = "RUNNABLE_TASKS", Value = 5,
+                Metadata = new() { ["total_runnable_tasks"] = 5, ["runnable_tasks_warning"] = 0 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "RUNNABLE_TASKS").Severity, precision: 4);
+    }
+
+    // Small-box fallback: below the absolute > 10 bar, the collector's runnable_tasks_warning flag
+    // (SUM(runnable_tasks_count) >= cpu_count) still scores HIGH (install/47:1844).
+    [Fact]
+    public void Score_RunnableTasks_WarningFlagOnSmallBox_ScoresHigh()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "cpu", Key = "RUNNABLE_TASKS", Value = 6,
+                Metadata = new() { ["total_runnable_tasks"] = 6, ["runnable_tasks_warning"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.75, facts.First(f => f.Key == "RUNNABLE_TASKS").Severity, precision: 4);
+    }
+
+    // ARM 2 — TokenAndPermUserStore (security cache) growth scores a flat WARNING at >= 1 GB off the
+    // otherwise context-only MEMORY_CLERKS fact (install/50:562 severity=WARNING, :583 threshold 1 GB).
+    // The clerk size rides in metadata keyed by clerk_type (= sys.dm_os_memory_clerks.type).
+    [Fact]
+    public void Score_MemoryClerks_SecurityCacheOver1Gb_ScoresWarning()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "MEMORY_CLERKS", Value = 52_048,
+                Metadata = new()
+                {
+                    ["MEMORYCLERK_SQLBUFFERPOOL"] = 50_000,
+                    ["USERSTORE_TOKENPERM"] = 2_048, // 2 GB
+                    ["total_top_clerks_mb"] = 52_048,
+                    ["clerk_count"] = 2
+                } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var mc = facts.First(f => f.Key == "MEMORY_CLERKS");
+        Assert.True(mc.Severity >= 0.75 && mc.Severity < 1.5, "security-cache growth bands WARNING");
+    }
+
+    // Under 1 GB does not score; MEMORY_CLERKS stays context-only.
+    [Fact]
+    public void Score_MemoryClerks_SecurityCacheUnder1Gb_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "MEMORY_CLERKS", Value = 50_512,
+                Metadata = new()
+                {
+                    ["MEMORYCLERK_SQLBUFFERPOOL"] = 50_000,
+                    ["USERSTORE_TOKENPERM"] = 512, // 0.5 GB — below the 1 GB bar
+                } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "MEMORY_CLERKS").Severity, precision: 4);
+    }
+
+    // A normal clerk set with no TokenAndPermUserStore entry scores 0 (context-only preserved).
+    [Fact]
+    public void Score_MemoryClerks_NoSecurityCacheClerk_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "MEMORY_CLERKS", Value = 50_000,
+                Metadata = new() { ["MEMORYCLERK_SQLBUFFERPOOL"] = 50_000, ["clerk_count"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "MEMORY_CLERKS").Severity, precision: 4);
+    }
+
+    // ARM 1 — Query Store off on a user database is an INFO advisory carried by the DB_CONFIG fact,
+    // detected as query_store_on_count < database_count (install/50:83 severity=INFO). Low 0.3 base =
+    // INFO band, and DB_CONFIG roots at any positive severity (a ConfigAdvisoryRootKey).
+    [Fact]
+    public void Score_DbConfig_QueryStoreOff_ScoresInfoAdvisory()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "database_config", Key = "DB_CONFIG", Value = 3,
+                Metadata = new() { ["database_count"] = 3, ["query_store_on_count"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var db = facts.First(f => f.Key == "DB_CONFIG");
+        Assert.Equal(0.3, db.Severity, precision: 4);
+        Assert.True(db.Severity > 0 && db.Severity < 0.75, "QS-off is an INFO-band advisory");
+    }
+
+    // Every user DB has Query Store on and nothing else drifted -> DB_CONFIG does not score.
+    [Fact]
+    public void Score_DbConfig_QueryStoreAllOn_NoContribution()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "database_config", Key = "DB_CONFIG", Value = 3,
+                Metadata = new() { ["database_count"] = 3, ["query_store_on_count"] = 3 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "DB_CONFIG").Severity, precision: 4);
+    }
+
+    // QS-off never lowers a worse co-present DB_CONFIG issue (existing arms unchanged): AUTO_SHRINK on
+    // 3 DBs stays 0.9 even with Query Store also off on all of them.
+    [Fact]
+    public void Score_DbConfig_QueryStoreOff_DoesNotLowerWorseIssue()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "database_config", Key = "DB_CONFIG", Value = 3,
+                Metadata = new()
+                {
+                    ["database_count"] = 3,
+                    ["query_store_on_count"] = 0,   // all off
+                    ["auto_shrink_on_count"] = 3    // worse issue -> 3 * 0.3 = 0.9
+                } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.9, facts.First(f => f.Key == "DB_CONFIG").Severity, precision: 4);
+    }
+
     // Confidence-hardening: the low-quality fallback floors at 0.5 AFTER the confidence multiply, so a
     // fired thin-baseline anomaly stays >= InferenceEngine's 0.5 root entry-point even if confidence
     // ever drops below 1.0 (it is a hardcoded 1.0 today; this guards the future).

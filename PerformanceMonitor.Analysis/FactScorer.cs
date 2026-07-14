@@ -185,8 +185,34 @@ public class FactScorer
             // CPU spike: value is max CPU %. Concerning at 80%, critical at 95%.
             // Only emitted when max is significantly above average (bursty).
             "CPU_SPIKE" => ApplyThresholdFormula(fact.Value, 80, 95),
+            // Runnable-task queue depth — a STANDALONE scheduler-pressure signal that roots the collected
+            // cpu_scheduler_stats snapshot directly. Distinct from (and additive to) the #1494 THREADPOOL
+            // runnable-queue amplifier, which still fires independently off the same RUNNABLE_TASKS fact.
+            "RUNNABLE_TASKS" => ScoreRunnableTasks(fact),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores the runnable-task-queue pressure signal (RUNNABLE_TASKS context fact; Value =
+    /// total_runnable_tasks_count from the latest cpu_scheduler_stats snapshot). Tiers mirror the
+    /// Dashboard's report.cpu_scheduler_pressure pressure_level CASE
+    /// (install/47_create_reporting_views.sql lines 1839-1844): > 50 CRITICAL, > 20 HIGH, > 10 MEDIUM,
+    /// else the collector's own runnable_tasks_warning flag (SUM(runnable_tasks_count) >= cpu_count) as a
+    /// small-box HIGH fallback the absolute > 10 bar misses. Base maxes at 1.0 (WARNING band) exactly as
+    /// every other base fact does — the CRITICAL band (>= 1.5) is reached only with corroboration, which
+    /// is precisely the runnable-queue -> THREADPOOL amplifier path (#1494). A bare runnable queue with no
+    /// thread/CPU corroboration is a strong WARNING, not an outage.
+    /// </summary>
+    private static double ScoreRunnableTasks(Fact fact)
+    {
+        var total = fact.Value; // total_runnable_tasks_count (latest snapshot)
+        if (total > 50) return 1.0;   // CRITICAL - High runnable task queue (install/47:1839)
+        if (total > 20) return 0.75;  // HIGH - Moderate runnable task queue (install/47:1840)
+        if (total > 10) return 0.5;   // MEDIUM - Some runnable tasks queued (install/47:1841)
+        // Small-box per-scheduler pressure below the absolute bar (install/47:1844: runnable_tasks_warning).
+        if (fact.Metadata.GetValueOrDefault("runnable_tasks_warning") >= 1.0) return 0.75;
+        return 0.0;
     }
 
     /// <summary>
@@ -218,7 +244,7 @@ public class FactScorer
     }
 
     /// <summary>
-    /// Scores memory grant facts. Only MEMORY_GRANT_PENDING (from resource semaphore) for now.
+    /// Scores memory facts: grant waiters (MEMORY_GRANT_PENDING) and security-cache growth (MEMORY_CLERKS).
     /// </summary>
     private static double ScoreMemoryFact(Fact fact)
     {
@@ -226,8 +252,26 @@ public class FactScorer
         {
             // Grant waiters: concerning at 1, critical at 5
             "MEMORY_GRANT_PENDING" => ApplyThresholdFormula(fact.Value, 1, 5),
+            // Security cache (TokenAndPermUserStore) growth — WARNING at >= 1 GB. See ScoreSecurityCache.
+            "MEMORY_CLERKS" => ScoreSecurityCache(fact),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores TokenAndPermUserStore (security cache) growth off the otherwise context-only MEMORY_CLERKS
+    /// fact. That fact carries each top-clerk's size in MB keyed by its clerk_type (MemoryClerksCollector
+    /// stores clerk_type = sys.dm_os_memory_clerks.type), so the security cache is the USERSTORE_TOKENPERM
+    /// entry. The Dashboard fires a single WARNING at >= 1 GB with no size escalation
+    /// (install/50_configuration_issues_analyzer.sql line 562 severity=WARNING, line 583 threshold
+    /// pages_kb / 1024 / 1024 >= 1.0), so this is a flat WARNING-band base (0.9). Absent when the clerk is
+    /// not among the top-10 collected, which for a >= 1 GB clerk is effectively never. Non-security clerk
+    /// sets (buffer pool, etc.) score 0, preserving MEMORY_CLERKS as context-only for those.
+    /// </summary>
+    private static double ScoreSecurityCache(Fact fact)
+    {
+        var securityCacheMb = fact.Metadata.GetValueOrDefault("USERSTORE_TOKENPERM");
+        return securityCacheMb >= 1024.0 ? 0.9 : 0.0; // >= 1 GB -> flat WARNING (install/50:562,583)
     }
 
     /// <summary>
@@ -343,6 +387,18 @@ public class FactScorer
         // Amplifiers for LCK_M_S/LCK_M_IS push it above 0.5 when reader/writer
         // contention confirms RCSI would help.
         if (rcsiOff > 0)
+            score = Math.Max(score, 0.3);
+
+        // Query Store disabled on a user database — INFO advisory (install/50_configuration_issues_analyzer.sql
+        // line 83 severity=INFO). Detected purely from the aggregate counts every collector already emits:
+        // query_store_on_count (user DBs with QS on; system DBs are excluded from both counts) < database_count
+        // (user DB total) means at least one user database has Query Store off. Low 0.3 base — DB_CONFIG is a
+        // ConfigAdvisoryRootKey so it roots as a standing INFO advisory at any positive severity, and 0.3 keeps
+        // it in the INFO band (< 0.75) matching the Dashboard. Requires BOTH counts present so a fact carrying
+        // partial metadata never trips it.
+        if (fact.Metadata.TryGetValue("database_count", out var dbCount) && dbCount > 0
+            && fact.Metadata.TryGetValue("query_store_on_count", out var queryStoreOn)
+            && queryStoreOn < dbCount)
             score = Math.Max(score, 0.3);
 
         return score;
