@@ -15,6 +15,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitor.Darling.Viewer;
 

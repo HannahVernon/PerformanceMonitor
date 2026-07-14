@@ -15,6 +15,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -265,17 +266,5 @@ public partial class FinOpsTab : UserControl
     {
         if (_filterPopup != null)
             _filterPopup.IsOpen = false;
-    }
-
-    private static DataGrid? FindParentDataGridFromElement(DependencyObject element)
-    {
-        var current = element;
-        while (current != null)
-        {
-            if (current is DataGrid dg)
-                return dg;
-            current = VisualTreeHelper.GetParent(current);
-        }
-        return null;
     }
 }

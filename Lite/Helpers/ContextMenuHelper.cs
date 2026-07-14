@@ -19,6 +19,7 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using ScottPlot.WPF;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitorLite.Helpers;
 
@@ -29,18 +30,6 @@ namespace PerformanceMonitorLite.Helpers;
 /// </summary>
 public static class ContextMenuHelper
 {
-    public static DataGrid? FindParentDataGrid(object sender)
-    {
-        if (sender is not MenuItem menuItem) return null;
-        var contextMenu = menuItem.Parent as ContextMenu;
-        var target = contextMenu?.PlacementTarget as FrameworkElement;
-        while (target != null && target is not DataGrid)
-        {
-            target = VisualTreeHelper.GetParent(target) as FrameworkElement;
-        }
-        return target as DataGrid;
-    }
-
     public static string GetCellValue(DataGridColumn col, object item)
     {
         if (col is DataGridBoundColumn boundCol

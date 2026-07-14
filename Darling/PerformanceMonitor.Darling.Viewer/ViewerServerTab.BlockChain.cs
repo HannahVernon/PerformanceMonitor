@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
