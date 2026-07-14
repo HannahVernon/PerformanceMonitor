@@ -49,7 +49,7 @@ public partial class ServerTab : UserControl
     // MainTabControl_SelectionChanged skips its refresh and doesn't clobber the filtered snapshot
     // the drill-down loads next (async race).
     private bool _suppressActiveQueriesAutoRefresh;
-    private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
+    private readonly ChartRenderHelper _chartHelper = new();
     private List<SelectableItem> _waitTypeItems = new();
     private List<SelectableItem> _perfmonCounterItems = new();
     /* #1319: per-server global database filter (display-only). Empty set = "All" (unfiltered). */
