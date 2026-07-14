@@ -1310,7 +1310,7 @@ public partial class ServerTab : UserControl
         cbTicks.AddMajor(Math.Log(1 + maxRaw), ((int)maxRaw).ToString("N0"));
         colorBar.Axis.TickGenerator = cbTicks;
         QueryHeatmapChart.Plot.Axes.AddPanel(colorBar);
-        _legendPanels[QueryHeatmapChart] = colorBar;
+        _chartHelper.SetLegendPanel(QueryHeatmapChart, colorBar);
 
         var metricName = ((ComboBoxItem)HeatmapMetricCombo.SelectedItem).Content?.ToString() ?? "Duration (ms)";
         QueryHeatmapChart.Plot.Title($"Query Distribution by {metricName}");
@@ -1416,63 +1416,19 @@ public partial class ServerTab : UserControl
     /// <summary>
     /// Clears a chart and removes any existing legend panel to prevent duplication.
     /// </summary>
-    private void ClearChart(ScottPlot.WPF.WpfPlot chart)
-    {
-        if (_legendPanels.TryGetValue(chart, out var existingPanel) && existingPanel != null)
-        {
-            chart.Plot.Axes.Remove(existingPanel);
-            _legendPanels[chart] = null;
-        }
-
-        /* Reset fully — Plot.Clear() leaves stale DateTime axes behind,
-           and DateTimeTicksBottom() replaces the axis object entirely.
-           Resetting the plot object avoids tick generator type mismatches. */
-        chart.Reset();
-        chart.Plot.Clear();
-    }
+    private void ClearChart(ScottPlot.WPF.WpfPlot chart) => _chartHelper.ClearChart(chart);
 
     /// <summary>
     /// Sets up an empty chart with dark theme, Y-axis label, legend, and "No Data" annotation.
     /// Matches Full Dashboard behavior for consistent UX.
     /// </summary>
     private void RefreshEmptyChart(ScottPlot.WPF.WpfPlot chart, string legendText, string yAxisLabel)
-    {
-        ReapplyAxisColors(chart);
-
-        /* Add invisible scatter to create legend entry (matches data chart layout) */
-        var placeholder = chart.Plot.Add.Scatter(new double[] { 0 }, new double[] { 0 });
-        placeholder.LegendText = legendText;
-        placeholder.Color = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
-        placeholder.MarkerSize = 0;
-        placeholder.LineWidth = 0;
-
-        /* Add centered "No Data" text */
-        var text = chart.Plot.Add.Text($"{legendText}\nNo Data", 0, 0);
-        text.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
-        text.LabelFontSize = 14;
-        text.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
-
-        /* Configure axes */
-        chart.Plot.HideGrid();
-        chart.Plot.Axes.SetLimitsX(-1, 1);
-        chart.Plot.Axes.SetLimitsY(-1, 1);
-        chart.Plot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.EmptyTickGenerator();
-        chart.Plot.Axes.Left.TickGenerator = new ScottPlot.TickGenerators.EmptyTickGenerator();
-        chart.Plot.YLabel(yAxisLabel);
-
-        /* Show legend to match data chart layout */
-        ShowChartLegend(chart);
-        chart.Refresh();
-    }
+        => _chartHelper.RefreshEmptyChart(chart, legendText, yAxisLabel);
 
     /// <summary>
     /// Shows legend on chart and tracks it for proper cleanup on next refresh.
     /// </summary>
-    private void ShowChartLegend(ScottPlot.WPF.WpfPlot chart)
-    {
-        _legendPanels[chart] = chart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
-        chart.Plot.Legend.FontSize = 13;
-    }
+    private void ShowChartLegend(ScottPlot.WPF.WpfPlot chart) => _chartHelper.ShowChartLegend(chart);
 
     /// <summary>
     /// Applies the chrome theme to a ScottPlot chart.

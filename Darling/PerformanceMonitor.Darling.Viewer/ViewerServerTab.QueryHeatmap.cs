@@ -223,7 +223,7 @@ public partial class ViewerServerTab
         cbTicks.AddMajor(Math.Log(1 + maxRaw), ((int)maxRaw).ToString("N0"));
         colorBar.Axis.TickGenerator = cbTicks;
         QueryHeatmapChart.Plot.Axes.AddPanel(colorBar);
-        _legendPanels[QueryHeatmapChart] = colorBar;
+        _chartHelper.SetLegendPanel(QueryHeatmapChart, colorBar);
 
         var metricName = ((ComboBoxItem)HeatmapMetricCombo.SelectedItem).Content?.ToString() ?? "Duration (ms)";
         QueryHeatmapChart.Plot.Title($"Query Distribution by {metricName}");
