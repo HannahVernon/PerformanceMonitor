@@ -1529,7 +1529,9 @@ VALUES ($1, $2, $3, $4, $5, $6)";
     }
 
     /// <summary>
-    /// Seeds database_config with per-database configuration flags.
+    /// Seeds database_config with per-database configuration flags. Query Store defaults ON (the healthy
+    /// value, like rcsi-on / CHECKSUM here) so the QS-off advisory arm stays dormant in fixtures not
+    /// exercising it; the QS-off scorer arm is covered directly in FactScorerTests with hand-built facts.
     /// </summary>
     internal async Task SeedDatabaseConfigAsync(
         params (string dbName, bool rcsiOn, bool autoShrink, bool autoClose, string pageVerify)[] databases)
@@ -1547,7 +1549,7 @@ INSERT INTO database_config
      recovery_model, is_auto_shrink_on, is_auto_close_on,
      is_read_committed_snapshot_on, is_auto_create_stats_on,
      is_auto_update_stats_on, page_verify_option, is_query_store_on)
-VALUES ($1, $2, $3, $4, $5, 'FULL', $6, $7, $8, true, true, $9, false)";
+VALUES ($1, $2, $3, $4, $5, 'FULL', $6, $7, $8, true, true, $9, true)";
 
             cmd.Parameters.Add(new DuckDBParameter { Value = _nextId-- });
             cmd.Parameters.Add(new DuckDBParameter { Value = TestPeriodEnd });
