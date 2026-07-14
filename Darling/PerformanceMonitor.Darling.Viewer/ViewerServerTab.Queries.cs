@@ -36,18 +36,21 @@ public partial class ViewerServerTab
 {
     /* Queries sub-tab order — matches Lite's QueriesSubTabControl (W1f-2), plus the Darling-only unified
        Expensive Queries grid inserted after the three per-source grids (Dashboard parity), keeping Query
-       Heatmap last, and the Darling-only LIVE "Current Active Queries" tab inserted right after the stored
-       "Active Queries" tab: Performance Trends, Active Queries, Current Active Queries (live), the three grids,
-       Expensive Queries, Query Heatmap. Every reference below uses the NAMED constant, so inserting the live
-       tab at index 2 only shifts these values — no literal-index caller needs touching. */
+       Heatmap last, the Darling-only LIVE "Current Active Queries" tab inserted right after the stored
+       "Active Queries" tab, and the Query Store Regressions grid (Dashboard parity) inserted right after
+       Query Store — matching the Dashboard's Query Store → Query Store Regressions adjacency: Performance
+       Trends, Active Queries, Current Active Queries (live), the three grids, Query Store Regressions,
+       Expensive Queries, Query Heatmap. Every reference below uses the NAMED constant, so inserting a tab
+       only shifts these values — no literal-index caller needs touching. */
     private const int PerformanceTrendsSubTabIndex = 0;
     private const int ActiveQueriesSubTabIndex = 1;
     private const int CurrentActiveQueriesSubTabIndex = 2;
     private const int TopQueriesSubTabIndex = 3;
     private const int TopProceduresSubTabIndex = 4;
     private const int QueryStoreSubTabIndex = 5;
-    private const int ExpensiveQueriesSubTabIndex = 6;
-    private const int QueryHeatmapSubTabIndex = 7;
+    private const int QueryStoreRegressionsSubTabIndex = 6;
+    private const int ExpensiveQueriesSubTabIndex = 7;
+    private const int QueryHeatmapSubTabIndex = 8;
 
     private string _queryStatsSlicerMetric = "TotalCpu";
     private List<TimeSliceBucket>? _queryStatsSlicerData;
@@ -141,6 +144,9 @@ public partial class ViewerServerTab
             case QueryStoreSubTabIndex:
                 await LoadQueryStoreAsync(startUtc, endUtc);
                 break;
+            case QueryStoreRegressionsSubTabIndex:
+                await LoadQueryStoreRegressionsAsync(startUtc, endUtc);
+                break;
             case ExpensiveQueriesSubTabIndex:
                 await LoadExpensiveQueriesAsync(startUtc, endUtc);
                 break;
@@ -192,6 +198,21 @@ public partial class ViewerServerTab
         var rows = await _dataService.GetUnifiedExpensiveQueriesAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
         _expensiveQueriesFilterMgr!.UpdateData(rows);
         SetDefaultSortIfNone(ExpensiveQueriesGrid, "AvgWorkerTimeMs", ListSortDirection.Descending);
+    }
+
+    /// <summary>
+    /// Loads the Query Store Regressions grid — the Dashboard's regressions view (baseline-vs-recent Query
+    /// Store performance) ported to Darling's store, over the toolbar's settable window. Like the Dashboard
+    /// grid (and unlike the three per-source grids) it has no slicer / comparison / slicer-overlay: the read
+    /// is already a baseline-vs-recent contrast, not a single time series. The default sort matches the
+    /// Dashboard grid's (duration regression % descending) — a grid-view-only SortDescription that does NOT
+    /// touch the read's additional-duration ORDER BY (the TVF's ranking).
+    /// </summary>
+    private async Task LoadQueryStoreRegressionsAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetQueryStoreRegressionsAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _queryStoreRegressionsFilterMgr!.UpdateData(rows);
+        SetDefaultSortIfNone(QueryStoreRegressionsGrid, "DurationRegressionPercent", ListSortDirection.Descending);
     }
 
     // ── Slicers (Lite's ServerTab.Slicers.cs; the slicer sends UTC bounds, the viewer reads take naive UTC) ──
