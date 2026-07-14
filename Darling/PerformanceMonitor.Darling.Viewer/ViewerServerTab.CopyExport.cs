@@ -15,6 +15,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.FileSaveHelper;
 using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitor.Darling.Viewer;
@@ -143,46 +144,12 @@ public partial class ViewerServerTab
     private void DownloadBlockedProcessXml_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.DataContext is not ViewerBlockedProcessRow row || string.IsNullOrEmpty(row.BlockedProcessReportXml)) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            DefaultExt = ".xml",
-            FileName = $"blocked_process_{row.EventTime:yyyyMMdd_HHmmss}.xml"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, row.BlockedProcessReportXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save blocked process XML: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        SaveXmlToFile(row.BlockedProcessReportXml, $"blocked_process_{row.EventTime:yyyyMMdd_HHmmss}.xml", "blocked process XML");
     }
 
     private void DownloadDeadlockXml_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.DataContext is not DeadlockProcessDetail row || string.IsNullOrEmpty(row.DeadlockGraphXml)) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            DefaultExt = ".xml",
-            FileName = $"deadlock_{row.DeadlockTime:yyyyMMdd_HHmmss}.xml"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, row.DeadlockGraphXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save deadlock XML: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        SaveXmlToFile(row.DeadlockGraphXml, $"deadlock_{row.DeadlockTime:yyyyMMdd_HHmmss}.xml", "deadlock XML");
     }
 }

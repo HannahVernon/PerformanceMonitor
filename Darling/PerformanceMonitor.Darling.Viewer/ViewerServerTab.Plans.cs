@@ -15,6 +15,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.FileSaveHelper;
 using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitor.Darling.Viewer;
@@ -291,27 +292,6 @@ public partial class ViewerServerTab
         finally
         {
             btn.Content = "Download";
-        }
-    }
-
-    private void SavePlanFile(string planXml, string defaultName)
-    {
-        var dialog = new SaveFileDialog
-        {
-            Filter = "SQL Plan files (*.sqlplan)|*.sqlplan|All files (*.*)|*.*",
-            DefaultExt = ".sqlplan",
-            FileName = $"{defaultName}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, planXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save plan: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
