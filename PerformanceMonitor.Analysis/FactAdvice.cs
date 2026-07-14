@@ -2063,6 +2063,22 @@ public static class FactAdvice
             Remediation:
                 "Same playbook as RESOURCE_SEMAPHORE: the offenders are over-granting because of bad cardinality estimates. Pull the heavy queries' plans and find where the estimate diverged from actuals; update statistics with FULLSCAN, add the right indexes, and the grants shrink. `OPTION (MAX_GRANT_PERCENT = X)` is a per-query stopgap that caps the worst offender without affecting others.");
 
+        t["PLAN_CACHE_BLOAT"] = new AdviceBlock(
+            Headline:
+                "Single-use plans are bloating the plan cache — a large share of cached plans have been used exactly once, wasting the memory that holds them",
+            Investigation:
+                "The finding carries the single-use plan count and size against the totals for the latest snapshot; a single-use ratio above 20% is flagged, above 50% is severe. Each single-use plan is a query that compiled, ran once, and will almost certainly never be reused — most often unparameterized ad-hoc SQL or dynamic SQL that embeds literal values, so every distinct value produces its own one-shot plan. That memory is stolen from the buffer pool and from plans that WOULD be reused. Open Memory → Plan Cache to see the single-use vs. multi-use composition and the trend; RESOURCE_SEMAPHORE_QUERY_COMPILE or high SQL Compilations/sec co-firing confirms the same churn is also costing CPU on constant recompilation.",
+            Remediation:
+                "The low-risk first step is `optimize for ad hoc workloads` at the server level — SQL then caches only a small stub for a plan's first execution and the full plan only if it is reused, which collapses single-use bloat without changing plan choice. The durable fix is to stop generating the churn: parameterize the offending ad-hoc/dynamic SQL in the application so one plan serves every parameter value. Where the app cannot be changed, `ALTER DATABASE ... SET PARAMETERIZATION FORCED` makes the optimizer parameterize more aggressively — test it on a workload copy first, because forced parameterization can change plan selection for other queries. (Sourced from the Dashboard's report.plan_cache_bloat recommendation, install/47:1493.)");
+
+        t["MEMORY_PRESSURE_EVENTS"] = new AdviceBlock(
+            Headline:
+                "SQL Server signalled physical-memory pressure — the resource monitor logged RESOURCE_MEMPHYSICAL_LOW notifications in the window",
+            Investigation:
+                "These come from the RING_BUFFER_RESOURCE_MONITOR ring buffer: when the OS or SQL Server itself flags low available physical memory, the resource monitor raises an indicator (0-1 normal, 2 medium, 3+ severe) and SQL responds by trimming caches — evicting buffer-pool pages and plan cache to free memory. The finding carries the count of pressure events and the peak process/system indicators for the window. That cache trimming shows up downstream as more physical reads (PAGEIOLATCH_SH) and more recompiles as evicted plans are rebuilt, so check the Memory tab and the Wait Stats tab around the event times for that fallout.",
+            Remediation:
+                "Confirm whether the pressure is SQL's or the box's: check `max server memory` against physical RAM and what else runs on the host. If `max server memory` is unset or too high, SQL can starve the OS and other processes into signalling system-wide low memory — cap it leaving headroom for the OS (and for other instances/services on the box). If `max server memory` is already conservative and the system indicator is what fired, an external consumer (another instance, an app, a runaway agent) is taking the memory — find and constrain it. If the server is genuinely short of memory for its workload after those checks, add RAM.");
+
         // ─────────────────────────────────────────────────────────────────
         // Blocking / lock contention
         // ─────────────────────────────────────────────────────────────────

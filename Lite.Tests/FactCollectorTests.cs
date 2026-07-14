@@ -503,4 +503,64 @@ public class FactCollectorTests : IDisposable
         Assert.False(facts.ContainsKey("FILE_AUTOGROWTH_PERCENT"),
             "FILE_AUTOGROWTH_PERCENT should not be emitted when no large percent-growth file exists");
     }
+
+    /* ── Tier-2: plan-cache single-use bloat + ring-buffer memory-pressure collector round-trips ── */
+
+    // The collector reads the LATEST plan_cache_stats snapshot and SUMs it into a PLAN_CACHE_BLOAT fact:
+    // 6,000 single-use of 10,000 total = 60%, with the single-use size carried for the scorer's guard.
+    [Fact]
+    public async Task CollectFacts_PlanCacheBloat_EmitsPercentAndSizeMetadata()
+    {
+        var facts = await SeedAndCollectAsync(s => s.SeedPlanCacheStatsAsync(
+            totalPlans: 10_000, singleUsePlans: 6_000, totalSizeMb: 1_300, singleUseSizeMb: 800));
+
+        Assert.True(facts.ContainsKey("PLAN_CACHE_BLOAT"), "PLAN_CACHE_BLOAT should be collected");
+        var bloat = facts["PLAN_CACHE_BLOAT"];
+        Assert.Equal("memory", bloat.Source);
+        Assert.Equal(60, bloat.Value, precision: 0);              // 6000 * 100 / 10000
+        Assert.Equal(6_000, bloat.Metadata["single_use_plans"]);
+        Assert.Equal(10_000, bloat.Metadata["total_plans"]);
+        Assert.Equal(800, bloat.Metadata["single_use_size_mb"]);
+        Assert.Equal(1_300, bloat.Metadata["total_size_mb"]);
+    }
+
+    // No plan_cache_stats snapshot -> the fact is not emitted (collector returns before Add).
+    [Fact]
+    public async Task CollectFacts_PlanCacheBloat_AbsentWhenNoSnapshot()
+    {
+        var facts = await SeedAndCollectAsync(s => s.SeedCleanServerAsync());
+
+        Assert.False(facts.ContainsKey("PLAN_CACHE_BLOAT"),
+            "PLAN_CACHE_BLOAT should not be emitted when no plan_cache_stats snapshot exists");
+    }
+
+    // A genuine HIGH pressure event (indicator 3) is classified: Value = the max indicator, with the
+    // MEDIUM+ event count carried for the card.
+    [Fact]
+    public async Task CollectFacts_MemoryPressureEvents_EmitsMaxIndicator()
+    {
+        var facts = await SeedAndCollectAsync(s => s.SeedMemoryPressureEventsAsync(
+            ("RESOURCE_MEMPHYSICAL_STEADY", 0, 0), // steady — ignored by the MEDIUM+ gate
+            ("RESOURCE_MEMPHYSICAL_LOW", 3, 1)));   // real pressure — process indicator 3
+
+        Assert.True(facts.ContainsKey("MEMORY_PRESSURE_EVENTS"), "MEMORY_PRESSURE_EVENTS should be collected");
+        var mp = facts["MEMORY_PRESSURE_EVENTS"];
+        Assert.Equal("memory", mp.Source);
+        Assert.Equal(3, mp.Value);                                // max(process=3, system=1)
+        Assert.Equal(3, mp.Metadata["max_process_indicator"]);
+        Assert.Equal(1, mp.Metadata["max_system_indicator"]);
+        Assert.Equal(1, mp.Metadata["event_count"]);              // only the indicator-3 row is MEDIUM+
+    }
+
+    // A steady ring buffer (indicators 0-1) is the healthy norm — the collector gates it out entirely.
+    [Fact]
+    public async Task CollectFacts_MemoryPressureEvents_AbsentWhenOnlySteady()
+    {
+        var facts = await SeedAndCollectAsync(s => s.SeedMemoryPressureEventsAsync(
+            ("RESOURCE_MEMPHYSICAL_STEADY", 0, 0),
+            ("RESOURCE_MEMPHYSICAL_HIGH", 1, 1)));  // indicator 1 — below the MEDIUM (>= 2) floor
+
+        Assert.False(facts.ContainsKey("MEMORY_PRESSURE_EVENTS"),
+            "MEMORY_PRESSURE_EVENTS should not be emitted when no MEDIUM+ indicator is present");
+    }
 }

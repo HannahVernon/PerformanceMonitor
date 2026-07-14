@@ -366,4 +366,133 @@ FROM latest WHERE rn = 1";
         catch { /* Table may not exist or have no data */ }
     }
 
+    public const string PlanCacheStatsSql = @"
+WITH ranked AS (
+    SELECT total_plans, single_use_plans, total_size_mb, single_use_size_mb,
+           DENSE_RANK() OVER (ORDER BY collection_time DESC) AS rnk
+    FROM plan_cache_stats
+    WHERE server_id = $1
+    AND   collection_time <= $2
+)
+SELECT
+    COALESCE(SUM(total_plans), 0) AS total_plans,
+    COALESCE(SUM(single_use_plans), 0) AS single_use_plans,
+    COALESCE(SUM(total_size_mb), 0) AS total_size_mb,
+    COALESCE(SUM(single_use_size_mb), 0) AS single_use_size_mb
+FROM ranked
+WHERE rnk = 1";
+
+    /// <summary>
+    /// Collects the plan-cache single-use bloat signal from the LATEST plan_cache_stats snapshot. Mirrors
+    /// the Dashboard's report.plan_cache_bloat (install/47_create_reporting_views.sql:1456-1496): SUM the
+    /// plan/size counts over the newest collection_time, derive single_use_percent. Point-in-time read
+    /// (no lower bound, just &lt;= TimeRangeEnd) like CollectMemoryFactsAsync; DENSE_RANK() selects every
+    /// row of the newest collection (QUALIFY is DuckDB-only and banned in the shared PG dialect). The
+    /// FactScorer applies the &gt; 50/30/20% tiers AND the single_use_size_mb &gt;= 100 noise guard.
+    /// Ported byte-identically from Lite's DuckDbFactCollector.CollectPlanCacheFactsAsync.
+    /// </summary>
+    private async Task CollectPlanCacheFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(PlanCacheStatsSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            // SUM(integer) is bigint in Postgres — read every aggregate through ToInt64 (the Lite-parity
+            // shape), then widen the MB sizes to double for the metadata.
+            var totalPlans = reader.IsDBNull(0) ? 0L : ToInt64(reader.GetValue(0));
+            var singleUsePlans = reader.IsDBNull(1) ? 0L : ToInt64(reader.GetValue(1));
+            var totalSizeMb = reader.IsDBNull(2) ? 0.0 : (double)ToInt64(reader.GetValue(2));
+            var singleUseSizeMb = reader.IsDBNull(3) ? 0.0 : (double)ToInt64(reader.GetValue(3));
+
+            // No cache collected (or an empty cache) — nothing to classify.
+            if (totalPlans <= 0) return;
+
+            var singleUsePercent = singleUsePlans * 100.0 / totalPlans;
+
+            facts.Add(new Fact
+            {
+                Source = "memory",
+                Key = "PLAN_CACHE_BLOAT",
+                Value = singleUsePercent,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["single_use_plans"] = singleUsePlans,
+                    ["total_plans"] = totalPlans,
+                    ["single_use_size_mb"] = singleUseSizeMb,
+                    ["total_size_mb"] = totalSizeMb,
+                    ["single_use_percent"] = singleUsePercent
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
+    }
+
+    public const string MemoryPressureEventsSql = @"
+SELECT
+    SUM(CASE WHEN memory_indicators_process >= 2 OR memory_indicators_system >= 2 THEN 1 ELSE 0 END) AS pressure_event_count,
+    MAX(memory_indicators_process) AS max_process,
+    MAX(memory_indicators_system) AS max_system
+FROM memory_pressure_events
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3";
+
+    /// <summary>
+    /// Collects ring-buffer physical-memory-pressure notifications from memory_pressure_events. Mirrors
+    /// the Dashboard's report.memory_pressure_events (install/47_create_reporting_views.sql:220-238),
+    /// whose severity keys off memory_indicators_process / memory_indicators_system (&gt;= 3 HIGH, &gt;= 2
+    /// MEDIUM, else LOW). Window-bounded to [TimeRangeStart, TimeRangeEnd]. NOISE GATE: emit only when a
+    /// genuine MEDIUM+ indicator occurred (max &gt;= 2) — the steady 0-1 samples on every healthy server
+    /// stay silent (install/47:232-233). Value = the max overall indicator; event_count = the MEDIUM+
+    /// sample count. Ported byte-identically from Lite's
+    /// DuckDbFactCollector.CollectMemoryPressureEventFactsAsync.
+    /// </summary>
+    private async Task CollectMemoryPressureEventFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync();
+
+            using var cmd = new NpgsqlCommand(MemoryPressureEventsSql, connection);
+            cmd.Parameters.AddWithValue(context.ServerId);
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
+            cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var pressureEventCount = reader.IsDBNull(0) ? 0L : ToInt64(reader.GetValue(0));
+            var maxProcess = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var maxSystem = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2));
+            var maxIndicator = Math.Max(maxProcess, maxSystem);
+
+            // Steady ring buffer (indicators 0-1) is the healthy norm on every server — only a genuine
+            // MEDIUM+ pressure indicator is worth a fact (install/47:232-233 MEDIUM floor).
+            if (maxIndicator < 2) return;
+
+            facts.Add(new Fact
+            {
+                Source = "memory",
+                Key = "MEMORY_PRESSURE_EVENTS",
+                Value = maxIndicator,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["event_count"] = pressureEventCount,
+                    ["max_process_indicator"] = maxProcess,
+                    ["max_system_indicator"] = maxSystem
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
+    }
+
 }

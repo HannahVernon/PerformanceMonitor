@@ -373,4 +373,142 @@ FROM latest WHERE rn = 1";
         catch { /* Table may not exist or have no data */ }
     }
 
+    /// <summary>
+    /// Collects the plan-cache single-use bloat signal from the LATEST plan_cache_stats snapshot. Mirrors
+    /// the Dashboard's report.plan_cache_bloat (install/47_create_reporting_views.sql:1456-1496), which
+    /// SUMs single_use_plans / total_plans / single_use_size_mb / total_size_mb over the newest
+    /// collection_time and derives single_use_percent. Read as a point-in-time state (no lower time bound,
+    /// just &lt;= TimeRangeEnd, like CollectMemoryFactsAsync / the config reads); DENSE_RANK() picks every
+    /// row of the newest collection (avoiding QUALIFY, which is DuckDB-only and banned in the shared PG
+    /// dialect). The fact is emitted whenever a real cache exists (total_plans &gt; 0); the FactScorer
+    /// applies the &gt; 50/30/20% bloat tiers AND the single_use_size_mb &gt;= 100 noise guard, so a
+    /// healthy or tiny cache stays context-only. Absent on an empty/uncollected cache.
+    /// </summary>
+    private async Task CollectPlanCacheFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var readLock = _duckDb.AcquireReadLock();
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+WITH ranked AS (
+    SELECT total_plans, single_use_plans, total_size_mb, single_use_size_mb,
+           DENSE_RANK() OVER (ORDER BY collection_time DESC) AS rnk
+    FROM plan_cache_stats
+    WHERE server_id = $1
+    AND   collection_time <= $2
+)
+SELECT
+    COALESCE(SUM(total_plans), 0) AS total_plans,
+    COALESCE(SUM(single_use_plans), 0) AS single_use_plans,
+    COALESCE(SUM(total_size_mb), 0) AS total_size_mb,
+    COALESCE(SUM(single_use_size_mb), 0) AS single_use_size_mb
+FROM ranked
+WHERE rnk = 1";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            // SUM(INTEGER) widens to HUGEINT — DuckDB hands it back boxed as BigInteger, which
+            // Convert.ToDouble cannot take (no IConvertible); read every aggregate through the
+            // BigInteger-tolerant ToInt64, then widen the MB sizes to double for the metadata.
+            var totalPlans = reader.IsDBNull(0) ? 0L : ToInt64(reader.GetValue(0));
+            var singleUsePlans = reader.IsDBNull(1) ? 0L : ToInt64(reader.GetValue(1));
+            var totalSizeMb = reader.IsDBNull(2) ? 0.0 : (double)ToInt64(reader.GetValue(2));
+            var singleUseSizeMb = reader.IsDBNull(3) ? 0.0 : (double)ToInt64(reader.GetValue(3));
+
+            // No cache collected (or an empty cache) — nothing to classify.
+            if (totalPlans <= 0) return;
+
+            var singleUsePercent = singleUsePlans * 100.0 / totalPlans;
+
+            facts.Add(new Fact
+            {
+                Source = "memory",
+                Key = "PLAN_CACHE_BLOAT",
+                Value = singleUsePercent,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["single_use_plans"] = singleUsePlans,
+                    ["total_plans"] = totalPlans,
+                    ["single_use_size_mb"] = singleUseSizeMb,
+                    ["total_size_mb"] = totalSizeMb,
+                    ["single_use_percent"] = singleUsePercent
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
+    }
+
+    /// <summary>
+    /// Collects ring-buffer physical-memory-pressure notifications from memory_pressure_events
+    /// (RING_BUFFER_RESOURCE_MONITOR / sp_pressuredetector). Mirrors the Dashboard's
+    /// report.memory_pressure_events (install/47_create_reporting_views.sql:220-238), whose severity keys
+    /// purely off memory_indicators_process / memory_indicators_system (&gt;= 3 HIGH, &gt;= 2 MEDIUM, else
+    /// LOW). Window-bounded to [TimeRangeStart, TimeRangeEnd] like the other window collectors (a distinct
+    /// signal from the deviation-based ANOMALY_MEMORY_PRESSURE, which watches peak_memory_pressure_pct).
+    /// NOISE GATE: emit only when a genuine MEDIUM+ indicator occurred (max &gt;= 2) — the ring buffer is
+    /// full of steady 0-1 samples on every healthy server, which must stay silent (mirrors the MEDIUM
+    /// severity floor, install/47:232-233). Value = the max overall indicator (drives the scored band);
+    /// event_count = the count of MEDIUM+ samples for the card.
+    /// </summary>
+    private async Task CollectMemoryPressureEventFactsAsync(AnalysisContext context, List<Fact> facts)
+    {
+        try
+        {
+            using var readLock = _duckDb.AcquireReadLock();
+            using var connection = _duckDb.CreateConnection();
+            await connection.OpenAsync();
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SELECT
+    SUM(CASE WHEN memory_indicators_process >= 2 OR memory_indicators_system >= 2 THEN 1 ELSE 0 END) AS pressure_event_count,
+    MAX(memory_indicators_process) AS max_process,
+    MAX(memory_indicators_system) AS max_system
+FROM memory_pressure_events
+WHERE server_id = $1
+AND   collection_time >= $2
+AND   collection_time <= $3";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return;
+
+            var pressureEventCount = reader.IsDBNull(0) ? 0L : ToInt64(reader.GetValue(0));
+            var maxProcess = reader.IsDBNull(1) ? 0.0 : Convert.ToDouble(reader.GetValue(1));
+            var maxSystem = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2));
+            var maxIndicator = Math.Max(maxProcess, maxSystem);
+
+            // Steady ring buffer (indicators 0-1) is the healthy norm on every server — only a genuine
+            // MEDIUM+ pressure indicator is worth a fact (install/47:232-233 MEDIUM floor).
+            if (maxIndicator < 2) return;
+
+            facts.Add(new Fact
+            {
+                Source = "memory",
+                Key = "MEMORY_PRESSURE_EVENTS",
+                Value = maxIndicator,
+                ServerId = context.ServerId,
+                Metadata = new Dictionary<string, double>
+                {
+                    ["event_count"] = pressureEventCount,
+                    ["max_process_indicator"] = maxProcess,
+                    ["max_system_indicator"] = maxSystem
+                }
+            });
+        }
+        catch { /* Table may not exist or have no data */ }
+    }
+
 }

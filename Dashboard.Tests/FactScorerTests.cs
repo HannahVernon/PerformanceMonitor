@@ -486,6 +486,138 @@ public class FactScorerTests
         Assert.Equal(0.0, facts.First(f => f.Key == "MEMORY_CLERKS").Severity, precision: 4);
     }
 
+    // ── Tier-2 ARM: plan-cache single-use bloat scores off PLAN_CACHE_BLOAT (Value = single_use_percent),
+    // tiered > 50/30/20% (install/47:1485-1487) behind a single_use_size_mb >= 100 noise guard. ──
+    [Fact]
+    public void Score_PlanCacheBloat_Over50Percent_BandsWarningCeiling()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "PLAN_CACHE_BLOAT", Value = 62,
+                Metadata = new()
+                {
+                    ["single_use_plans"] = 6_200,
+                    ["total_plans"] = 10_000,
+                    ["single_use_size_mb"] = 800, // >= 100 MB — real bloat
+                    ["total_size_mb"] = 1_300,
+                    ["single_use_percent"] = 62
+                } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        // > 50% is the Dashboard's CRITICAL tier, but base caps at the WARNING ceiling (1.0); CRITICAL is
+        // earned only via corroboration.
+        Assert.Equal(1.0, facts.First(f => f.Key == "PLAN_CACHE_BLOAT").Severity, precision: 4);
+    }
+
+    [Fact]
+    public void Score_PlanCacheBloat_Between30And50_ScoresHigh()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "PLAN_CACHE_BLOAT", Value = 38,
+                Metadata = new() { ["single_use_size_mb"] = 400, ["single_use_percent"] = 38 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.75, facts.First(f => f.Key == "PLAN_CACHE_BLOAT").Severity, precision: 4);
+    }
+
+    [Fact]
+    public void Score_PlanCacheBloat_Between20And30_ScoresMedium()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "PLAN_CACHE_BLOAT", Value = 24,
+                Metadata = new() { ["single_use_size_mb"] = 250, ["single_use_percent"] = 24 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.5, facts.First(f => f.Key == "PLAN_CACHE_BLOAT").Severity, precision: 4);
+    }
+
+    // Under 20% single-use is healthy plan-cache composition — dormant.
+    [Fact]
+    public void Score_PlanCacheBloat_Under20Percent_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "PLAN_CACHE_BLOAT", Value = 12,
+                Metadata = new() { ["single_use_size_mb"] = 400, ["single_use_percent"] = 12 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "PLAN_CACHE_BLOAT").Severity, precision: 4);
+    }
+
+    // A high single-use % on a tiny footprint (< 100 MB) is noise — the size guard keeps it dormant even
+    // above the 20% bar.
+    [Fact]
+    public void Score_PlanCacheBloat_HighPercentButTinyFootprint_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "PLAN_CACHE_BLOAT", Value = 70,
+                Metadata = new() { ["single_use_size_mb"] = 40, ["single_use_percent"] = 70 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "PLAN_CACHE_BLOAT").Severity, precision: 4);
+    }
+
+    // ── Tier-2 ARM: ring-buffer physical-memory-pressure scores off MEMORY_PRESSURE_EVENTS (Value = the
+    // max indicator), banded >= 3 HIGH (0.9) / >= 2 MEDIUM (0.5) per report.memory_pressure_events
+    // (install/47:229-236). ──
+    [Fact]
+    public void Score_MemoryPressureEvents_Indicator3_BandsWarning()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "MEMORY_PRESSURE_EVENTS", Value = 3,
+                Metadata = new() { ["event_count"] = 12, ["max_process_indicator"] = 3, ["max_system_indicator"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var mp = facts.First(f => f.Key == "MEMORY_PRESSURE_EVENTS");
+        Assert.Equal(0.9, mp.Severity, precision: 4);
+        Assert.True(mp.Severity >= 0.75 && mp.Severity < 1.5, "HIGH pressure bands WARNING");
+    }
+
+    [Fact]
+    public void Score_MemoryPressureEvents_Indicator2_ScoresMedium()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "MEMORY_PRESSURE_EVENTS", Value = 2,
+                Metadata = new() { ["event_count"] = 4, ["max_process_indicator"] = 2, ["max_system_indicator"] = 0 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.5, facts.First(f => f.Key == "MEMORY_PRESSURE_EVENTS").Severity, precision: 4);
+    }
+
+    // Indicator 1 (steady / LOW) does not score — a defensive floor (the collector already gates < 2 out).
+    [Fact]
+    public void Score_MemoryPressureEvents_Indicator1_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "memory", Key = "MEMORY_PRESSURE_EVENTS", Value = 1,
+                Metadata = new() { ["event_count"] = 0, ["max_process_indicator"] = 1, ["max_system_indicator"] = 1 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "MEMORY_PRESSURE_EVENTS").Severity, precision: 4);
+    }
+
     // batch-2b — priority boost enabled is a Dashboard WARNING (install/50:368). CONFIG_PRIORITY_BOOST
     // bands WARNING (0.9) when value_in_use == 1, and scores 0 when disabled.
     [Fact]

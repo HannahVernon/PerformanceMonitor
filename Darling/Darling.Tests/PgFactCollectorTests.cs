@@ -66,9 +66,11 @@ public sealed class PgFactCollectorTests
         "CollectMemoryClerkFactsAsync",
         "CollectMemoryFactsAsync",
         "CollectMemoryGrantFactsAsync",
+        "CollectMemoryPressureEventFactsAsync",
         "CollectParameterSensitivityFactsAsync",
         "CollectPerfmonFactsAsync",
         "CollectPlanAdvisoryFactsAsync",
+        "CollectPlanCacheFactsAsync",
         "CollectPlanRegressionFactsAsync",
         "CollectProcedureStatsFactsAsync",
         "CollectQueryStatsFactsAsync",
@@ -104,7 +106,7 @@ public sealed class PgFactCollectorTests
     [Fact]
     public void AllSql_CoversEveryQuery_OnePerCollectMethodPlusTheDmvFallback()
     {
-        /* 29 collect methods, one query each, plus the DMV-snapshot fallback the blocking-chain
+        /* 31 collect methods, one query each, plus the DMV-snapshot fallback the blocking-chain
            method appends through PgBlockingPairRowQuery. */
         Assert.Equal(LiteCollectMethodSurface.Length + 1, PgFactCollector.AllSql.Count);
         Assert.Contains(PgBlockingPairRowQuery.DmvSnapshotSql, PgFactCollector.AllSql);
