@@ -18,26 +18,13 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitorLite.Controls;
 
 public partial class ServerTab : UserControl
 {
     /* DataGrid copy helpers */
-    /// <summary>
-    /// Finds the parent DataGrid from a context menu opened on a DataGridRow.
-    /// </summary>
-    private static DataGrid? FindParentDataGrid(MenuItem menuItem)
-    {
-        var contextMenu = menuItem.Parent as ContextMenu;
-        var target = contextMenu?.PlacementTarget as FrameworkElement;
-        while (target != null && target is not DataGrid)
-        {
-            target = System.Windows.Media.VisualTreeHelper.GetParent(target) as FrameworkElement;
-        }
-        return target as DataGrid;
-    }
-
     private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
     private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);

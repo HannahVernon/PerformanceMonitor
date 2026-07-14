@@ -15,6 +15,7 @@ using System.Windows.Controls;
 using Microsoft.Win32;
 using PerformanceMonitor.PlanAnalysis;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -32,18 +33,6 @@ public partial class ViewerServerTab
 {
     /* The product tag ReproScriptBuilder stamps in the repro-script header comment. */
     private const string ReproProductName = "SQL Server Performance Monitor";
-
-    /// <summary>Finds the parent DataGrid from a context menu opened on a DataGridRow.</summary>
-    private static DataGrid? FindParentDataGrid(MenuItem menuItem)
-    {
-        var contextMenu = menuItem.Parent as ContextMenu;
-        var target = contextMenu?.PlacementTarget as FrameworkElement;
-        while (target != null && target is not DataGrid)
-        {
-            target = System.Windows.Media.VisualTreeHelper.GetParent(target) as FrameworkElement;
-        }
-        return target as DataGrid;
-    }
 
     private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 

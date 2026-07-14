@@ -20,6 +20,7 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Controls;

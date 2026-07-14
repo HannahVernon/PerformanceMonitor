@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 using PerformanceMonitorLite.Services;
 
 namespace PerformanceMonitorLite.Controls;

@@ -23,6 +23,7 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
@@ -412,19 +413,6 @@ public partial class AlertsHistoryTab : UserControl
 
     private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
         DataGridExport.ExportToCsv(sender, "alert_history", App.CsvSeparator);
-
-    #endregion
-
-    #region Helpers
-
-    private static DataGrid? FindParentDataGrid(MenuItem menuItem)
-    {
-        var contextMenu = menuItem.Parent as ContextMenu;
-        var target = contextMenu?.PlacementTarget as FrameworkElement;
-        while (target != null && target is not DataGrid)
-            target = System.Windows.Media.VisualTreeHelper.GetParent(target) as FrameworkElement;
-        return target as DataGrid;
-    }
 
     #endregion
 
