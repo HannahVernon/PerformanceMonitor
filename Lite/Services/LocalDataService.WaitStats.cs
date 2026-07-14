@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 
+using PerformanceMonitor.Ui;
+
 namespace PerformanceMonitorLite.Services;
 
 public partial class LocalDataService
@@ -685,12 +687,6 @@ public class WaitStatsRow
         if (ms < 3600000) return $"{ms / 60000.0:F1} min";
         return $"{ms / 3600000.0:F1} hr";
     }
-}
-
-public class SelectableItem
-{
-    public string DisplayName { get; set; } = "";
-    public bool IsSelected { get; set; }
 }
 
 public class WaitStatsTrendPoint

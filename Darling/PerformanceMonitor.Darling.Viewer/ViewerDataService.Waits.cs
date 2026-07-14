@@ -13,6 +13,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 
+using PerformanceMonitor.Ui;
+
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
@@ -28,17 +30,6 @@ public sealed record WaitStatsTrendPoint(
     double WaitTimeMsPerSecond,
     double SignalWaitTimeMsPerSecond,
     double AvgMsPerWait);
-
-/// <summary>
-/// One row of the wait-type picker's checkbox list: the wait_type name and whether it is checked.
-/// Mutable — the checkbox two-way-binds <see cref="IsSelected"/> and the checked-to-top reorder
-/// rewrites the list — mirroring Lite's <c>SelectableItem</c>.
-/// </summary>
-public sealed class SelectableItem
-{
-    public string DisplayName { get; set; } = "";
-    public bool IsSelected { get; set; }
-}
 
 public sealed partial class ViewerDataService
 {

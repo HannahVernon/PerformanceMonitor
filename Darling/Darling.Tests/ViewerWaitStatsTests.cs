@@ -16,6 +16,8 @@ using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
 
+using PerformanceMonitor.Ui;
+
 namespace Darling.Tests;
 
 /// <summary>
