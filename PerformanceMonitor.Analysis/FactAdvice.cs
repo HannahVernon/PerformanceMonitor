@@ -173,7 +173,7 @@ public static class FactAdvice
             "QUERY_SPILLS" => ComposeQuerySpills(factsByKey),
             // Simple wait-type blocks: each states its own wait totals, with a clean concept + fix.
             "RESOURCE_SEMAPHORE" or "RESOURCE_SEMAPHORE_QUERY_COMPILE" or "WRITELOG"
-                or "LATCH_EX" or "LATCH_SH" or "LCK_M_S" or "LCK_M_IS"
+                or "LATCH_EX" or "LATCH_SH" or "PAGELATCH_UP" or "LCK_M_S" or "LCK_M_IS"
                 => ComposeWaitByKey(rootFactKey, factsByKey),
             // Query-level: state the cost-swing ratio / regression factor / tempdb driver the engine
             // measured, and permute on the discriminating flag (forced-plan-failing, dominant consumer).
@@ -921,6 +921,10 @@ public static class FactAdvice
             "Shared latch contention — LATCH_SH",
             "LATCH_SH is shared-latch contention on in-memory structures, and it frequently accompanies heavy parallelism or specific internal hotspots rather than user row contention.",
             "Narrow it by the latch sub-type — common drivers are heavy concurrent reads of the same pages or parallelism overhead. Reducing unnecessary parallelism (cost threshold for parallelism, MAXDOP) often relieves the parallelism-driven cases."),
+        "PAGELATCH_UP" => ComposeSimpleWait(facts, key, "Tempdb allocation page-latch waits",
+            "Tempdb allocation contention — PFS/GAM/SGAM page latches (PAGELATCH_UP)",
+            "PAGELATCH_UP is contention on tempdb's allocation bitmap pages (PFS/GAM/SGAM): sessions that rapidly create and drop temp tables, or spill sorts and hashes to tempdb, all latch the same small set of allocation pages in each data file. It is an in-memory latch — not disk I/O (that is PAGEIOLATCH) and not row locks — and it is the classic 'too few tempdb data files for the core count' signal.",
+            "Add tempdb data files so allocations spread across more bitmap pages — one per logical core up to 8, all the same size, with equal autogrowth (the source recommendation is add tempdb files / TF 1118). Confirm MIXED_PAGE_ALLOCATION is OFF (the default since 2016; TF 1118 is the pre-2016 equivalent forcing uniform extents). Then cut the churn that drives it: reduce how many temp objects the hot procedures create, and right-size the queries spilling to tempdb (accurate statistics give adequate grants) so fewer sessions hit the allocation pages at once."),
         "LCK_M_S" => ComposeSimpleWait(facts, key, "Shared-lock waits",
             "Readers are blocked waiting for shared locks — LCK_M_S",
             "LCK_M_S is time spent waiting to acquire a shared (read) lock, which under the default READ COMMITTED means a reader is blocked behind a writer's exclusive lock.",
@@ -1271,31 +1275,46 @@ public static class FactAdvice
         var internalObj = FactMeta(facts, "TEMPDB_USAGE", "max_internal_object_mb") ?? 0;
         var version = FactMeta(facts, "TEMPDB_USAGE", "max_version_store_mb") ?? 0;
 
+        // report.tempdb_pressure keys pressure_level PURELY on the absolute version-store size and checks
+        // it FIRST in the recommendation CASE (install/47:1429-1443): a version store over the > 1000 MB
+        // MEDIUM bar is a specific, actionable problem (a long-running RCSI/snapshot transaction pinning
+        // row versions) regardless of what else is bigger — and it is exactly what the
+        // ScoreTempDbVersionStore arm fires on. So when the version store clears that bar make it the
+        // driver even if another consumer is nominally larger; otherwise chase the largest consumer.
+        var versionStorePressure = version > 1000;
         string driverName, fix;
         double driverMb;
-        if (version >= user && version >= internalObj && version > 0)
+        bool driverIsLargest;
+        if (versionStorePressure || (version >= user && version >= internalObj && version > 0))
         {
             driverName = "the version store";
             driverMb = version;
+            driverIsLargest = version >= user && version >= internalObj;
             fix = "The version store grows with long-running transactions under RCSI or snapshot isolation (and with heavy triggers) — find and shorten the oldest open transaction; tempdb cannot reclaim its versions until that transaction ends.";
         }
         else if (internalObj >= user && internalObj > 0)
         {
             driverName = "internal objects (sort and hash spills)";
             driverMb = internalObj;
+            driverIsLargest = true;
             fix = "Internal objects are sorts and hash spills — fix the queries spilling to tempdb by getting them adequate memory grants and accurate statistics so the work stays in memory, which usually means correcting bad cardinality estimates.";
         }
         else
         {
             driverName = "user objects (#temp tables and table variables)";
             driverMb = user;
+            driverIsLargest = true;
             fix = "User objects are #temp tables and table variables — find the sessions materializing large temp objects and reduce what they stage, or index them so they hold fewer rows.";
         }
 
         return fallback with
         {
-            Headline = $"tempdb reserved up to {reserved.Value:N0} MB — {driverName} was the largest consumer",
-            Investigation = $"tempdb reserved up to {reserved.Value:N0} MB this window, with {driverName} the largest consumer at {driverMb:N0} MB. That identifies which of the three tempdb consumers to chase.",
+            Headline = driverIsLargest
+                ? $"tempdb reserved up to {reserved.Value:N0} MB — {driverName} was the largest consumer"
+                : $"tempdb reserved up to {reserved.Value:N0} MB — the version store reached {driverMb:N0} MB",
+            Investigation = driverIsLargest
+                ? $"tempdb reserved up to {reserved.Value:N0} MB this window, with {driverName} the largest consumer at {driverMb:N0} MB. That identifies which of the three tempdb consumers to chase."
+                : $"tempdb reserved up to {reserved.Value:N0} MB this window; the version store reached {driverMb:N0} MB — over the 1 GB pressure bar — so it is the signal to chase even though it is not the largest of the three consumers.",
             Remediation = fix
         };
     }
@@ -2156,6 +2175,14 @@ public static class FactAdvice
                 "Less common than EX, but shows up when many parallel readers hit the same small set of pages — root pages of busy indexes, single-page tables that everyone reads. Open the Latch Stats sub-tab under Resource Metrics for the breakdown by latch class. PAGE class points at the buffer pool; ACCESS_METHODS_HOBT_VIRTUAL_ROOT is the famously hot root-page latch on heavily-read indexes. CXPACKET co-elevation means parallel operations are amplifying the contention.",
             Remediation:
                 "Architectural problem, not a configuration one. If a single hot page is being thrashed by small lookups, partition the index so the hot data spans multiple pages, denormalize the lookup into a wider structure, or cache at the application layer. There's no `sp_configure` setting that fixes this — the schema or workload has to change. If the contention is on a queue-table or status-flag pattern that everyone polls, switching that hot pattern to a service broker queue or an event-driven design is usually the durable answer.");
+
+        t["PAGELATCH_UP"] = new AdviceBlock(
+            Headline:
+                "Tempdb allocation contention — PFS/GAM/SGAM page-latch waits (PAGELATCH_UP)",
+            Investigation:
+                "PAGELATCH_UP waits are contention on tempdb's allocation bitmap pages (PFS/GAM/SGAM). Sessions that rapidly create and drop temp tables, or spill sorts and hashes to tempdb, all latch the same small set of allocation pages in each data file — the classic 'too few tempdb data files for the core count' signal. It is an in-memory latch, distinct from PAGEIOLATCH (disk reads) and from row locks. Open the TempDB tab and the Latch Stats sub-tab under Resource Metrics to confirm the allocation shape.",
+            Remediation:
+                "Add tempdb data files so allocations spread across more bitmap pages — one per logical core up to 8, all the same size, with equal autogrowth (the source recommendation is add tempdb files / TF 1118). Confirm MIXED_PAGE_ALLOCATION is OFF (the default since 2016; TF 1118 is the pre-2016 equivalent that forces uniform extents). Then cut the churn that drives it: reduce how many temp objects the hot procedures create, and right-size the queries spilling to tempdb (accurate statistics give adequate grants) so fewer sessions hit the allocation pages at once.");
 
         // ─────────────────────────────────────────────────────────────────
         // TempDB

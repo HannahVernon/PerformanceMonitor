@@ -694,6 +694,104 @@ public class FactScorerTests : IDisposable
         Assert.Equal(0.9, facts.First(f => f.Key == "DB_CONFIG").Severity, precision: 4);
     }
 
+    // ── Tier-2 parity arms (batch 2): tempdb-deep — version-store size + PAGELATCH_UP allocation ─────
+    // Both are additions to the SHARED FactScorer, so they fire identically for Lite, Dashboard, and
+    // Darling findings. Every trip point is cited to the deprecated Dashboard's install SQL.
+
+    // ARM 1 — tempdb VERSION-STORE pressure by ABSOLUTE size (max_version_store_mb in the TEMPDB_USAGE
+    // fact metadata), scored as the WORSE of space-fraction and version-store size. Tiers mirror
+    // report.tempdb_pressure's pressure_level CASE (install/47:1431-1433): > 5000 MB CRITICAL-tier
+    // (base 1.0), > 2000 MB HIGH (0.75), > 1000 MB MEDIUM (0.5 — the 0.5 root entry point). Space is only
+    // 20% full, whose sub-0.5 fraction score is dominated by the version-store arm via Math.Max, so the
+    // asserted severity IS the version-store tier — proving the arm scores independently of fill.
+    [Theory]
+    [InlineData(6000, 1.0)]   // > 5000 -> CRITICAL tier (install/47:1431)
+    [InlineData(3000, 0.75)]  // > 2000 -> HIGH tier     (install/47:1432)
+    [InlineData(1500, 0.5)]   // > 1000 -> MEDIUM tier   (install/47:1433)
+    public void Score_TempDbVersionStore_TiersMatchDashboard(double versionMb, double expected)
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "tempdb", Key = "TEMPDB_USAGE", Value = 0.20, // space only 20% full
+                Metadata = new() { ["max_version_store_mb"] = versionMb } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var t = facts.First(f => f.Key == "TEMPDB_USAGE");
+        Assert.Equal(expected, t.Severity, precision: 4);
+        Assert.True(t.Severity >= 0.5, "a version store over 1 GB must clear the 0.5 root threshold");
+    }
+
+    // A version store below the > 1000 MB bar does not score. Space fraction 0 isolates the version-store
+    // arm (the space-fraction arm yields a small sub-0.5 base for any positive fill), proving a 900 MB
+    // store trips nothing on its own.
+    [Fact]
+    public void Score_TempDbVersionStore_BelowThreshold_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "tempdb", Key = "TEMPDB_USAGE", Value = 0.0,
+                Metadata = new() { ["max_version_store_mb"] = 900 } }, // 900 MB — below the 1 GB bar
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "TEMPDB_USAGE").Severity, precision: 4);
+    }
+
+    // WORSE-of: the version-store arm never LOWERS a higher space-fraction score. Space 95% full (the
+    // fraction arm hits its 0.90 critical -> 1.0) with a small version store stays 1.0.
+    [Fact]
+    public void Score_TempDbVersionStore_DoesNotLowerWorseSpaceFraction()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "tempdb", Key = "TEMPDB_USAGE", Value = 0.95,
+                Metadata = new() { ["max_version_store_mb"] = 200 } }, // small VS, but space is critical
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(1.0, facts.First(f => f.Key == "TEMPDB_USAGE").Severity, precision: 4);
+    }
+
+    // ARM 2 — tempdb allocation / PFS-GAM-SGAM contention scored off the PAGELATCH_UP wait fact by
+    // ABSOLUTE wait_time_ms (server-wide wait_stats, the SAME data the source view reads), tripping at
+    // > 10000 ms -> MEDIUM (install/47:2515: pagelatch_up_ms > 10000 -> "MEDIUM - PAGELATCH_UP
+    // contention"). Flat 0.5 — the view has no higher PAGELATCH_UP band. Value (fraction-of-period) only
+    // has to be > 0 to clear the wait guard; the absolute wait_time_ms is what scores.
+    [Fact]
+    public void Score_PageLatchUp_Over10Sec_ScoresMedium()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "PAGELATCH_UP", Value = 0.01,
+                Metadata = new() { ["wait_time_ms"] = 15_000, ["waiting_tasks_count"] = 800 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        var p = facts.First(f => f.Key == "PAGELATCH_UP");
+        Assert.Equal(0.5, p.Severity, precision: 4);
+        Assert.True(p.Severity >= 0.5, "PAGELATCH_UP over the 10s bar must clear the 0.5 root threshold");
+    }
+
+    // At/under the 10000 ms bar PAGELATCH_UP stays context-only (a little allocation latching is normal).
+    [Fact]
+    public void Score_PageLatchUp_Under10Sec_DoesNotScore()
+    {
+        var facts = new List<Fact>
+        {
+            new() { Source = "waits", Key = "PAGELATCH_UP", Value = 0.01,
+                Metadata = new() { ["wait_time_ms"] = 8_000, ["waiting_tasks_count"] = 300 } },
+        };
+
+        new FactScorer().ScoreAll(facts);
+
+        Assert.Equal(0.0, facts.First(f => f.Key == "PAGELATCH_UP").Severity, precision: 4);
+    }
+
     // Confidence-hardening: the low-quality fallback floors at 0.5 AFTER the confidence multiply, so a
     // fired thin-baseline anomaly stays >= InferenceEngine's 0.5 root entry-point even if confidence
     // ever drops below 1.0 (it is a hardcoded 1.0 today; this guards the future).

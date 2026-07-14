@@ -132,6 +132,20 @@ public class FactScorer
             if (waitTimeMs < 3_600_000 || avgMs < 1_000) return 0.0;
         }
 
+        // PAGELATCH_UP (tempdb allocation contention) is scored on ABSOLUTE wait_time_ms, not
+        // fraction-of-period, because its source — the Dashboard's report.tempdb_contention_analysis
+        // contention_level CASE — trips on an absolute PAGELATCH_UP total (install/47:2515:
+        // pagelatch_up_ms > 10000 -> "MEDIUM - PAGELATCH_UP contention"). PAGELATCH_UP is the canonical
+        // PFS/GAM/SGAM allocation-page latch (the fix is add tempdb data files / TF 1118), and the source
+        // reads the SAME server-wide wait_stats this fact is built from, so scoring the wait total is a
+        // faithful port. Flat 0.5 (MEDIUM) at the source's single PAGELATCH_UP tier — there is no higher
+        // band for it there; the view's CRITICAL "allocation contention" comes from a tempdb-scoped
+        // dm_os_waiting_tasks flag (allocation_contention_warning, install/47:2503) that is NOT carried in
+        // this fact. Absolute-ms is consistent with the THREADPOOL gate just above (the analysis window is
+        // hours-scale; the source's window is 1 hour).
+        if (fact.Key == "PAGELATCH_UP")
+            return fact.Metadata.GetValueOrDefault("wait_time_ms") > 10_000 ? 0.5 : 0.0;
+
         var thresholds = GetWaitThresholds(fact.Key);
         if (thresholds == null) return 0.0;
 
@@ -237,10 +251,36 @@ public class FactScorer
     {
         return fact.Key switch
         {
-            // TempDB usage: concerning at 75%, critical at 90%
-            "TEMPDB_USAGE" => ApplyThresholdFormula(fact.Value, 0.75, 0.90),
+            // TempDB usage scores the WORSE of two INDEPENDENT pressures: space-fraction fill (concerning
+            // 75%, critical 90%) and absolute version-store size (ScoreTempDbVersionStore) — a multi-GB
+            // version store is a problem even when total tempdb space is nowhere near full, and the
+            // fraction arm is blind to it.
+            "TEMPDB_USAGE" => Math.Max(
+                ApplyThresholdFormula(fact.Value, 0.75, 0.90),
+                ScoreTempDbVersionStore(fact)),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores tempdb VERSION-STORE pressure by ABSOLUTE reserved size (max_version_store_mb, carried in
+    /// the TEMPDB_USAGE fact metadata by every collector), independent of the space-fraction the main arm
+    /// scores. The version store grows with long-running RCSI/snapshot transactions (and heavy triggers)
+    /// that pin old row versions, so it can reach gigabytes while total tempdb space is barely used —
+    /// space-fraction alone misses it. Tiers mirror the Dashboard's report.tempdb_pressure pressure_level
+    /// CASE (install/47_create_reporting_views.sql lines 1431-1433): > 5000 MB CRITICAL, > 2000 MB HIGH,
+    /// > 1000 MB MEDIUM. Base maxes at 1.0 (WARNING) like every base fact — the > 5000 "CRITICAL" tier
+    /// caps at 1.0 here; the CRITICAL band is earned only via corroboration. tempdb_contention_analysis
+    /// corroborates the > 1 GB bar (version_store_high_warning fires at 1 GB — install/47:2504,
+    /// install/34:146). Absent metadata (older facts) scores 0, preserving prior behavior.
+    /// </summary>
+    private static double ScoreTempDbVersionStore(Fact fact)
+    {
+        var versionStoreMb = fact.Metadata.GetValueOrDefault("max_version_store_mb");
+        if (versionStoreMb > 5000) return 1.0;   // CRITICAL - Version store > 5GB (install/47:1431)
+        if (versionStoreMb > 2000) return 0.75;  // HIGH - Version store > 2GB     (install/47:1432)
+        if (versionStoreMb > 1000) return 0.5;   // MEDIUM - Version store > 1GB   (install/47:1433)
+        return 0.0;
     }
 
     /// <summary>
