@@ -91,6 +91,11 @@ public sealed class McpHostService : BackgroundService
                 .WithGeminiCompatibleTools<McpServerInfoTools>()
                 .WithGeminiCompatibleTools<McpSessionTools>()
                 .WithGeminiCompatibleTools<McpObjectStatsTools>()
+                .WithGeminiCompatibleTools<McpLatchSpinlockTools>()
+                .WithGeminiCompatibleTools<McpPlanCacheSchedulerTools>()
+                .WithGeminiCompatibleTools<McpConfigHistoryTools>()
+                .WithGeminiCompatibleTools<McpDefaultTraceTools>()
+                .WithGeminiCompatibleTools<McpHealthParserTools>()
                 .WithGeminiCompatibleTools<McpAnalysisTools>();
 
             _app = builder.Build();
