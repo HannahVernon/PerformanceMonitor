@@ -232,6 +232,29 @@ public sealed class ViewerHistoryWindowTests
         => Assert.Null(ViewerServerTab.MapQueryStoreHistoryKey(
             new ViewerQueryStoreRow { DatabaseName = db, QueryId = queryId }));
 
+    [Fact]
+    public void MapQueryStoreRegressionHistoryKey_CarriesDbQueryIdText_WithZeroPlanId_WhenDbAndQueryIdPresent()
+    {
+        /* The regression row aggregates over plans (no single plan_id), so the query-scoped history window
+           opens with plan_id 0 — the same "no specific plan" value the Dashboard passes. */
+        var key = ViewerServerTab.MapQueryStoreRegressionHistoryKey(new ViewerQueryStoreRegressionRow
+        {
+            DatabaseName = "Sales", QueryId = 42, QueryTextSample = "SELECT 3",
+        });
+        Assert.NotNull(key);
+        Assert.Equal("Sales", key!.DatabaseName);
+        Assert.Equal(42, key.QueryId);
+        Assert.Equal(0, key.PlanId);
+        Assert.Equal("SELECT 3", key.QueryText);
+    }
+
+    [Theory]
+    [InlineData("", 42)]      // no database
+    [InlineData("Sales", 0)]  // no query_id
+    public void MapQueryStoreRegressionHistoryKey_ReturnsNull_WhenAKeyFieldIsMissing(string db, long queryId)
+        => Assert.Null(ViewerServerTab.MapQueryStoreRegressionHistoryKey(
+            new ViewerQueryStoreRegressionRow { DatabaseName = db, QueryId = queryId }));
+
     // ── Shared PG positional-dialect assertion (mirrors ViewerDrillDownTests) ──
 
     private static void AssertPgPositionalDialect(string sql)

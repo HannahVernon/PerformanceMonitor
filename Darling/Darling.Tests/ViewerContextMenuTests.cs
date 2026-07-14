@@ -188,6 +188,32 @@ public sealed class ViewerReproScriptTests
     }
 
     [Fact]
+    public void QueryStoreRegressionsRow_BuildsPlanLessReproFromTheQueryTextSample()
+    {
+        /* The regression row carries the query-text sample but no plan (it aggregates over plans), so the
+           repro is plan-less even though the caller could pass an enriched plan — the branch ignores it. */
+        var row = new ViewerQueryStoreRegressionRow
+        {
+            QueryTextSample = "SELECT SUM(Amount) FROM dbo.Ledger",
+            DatabaseName = "fin",
+            QueryId = 99,
+        };
+
+        var script = ViewerServerTab.BuildReproScriptForRow(row, enrichedPlanXml: "<ShowPlanXML/>", Product);
+
+        Assert.NotNull(script);
+        Assert.Contains("SELECT SUM(Amount) FROM dbo.Ledger", script!, StringComparison.Ordinal);
+        Assert.Contains("Source: Query Store Regressions", script, StringComparison.Ordinal);
+        Assert.Contains("USE [fin];", script, StringComparison.Ordinal);
+        Assert.Contains("plan XML not available", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QueryStoreRegressionsRow_WithNoQueryText_ReturnsNull_SoTheHandlerNoOps()
+        => Assert.Null(ViewerServerTab.BuildReproScriptForRow(
+            new ViewerQueryStoreRegressionRow { QueryTextSample = "", DatabaseName = "db" }, enrichedPlanXml: null, Product));
+
+    [Fact]
     public void RowWithNoQueryText_ReturnsNull_SoTheHandlerNoOps()
     {
         var empty = new ViewerQuerySnapshotRow { QueryText = "", DatabaseName = "db" };
