@@ -204,6 +204,7 @@ public sealed class ViewerQueriesSqlTests
     [InlineData(nameof(ViewerDataService.TopQueriesSql))]
     [InlineData(nameof(ViewerDataService.TopProceduresSql))]
     [InlineData(nameof(ViewerDataService.QueryStoreTopSql))]
+    [InlineData(nameof(ViewerDataService.QueryStoreRegressionsSql))]
     [InlineData(nameof(ViewerDataService.QueryStatsComparisonSql))]
     [InlineData(nameof(ViewerDataService.ProcedureStatsComparisonSql))]
     [InlineData(nameof(ViewerDataService.QueryStoreComparisonSql))]
@@ -225,6 +226,7 @@ public sealed class ViewerQueriesSqlTests
         nameof(ViewerDataService.TopQueriesSql) => ViewerDataService.TopQueriesSql,
         nameof(ViewerDataService.TopProceduresSql) => ViewerDataService.TopProceduresSql,
         nameof(ViewerDataService.QueryStoreTopSql) => ViewerDataService.QueryStoreTopSql,
+        nameof(ViewerDataService.QueryStoreRegressionsSql) => ViewerDataService.QueryStoreRegressionsSql,
         nameof(ViewerDataService.QueryStatsComparisonSql) => ViewerDataService.QueryStatsComparisonSql,
         nameof(ViewerDataService.ProcedureStatsComparisonSql) => ViewerDataService.ProcedureStatsComparisonSql,
         nameof(ViewerDataService.QueryStoreComparisonSql) => ViewerDataService.QueryStoreComparisonSql,
@@ -285,6 +287,76 @@ public sealed class ViewerQueriesDisplayTests
 }
 
 /// <summary>
+/// Pins the Query Store Regressions read (the Dashboard's <c>report.query_store_regressions</c> TVF ported
+/// to Postgres): the baseline-before-window vs. recent-in-window split ON <c>collection_time</c> (not the
+/// TVF's <c>server_last_execution_time</c>), the CPU-regression &gt; 25% gate, the added-duration ranking +
+/// TOP (50) cap, the duration-driven severity bands, the summed/counted CASTs, and the #1319 database
+/// filter — plus the row model's raw-server-clock display. String + pure-logic pins only (no live Postgres).
+/// </summary>
+public sealed class ViewerQueryStoreRegressionsTests
+{
+    [Fact]
+    public void RegressionsSql_SplitsBaselineBeforeWindow_RecentInWindow_OverTheBaseTable()
+    {
+        var sql = ViewerDataService.QueryStoreRegressionsSql;
+        Assert.Contains("FROM query_store_stats", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("v_query_store_stats", sql, StringComparison.Ordinal); /* viewer reads base tables */
+        Assert.Contains("collection_time < $2", sql, StringComparison.Ordinal);   /* baseline: everything before the window */
+        Assert.Contains("collection_time >= $2", sql, StringComparison.Ordinal);  /* recent: window start */
+        Assert.Contains("collection_time <= $3", sql, StringComparison.Ordinal);  /* recent: window end */
+        Assert.Contains("GROUP BY database_name, query_id", sql, StringComparison.Ordinal);
+        /* Darling windows the split on collection_time — the Dashboard TVF's server_last_execution_time is
+           the server's LOCAL wall clock in Darling's store and must not be windowed against UTC bounds. */
+        Assert.DoesNotContain("server_last_execution_time", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegressionsSql_GatesOnCpuRegressionOver25_RanksByAddedDuration_CapsAt50_InnerJoinsBaseline()
+    {
+        var sql = ViewerDataService.QueryStoreRegressionsSql;
+        /* The TVF's single-metric gate: CPU regression > 25% (recent vs baseline), NULLIF-guarded. */
+        Assert.Contains("(r.avg_cpu_time_ms - b.avg_cpu_time_ms) * 100.0 / NULLIF(b.avg_cpu_time_ms, 0) > 25", sql, StringComparison.Ordinal);
+        /* Extra total time = per-exec duration delta × recent exec count, and the read's ranking. */
+        Assert.Contains("(r.avg_duration_ms - b.avg_duration_ms) * r.exec_count AS additional_duration_ms", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY additional_duration_ms DESC", sql, StringComparison.Ordinal);
+        Assert.Contains("LIMIT 50", sql, StringComparison.Ordinal);
+        /* INNER JOIN — a query with no baseline (NEW) can't regress, exactly like the Dashboard TVF. */
+        Assert.Contains("JOIN baseline_performance", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegressionsSql_DurationDrivenSeverityBands_MatchTheDashboardThresholds()
+    {
+        var sql = ViewerDataService.QueryStoreRegressionsSql;
+        Assert.Contains("> 100 THEN 'CRITICAL'", sql, StringComparison.Ordinal);
+        Assert.Contains("> 50 THEN 'HIGH'", sql, StringComparison.Ordinal);
+        Assert.Contains("> 25 THEN 'MEDIUM'", sql, StringComparison.Ordinal);
+        Assert.Contains("ELSE 'LOW'", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegressionsSql_CastsSummedExecCountToBigint_PlanCountToInteger_ConvertsUnits_HonorsDatabaseFilter()
+    {
+        var sql = ViewerDataService.QueryStoreRegressionsSql;
+        Assert.Contains("CAST(SUM(execution_count) AS bigint)", sql, StringComparison.Ordinal);
+        Assert.Contains("CAST(COUNT(DISTINCT plan_id) AS integer)", sql, StringComparison.Ordinal);
+        /* µs → ms on duration + CPU; reads stay raw pages (matching the Dashboard TVF units). */
+        Assert.Contains("AVG(CAST(avg_duration_us AS double precision)) / 1000.0", sql, StringComparison.Ordinal);
+        Assert.Contains("AVG(CAST(avg_cpu_time_us AS double precision)) / 1000.0", sql, StringComparison.Ordinal);
+        /* #1319 global database filter, the same guarded ANY() idiom as the sibling reads ($4 here). */
+        Assert.Contains("$4::text[] IS NULL OR database_name = ANY($4)", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegressionRow_LastExecutionLocal_ShowsRawServerClock_EmptyForNull()
+    {
+        var row = new ViewerQueryStoreRegressionRow { LastExecutionTime = new DateTime(2026, 7, 1, 9, 30, 15) };
+        Assert.Equal("2026-07-01 09:30:15", row.LastExecutionTimeLocal);
+        Assert.Equal("", new ViewerQueryStoreRegressionRow { LastExecutionTime = null }.LastExecutionTimeLocal);
+    }
+}
+
+/// <summary>
 /// Gated (DARLING_TEST_PG) live round-trips for the three Queries reads + a comparison + a slicer. Each
 /// plants query/procedure/query-store rows for a negative sentinel server across two collections, then
 /// asserts the read executes on real Postgres and returns the expected grouping / ordering / unit
@@ -300,6 +372,7 @@ public sealed class ViewerQueriesLivePostgresTests
     private const int ComparisonServerId = -970804;
     private const int SlicerServerId = -970805;
     private const int ProcedureStatsPlanServerId = -970806;
+    private const int RegressionsServerId = -970807;
 
     private static string? ConnectionString => Environment.GetEnvironmentVariable("DARLING_TEST_PG");
 
@@ -464,6 +537,63 @@ public sealed class ViewerQueriesLivePostgresTests
         finally
         {
             await DeleteRowsAsync(connection, "query_store_stats", QueryStoreServerId);
+        }
+    }
+
+    [Fact]
+    public async Task QueryStoreRegressions_ContrastsBaselineVsRecent_GatesOnCpu_RanksByAddedDuration_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live Query Store regressions test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "query_store_stats", RegressionsServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var end = TruncateToSeconds(DateTime.UtcNow);
+        var start = end.AddHours(-24);
+        var baseline = start.AddHours(-2);   /* before the window → the baseline arm */
+        var recent = start.AddHours(1);      /* inside the window → the recent arm */
+
+        try
+        {
+            /* Query 100 REGRESSED: baseline 2ms dur / 1ms cpu → recent 6ms dur / 4ms cpu.
+               CPU regression = (4-1)/1 = 300% (clears the > 25% gate); duration regression = (6-2)/2 = 200%
+               (CRITICAL band); additional = (6-2) * recent exec 5 = 20 ms. */
+            await InsertQueryStoreAsync(connection, RegressionsServerId, baseline, "StackOverflow", queryId: 100, planId: 1,
+                execCount: 4, avgDurationUs: 2000, avgCpuUs: 1000, forced: false, maxMemPages: 0, queryText: "SELECT regressed");
+            await InsertQueryStoreAsync(connection, RegressionsServerId, recent, "StackOverflow", queryId: 100, planId: 2,
+                execCount: 5, avgDurationUs: 6000, avgCpuUs: 4000, forced: false, maxMemPages: 0, queryText: "SELECT regressed");
+
+            /* Query 200 STABLE: cpu 1ms → 1.1ms = 10% (below the gate) → excluded. */
+            await InsertQueryStoreAsync(connection, RegressionsServerId, baseline, "StackOverflow", queryId: 200, planId: 1,
+                execCount: 5, avgDurationUs: 3000, avgCpuUs: 1000, forced: false, maxMemPages: 0, queryText: "SELECT stable");
+            await InsertQueryStoreAsync(connection, RegressionsServerId, recent, "StackOverflow", queryId: 200, planId: 1,
+                execCount: 5, avgDurationUs: 3000, avgCpuUs: 1100, forced: false, maxMemPages: 0, queryText: "SELECT stable");
+
+            /* Query 300 NEW (recent only, no baseline) → the INNER JOIN drops it. */
+            await InsertQueryStoreAsync(connection, RegressionsServerId, recent, "StackOverflow", queryId: 300, planId: 1,
+                execCount: 9, avgDurationUs: 9000, avgCpuUs: 9000, forced: false, maxMemPages: 0, queryText: "SELECT new");
+
+            var rows = await viewer.GetQueryStoreRegressionsAsync(RegressionsServerId, start, end);
+
+            var r = Assert.Single(rows);                    /* only query 100 clears the CPU gate + INNER JOIN */
+            Assert.Equal(100, r.QueryId);
+            Assert.Equal("CRITICAL", r.Severity);
+            Assert.Equal(2.0, r.BaselineDurationMs, 3);
+            Assert.Equal(6.0, r.RecentDurationMs, 3);
+            Assert.Equal(200.0, r.DurationRegressionPercent, 1);
+            Assert.Equal(300.0, r.CpuRegressionPercent, 1);
+            Assert.Equal(20.0, r.AdditionalDurationMs, 1); /* (6-2)ms * 5 recent execs */
+            Assert.Equal(4, r.BaselineExecCount);
+            Assert.Equal(5, r.RecentExecCount);
+            Assert.Equal("SELECT regressed", r.QueryTextSample);
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "query_store_stats", RegressionsServerId);
         }
     }
 
