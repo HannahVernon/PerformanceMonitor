@@ -13,6 +13,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Alerting;
+using PerformanceMonitor.Common;
+using static PerformanceMonitor.Common.DeadlockGraphProcessParser;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -38,41 +40,15 @@ public sealed class ViewerDeadlockRow : DeadlockAlertRow
 /// <summary>
 /// One parsed process inside a deadlock graph — the Deadlocks grid binds a
 /// <c>List&lt;DeadlockProcessDetail&gt;</c> (one row per process, parsed from each
-/// <see cref="ViewerDeadlockRow"/>'s graph XML). Copied verbatim from Lite's
-/// <c>DeadlockProcessDetail</c> (LocalDataService.Blocking.cs): the sp_BlitzLock-style graph walk
-/// (victim detection, owner/waiter modes, object names, proc-name resolution) is CPU-bound XML work, so
-/// callers run <see cref="ParseFromRows"/> off the UI thread. The only deviation is the two *Local
-/// display strings: Lite's per-server <c>ServerTimeHelper.FormatServerTime</c> becomes the viewer's one
-/// machine-local <see cref="ViewerTimeHelper.ForDisplay"/> (the same swap the widened BPR row makes).
+/// <see cref="ViewerDeadlockRow"/>'s graph XML). The raw parsed fields and the sp_BlitzLock-style graph
+/// walk now live once on the shared <see cref="DeadlockProcessInfo"/> / <see cref="DeadlockGraphProcessParser"/>
+/// (Common), de-duplicated with Lite; the viewer adds only its machine-local display getters
+/// (<see cref="ViewerTimeHelper.ForDisplay"/>, where Lite uses its per-server <c>ServerTimeHelper</c>) and the
+/// per-row "View Victim Plan" gate. The walk is CPU-bound XML work, so callers run
+/// <see cref="ParseFromRows"/> off the UI thread.
 /// </summary>
-public sealed class DeadlockProcessDetail
+public sealed class DeadlockProcessDetail : DeadlockProcessInfo
 {
-    public DateTime? DeadlockTime { get; set; }
-    public bool IsVictim { get; set; }
-    public string ProcessId { get; set; } = "";
-    public int Spid { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public string SqlText { get; set; } = "";
-    public string WaitResource { get; set; } = "";
-    public long WaitTime { get; set; }
-    public string LockMode { get; set; } = "";
-    public string IsolationLevel { get; set; } = "";
-    public long LogUsed { get; set; }
-    public int TransactionCount { get; set; }
-    public string ClientApp { get; set; } = "";
-    public string HostName { get; set; } = "";
-    public string LoginName { get; set; } = "";
-    public string Status { get; set; } = "";
-    public string DeadlockGraphXml { get; set; } = "";
-    public bool HasDeadlockXml => !string.IsNullOrEmpty(DeadlockGraphXml);
-
-    /// <summary>
-    /// The BEST-EFFORT victim plan for this deadlock (deadlocks.victim_query_plan_xml, #1368 / V7) — one
-    /// plan per deadlock, copied onto every process row parsed from the same graph. The "View Victim Plan"
-    /// context item is gated per row on <see cref="CanViewVictimPlan"/> so a plan-less deadlock (NULL, the
-    /// common case, and always so under Lite) shows it disabled rather than shown-and-failed.
-    /// </summary>
-    public string? VictimQueryPlanXml { get; set; }
     public bool HasVictimQueryPlan => !string.IsNullOrEmpty(VictimQueryPlanXml);
 
     /// <summary>
@@ -83,18 +59,6 @@ public sealed class DeadlockProcessDetail
     /// </summary>
     public bool CanViewVictimPlan => IsVictim && HasVictimQueryPlan;
 
-    /* New fields from sp_BlitzLock analysis */
-    public string DeadlockType { get; set; } = "";
-    public string ObjectNames { get; set; } = "";
-    public string ProcName { get; set; } = "";
-    public string OwnerMode { get; set; } = "";
-    public string WaiterMode { get; set; } = "";
-    public string TransactionName { get; set; } = "";
-    public int Priority { get; set; }
-    public DateTime? LastTranStarted { get; set; }
-    public DateTime? LastBatchStarted { get; set; }
-    public DateTime? LastBatchCompleted { get; set; }
-
     public string DeadlockTimeLocal
         => DeadlockTime is { } t ? ViewerTimeHelper.ForDisplay(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
     public string VictimDisplay => IsVictim ? "Victim" : "";
@@ -103,154 +67,13 @@ public sealed class DeadlockProcessDetail
         => LastTranStarted is { } t ? ViewerTimeHelper.ForDisplay(t).ToString("yyyy-MM-dd HH:mm:ss") : "";
 
     /// <summary>
-    /// Parses a list of deadlock rows into per-process detail rows.
+    /// Parses a list of <see cref="ViewerDeadlockRow"/> into per-process detail rows via the shared
+    /// <see cref="DeadlockGraphProcessParser"/> (the sp_BlitzLock-style graph walk, de-duplicated with Lite).
+    /// Each row's best-effort victim plan (#1368 / V7) is threaded onto every process it produces.
     /// </summary>
     public static List<DeadlockProcessDetail> ParseFromRows(List<ViewerDeadlockRow> rows)
-    {
-        var details = new List<DeadlockProcessDetail>();
-        foreach (var row in rows)
-        {
-            if (string.IsNullOrEmpty(row.DeadlockGraphXml))
-                continue;
-
-            try
-            {
-                var doc = System.Xml.Linq.XElement.Parse(row.DeadlockGraphXml);
-
-                /* Detect parallel deadlock */
-                var resourceList = doc.Descendants("resource-list").FirstOrDefault();
-                var isParallel = resourceList != null &&
-                    (resourceList.Elements("exchangeEvent").Any() || resourceList.Elements("SyncPoint").Any());
-                var deadlockType = isParallel ? "Parallel" : "Regular";
-
-                /* Get victim IDs from victim-list */
-                var victimIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var vp in doc.Descendants("victimProcess"))
-                {
-                    var id = vp.Attribute("id")?.Value;
-                    if (id != null) victimIds.Add(id);
-                }
-
-                /* Parse lock resources to build per-process owner/waiter modes and object names */
-                var processOwnerModes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-                var processWaiterModes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-                var processObjectNames = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-
-                if (resourceList != null)
-                {
-                    var lockTypes = new[] { "objectlock", "pagelock", "keylock", "ridlock", "rowgrouplock" };
-                    foreach (var lockType in lockTypes)
-                    {
-                        foreach (var lockNode in resourceList.Elements(lockType))
-                        {
-                            var objectName = lockNode.Attribute("objectname")?.Value ?? "";
-
-                            /* Parse owners */
-                            foreach (var owner in lockNode.Descendants("owner"))
-                            {
-                                var ownerId = owner.Attribute("id")?.Value ?? "";
-                                var ownerMode = owner.Attribute("mode")?.Value ?? "";
-                                if (!string.IsNullOrEmpty(ownerId) && !string.IsNullOrEmpty(ownerMode))
-                                {
-                                    if (!processOwnerModes.ContainsKey(ownerId))
-                                        processOwnerModes[ownerId] = new HashSet<string>();
-                                    processOwnerModes[ownerId].Add(ownerMode);
-                                }
-                                if (!string.IsNullOrEmpty(ownerId) && !string.IsNullOrEmpty(objectName))
-                                {
-                                    if (!processObjectNames.ContainsKey(ownerId))
-                                        processObjectNames[ownerId] = new HashSet<string>();
-                                    processObjectNames[ownerId].Add(objectName);
-                                }
-                            }
-
-                            /* Parse waiters */
-                            foreach (var waiter in lockNode.Descendants("waiter"))
-                            {
-                                var waiterId = waiter.Attribute("id")?.Value ?? "";
-                                var waiterMode = waiter.Attribute("mode")?.Value ?? "";
-                                if (!string.IsNullOrEmpty(waiterId) && !string.IsNullOrEmpty(waiterMode))
-                                {
-                                    if (!processWaiterModes.ContainsKey(waiterId))
-                                        processWaiterModes[waiterId] = new HashSet<string>();
-                                    processWaiterModes[waiterId].Add(waiterMode);
-                                }
-                                if (!string.IsNullOrEmpty(waiterId) && !string.IsNullOrEmpty(objectName))
-                                {
-                                    if (!processObjectNames.ContainsKey(waiterId))
-                                        processObjectNames[waiterId] = new HashSet<string>();
-                                    processObjectNames[waiterId].Add(objectName);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                /* Parse each process */
-                foreach (var proc in doc.Descendants("process"))
-                {
-                    var id = proc.Attribute("id")?.Value ?? "";
-
-                    /* Get proc name from execution stack */
-                    var procName = "";
-                    foreach (var frame in proc.Descendants("frame"))
-                    {
-                        var frameProcName = frame.Attribute("procname")?.Value ?? "";
-                        if (!string.IsNullOrEmpty(frameProcName) && frameProcName != "adhoc" && frameProcName != "unknown")
-                        {
-                            procName = frameProcName;
-                            break;
-                        }
-                    }
-
-                    details.Add(new DeadlockProcessDetail
-                    {
-                        DeadlockTime = row.DeadlockTime,
-                        ProcessId = id,
-                        IsVictim = victimIds.Contains(id),
-                        Spid = int.TryParse(proc.Attribute("spid")?.Value, out var spid) ? spid : 0,
-                        DatabaseName = proc.Attribute("currentdbname")?.Value ?? "",
-                        SqlText = proc.Element("inputbuf")?.Value?.Trim() ?? "",
-                        WaitResource = proc.Attribute("waitresource")?.Value ?? "",
-                        WaitTime = long.TryParse(proc.Attribute("waittime")?.Value, out var wt) ? wt : 0,
-                        LockMode = proc.Attribute("lockMode")?.Value ?? "",
-                        IsolationLevel = proc.Attribute("isolationlevel")?.Value ?? "",
-                        LogUsed = long.TryParse(proc.Attribute("logused")?.Value, out var lu) ? lu : 0,
-                        TransactionCount = int.TryParse(proc.Attribute("trancount")?.Value, out var tc) ? tc : 0,
-                        ClientApp = proc.Attribute("clientapp")?.Value ?? "",
-                        HostName = proc.Attribute("hostname")?.Value ?? "",
-                        LoginName = proc.Attribute("loginname")?.Value ?? "",
-                        Status = proc.Attribute("status")?.Value ?? "",
-                        DeadlockGraphXml = row.DeadlockGraphXml,
-                        VictimQueryPlanXml = row.VictimQueryPlanXml,
-                        DeadlockType = deadlockType,
-                        ProcName = procName,
-                        TransactionName = proc.Attribute("transactionname")?.Value ?? "",
-                        Priority = int.TryParse(proc.Attribute("priority")?.Value, out var pri) ? pri : 0,
-                        LastTranStarted = DateTime.TryParse(proc.Attribute("lasttranstarted")?.Value, out var lts) ? lts : null,
-                        LastBatchStarted = DateTime.TryParse(proc.Attribute("lastbatchstarted")?.Value, out var lbs) ? lbs : null,
-                        LastBatchCompleted = DateTime.TryParse(proc.Attribute("lastbatchcompleted")?.Value, out var lbc) ? lbc : null,
-                        OwnerMode = processOwnerModes.TryGetValue(id, out var om) ? string.Join(", ", om) : "",
-                        WaiterMode = processWaiterModes.TryGetValue(id, out var wm) ? string.Join(", ", wm) : "",
-                        ObjectNames = processObjectNames.TryGetValue(id, out var on) ? string.Join(", ", on) : ""
-                    });
-                }
-            }
-            catch
-            {
-                /* If XML parsing fails, add a single fallback row */
-                details.Add(new DeadlockProcessDetail
-                {
-                    DeadlockTime = row.DeadlockTime,
-                    SqlText = row.VictimSqlText,
-                    IsVictim = true,
-                    DeadlockGraphXml = row.DeadlockGraphXml,
-                    VictimQueryPlanXml = row.VictimQueryPlanXml
-                });
-            }
-        }
-        return details;
-    }
+        => DeadlockGraphProcessParser.Parse<DeadlockProcessDetail>(
+            rows.Select(r => new DeadlockGraphInput(r.DeadlockGraphXml, r.DeadlockTime, r.VictimSqlText, r.VictimQueryPlanXml))).ToList();
 }
 
 public sealed partial class ViewerDataService
