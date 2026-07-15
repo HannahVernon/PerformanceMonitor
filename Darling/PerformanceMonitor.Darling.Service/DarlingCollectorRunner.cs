@@ -159,11 +159,20 @@ public sealed class DarlingCollectorRunner
             rows = new List<TRow>();
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
+            var attempted = 0;
+            var failed = 0;
+            Exception? firstFailure = null;
+
             foreach (var databaseName in databases)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                attempted++;
                 try
                 {
+                    /* The authoritative database_name for XE rows read on this path — see
+                       CollectorContext.CurrentDatabaseName. */
+                    context.CurrentDatabaseName = databaseName;
+
                     var dbPlan = plan;
                     if (dbPlan is null)
                     {
@@ -182,8 +191,25 @@ public sealed class DarlingCollectorRunner
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
+                    failed++;
+                    firstFailure ??= ex;
                     _logger?.LogDebug("Skipping database '{Database}' for {Collector}: {Error}", databaseName, definition.Name, ex.Message);
                 }
+            }
+
+            context.CurrentDatabaseName = null;
+
+            /* One database failing is routine (offline, mid-restore, a permissions oddity) and stays a
+               debug-logged skip. EVERY database failing is a systemic fault — before this check the run
+               recorded SUCCESS with zero rows, which on the XE collectors also made the SESSION_MISSING
+               classification (RunXeTolerantAsync → the Capture Down self-alert) unreachable on Azure.
+               Rethrow the first failure so RunOneAsync classifies it (SESSION_MISSING / PERMISSIONS /
+               ERROR) instead. Mirrors Lite's definition runner. */
+            if (attempted > 0 && failed == attempted && firstFailure is not null)
+            {
+                _logger?.LogWarning("{Collector} failed in all {Count} database(s) on '{Server}'; surfacing the first failure",
+                    definition.Name, attempted, server.Config.DisplayName);
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFailure).Throw();
             }
         }
         else

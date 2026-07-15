@@ -345,6 +345,7 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
             try
             {
                 using var connection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
+                var readable = true;
 
                 try
                 {
@@ -352,20 +353,47 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
                 }
                 catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
                 {
+                    var recreateKey = $"{server.Id}:{databaseName}:{sessionName}";
+
                     if (await IsDatabaseScopedXeSessionVisibleAsync(connection, sessionName, cancellationToken))
                     {
                         AppLogger.Debug("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session already present (benign, #1251)");
+                    }
+                    else if (_xeSessionRecreateGaveUp.ContainsKey(recreateKey))
+                    {
+                        /* Recreate already proven not to fix visibility here — don't churn the
+                           session every cycle (each DROP wipes captured-but-unread events).
+                           Counted unhealthy, quietly (the give-up itself was logged at Error). */
+                        AppLogger.Debug("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session still not readable; recreate previously didn't help — skipping (#1535)");
+                        readable = false;
+                        firstFailure ??= ex;
                     }
                     else
                     {
                         /* Exists per the engine, invisible to the reader's DMV — reclaim it.
                            Failures here fall to the per-database catch below. */
                         await RecreateDatabaseScopedXeSessionAsync(connection, sessionName, ensureAsync, cancellationToken);
-                        AppLogger.Info("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session existed but was not visible to the ring-buffer reader — dropped and recreated (#1535)");
+
+                        if (await IsDatabaseScopedXeSessionVisibleAsync(connection, sessionName, cancellationToken))
+                        {
+                            AppLogger.Info("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session existed but was not visible to the ring-buffer reader — dropped and recreated (#1535)");
+                        }
+                        else
+                        {
+                            /* Recreated under THIS principal and still invisible — recreating
+                               again next cycle can't help and would only churn events away. */
+                            _xeSessionRecreateGaveUp[recreateKey] = 1;
+                            AppLogger.Error("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session is still not visible in sys.dm_xe_database_sessions after recreating it — the ring-buffer reader cannot see this database's capture; giving up on recreates until the app restarts (#1535)");
+                            readable = false;
+                            firstFailure ??= ex;
+                        }
                     }
                 }
 
-                healthy++;
+                if (readable)
+                {
+                    healthy++;
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -374,7 +402,7 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
             }
         }
 
-        if (attempted > 0 && healthy == 0)
+        if (attempted > 0 && healthy == 0 && firstFailure is not null)
         {
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure the {captureName} XE session in all {attempted} database(s)");
 
@@ -383,11 +411,18 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
                 throw new XeSessionEnsureException(captureName, sqlFailure);
             }
 
-            /* Non-SQL failure (e.g. a connection-open fault) — surface it raw; RunCollectorAsync's
-               general handler classifies it ERROR, which is still not a silent SUCCESS. */
-            throw firstFailure!;
+            /* Non-SQL failure (e.g. a connection-open fault) — surface it raw with its original
+               stack; RunCollectorAsync's general handler classifies it ERROR, which is still not a
+               silent SUCCESS. */
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFailure).Throw();
         }
     }
+
+    /* Databases where a drop+recreate demonstrably did NOT make the session visible to the reader
+       (see the give-up branch above): keyed server:database:session, in-memory so an app restart
+       retries once. Prevents a per-cycle DROP/CREATE ping-pong that would wipe captured-but-unread
+       ring-buffer events every cycle in a pathological-permissions database. */
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _xeSessionRecreateGaveUp = new();
 
     /// <summary>
     /// Whether the database-scoped session is visible to THIS principal in

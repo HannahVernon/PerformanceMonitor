@@ -48,9 +48,13 @@ public sealed class DeadlocksCollector : CollectorDefinitionBase<DeadlocksCollec
            cache at collection time (CapturePlanXml only). Null on Lite (flag off) and whenever the
            plan can't be recovered — see the resolution comment on the query fragments. */
         public string? VictimQueryPlanXml { get; set; }
-        /* The victim process's currentdbname graph attribute (same source the grids' per-process
-           parse and BlockedProcessReportCollector use); null when the engine version doesn't emit
-           it. Keys the per-database watermark for Azure SQL DB's per-database capture sessions. */
+        /* Keys the per-database watermark for Azure SQL DB's per-database capture sessions. On the
+           per-database read path this is the capture database itself (context.CurrentDatabaseName —
+           a database-scoped session only captures its own database, and a null here could never
+           advance that database's watermark, re-inserting the row every cycle); on server-scoped
+           platforms it falls back to the victim process's currentdbname graph attribute (same
+           source the grids' per-process parse and BlockedProcessReportCollector use), null when
+           the engine doesn't emit it. */
         public string? DatabaseName { get; set; }
     }
 
@@ -265,7 +269,9 @@ OUTER APPLY
                 /* victim_query_plan_xml rides at ordinal 3 only when CapturePlanXml spliced it into
                    the projection; the short-circuit skips it entirely when off. */
                 VictimQueryPlanXml = context.CapturePlanXml && !reader.IsDBNull(3) ? reader.GetString(3) : null,
-                DatabaseName = victim.DatabaseName,
+                /* Per-database path: the capture database is authoritative (see the Row comment);
+                   server-scoped: the victim's currentdbname, null when the graph doesn't carry it. */
+                DatabaseName = context.CurrentDatabaseName ?? victim.DatabaseName,
             });
         }
 

@@ -46,9 +46,9 @@ public static class DarlingXeSessions
             using var connection = new SqlConnection(server.ConnectionString);
             await connection.OpenAsync(cancellationToken);
 
-            /* Each capture ensures under its own benign filter: a benign "already exists" from the
-               deadlock ensure used to abort the whole batch, silently skipping the blocked-process
-               ensure until the next reconnect. */
+            /* Each capture ensures under its own filter — benign AND hard: a benign "already
+               exists" (or any hard failure) from the deadlock ensure used to abort the whole
+               batch, silently skipping the blocked-process ensure until the next reconnect. */
             try
             {
                 await EnsureDeadlockOnPremAsync(connection, server, logger, cancellationToken);
@@ -56,6 +56,11 @@ public static class DarlingXeSessions
             catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
             {
                 logger?.LogInformation("[{Server}] Deadlock XE session already present (benign, #1251)", server.Config.DisplayName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogError("[{Server}] Failed to ensure deadlock XE session: {Message} — deadlock collection will read zero rows until resolved",
+                    server.Config.DisplayName, ex.Message);
             }
 
             try
@@ -65,6 +70,11 @@ public static class DarlingXeSessions
             catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
             {
                 logger?.LogInformation("[{Server}] Blocked process XE session already present (benign, #1251)", server.Config.DisplayName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogError("[{Server}] Failed to ensure blocked process XE session: {Message} — blocked-process collection will read zero rows until resolved",
+                    server.Config.DisplayName, ex.Message);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -162,8 +172,22 @@ public static class DarlingXeSessions
                     }
 
                     await ensureAsync(connection);
-                    logger?.LogInformation("[{Server}] [{Database}] {Capture} XE session existed but was not visible to the ring-buffer reader — dropped and recreated (#1535)",
-                        server.Config.DisplayName, databaseName, captureName);
+
+                    /* Read back once: recreated under THIS principal and still invisible means the
+                       reader cannot see this database's capture at all — say so at Error rather than
+                       announcing a recreate that didn't help. Ensure runs once per connect, so there
+                       is no per-cycle churn to bound here (Lite's per-cycle driver keeps a give-up
+                       set for the same case). */
+                    if (await IsDatabaseScopedSessionVisibleAsync(connection, sessionName, cancellationToken))
+                    {
+                        logger?.LogInformation("[{Server}] [{Database}] {Capture} XE session existed but was not visible to the ring-buffer reader — dropped and recreated (#1535)",
+                            server.Config.DisplayName, databaseName, captureName);
+                    }
+                    else
+                    {
+                        logger?.LogError("[{Server}] [{Database}] {Capture} XE session is still not visible in sys.dm_xe_database_sessions after recreating it — the ring-buffer reader cannot see this database's capture",
+                            server.Config.DisplayName, databaseName, captureName);
+                    }
                 }
             }
         }

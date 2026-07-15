@@ -581,6 +581,12 @@ OUTER APPLY
             parsed.ContentiousObject = contentiousObject;
             parsed.BlockedQueryPlanXml = blockedQueryPlanXml;
             parsed.BlockingQueryPlanXml = blockingQueryPlanXml;
+            /* Per-database path (#1535): the capture database is authoritative for the
+               per-database watermark key — a database-scoped session only captures its own
+               database, and a report whose XML carries no currentdbname would otherwise never
+               advance that database's watermark, re-inserting every cycle. Server-scoped
+               platforms keep the parsed currentdbname (CurrentDatabaseName is null there). */
+            parsed.DatabaseName = context.CurrentDatabaseName ?? parsed.DatabaseName;
             rows.Add(parsed);
         }
 

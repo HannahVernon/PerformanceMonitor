@@ -225,6 +225,24 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
     }
 
     [Fact]
+    public async Task ReadAsync_PerDatabasePath_CaptureDatabaseWinsOverParsedValue()
+    {
+        /* On the Azure per-database read path the host stamps context.CurrentDatabaseName per
+           iteration, and it is authoritative for the per-database watermark key — beating the
+           report XML's currentdbname (here "SO") and covering reports that carry none, whose null
+           database_name could never advance that database's watermark. Server-scoped platforms
+           leave CurrentDatabaseName null, keeping the parsed value (pinned above). */
+        var context = MakeContext(isAzureSqlDb: true);
+        context.CurrentDatabaseName = "ringdb";
+
+        using var reader = new FakeCollectorDataReader(
+            new object[] { new DateTime(2026, 7, 2, 11, 59, 30, DateTimeKind.Utc), SampleReportXml, 1234, 7, "dbo.t" });
+        var rows = await BlockedProcessReportCollector.Instance.ReadAsync(reader, context, CancellationToken.None);
+
+        Assert.Equal("ringdb", Assert.Single(rows).DatabaseName);
+    }
+
+    [Fact]
     public void ParseReportXml_NullOnGarbage_NullWithoutBlockedProcess()
     {
         Assert.Null(BlockedProcessReportCollector.ParseReportXml("<not-xml", null));

@@ -221,6 +221,27 @@ public sealed class DeadlocksCollectorDefinitionTests
     }
 
     [Fact]
+    public async Task ReadAsync_PerDatabasePath_CaptureDatabaseWinsOverGraphValue()
+    {
+        /* On the Azure per-database read path the host stamps context.CurrentDatabaseName per
+           iteration, and it is authoritative — a database-scoped session only captures its own
+           database — beating the graph's currentdbname AND covering graphs that carry none (a
+           null database_name row could never advance that database's watermark, so the same
+           ring-buffer event would re-insert every cycle). */
+        var context = MakeContext(isAzureSqlDb: true);
+        context.CurrentDatabaseName = "ringdb";
+
+        using var reader = new FakeCollectorDataReader(
+            new object[] { new DateTime(2026, 7, 2, 11, 58, 0, DateTimeKind.Utc), "process123", SampleGraphXmlWithDb },
+            new object[] { new DateTime(2026, 7, 2, 11, 59, 0, DateTimeKind.Utc), "process123", SampleGraphXml });
+        var rows = await DeadlocksCollector.Instance.ReadAsync(reader, context, CancellationToken.None);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("ringdb", rows[0].DatabaseName);   /* graph said salesdb — capture DB wins */
+        Assert.Equal("ringdb", rows[1].DatabaseName);   /* graph carried no currentdbname at all */
+    }
+
+    [Fact]
     public async Task ReadAsync_WritePayload_PinsSixColumnOrder_AndVictimExtraction()
     {
         var context = MakeContext();
