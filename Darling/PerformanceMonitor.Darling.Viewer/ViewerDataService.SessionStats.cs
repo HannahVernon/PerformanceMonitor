@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -42,7 +43,7 @@ public sealed record SessionStatsPoint(
     string? TopApplicationName,
     int? TopApplicationConnections,
     string? TopHostName,
-    int? TopHostConnections);
+    int? TopHostConnections) : ISessionStatsPoint;
 
 public sealed partial class ViewerDataService
 {
