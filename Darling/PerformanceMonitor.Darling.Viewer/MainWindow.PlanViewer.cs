@@ -21,15 +21,25 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// from Lite's <c>MainWindow.PlanViewer.cs</c>: a hidden-until-used, closable "Plan Viewer" aggregate tab
 /// (<c>MainWindowPlanViewerTab</c>) that hosts the SHARED <see cref="PlanViewerControl"/> as closable
 /// sub-tabs. Unlike the per-server Plan Viewer (<see cref="ViewerServerTab"/>'s <c>OpenPlanTab</c>, which
-/// fetches a STORED plan from Postgres), this surface reads no store data and needs no server connection —
+/// fetches a STORED plan from Postgres), this surface reads no store data and needs no server connection --
 /// the user supplies the plan by opening a .sqlplan / plan-XML file, pasting plan XML, or dragging a file
 /// in. Opened / focused from the sidebar's "Open Plan Viewer" button.
+///
+/// The tab management itself (empty "New Plan" sub-tabs, open/paste/drag-drop, plan rendering, unique
+/// labelling, teardown) is the shared <see cref="StandalonePlanViewerController"/> -- this file keeps only
+/// the app-specific outer-container reveal/close (<c>MainTabs</c> vs the no-servers empty state) and forwards
+/// the XAML-wired drag-over / drop / key-down handlers.
 /// </summary>
 public partial class MainWindow
 {
+    /* Lazy (a field initializer can't reference the instance-named MainWindowPlanTabControl). */
+    private StandalonePlanViewerController? _planViewerControllerField;
+    private StandalonePlanViewerController PlanViewerController =>
+        _planViewerControllerField ??= new StandalonePlanViewerController(MainWindowPlanTabControl);
+
     private void OpenPlanViewerButton_Click(object sender, RoutedEventArgs e)
     {
-        EnsurePlanTabControlInitialized();
+        PlanViewerController.EnsureInitialized();
         /* The Plan Viewer is server-independent: show it even when no servers are registered (in which
            case the no-servers empty state otherwise owns the content column with MainTabs collapsed). */
         EmptyStatePanel.Visibility = Visibility.Collapsed;
@@ -37,19 +47,19 @@ public partial class MainWindow
         MainWindowPlanViewerTab.Visibility = Visibility.Visible;
         if (MainWindowPlanViewerTab.IsSelected)
         {
-            // Already on Plan Viewer — just add a new empty sub-tab
-            AddNewEmptyPlanSubTab();
+            // Already on Plan Viewer -- just add a new empty sub-tab
+            PlanViewerController.AddNewEmptyPlanSubTab();
         }
         else
         {
             MainWindowPlanViewerTab.IsSelected = true;
-            AddNewEmptyPlanSubTab();
+            PlanViewerController.AddNewEmptyPlanSubTab();
         }
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => MainWindowPlanTabControl.Focus()));
     }
 
     /// <summary>
-    /// Opens a STORED plan in the standalone Plan Viewer surface — the destination for a "View Plan" click on
+    /// Opens a STORED plan in the standalone Plan Viewer surface -- the destination for a "View Plan" click on
     /// the FinOps aggregate tab's High Impact / Expensive Queries grids (raised via <c>FinOpsTab.PlanRequested</c>).
     /// That aggregate tab has no per-server plan host, so it feeds the plan XML it already holds here: reveal the
     /// Plan Viewer aggregate tab and render the plan in a fresh sub-tab. Unlike <see cref="OpenPlanViewerButton_Click"/>
@@ -57,28 +67,21 @@ public partial class MainWindow
     /// </summary>
     private void OpenStoredPlanInPlanViewer(string planXml, string label, string? queryText)
     {
-        EnsurePlanTabControlInitialized();
+        PlanViewerController.EnsureInitialized();
         /* Server-independent surface: show it even when the no-servers empty state otherwise owns the column. */
         EmptyStatePanel.Visibility = Visibility.Collapsed;
         MainTabs.Visibility = Visibility.Visible;
         MainWindowPlanViewerTab.Visibility = Visibility.Visible;
         MainWindowPlanViewerTab.IsSelected = true;
 
-        var subTab = AddNewEmptyPlanSubTab();
-        LoadPlanIntoSubTab(subTab, planXml, label, queryText);
+        var subTab = PlanViewerController.AddNewEmptyPlanSubTab();
+        PlanViewerController.LoadPlanIntoSubTab(subTab, planXml, label, queryText);
     }
 
     private void MainWindowPlanViewerClose_Click(object sender, RoutedEventArgs e)
     {
-        // Each plan sub-tab's viewer is rooted by the static ThemeChanged event —
-        // Cleanup() each before clearing the tab control so none leak.
-        foreach (var item in MainWindowPlanTabControl.Items)
-            if (item is TabItem { Content: Grid g } && g.Children.Count > 1
-                && g.Children[1] is PlanViewerControl pv)
-                pv.Cleanup();
-        // Reset inner tab control so next open starts fresh
-        MainWindowPlanTabControl.Items.Clear();
-        _planTabControlInitialized = false;
+        // Cleanup each sub-tab's viewer + reset the inner tab control (shared), then restore this app's shell.
+        PlanViewerController.Reset();
         MainWindowPlanViewerTab.Visibility = Visibility.Collapsed;
 
         /* Return the content column to the state it was in before the Plan Viewer opened: if no servers
@@ -102,366 +105,12 @@ public partial class MainWindow
         }
     }
 
-    #region Standalone Plan Viewer
+    private void MainWindowPlanViewer_DragOver(object sender, DragEventArgs e) =>
+        PlanViewerController.HandleDragOver(e);
 
-    private const string DarlingPlanAddTabId = "__PLAN_ADD_TAB__";
-    private bool _planTabControlInitialized;
+    private void MainWindowPlanViewer_Drop(object sender, DragEventArgs e) =>
+        PlanViewerController.HandleDrop(e);
 
-    private void EnsurePlanTabControlInitialized()
-    {
-        if (_planTabControlInitialized) return;
-        _planTabControlInitialized = true;
-
-        // "+" tab at the end
-        var addTabHeader = new TextBlock
-        {
-            Text = "+",
-            FontSize = 14,
-            FontWeight = FontWeights.Bold,
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "Open a new plan sub-tab"
-        };
-        var addTab = new TabItem
-        {
-            Header = addTabHeader,
-            Tag = DarlingPlanAddTabId,
-            Content = new Grid()
-        };
-        MainWindowPlanTabControl.Items.Add(addTab);
-
-        MainWindowPlanTabControl.SelectionChanged += (_, _) =>
-        {
-            if (MainWindowPlanTabControl.SelectedItem is TabItem { Tag: string t } && t == DarlingPlanAddTabId)
-            {
-                var newSub = AddNewEmptyPlanSubTab();
-                MainWindowPlanTabControl.SelectedItem = newSub;
-            }
-        };
-    }
-
-    /// <summary>
-    /// Adds a new empty "New Plan" sub-tab to the inner plan TabControl and selects it.
-    /// Returns the newly created sub-tab.
-    /// </summary>
-    private TabItem AddNewEmptyPlanSubTab()
-    {
-        EnsurePlanTabControlInitialized();
-
-        // --- Empty state layer ---
-        var emptyState = new Grid();
-        var dashedRect = new System.Windows.Shapes.Rectangle
-        {
-            Margin = new Thickness(24),
-            Stroke = (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush"),
-            StrokeThickness = 1.5,
-            StrokeDashArray = new System.Windows.Media.DoubleCollection { 6, 4 },
-            RadiusX = 10, RadiusY = 10,
-            Opacity = 0.25
-        };
-        var emptyStack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        emptyStack.Children.Add(new TextBlock
-        {
-            Text = "",
-            FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
-            FontSize = 52,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Foreground = (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush"),
-            Opacity = 0.45,
-            Margin = new Thickness(0, 0, 0, 12)
-        });
-        emptyStack.Children.Add(new TextBlock
-        {
-            Text = "New Plan",
-            FontSize = 20,
-            FontWeight = FontWeights.Light,
-            Foreground = (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush"),
-            HorizontalAlignment = HorizontalAlignment.Center
-        });
-        emptyStack.Children.Add(new TextBlock
-        {
-            Text = "Open or paste execution plan XML to render it",
-            FontSize = 13,
-            Foreground = (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush"),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 8, 0, 0)
-        });
-        var btnPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 20, 0, 0) };
-        var openBtn = new Button { Content = "Open .sqlplan File", Height = 28, Padding = new Thickness(12, 0, 12, 0), ToolTip = "Open a .sqlplan or .xml file from disk" };
-        var pasteBtn = new Button { Content = "Paste XML", Height = 28, Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Paste execution plan XML to render it (or use Ctrl+V)" };
-        btnPanel.Children.Add(openBtn);
-        btnPanel.Children.Add(pasteBtn);
-        emptyStack.Children.Add(btnPanel);
-        emptyStack.Children.Add(new TextBlock
-        {
-            Text = "or drag & drop a .sqlplan file anywhere in this area",
-            FontSize = 11,
-            Foreground = (System.Windows.Media.Brush)FindResource("ForegroundMutedBrush"),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 12, 0, 0)
-        });
-        emptyState.Children.Add(dashedRect);
-        emptyState.Children.Add(emptyStack);
-
-        // --- Viewer layer (hidden until a plan is loaded) ---
-        var viewer = new PlanViewerControl
-        {
-            Visibility = Visibility.Collapsed
-        };
-
-        // Sub-tab content grid: index 0 = emptyState, index 1 = viewer
-        var subTabContent = new Grid();
-        subTabContent.Children.Add(emptyState);
-        subTabContent.Children.Add(viewer);
-
-        // --- Sub-tab header: label + close button ---
-        var initialLabel = GetUniqueSubTabLabel("New Plan");
-        var labelBlock = new TextBlock
-        {
-            Text = initialLabel,
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = initialLabel
-        };
-        var subCloseBtn = new Button { Style = (Style)FindResource("TabCloseButton") };
-        var subTabHeader = new StackPanel { Orientation = Orientation.Horizontal };
-        subTabHeader.Children.Add(labelBlock);
-        subTabHeader.Children.Add(subCloseBtn);
-
-        var subTab = new TabItem { Header = subTabHeader, Content = subTabContent };
-
-        subCloseBtn.Tag = subTab;
-        subCloseBtn.Click += (_, _) =>
-        {
-            (subTabContent.Children[1] as PlanViewerControl)?.Cleanup();
-            MainWindowPlanTabControl.Items.Remove(subTab);
-            // If only the "+" tab remains, open a fresh empty sub-tab
-            if (MainWindowPlanTabControl.Items.Count == 1 &&
-                MainWindowPlanTabControl.Items[0] is TabItem { Tag: string t2 } && t2 == DarlingPlanAddTabId)
-            {
-                AddNewEmptyPlanSubTab();
-            }
-        };
-
-        // Wire per-sub-tab buttons
-        openBtn.Click += (_, _) =>
-        {
-            var dialog = new Microsoft.Win32.OpenFileDialog
-            {
-                Filter = "SQL Plan Files (*.sqlplan)|*.sqlplan|XML Files (*.xml)|*.xml|All Files (*.*)|*.*",
-                DefaultExt = ".sqlplan",
-                Multiselect = true
-            };
-            if (dialog.ShowDialog() != true) return;
-            var isFirst = true;
-            foreach (var fileName in dialog.FileNames)
-            {
-                try
-                {
-                    var xml = System.IO.File.ReadAllText(fileName);
-                    var targetTab = isFirst ? subTab : AddNewEmptyPlanSubTab();
-                    LoadPlanIntoSubTab(targetTab, xml, System.IO.Path.GetFileName(fileName));
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Failed to open file:\n\n{ex.Message}", "Error",
-                        MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-                isFirst = false;
-            }
-        };
-
-        pasteBtn.Click += (_, _) =>
-        {
-            var xml = Clipboard.GetText();
-            if (!string.IsNullOrWhiteSpace(xml))
-            {
-                LoadPlanIntoSubTab(subTab, xml, "Pasted Plan");
-                return;
-            }
-            MessageBox.Show("The clipboard does not contain any text.", "Paste Plan XML",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        };
-
-        // Insert before "+" tab
-        var addTabIndex = -1;
-        for (var i = 0; i < MainWindowPlanTabControl.Items.Count; i++)
-        {
-            if (MainWindowPlanTabControl.Items[i] is TabItem { Tag: string t3 } && t3 == DarlingPlanAddTabId)
-            {
-                addTabIndex = i;
-                break;
-            }
-        }
-        if (addTabIndex >= 0)
-            MainWindowPlanTabControl.Items.Insert(addTabIndex, subTab);
-        else
-            MainWindowPlanTabControl.Items.Add(subTab);
-
-        MainWindowPlanTabControl.SelectedItem = subTab;
-        return subTab;
-    }
-
-    /// <summary>
-    /// Loads plan XML into an existing sub-tab (replacing whatever was there before).
-    /// </summary>
-    private async void LoadPlanIntoSubTab(TabItem subTab, string planXml, string label, string? queryText = null)
-    {
-        if (subTab.Content is not Grid subTabContent) return;
-        if (subTabContent.Children.Count < 2) return;
-
-        var emptyState = subTabContent.Children[0] as FrameworkElement;
-        var viewer = subTabContent.Children[1] as PlanViewerControl;
-        if (viewer == null) return;
-
-        try
-        {
-            /* LoadPlan parses+analyzes off the UI thread; XmlException replaces the redundant
-               up-front XDocument.Parse validation. */
-            await viewer.LoadPlan(planXml, label, queryText);
-        }
-        catch (System.Xml.XmlException ex)
-        {
-            MessageBox.Show(
-                $"The plan XML is not valid:\n\n{ex.Message}",
-                "Invalid Plan XML",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(
-                $"Failed to load the execution plan:\n\n{ex.Message}",
-                "Plan Load Error",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
-        emptyState!.Visibility = Visibility.Collapsed;
-        viewer.Visibility = Visibility.Visible;
-
-        var uniqueLabel = GetUniqueSubTabLabel(label);
-        if (subTab.Header is StackPanel headerPanel &&
-            headerPanel.Children[0] is TextBlock headerLabel)
-        {
-            headerLabel.Text = uniqueLabel.Length > 30 ? uniqueLabel[..30] + "…" : uniqueLabel;
-            headerLabel.ToolTip = uniqueLabel;
-        }
-    }
-
-    /// <summary>
-    /// Returns a label that is unique among current inner plan sub-tab headers.
-    /// If <paramref name="baseLabel"/> is already taken, appends " (1)", " (2)", …
-    /// </summary>
-    private string GetUniqueSubTabLabel(string baseLabel)
-    {
-        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in MainWindowPlanTabControl.Items)
-        {
-            if (item is TabItem { Tag: string t } && t == DarlingPlanAddTabId) continue;
-            if (item is TabItem subTab &&
-                subTab.Header is StackPanel sp &&
-                sp.Children[0] is TextBlock tb)
-                existing.Add(tb.ToolTip as string ?? tb.Text);
-        }
-        if (!existing.Contains(baseLabel)) return baseLabel;
-        var counter = 1;
-        string candidate;
-        do { candidate = $"{baseLabel} ({counter++})"; }
-        while (existing.Contains(candidate));
-        return candidate;
-    }
-
-    /// <summary>
-    /// Returns the currently active real plan sub-tab (skips the "+" tab).
-    /// </summary>
-    private TabItem? GetActivePlanSubTab()
-    {
-        if (MainWindowPlanTabControl.SelectedItem is TabItem { Tag: string t } && t == DarlingPlanAddTabId)
-            return null;
-        return MainWindowPlanTabControl.SelectedItem as TabItem;
-    }
-
-    private void MainWindowPlanViewer_DragOver(object sender, DragEventArgs e)
-    {
-        if (e.Data.GetDataPresent(DataFormats.FileDrop))
-        {
-            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-            if (files?.Any(IsPlanFile) == true)
-            {
-                e.Effects = DragDropEffects.Copy;
-                e.Handled = true;
-                return;
-            }
-        }
-        e.Effects = DragDropEffects.None;
-        e.Handled = true;
-    }
-
-    private void MainWindowPlanViewer_Drop(object sender, DragEventArgs e)
-    {
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
-        var planFiles = (e.Data.GetData(DataFormats.FileDrop) as string[])
-            ?.Where(IsPlanFile).ToArray();
-        if (planFiles == null || planFiles.Length == 0) return;
-        LoadMainWindowPlanFromFileIntoActiveTab(planFiles[0]);
-        for (var i = 1; i < planFiles.Length; i++)
-        {
-            var newTab = AddNewEmptyPlanSubTab();
-            try
-            {
-                var xml = System.IO.File.ReadAllText(planFiles[i]);
-                LoadPlanIntoSubTab(newTab, xml, System.IO.Path.GetFileName(planFiles[i]));
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to load plan file:\n{ex.Message}", "Load Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-    }
-
-    private void MainWindowPlanViewer_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
-    {
-        if (e.Key == System.Windows.Input.Key.V &&
-            System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control &&
-            e.OriginalSource is not System.Windows.Controls.TextBox)
-        {
-            var xml = Clipboard.GetText();
-            if (!string.IsNullOrWhiteSpace(xml))
-            {
-                e.Handled = true;
-                LoadPlanIntoActivePlanSubTab(xml, "Pasted Plan");
-            }
-        }
-    }
-
-    private void LoadMainWindowPlanFromFileIntoActiveTab(string path)
-    {
-        try
-        {
-            var xml = System.IO.File.ReadAllText(path);
-            LoadPlanIntoActivePlanSubTab(xml, System.IO.Path.GetFileName(path));
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to load plan file:\n{ex.Message}", "Load Error",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void LoadPlanIntoActivePlanSubTab(string planXml, string label)
-    {
-        var activeSubTab = GetActivePlanSubTab();
-        if (activeSubTab != null)
-            LoadPlanIntoSubTab(activeSubTab, planXml, label);
-    }
-
-    private static bool IsPlanFile(string path)
-    {
-        var ext = System.IO.Path.GetExtension(path);
-        return string.Equals(ext, ".sqlplan", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(ext, ".xml", StringComparison.OrdinalIgnoreCase);
-    }
-
-    #endregion
+    private void MainWindowPlanViewer_KeyDown(object sender, System.Windows.Input.KeyEventArgs e) =>
+        PlanViewerController.HandleKeyDown(e);
 }
