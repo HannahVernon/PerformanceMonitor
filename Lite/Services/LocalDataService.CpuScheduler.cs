@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -171,8 +172,10 @@ public class CpuSchedulerTrendPoint
 
 /// <summary>The most recent CPU-scheduler snapshot in the window — every column the cpu_scheduler_stats
 /// collector captures (scheduler / worker / NUMA / OS-memory pressure), feeding the CPU Scheduler tab's
-/// latest-snapshot metric grid and its warning highlights.</summary>
-public class CpuSchedulerSnapshot
+/// latest-snapshot metric grid and its warning highlights. Implements <see cref="ICpuSchedulerSnapshot"/> so
+/// the shared <see cref="CpuSchedulerMetrics"/> projection reads it directly (its double / double? averaged
+/// columns satisfy the interface as-is).</summary>
+public class CpuSchedulerSnapshot : ICpuSchedulerSnapshot
 {
     public DateTime CollectionTime { get; set; }
     public int MaxWorkersCount { get; set; }
