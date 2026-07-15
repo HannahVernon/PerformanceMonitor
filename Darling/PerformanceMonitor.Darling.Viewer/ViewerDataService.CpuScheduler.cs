@@ -21,7 +21,7 @@ public sealed record CpuSchedulerTrendPoint(
     DateTime CollectionTime,
     int RunnableTasks,
     int BlockedTasks,
-    int QueuedRequests);
+    int QueuedRequests) : ICpuSchedulerTrendPoint;
 
 /// <summary>
 /// The most recent CPU-scheduler snapshot in the window — every column the cpu_scheduler_stats

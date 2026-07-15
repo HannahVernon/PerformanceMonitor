@@ -33,6 +33,10 @@ public partial class ServerTab : UserControl
 {
     private ChartHoverHelper? _cpuSchedulerHover;
 
+    private CpuSchedulerChartRenderer? _cpuSchedRendererField;
+    private CpuSchedulerChartRenderer CpuSchedRenderer =>
+        _cpuSchedRendererField ??= new CpuSchedulerChartRenderer(_chartHelper, t => t.AddMinutes(UtcOffsetMinutes));
+
     /// <summary>Applies the shared chrome + hover to the scheduler chart up front (constructor), so it
     /// doesn't flash white before the tab's first load — matching the CPU/Memory charts.</summary>
     private void InitializeCpuSchedulerChart()
@@ -70,10 +74,6 @@ public partial class ServerTab : UserControl
     /// data. Mirrors Darling's RenderCpuSchedulerChart.</summary>
     private void UpdateCpuSchedulerChart(List<CpuSchedulerTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
-        ClearChart(CpuSchedulerChart);
-        ApplyTheme(CpuSchedulerChart);
-        _cpuSchedulerHover?.Clear();
-
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
         {
@@ -86,40 +86,7 @@ public partial class ServerTab : UserControl
             rangeStart = rangeEnd.AddHours(-hoursBack);
         }
 
-        double globalMax = 0;
-        if (data.Count > 0)
-        {
-            var ordered = data.OrderBy(d => d.CollectionTime).ToList();
-            var times = ordered.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
-
-            var series = new (string Name, Func<CpuSchedulerTrendPoint, double> Selector)[]
-            {
-                ("Runnable Tasks", d => d.RunnableTasks),
-                ("Blocked Tasks", d => d.BlockedTasks),
-                ("Queued Requests", d => d.QueuedRequests),
-            };
-
-            int colorIdx = 0;
-            foreach (var s in series)
-            {
-                var values = ordered.Select(s.Selector).ToArray();
-                var plot = CpuSchedulerChart.Plot.Add.Scatter(times, values);
-                plot.LegendText = s.Name;
-                plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
-                ChartStyle.StyleScatter(plot);
-                _cpuSchedulerHover?.Add(plot, s.Name);
-                colorIdx++;
-                if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
-            }
-        }
-
-        CpuSchedulerChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        CpuSchedulerChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-        ReapplyAxisColors(CpuSchedulerChart);
-        CpuSchedulerChart.Plot.YLabel("Task Count");
-        SetChartYLimitsWithLegendPadding(CpuSchedulerChart, 0, globalMax > 0 ? globalMax : 5);
-        ShowChartLegend(CpuSchedulerChart);
-        CpuSchedulerChart.Refresh();
+        CpuSchedRenderer.Render(CpuSchedulerChart, _cpuSchedulerHover, data, rangeStart.ToOADate(), rangeEnd.ToOADate());
     }
 
     /// <summary>Tears down the scheduler hover helper (mirrors the other tabs' dispose) so its tooltip

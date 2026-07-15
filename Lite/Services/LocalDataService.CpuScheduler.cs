@@ -162,7 +162,7 @@ LIMIT 1";
 /// <summary>One point on the CPU-scheduler pressure trend: the runnable / blocked / queued task counts
 /// at a collection instant. A point-in-time snapshot collector (one row per collection), so these plot
 /// directly with no delta math.</summary>
-public class CpuSchedulerTrendPoint
+public class CpuSchedulerTrendPoint : ICpuSchedulerTrendPoint
 {
     public DateTime CollectionTime { get; set; }
     public int RunnableTasks { get; set; }

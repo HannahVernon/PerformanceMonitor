@@ -56,49 +56,15 @@ public partial class ViewerServerTab
         CpuSchedulerGrid.ItemsSource = CpuSchedulerMetrics.BuildMetrics(snapshotTask.Result);
     }
 
+    private CpuSchedulerChartRenderer? _cpuSchedRendererField;
+    private CpuSchedulerChartRenderer CpuSchedRenderer =>
+        _cpuSchedRendererField ??= new CpuSchedulerChartRenderer(_chartHelper, ViewerTimeHelper.ForDisplay);
+
     private void RenderCpuSchedulerChart(List<CpuSchedulerTrendPoint> data)
     {
-        ClearChart(CpuSchedulerChart);
-        _cpuSchedulerHover?.Clear();
-        ApplyTheme(CpuSchedulerChart);
-
         var (startUtc, endUtc) = GetWindowUtc();
-        CpuSchedulerChart.Plot.YLabel("Task Count");
-
-        double globalMax = 0;
-        if (data.Count > 0)
-        {
-            var times = data.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
-
-            var series = new (string Name, Func<CpuSchedulerTrendPoint, double> Selector)[]
-            {
-                ("Runnable Tasks", d => d.RunnableTasks),
-                ("Blocked Tasks", d => d.BlockedTasks),
-                ("Queued Requests", d => d.QueuedRequests),
-            };
-
-            int colorIdx = 0;
-            foreach (var s in series)
-            {
-                var values = data.Select(s.Selector).ToArray();
-                var plot = CpuSchedulerChart.Plot.Add.Scatter(times, values);
-                plot.LegendText = s.Name;
-                plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
-                ChartStyle.StyleScatter(plot);
-                _cpuSchedulerHover?.Add(plot, s.Name);
-                colorIdx++;
-                if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
-            }
-        }
-
-        CpuSchedulerChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
-        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
-        CpuSchedulerChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-        ReapplyAxisColors(CpuSchedulerChart);
-        SetChartYLimitsWithLegendPadding(CpuSchedulerChart, 0, globalMax > 0 ? globalMax : 5);
-        ShowChartLegend(CpuSchedulerChart);
-        CpuSchedulerChart.Refresh();
+        CpuSchedRenderer.Render(CpuSchedulerChart, _cpuSchedulerHover, data,
+            ViewerTimeHelper.ForDisplay(startUtc).ToOADate(), ViewerTimeHelper.ForDisplay(endUtc).ToOADate());
     }
 
     /// <summary>Tears down the scheduler hover helper (mirrors the other tabs' dispose).</summary>
