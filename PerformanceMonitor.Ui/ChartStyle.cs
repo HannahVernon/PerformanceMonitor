@@ -189,14 +189,16 @@ namespace PerformanceMonitor.Ui
         /// Pure Y-limit math behind <see cref="SetChartYLimitsWithLegendPadding"/>, extracted so it can be
         /// unit-tested without a WPF control. Floors at zero for non-negative data so high-magnitude charts
         /// get no dead-band below the lines; only genuinely-negative data gets a 10%-of-range below-zero
-        /// margin. Adds 5%-of-range top breathing room for the bottom legend.
+        /// margin. Adds 15%-of-range top breathing room so a series that plateaus at a hard ceiling
+        /// (e.g. CPU-scheduler task counts pinned at the scheduler count) does not crowd the top edge
+        /// and read as clipped; a momentary peak simply gets a little more air above it.
         /// </summary>
         public static (double YMin, double YMax) ComputeYLimitsWithLegendPadding(double dataYMin, double dataYMax)
         {
             if (dataYMax <= dataYMin) dataYMax = dataYMin + 1;
 
             double range = dataYMax - dataYMin;
-            double topPadding = range * 0.05;
+            double topPadding = range * 0.15;
 
             double yMin = dataYMin >= 0 ? 0 : dataYMin - (range * 0.10);
             double yMax = dataYMax + topPadding;
