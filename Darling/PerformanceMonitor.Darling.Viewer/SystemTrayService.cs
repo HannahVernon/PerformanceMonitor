@@ -73,7 +73,8 @@ public sealed class SystemTrayService : IDisposable
         /* Custom tooltip styled to match current theme.
            Note: Hardcodet TrayToolTip can rarely trigger a race condition in Popup.CreateWindow
            that throws "The root Visual of a VisualTarget cannot have a parent." (issue #422).
-           The DispatcherUnhandledException handler silently logs this specific crash. */
+           App.xaml.cs's IsTrayToolTipCrash suppresses it: e.Handled on the Dispatcher path (keeps the
+           app alive) + log-only on the AppDomain path -- matching Lite's proven handling of #422. */
         _tooltipText = new TextBlock
         {
             Text = TooltipText,
