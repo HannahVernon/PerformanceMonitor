@@ -63,6 +63,19 @@ public interface ICollectorDefinition<TRow> : ICollectorSchemaInfo
     string? NumericWatermarkColumn { get; }
 
     /// <summary>
+    /// Table column that scopes <see cref="WatermarkColumn"/> per database when the collector
+    /// <see cref="RunsPerDatabase"/> (Azure SQL DB). Non-null means each per-database run gets its
+    /// own watermark (<c>MAX(WatermarkColumn) WHERE PerDatabaseWatermarkColumn = db</c>) and the
+    /// host rebuilds the query per database — one busy database's newer event can then never
+    /// watermark past another database's older event still sitting in its ring buffer (the XE
+    /// collectors' per-database sessions dispatch independently). Null (the common case) keeps the
+    /// single server-wide watermark and the build-once-per-cycle query. Ignored when
+    /// <see cref="RunsPerDatabase"/> is false for the target — the server-wide watermark is already
+    /// exact there.
+    /// </summary>
+    string? PerDatabaseWatermarkColumn { get; }
+
+    /// <summary>
     /// Builds the T-SQL (and any bound parameters) for this cycle. Constant for most collectors;
     /// target-aware definitions branch on <see cref="CollectorContext.Target"/> and
     /// <see cref="CollectorContext.Watermark"/>.

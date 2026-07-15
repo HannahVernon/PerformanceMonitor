@@ -1120,6 +1120,35 @@ WHERE server_id = $3";
     }
 
     /// <summary>
+    /// The database-scoped twin of <see cref="GetLastCollectedTimeAsync"/>, for definitions that
+    /// declare a <see cref="PerformanceMonitor.Collectors.ICollectorDefinition{TRow}.PerDatabaseWatermarkColumn"/>
+    /// (Azure SQL DB per-database XE capture): the newest already-collected value for ONE database,
+    /// so each database's ring buffer dedups against its own history. Null on first run for that
+    /// database or on failure — the caller falls back to the definition's documented window.
+    /// </summary>
+    protected async Task<DateTime?> GetLastCollectedTimeForDatabaseAsync(
+        int serverId, string tableName, string columnName, string databaseColumnName, string databaseName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var conn = _duckDb.CreateConnection();
+            await conn.OpenAsync(cancellationToken);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"SELECT MAX({columnName}) FROM {tableName} WHERE server_id = $1 AND {databaseColumnName} = $2";
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = databaseName });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            if (result is DateTime dt)
+                return dt;
+        }
+        catch
+        {
+            /* If DuckDB query fails, caller uses fallback window */
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Gets the most recent value of a monotonic bigint identity column from DuckDB for incremental
     /// collection — the numeric twin of <see cref="GetLastCollectedTimeAsync"/> (job_history dedups on
     /// <c>instance_id</c>, sysjobhistory's IDENTITY bigint). Returns null on first run or if the query

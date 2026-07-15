@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,40 +21,210 @@ namespace PerformanceMonitor.Darling.Service;
 /// Creates and starts the app-managed XE ring-buffer sessions the deadlock and blocked-process
 /// collectors read — ported from Lite's Ensure* lifecycle (session names come from the shared
 /// definitions so the reader and this lifecycle can never disagree). Server-scoped sessions on
-/// on-prem/MI/RDS, database-scoped on Azure SQL DB; the blocked-process threshold sp_configure
+/// on-prem/MI/RDS; on Azure SQL DB a database-scoped session in EVERY monitored database (#1535
+/// — a single session only ever captured the connection's own database), matching the
+/// collectors' per-database ring-buffer reads. The blocked-process threshold sp_configure
 /// bootstrap self-guards for platforms without sp_configure (AWS RDS). Ensure failures are
 /// logged and tolerated — the collectors read zero rows until the session exists (#1251 benign
-/// "already present" errors are success).
+/// "already present" errors are success once the session passes the reader-visibility check),
+/// and the SESSION_MISSING classification + Capture Down self-alert own the capture-is-down
+/// story. Runs once per connect: a database created mid-run gets its sessions at the next
+/// reconnect (its reads tolerate the missing session as zero rows until then).
 /// </summary>
 public static class DarlingXeSessions
 {
-    public static async Task EnsureAllAsync(ServerRuntime server, ILogger? logger, CancellationToken cancellationToken)
+    public static async Task EnsureAllAsync(ServerRuntime server, DarlingCollectorRunner runner, ILogger? logger, CancellationToken cancellationToken)
     {
+        if (server.Target.IsAzureSqlDb)
+        {
+            await EnsureDatabaseScopedAsync(server, runner, logger, cancellationToken);
+            return;
+        }
+
         try
         {
             using var connection = new SqlConnection(server.ConnectionString);
             await connection.OpenAsync(cancellationToken);
 
-            if (server.Target.IsAzureSqlDb)
-            {
-                await EnsureDeadlockAzureAsync(connection, server, logger, cancellationToken);
-                await EnsureBlockedProcessAzureAsync(connection, server, logger, cancellationToken);
-            }
-            else
+            /* Each capture ensures under its own filter — benign AND hard: a benign "already
+               exists" (or any hard failure) from the deadlock ensure used to abort the whole
+               batch, silently skipping the blocked-process ensure until the next reconnect. */
+            try
             {
                 await EnsureDeadlockOnPremAsync(connection, server, logger, cancellationToken);
+            }
+            catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+            {
+                logger?.LogInformation("[{Server}] Deadlock XE session already present (benign, #1251)", server.Config.DisplayName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogError("[{Server}] Failed to ensure deadlock XE session: {Message} — deadlock collection will read zero rows until resolved",
+                    server.Config.DisplayName, ex.Message);
+            }
+
+            try
+            {
                 await EnsureBlockedProcessOnPremAsync(connection, server, logger, cancellationToken);
             }
-        }
-        catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
-        {
-            logger?.LogInformation("[{Server}] XE sessions already present (benign, #1251)", server.Config.DisplayName);
+            catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+            {
+                logger?.LogInformation("[{Server}] Blocked process XE session already present (benign, #1251)", server.Config.DisplayName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogError("[{Server}] Failed to ensure blocked process XE session: {Message} — blocked-process collection will read zero rows until resolved",
+                    server.Config.DisplayName, ex.Message);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger?.LogError("[{Server}] Failed to ensure XE sessions: {Message} — deadlock/blocked-process collection will read zero rows until resolved",
                 server.Config.DisplayName, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Azure SQL DB: one database-scoped session pair per monitored database (#1535), using the
+    /// runner's shared database list (master enumeration + fallback + ExcludedDatabases) and
+    /// per-database connections. Master is skipped — database-scoped sessions can't be created in
+    /// logical master. Failure isolation is per database AND per capture: one broken database (or
+    /// one broken session) never blocks the rest.
+    /// </summary>
+    private static async Task EnsureDatabaseScopedAsync(ServerRuntime server, DarlingCollectorRunner runner, ILogger? logger, CancellationToken cancellationToken)
+    {
+        List<string> databases;
+        try
+        {
+            databases = await runner.GetAzureDatabaseListAsync(server, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogError("[{Server}] Failed to enumerate databases for XE sessions: {Message} — deadlock/blocked-process collection will read zero rows until resolved",
+                server.Config.DisplayName, ex.Message);
+            return;
+        }
+
+        foreach (var databaseName in databases)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            /* Logical master can't host database-scoped event sessions. */
+            if (string.Equals(databaseName, "master", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var connection = await runner.OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
+
+                await EnsureOneDatabaseScopedAsync(
+                    connection, server, databaseName, "deadlock", DeadlocksCollector.XeSessionName,
+                    c => EnsureDeadlockAzureAsync(c, server, logger, cancellationToken), logger, cancellationToken);
+
+                await EnsureOneDatabaseScopedAsync(
+                    connection, server, databaseName, "blocked process", BlockedProcessReportCollector.XeSessionName,
+                    c => EnsureBlockedProcessAzureAsync(c, server, logger, cancellationToken), logger, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogWarning("[{Server}] [{Database}] Failed to open a connection for XE session ensure: {Message}",
+                    server.Config.DisplayName, databaseName, ex.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// One capture's database-scoped ensure, with the #1251 benign path grown a read-back check
+    /// (#1535, verbatim semantics from Lite): a benign "already exists"/"already started" proves
+    /// the session is there, but NOT that this principal can see it — the ring-buffer reader joins
+    /// <c>sys.dm_xe_database_sessions</c>, and a session invisible there (created by another
+    /// principal, or present-but-stopped) reads zero rows forever while collection reports
+    /// SUCCESS. So after a benign error the session is probed in the reader's own DMV, and an
+    /// invisible one is dropped and recreated under this principal. Hard failures are warn-logged
+    /// by the caller's per-capture catch here.
+    /// </summary>
+    private static async Task EnsureOneDatabaseScopedAsync(
+        SqlConnection connection,
+        ServerRuntime server,
+        string databaseName,
+        string captureName,
+        string sessionName,
+        Func<SqlConnection, Task> ensureAsync,
+        ILogger? logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            try
+            {
+                await ensureAsync(connection);
+            }
+            catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+            {
+                if (!await IsDatabaseScopedSessionVisibleAsync(connection, sessionName, cancellationToken))
+                {
+                    using (var dropCmd = new SqlCommand($"DROP EVENT SESSION [{sessionName}] ON DATABASE;", connection))
+                    {
+                        dropCmd.CommandTimeout = 60;
+                        await dropCmd.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    await ensureAsync(connection);
+
+                    /* Read back once: recreated under THIS principal and still invisible means the
+                       reader cannot see this database's capture at all — say so at Error rather than
+                       announcing a recreate that didn't help. Ensure runs once per connect, so there
+                       is no per-cycle churn to bound here (Lite's per-cycle driver keeps a give-up
+                       set for the same case). */
+                    if (await IsDatabaseScopedSessionVisibleAsync(connection, sessionName, cancellationToken))
+                    {
+                        logger?.LogInformation("[{Server}] [{Database}] {Capture} XE session existed but was not visible to the ring-buffer reader — dropped and recreated (#1535)",
+                            server.Config.DisplayName, databaseName, captureName);
+                    }
+                    else
+                    {
+                        logger?.LogError("[{Server}] [{Database}] {Capture} XE session is still not visible in sys.dm_xe_database_sessions after recreating it — the ring-buffer reader cannot see this database's capture",
+                            server.Config.DisplayName, databaseName, captureName);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning("[{Server}] [{Database}] Failed to ensure {Capture} XE session: {Message}",
+                server.Config.DisplayName, databaseName, captureName, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Whether the database-scoped session is visible to THIS principal in
+    /// <c>sys.dm_xe_database_sessions</c> — the reader's-eye view (false: the reader would see zero
+    /// rows regardless of captured events).
+    /// </summary>
+    private static async Task<bool> IsDatabaseScopedSessionVisibleAsync(SqlConnection connection, string sessionName, CancellationToken cancellationToken)
+    {
+        using var cmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT /* PerformanceMonitorDarling */
+    is_visible =
+        CASE
+            WHEN EXISTS
+            (
+                SELECT
+                    1/0
+                FROM sys.dm_xe_database_sessions AS xes
+                WHERE xes.name = @session_name
+            )
+            THEN 1
+            ELSE 0
+        END;", connection);
+        cmd.CommandTimeout = 60;
+        cmd.Parameters.Add(new SqlParameter("@session_name", SqlDbType.NVarChar, 128) { Value = sessionName });
+        var result = await cmd.ExecuteScalarAsync(cancellationToken);
+        return result is int isVisible && isVisible == 1;
     }
 
     private static async Task EnsureDeadlockOnPremAsync(SqlConnection connection, ServerRuntime server, ILogger? logger, CancellationToken cancellationToken)

@@ -97,6 +97,24 @@ public sealed class BlockedProcessReportCollector : CollectorDefinitionBase<Bloc
     /// </summary>
     public override string? WatermarkColumn => "event_time";
 
+    /// <summary>
+    /// Azure SQL DB capture is a database-scoped session per monitored database (#1535 — a single
+    /// session only ever saw the connection's own database). The host ensures the session per
+    /// database and this read then runs per database, exactly like the other Azure per-database
+    /// collectors. The per-database contentious-object resolution degrades exactly as the
+    /// single-database form did: cross-database lookups that can't run on Azure fall to the
+    /// labeled-Unresolved sentinel via the existing TRY/CATCH guards.
+    /// </summary>
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
+
+    /// <summary>
+    /// Per-database watermark for the per-database sessions (database_name is the blocked
+    /// process's currentdbname, parsed since the column's introduction): each database's ring
+    /// buffer dispatches independently, so one database's newer report must not watermark past
+    /// another's older one.
+    /// </summary>
+    public override string? PerDatabaseWatermarkColumn => "database_name";
+
     public override CollectorQuery BuildQuery(CollectorContext context)
     {
         /* The ring-buffer source DMV is the only engine difference (database-scoped on Azure SQL DB,
@@ -563,6 +581,12 @@ OUTER APPLY
             parsed.ContentiousObject = contentiousObject;
             parsed.BlockedQueryPlanXml = blockedQueryPlanXml;
             parsed.BlockingQueryPlanXml = blockingQueryPlanXml;
+            /* Per-database path (#1535): the capture database is authoritative for the
+               per-database watermark key — a database-scoped session only captures its own
+               database, and a report whose XML carries no currentdbname would otherwise never
+               advance that database's watermark, re-inserting every cycle. Server-scoped
+               platforms keep the parsed currentdbname (CurrentDatabaseName is null there). */
+            parsed.DatabaseName = context.CurrentDatabaseName ?? parsed.DatabaseName;
             rows.Add(parsed);
         }
 

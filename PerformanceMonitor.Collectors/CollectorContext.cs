@@ -35,8 +35,24 @@ public sealed class CollectorContext
     /// The most recent already-collected value of the definition's <c>WatermarkColumn</c>, fetched
     /// by the host from ITS store (Lite: DuckDB; Darling: Postgres) before the query is built.
     /// Null when the definition declares no watermark or nothing was collected yet.
+    /// Settable (not init-only) for one host mutation: definitions with a
+    /// <c>PerDatabaseWatermarkColumn</c> get this re-fetched per database inside the Azure
+    /// per-database loop, right before each per-database <c>BuildQuery</c> (see
+    /// <see cref="CurrentDatabaseName"/> and <see cref="EnumerationProbeResult"/> for the other
+    /// mid-cycle mutations).
     /// </summary>
-    public DateTime? Watermark { get; init; }
+    public DateTime? Watermark { get; set; }
+
+    /// <summary>
+    /// The database the host's Azure per-database loop is currently reading, set per iteration
+    /// (null outside that loop — single-connection runs and non-Azure targets). The XE collectors
+    /// use it as the authoritative <c>database_name</c> for rows read on this path: a
+    /// database-scoped session only ever captures its own database, so the connection's database IS
+    /// the ring buffer's database — while the value parsed from the event XML can be missing
+    /// (older graph shapes), and a row with a null database_name could never advance its
+    /// database's watermark, re-inserting every cycle until it aged out of the ring buffer.
+    /// </summary>
+    public string? CurrentDatabaseName { get; set; }
 
     /// <summary>
     /// The most recent already-collected value of the definition's <c>NumericWatermarkColumn</c>,
@@ -105,7 +121,9 @@ public sealed class CollectorContext
     /// <c>ICollectorDefinition.BuildEnumerationProbe</c>), set by the host between enumeration
     /// and the per-item loop. Null when the definition declares no probe, the probe failed, or
     /// it returned SQL NULL — the definition falls back to its documented default (query_store:
-    /// PRODUCTVERSION 13). The only context member the host mutates mid-cycle.
+    /// PRODUCTVERSION 13). One of the context members the host mutates mid-cycle (the others are
+    /// <see cref="Watermark"/> and <see cref="CurrentDatabaseName"/>, set per database inside the
+    /// Azure per-database loop).
     /// </summary>
     public object? EnumerationProbeResult { get; set; }
 }

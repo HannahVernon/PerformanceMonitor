@@ -20,7 +20,8 @@ namespace PerformanceMonitor.Collectors;
 /// Deadlock events from the app-managed PerformanceMonitor_Deadlock XE ring-buffer session.
 /// Extracted verbatim from Lite's RemoteCollectorService.Deadlocks.cs: the server-scoped read
 /// (on-prem/MI/RDS, event xml_deadlock_report) vs the database-scoped read (Azure SQL DB, event
-/// database_xml_deadlock_report), the deadlock_time watermark that keeps ring-buffer lingerers
+/// database_xml_deadlock_report — run once per monitored database since #1535, with a
+/// per-database watermark), the deadlock_time watermark that keeps ring-buffer lingerers
 /// from re-inserting (10-minute fallback window), and the victim-inputbuf extraction from the
 /// graph XML (parsed in the SQL/read phase — XElement.Parse is expensive and was previously
 /// misattributed as storage time). Session lifecycle (create/start/ensure) stays host-side; the
@@ -47,6 +48,14 @@ public sealed class DeadlocksCollector : CollectorDefinitionBase<DeadlocksCollec
            cache at collection time (CapturePlanXml only). Null on Lite (flag off) and whenever the
            plan can't be recovered — see the resolution comment on the query fragments. */
         public string? VictimQueryPlanXml { get; set; }
+        /* Keys the per-database watermark for Azure SQL DB's per-database capture sessions. On the
+           per-database read path this is the capture database itself (context.CurrentDatabaseName —
+           a database-scoped session only captures its own database, and a null here could never
+           advance that database's watermark, re-inserting the row every cycle); on server-scoped
+           platforms it falls back to the victim process's currentdbname graph attribute (same
+           source the grids' per-process parse and BlockedProcessReportCollector use), null when
+           the engine doesn't emit it. */
+        public string? DatabaseName { get; set; }
     }
 
     /* Azure SQL DB: read from ring_buffer (database-scoped session)
@@ -192,6 +201,20 @@ OUTER APPLY
     /// </summary>
     public override string? WatermarkColumn => "deadlock_time";
 
+    /// <summary>
+    /// Azure SQL DB capture is a database-scoped session per monitored database (#1535 — a single
+    /// session only ever saw the connection's own database, so deadlocks in the other databases of
+    /// the logical server never appeared). The host ensures the session per database and this read
+    /// then runs per database, exactly like the other Azure per-database collectors.
+    /// </summary>
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
+
+    /// <summary>
+    /// Per-database watermark for the per-database sessions: each database's ring buffer dispatches
+    /// independently, so one database's newer deadlock must not watermark past another's older one.
+    /// </summary>
+    public override string? PerDatabaseWatermarkColumn => "database_name";
+
     public override CollectorQuery BuildQuery(CollectorContext context)
     {
         var text = context.Target.IsAzureSqlDb ? AzureQueryText : ServerScopedQueryText;
@@ -220,6 +243,9 @@ OUTER APPLY
         /* Trailing best-effort victim plan (appended so one ADD COLUMN brings a pre-plan store up to
            shape; NULL on Lite and whenever the victim's plan aged out of cache). */
         new CollectorColumn("victim_query_plan_xml", CollectorColumnType.Varchar),
+        /* Trailing victim database (appended so one ADD COLUMN brings a pre-#1535 store up to shape;
+           NULL when the graph carries no currentdbname). Keys the Azure per-database watermark. */
+        new CollectorColumn("database_name", CollectorColumnType.Varchar),
     };
 
     public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
@@ -232,16 +258,20 @@ OUTER APPLY
         {
             var victimProcessId = reader.IsDBNull(1) ? null : reader.GetString(1);
             var graphXml = reader.IsDBNull(2) ? null : reader.GetString(2);
+            var victim = ExtractVictimFields(graphXml, victimProcessId);
 
             rows.Add(new Row
             {
                 DeadlockTime = reader.IsDBNull(0) ? null : reader.GetDateTime(0),
                 VictimProcessId = victimProcessId,
-                VictimSqlText = ExtractVictimSqlText(graphXml, victimProcessId),
+                VictimSqlText = victim.SqlText,
                 GraphXml = graphXml,
                 /* victim_query_plan_xml rides at ordinal 3 only when CapturePlanXml spliced it into
                    the projection; the short-circuit skips it entirely when off. */
                 VictimQueryPlanXml = context.CapturePlanXml && !reader.IsDBNull(3) ? reader.GetString(3) : null,
+                /* Per-database path: the capture database is authoritative (see the Row comment);
+                   server-scoped: the victim's currentdbname, null when the graph doesn't carry it. */
+                DatabaseName = context.CurrentDatabaseName ?? victim.DatabaseName,
             });
         }
 
@@ -255,17 +285,29 @@ OUTER APPLY
             .Value(row.VictimProcessId)
             .Value(row.VictimSqlText)
             .Value(row.GraphXml)
-            .Value(row.VictimQueryPlanXml);    /* null unless CapturePlanXml resolved it (Darling) */
+            .Value(row.VictimQueryPlanXml)     /* null unless CapturePlanXml resolved it (Darling) */
+            .Value(row.DatabaseName);          /* null when the graph carries no currentdbname */
     }
 
     /// <summary>
     /// Extracts victim SQL text from a deadlock graph XML fragment.
     /// </summary>
     public static string? ExtractVictimSqlText(string? graphXml, string? victimProcessId)
+        => ExtractVictimFields(graphXml, victimProcessId).SqlText;
+
+    /// <summary>
+    /// Extracts the victim process's inputbuf and currentdbname from a deadlock graph XML fragment
+    /// in one parse (XElement.Parse is the expensive part — see the ReadAsync comment). Victim
+    /// matched by id, case-insensitively; falls back to the first process when the id is missing or
+    /// unmatched (the pre-existing ExtractVictimSqlText contract). currentdbname is the same
+    /// attribute the grids' per-process parse and the blocked-process collector read; engines that
+    /// don't emit it yield a null DatabaseName rather than a fabricated one.
+    /// </summary>
+    public static (string? SqlText, string? DatabaseName) ExtractVictimFields(string? graphXml, string? victimProcessId)
     {
         if (string.IsNullOrEmpty(graphXml))
         {
-            return null;
+            return (null, null);
         }
 
         try
@@ -276,23 +318,21 @@ OUTER APPLY
             var processes = doc.Descendants("process").ToList();
 
             /* If we have a victim ID, find that specific process */
+            XElement? victim = null;
             if (!string.IsNullOrEmpty(victimProcessId))
             {
-                var victim = processes.FirstOrDefault(p =>
+                victim = processes.FirstOrDefault(p =>
                     string.Equals(p.Attribute("id")?.Value, victimProcessId, StringComparison.OrdinalIgnoreCase));
-
-                if (victim != null)
-                {
-                    return victim.Element("inputbuf")?.Value?.Trim();
-                }
             }
 
-            /* Fallback: return the first process inputbuf */
-            return processes.FirstOrDefault()?.Element("inputbuf")?.Value?.Trim();
+            /* Fallback: the first process */
+            victim ??= processes.FirstOrDefault();
+
+            return (victim?.Element("inputbuf")?.Value?.Trim(), victim?.Attribute("currentdbname")?.Value);
         }
         catch
         {
-            return null;
+            return (null, null);
         }
     }
 }

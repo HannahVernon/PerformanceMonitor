@@ -24,7 +24,9 @@ public partial class RemoteCollectorService
     /// <summary>
     /// Ensures the deadlock XE session exists and is running.
     /// Creates a ring_buffer session for ALL platforms (on-prem, MI, Azure SQL DB, AWS RDS).
-    /// Uses server-scoped session for on-prem/MI/RDS, database-scoped for Azure SQL DB.
+    /// Server-scoped session for on-prem/MI/RDS; on Azure SQL DB a database-scoped session in
+    /// EVERY monitored database (#1535 — a single session only ever captured the connection's own
+    /// database, so deadlocks in the logical server's other databases never appeared).
     /// </summary>
     public async Task EnsureDeadlockXeSessionAsync(ServerConnection server, int engineEdition = 0, CancellationToken cancellationToken = default)
     {
@@ -35,29 +37,29 @@ public partial class RemoteCollectorService
             return;
         }
 
-        bool isAzureSqlDb = engineEdition == 5;
+        if (engineEdition == 5)
+        {
+            /* Azure SQL DB: one database-scoped session per monitored database, matching the
+               per-database ring-buffer read (DeadlocksCollector.RunsPerDatabase). The shared driver
+               skips master, honors ExcludedDatabases via the shared database list, self-heals
+               sessions the reader can't see, and only surfaces unhealthy when NO database could be
+               ensured. */
+            await EnsureDatabaseScopedXeSessionsAsync(
+                server, "deadlock", DeadlockXeSessionName,
+                EnsureDeadlockXeSessionAzureSqlDbAsync, cancellationToken);
+            return;
+        }
 
         try
         {
             using var connection = await CreateConnectionAsync(server, cancellationToken);
 
-            if (isAzureSqlDb)
-            {
-                /* Azure SQL DB: create database-scoped session with ring_buffer */
-                await EnsureDeadlockXeSessionAzureSqlDbAsync(connection, cancellationToken);
-            }
-            else
-            {
-                /* On-prem, Azure MI, and AWS RDS: create server-scoped session with ring_buffer */
-                await EnsureDeadlockXeSessionOnPremAsync(connection, server, cancellationToken);
-            }
+            /* On-prem, Azure MI, and AWS RDS: create server-scoped session with ring_buffer */
+            await EnsureDeadlockXeSessionOnPremAsync(connection, server, cancellationToken);
         }
         catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
         {
-            /* Session already present + running -- see IsBenignXeSessionAlreadyPresent. On Azure SQL DB the
-               XE existence catalogs are visibility-scoped per principal, so the pre-check can miss an
-               existing session and CREATE/START then reports "already exists" (25631) / "already started"
-               (25705). That's success, not a failure to surface as unhealthy or log every cycle (#1251). */
+            /* Session already present + running -- see IsBenignXeSessionAlreadyPresent (#1251). */
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Deadlock XE session already present (benign, #1251)");
         }
         catch (SqlException ex)
@@ -197,11 +199,11 @@ SELECT /* PerformanceMonitorLite */
                             $"DROP EVENT SESSION [{DeadlockXeSessionName}] ON DATABASE;", connection);
                         dropCmd.CommandTimeout = CommandTimeoutSeconds;
                         await dropCmd.ExecuteNonQueryAsync(cancellationToken);
-                        AppLogger.Info("XeSession", $"[Azure SQL DB] Dropped deadlock XE session with incorrect event, will recreate");
+                        AppLogger.Info("XeSession", $"[Azure SQL DB:{connection.Database}] Dropped deadlock XE session with incorrect event, will recreate");
                     }
                     catch (SqlException ex)
                     {
-                        AppLogger.Error("XeSession", $"[Azure SQL DB] Failed to drop old deadlock XE session: {ex.Message}");
+                        AppLogger.Error("XeSession", $"[Azure SQL DB:{connection.Database}] Failed to drop old deadlock XE session: {ex.Message}");
                     }
                     /* Fall through to create with correct event */
                 }
@@ -222,7 +224,8 @@ END;", connection);
                     startCmd.CommandTimeout = CommandTimeoutSeconds;
                     await startCmd.ExecuteNonQueryAsync(cancellationToken);
 
-                    AppLogger.Info("XeSession", $"[Azure SQL DB] Deadlock XE session verified (database-scoped)");
+                    /* Debug, not Info: this fires once per monitored database per cycle (#1535). */
+                    AppLogger.Debug("XeSession", $"[Azure SQL DB:{connection.Database}] Deadlock XE session verified (database-scoped)");
                     return;
                 }
             }
@@ -251,7 +254,7 @@ ALTER EVENT SESSION [{DeadlockXeSessionName}] ON DATABASE STATE = START;", conne
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        AppLogger.Info("XeSession", $"[Azure SQL DB] Created and started deadlock XE session (database-scoped)");
+        AppLogger.Info("XeSession", $"[Azure SQL DB:{connection.Database}] Created and started deadlock XE session (database-scoped)");
     }
 
     /// <summary>

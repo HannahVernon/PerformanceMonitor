@@ -703,7 +703,8 @@ internal static class GoldenCollectorSchema
     victim_process_id VARCHAR,
     victim_sql_text VARCHAR,
     deadlock_graph_xml VARCHAR,
-    victim_query_plan_xml VARCHAR
+    victim_query_plan_xml VARCHAR,
+    database_name VARCHAR
 )",
         ["blocked_process_reports"] = @"CREATE TABLE IF NOT EXISTS blocked_process_reports (
     blocked_report_id BIGINT PRIMARY KEY,
