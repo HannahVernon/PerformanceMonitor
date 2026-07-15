@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -54,7 +55,17 @@ public sealed record CpuSchedulerSnapshot(
     int TotalNodeCount,
     int NodesOnlineCount,
     int OfflineCpuCount,
-    bool OfflineCpuWarning);
+    bool OfflineCpuWarning) : ICpuSchedulerSnapshot
+{
+    /* The two averaged/percentage columns come off Postgres NUMERIC as decimal; the shared
+       ICpuSchedulerSnapshot surfaces them as double (Lite's native type). They feed only the metric grid's
+       F2 display strings in CpuSchedulerMetrics.BuildMetrics — never the pressure banding — so this widening
+       cast is display-only and not observably different for these small values. */
+    double ICpuSchedulerSnapshot.AvgRunnableTasksCount => (double)AvgRunnableTasksCount;
+
+    double? ICpuSchedulerSnapshot.RunnablePercent =>
+        RunnablePercent.HasValue ? (double)RunnablePercent.Value : (double?)null;
+}
 
 public sealed partial class ViewerDataService
 {

@@ -11,6 +11,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Npgsql;
 using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
 using Xunit;
@@ -105,7 +106,7 @@ public sealed class ViewerCpuSchedulerSqlTests
 
 /// <summary>
 /// Pins the CPU Scheduler latest-snapshot metric-grid projection (<see
-/// cref="ViewerServerTab.BuildCpuSchedulerMetrics"/>): the collector's pressure flags land on the right
+/// cref="CpuSchedulerMetrics.BuildMetrics"/>): the collector's pressure flags land on the right
 /// labelled rows (driving the grid highlight), worker-utilization is current/max*100, nullable request
 /// columns degrade to "N/A", and a null snapshot yields an empty grid.
 /// </summary>
@@ -147,12 +148,12 @@ public sealed class ViewerCpuSchedulerProjectionTests
 
     [Fact]
     public void BuildMetrics_NullSnapshot_YieldsEmptyGrid()
-        => Assert.Empty(ViewerServerTab.BuildCpuSchedulerMetrics(null));
+        => Assert.Empty(CpuSchedulerMetrics.BuildMetrics(null));
 
     [Fact]
     public void BuildMetrics_WarningFlags_HighlightTheirOwnRows()
     {
-        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(
+        var rows = CpuSchedulerMetrics.BuildMetrics(
             Snapshot(runnableWarn: true, blockedWarn: true, memPressure: true));
 
         Assert.True(rows.Single(r => r.Metric == "Runnable Tasks").IsWarning);
@@ -168,7 +169,7 @@ public sealed class ViewerCpuSchedulerProjectionTests
     [Fact]
     public void BuildMetrics_WorkerUtilization_IsCurrentOverMaxTimes100()
     {
-        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot(maxWorkers: 400, currentWorkers: 100));
+        var rows = CpuSchedulerMetrics.BuildMetrics(Snapshot(maxWorkers: 400, currentWorkers: 100));
 
         /* 100 / 400 * 100 = 25.0 %. */
         Assert.Equal("25.0", rows.Single(r => r.Metric == "Worker Utilization %").Value);
@@ -177,7 +178,7 @@ public sealed class ViewerCpuSchedulerProjectionTests
     [Fact]
     public void BuildMetrics_WorkerUtilization_ZeroMaxWorkers_DoesNotDivideByZero()
     {
-        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot(maxWorkers: 0, currentWorkers: 0));
+        var rows = CpuSchedulerMetrics.BuildMetrics(Snapshot(maxWorkers: 0, currentWorkers: 0));
 
         Assert.Equal("0.0", rows.Single(r => r.Metric == "Worker Utilization %").Value);
     }
@@ -185,7 +186,7 @@ public sealed class ViewerCpuSchedulerProjectionTests
     [Fact]
     public void BuildMetrics_NullableRequestColumns_DegradeToNa()
     {
-        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot(runnableRequests: null, runnablePercent: null));
+        var rows = CpuSchedulerMetrics.BuildMetrics(Snapshot(runnableRequests: null, runnablePercent: null));
 
         Assert.Equal("N/A", rows.Single(r => r.Metric == "Runnable Requests").Value);
         Assert.Equal("N/A", rows.Single(r => r.Metric == "Total Requests").Value);
@@ -197,7 +198,7 @@ public sealed class ViewerCpuSchedulerProjectionTests
     {
         /* Item 4: the rolled-up pressure badge + recommendation are the first two headline rows, ahead of
            the raw metrics. A calm snapshot is NORMAL and does not highlight. */
-        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot());
+        var rows = CpuSchedulerMetrics.BuildMetrics(Snapshot());
 
         Assert.Equal("Pressure Level", rows[0].Metric);
         Assert.Equal("Recommendation", rows[1].Metric);
@@ -209,7 +210,7 @@ public sealed class ViewerCpuSchedulerProjectionTests
     public void BuildMetrics_PressureLevelRow_HighlightsWhenNotNormal()
     {
         /* worker_thread_exhaustion_warning drives a CRITICAL pressure level, which must highlight. */
-        var rows = ViewerServerTab.BuildCpuSchedulerMetrics(Snapshot(workerExhaustion: true));
+        var rows = CpuSchedulerMetrics.BuildMetrics(Snapshot(workerExhaustion: true));
 
         var pressure = rows.Single(r => r.Metric == "Pressure Level");
         Assert.StartsWith("CRITICAL", pressure.Value, StringComparison.Ordinal);
@@ -219,7 +220,7 @@ public sealed class ViewerCpuSchedulerProjectionTests
 
 /// <summary>
 /// Pins the rolled-up CPU-scheduler pressure classification
-/// (<see cref="ViewerServerTab.ClassifyCpuPressure"/>) against install/47's report.cpu_scheduler_pressure
+/// (<see cref="CpuSchedulerMetrics.ClassifyCpuPressure"/>) against install/47's report.cpu_scheduler_pressure
 /// CASE ordering: runnable task queue &gt; 50 / &gt; 20 / &gt; 10, then worker-utilization &gt; 90%, then the
 /// collector's warning flags; plus the paired recommendation.
 /// </summary>
@@ -252,13 +253,13 @@ public sealed class ViewerCpuPressureTests
     [InlineData(11, "MEDIUM - Some runnable tasks queued")]
     [InlineData(5, "NORMAL")]
     public void ClassifyCpuPressure_BandsOnRunnableTaskQueue(int runnable, string expectedLevel)
-        => Assert.Equal(expectedLevel, ViewerServerTab.ClassifyCpuPressure(Snapshot(runnableTasks: runnable)).Level);
+        => Assert.Equal(expectedLevel, CpuSchedulerMetrics.ClassifyCpuPressure(Snapshot(runnableTasks: runnable)).Level);
 
     [Fact]
     public void ClassifyCpuPressure_WorkerUtilizationOver90_IsHigh_WhenRunnableIsLow()
     {
         /* 95 / 100 = 95% > 90, runnable low → the worker-utilization branch. */
-        var pressure = ViewerServerTab.ClassifyCpuPressure(Snapshot(maxWorkers: 100, currentWorkers: 95));
+        var pressure = CpuSchedulerMetrics.ClassifyCpuPressure(Snapshot(maxWorkers: 100, currentWorkers: 95));
         Assert.Equal("HIGH - Worker thread exhaustion", pressure.Level);
     }
 
@@ -266,16 +267,16 @@ public sealed class ViewerCpuPressureTests
     public void ClassifyCpuPressure_FallsThroughToWarningFlags_InOrder()
     {
         Assert.Equal("CRITICAL - Worker thread exhaustion warning",
-            ViewerServerTab.ClassifyCpuPressure(Snapshot(workerExhaustion: true)).Level);
+            CpuSchedulerMetrics.ClassifyCpuPressure(Snapshot(workerExhaustion: true)).Level);
         Assert.Equal("HIGH - Runnable tasks warning",
-            ViewerServerTab.ClassifyCpuPressure(Snapshot(runnableWarn: true)).Level);
+            CpuSchedulerMetrics.ClassifyCpuPressure(Snapshot(runnableWarn: true)).Level);
         Assert.Equal("MEDIUM - Queued requests warning",
-            ViewerServerTab.ClassifyCpuPressure(Snapshot(queuedWarn: true)).Level);
+            CpuSchedulerMetrics.ClassifyCpuPressure(Snapshot(queuedWarn: true)).Level);
     }
 
     [Fact]
     public void ClassifyCpuPressure_ZeroMaxWorkers_DoesNotDivideByZero_StaysNormal()
-        => Assert.Equal("NORMAL", ViewerServerTab.ClassifyCpuPressure(Snapshot(maxWorkers: 0, currentWorkers: 0)).Level);
+        => Assert.Equal("NORMAL", CpuSchedulerMetrics.ClassifyCpuPressure(Snapshot(maxWorkers: 0, currentWorkers: 0)).Level);
 
     [Theory]
     [InlineData(25, false, 0, "CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores")]
@@ -284,7 +285,7 @@ public sealed class ViewerCpuPressureTests
     [InlineData(0, false, 0, "No CPU scheduler pressure detected")]
     public void ClassifyCpuPressure_Recommendation_MirrorsTheProcCase(
         int runnable, bool workerExhaustion, int queuedRequests, string expected)
-        => Assert.Equal(expected, ViewerServerTab.ClassifyCpuPressure(
+        => Assert.Equal(expected, CpuSchedulerMetrics.ClassifyCpuPressure(
             Snapshot(runnableTasks: runnable, workerExhaustion: workerExhaustion, queuedRequests: queuedRequests)).Recommendation);
 }
 
