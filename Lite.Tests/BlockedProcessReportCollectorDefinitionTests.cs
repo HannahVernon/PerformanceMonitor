@@ -59,6 +59,19 @@ public sealed class BlockedProcessReportCollectorDefinitionTests
     }
 
     [Fact]
+    public void RunsPerDatabase_OnAzureOnly_WithPerDatabaseWatermark()
+    {
+        /* #1535: Azure capture is one database-scoped session per monitored database, so the read
+           loops databases and each database dedups against its own watermark (database_name is the
+           blocked process's currentdbname the report parse has always extracted). Server-scoped
+           platforms keep the single run + server-wide watermark. */
+        Assert.True(BlockedProcessReportCollector.Instance.RunsPerDatabase(new CollectorTargetInfo { IsAzureSqlDb = true }));
+        Assert.False(BlockedProcessReportCollector.Instance.RunsPerDatabase(new CollectorTargetInfo()));
+        Assert.False(BlockedProcessReportCollector.Instance.RunsPerDatabase(new CollectorTargetInfo { IsAzureManagedInstance = true }));
+        Assert.Equal("database_name", BlockedProcessReportCollector.Instance.PerDatabaseWatermarkColumn);
+    }
+
+    [Fact]
     public void BuildQuery_ServerScoped_PinsResolutionBatch()
     {
         var plan = BlockedProcessReportCollector.Instance.BuildQuery(MakeContext());

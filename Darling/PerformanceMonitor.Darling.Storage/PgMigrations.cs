@@ -70,6 +70,7 @@ public static class PgMigrations
         new Migration(24, "job-history-collector", V24Sql),
         new Migration(25, "agent-status-collector", V25Sql),
         new Migration(26, "generic-webhook-channel", V26Sql),
+        new Migration(27, "deadlocks-database-name", V27Sql),
     };
 
     /// <summary>
@@ -273,6 +274,18 @@ ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS query_plan_xml text;
 ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocked_query_plan_xml text;
 ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml text;
 ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml text;";
+
+    /* V27 — deadlocks.database_name: the victim process's currentdbname, keying the Azure SQL DB
+       per-database watermark (#1535: capture is one database-scoped session per monitored database).
+       Nullable text appended at the end (identical physical column order for the binary COPY whether
+       fresh — V1 is generated from the current collector definition, which now includes it — or
+       upgraded; ADD COLUMN IF NOT EXISTS no-ops on fresh). blocked_process_reports already had
+       database_name. The trailing CREATE OR REPLACE VIEW re-expands v_deadlocks' pinned SELECT *
+       (Postgres freezes it at CREATE; append-only ADDs keep the refresh legal), mirroring V15.
+       Runs after V8, so the bare names resolve through search_path = collect, config, public. */
+    private const string V27Sql = @"
+ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS database_name text;
+CREATE OR REPLACE VIEW v_deadlocks AS SELECT * FROM deadlocks;";
 
     /// <summary>
     /// V9 — the FinOps copy-parity fields that were user-input config or previously live-only:

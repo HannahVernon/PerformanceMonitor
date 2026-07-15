@@ -1472,7 +1472,7 @@ LIMIT 1", connection);
 
             await DarlingObservability.UpsertServerAsync(_postgres!, runtime, _logger, cancellationToken);
 
-            await DarlingXeSessions.EnsureAllAsync(runtime, _logger, cancellationToken);
+            await DarlingXeSessions.EnsureAllAsync(runtime, runner, _logger, cancellationToken);
 
             /* On-load config snapshots (effective FrequencyMinutes 0) run once per connect, then every
                scheduled collector becomes immediately due — mirrors Lite's server-open behavior. The

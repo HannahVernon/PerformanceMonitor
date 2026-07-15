@@ -145,8 +145,17 @@ public sealed class DarlingCollectorRunner
         if (definition.RunsPerDatabase(context.Target))
         {
             /* Azure SQL DB scopes some DMVs to the connected database — run the query once per
-               database, skipping (and debug-logging) databases that error, matching Lite. */
-            var plan = definition.BuildQuery(context);
+               database, skipping (and debug-logging) databases that error, matching Lite.
+
+               Definitions with a database-scoped watermark (the XE ring-buffer collectors, whose
+               per-database sessions dispatch independently) get the query rebuilt per database
+               against that database's own newest already-collected value — the single server-wide
+               watermark would let one busy database's newer event silence another database's older
+               event still sitting in its ring buffer (#1535). Everything else keeps the
+               build-once plan. */
+            var plan = definition.PerDatabaseWatermarkColumn is null || definition.WatermarkColumn is null
+                ? definition.BuildQuery(context)
+                : null;
             rows = new List<TRow>();
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
@@ -155,8 +164,19 @@ public sealed class DarlingCollectorRunner
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
+                    var dbPlan = plan;
+                    if (dbPlan is null)
+                    {
+                        /* Null (no rows for this database yet) falls back to the definition's
+                           documented first-run window, per database. */
+                        context.Watermark = await GetLastCollectedTimeForDatabaseAsync(
+                            server.ServerId, definition.TargetTable, definition.WatermarkColumn!,
+                            definition.PerDatabaseWatermarkColumn!, databaseName, cancellationToken);
+                        dbPlan = definition.BuildQuery(context);
+                    }
+
                     using var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
-                    using var dbCommand = CreateCollectorCommand(plan, dbConnection, CommandTimeoutSeconds);
+                    using var dbCommand = CreateCollectorCommand(dbPlan, dbConnection, CommandTimeoutSeconds);
                     using var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken);
                     rows.AddRange(await definition.ReadAsync(dbReader, context, cancellationToken));
                 }
@@ -380,6 +400,35 @@ public sealed class DarlingCollectorRunner
     }
 
     /// <summary>
+    /// Postgres twin of Lite's GetLastCollectedTimeForDatabaseAsync: the newest already-collected
+    /// value for ONE database, for definitions with a PerDatabaseWatermarkColumn (Azure SQL DB
+    /// per-database XE capture, #1535). Null on first run for that database or on failure — the
+    /// caller falls back to the definition's documented window.
+    /// </summary>
+    public async Task<DateTime?> GetLastCollectedTimeForDatabaseAsync(
+        int serverId, string tableName, string columnName, string databaseColumnName, string databaseName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(
+                $"SELECT MAX({columnName}) FROM {tableName} WHERE server_id = $1 AND {databaseColumnName} = $2", connection);
+            command.Parameters.AddWithValue(serverId);
+            command.Parameters.AddWithValue(databaseName);
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            if (result is DateTime dt)
+            {
+                return dt;
+            }
+        }
+        catch
+        {
+            /* If the Postgres query fails, caller uses fallback window */
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Gets the most recent value of a monotonic bigint identity column from Postgres for incremental
     /// collection — the numeric twin of <see cref="GetLastCollectedTimeAsync"/> (job_history dedups on
     /// <c>instance_id</c>, sysjobhistory's IDENTITY bigint). Returns null on first run or if the query
@@ -454,7 +503,7 @@ public sealed class DarlingCollectorRunner
     /// master enumeration first (with the per-server exclusion filter), and on a master-access
     /// error fall back to the connection's own database, throttling re-probes per server.
     /// </summary>
-    private async Task<List<string>> GetAzureDatabaseListAsync(ServerRuntime server, CancellationToken cancellationToken)
+    internal async Task<List<string>> GetAzureDatabaseListAsync(ServerRuntime server, CancellationToken cancellationToken)
     {
         var targetDb = new SqlConnectionStringBuilder(server.ConnectionString).InitialCatalog;
 
@@ -563,7 +612,7 @@ public sealed class DarlingCollectorRunner
         return fallback;
     }
 
-    private async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerRuntime server, string databaseName, CancellationToken cancellationToken)
+    internal async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerRuntime server, string databaseName, CancellationToken cancellationToken)
     {
         var connectionString = new SqlConnectionStringBuilder(server.ConnectionString)
         {

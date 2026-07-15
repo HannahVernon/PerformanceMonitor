@@ -98,7 +98,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 45;
+    internal const int CurrentSchemaVersion = 46;
 
     private readonly string _archivePath;
 
@@ -1058,6 +1058,26 @@ public class DuckDbInitializer
                     only — created by GetAllTableStatements() below; the v_ view comes from
                     CreateArchiveViewsAsync via ArchivableTables. */
             _logger?.LogInformation("Running migration to v45: adding agent_status table");
+        }
+
+        if (fromVersion < 46)
+        {
+            /* v46: deadlocks.database_name — the victim process's currentdbname, keying the Azure SQL DB
+                    per-database watermark (#1535: capture is now one database-scoped session per monitored
+                    database). Appended at the end to keep the positional appender aligned; the collector
+                    writes it unconditionally (null when the graph carries no currentdbname), so an
+                    un-migrated DB would mis-align on the next append — this ALTER is required. The v_ view
+                    (SELECT *) is rebuilt every startup and picks it up; old parquet reads back NULL (union
+                    BY NAME). blocked_process_reports already had database_name. */
+            _logger?.LogInformation("Running migration to v46: deadlocks database_name column");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS database_name VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v46 encountered an error (non-fatal): {Error}", ex.Message);
+            }
         }
     }
 

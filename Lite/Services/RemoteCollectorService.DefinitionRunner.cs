@@ -100,8 +100,16 @@ public partial class RemoteCollectorService
         {
             /* Azure SQL DB scopes some DMVs to the connected database — run the query once per
                database, skipping (and debug-logging) databases that error, matching the original
-               hand-rolled collectors. */
-            var plan = definition.BuildQuery(context);
+               hand-rolled collectors.
+
+               Definitions with a database-scoped watermark (the XE ring-buffer collectors, whose
+               per-database sessions dispatch independently) get the query rebuilt per database
+               against that database's own newest already-collected value — the single server-wide
+               watermark would let one busy database's newer event silence another database's older
+               event still sitting in its ring buffer. Everything else keeps the build-once plan. */
+            var plan = definition.PerDatabaseWatermarkColumn is null || definition.WatermarkColumn is null
+                ? definition.BuildQuery(context)
+                : null;
             var commandTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
             rows = new List<TRow>();
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
@@ -111,8 +119,19 @@ public partial class RemoteCollectorService
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
+                    var dbPlan = plan;
+                    if (dbPlan is null)
+                    {
+                        /* Null (no rows for this database yet) falls back to the definition's
+                           documented first-run window, per database. */
+                        context.Watermark = await GetLastCollectedTimeForDatabaseAsync(
+                            serverId, definition.TargetTable, definition.WatermarkColumn!,
+                            definition.PerDatabaseWatermarkColumn!, databaseName, cancellationToken);
+                        dbPlan = definition.BuildQuery(context);
+                    }
+
                     using var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
-                    using var dbCommand = CreateCollectorCommand(plan, dbConnection, commandTimeout);
+                    using var dbCommand = CreateCollectorCommand(dbPlan, dbConnection, commandTimeout);
                     using var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken);
                     rows.AddRange(await definition.ReadAsync(dbReader, context, cancellationToken));
                 }

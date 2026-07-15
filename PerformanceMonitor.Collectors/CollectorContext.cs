@@ -35,8 +35,12 @@ public sealed class CollectorContext
     /// The most recent already-collected value of the definition's <c>WatermarkColumn</c>, fetched
     /// by the host from ITS store (Lite: DuckDB; Darling: Postgres) before the query is built.
     /// Null when the definition declares no watermark or nothing was collected yet.
+    /// Settable (not init-only) for one host mutation: definitions with a
+    /// <c>PerDatabaseWatermarkColumn</c> get this re-fetched per database inside the Azure
+    /// per-database loop, right before each per-database <c>BuildQuery</c> (see
+    /// <see cref="EnumerationProbeResult"/> for the other mid-cycle mutation).
     /// </summary>
-    public DateTime? Watermark { get; init; }
+    public DateTime? Watermark { get; set; }
 
     /// <summary>
     /// The most recent already-collected value of the definition's <c>NumericWatermarkColumn</c>,
@@ -105,7 +109,8 @@ public sealed class CollectorContext
     /// <c>ICollectorDefinition.BuildEnumerationProbe</c>), set by the host between enumeration
     /// and the per-item loop. Null when the definition declares no probe, the probe failed, or
     /// it returned SQL NULL — the definition falls back to its documented default (query_store:
-    /// PRODUCTVERSION 13). The only context member the host mutates mid-cycle.
+    /// PRODUCTVERSION 13). One of two context members the host mutates mid-cycle (the other is
+    /// <see cref="Watermark"/>, re-fetched per database for per-database-watermark definitions).
     /// </summary>
     public object? EnumerationProbeResult { get; set; }
 }

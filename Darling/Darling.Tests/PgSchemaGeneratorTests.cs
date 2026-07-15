@@ -93,7 +93,8 @@ public sealed class PgSchemaGeneratorTests
             "    victim_process_id text,\n" +
             "    victim_sql_text text,\n" +
             "    deadlock_graph_xml text,\n" +
-            "    victim_query_plan_xml text\n" +
+            "    victim_query_plan_xml text,\n" +
+            "    database_name text\n" +
             ");",
             ddl);
     }
