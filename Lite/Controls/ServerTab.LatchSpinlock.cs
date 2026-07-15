@@ -8,7 +8,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Controls;
 using PerformanceMonitorLite.Services;
@@ -32,6 +31,12 @@ public partial class ServerTab : UserControl
 {
     private ChartHoverHelper? _latchStatsHover;
     private ChartHoverHelper? _spinlockStatsHover;
+
+    /* One shared grouped-trend renderer serves BOTH the latch and spinlock charts; built lazily with
+       Lite's UTC-offset display projection (mirrors the CpuScheduler renderer's per-app wiring). */
+    private GroupedTrendChartRenderer? _latchSpinlockRendererField;
+    private GroupedTrendChartRenderer LatchSpinlockRenderer =>
+        _latchSpinlockRendererField ??= new GroupedTrendChartRenderer(_chartHelper, t => t.AddMinutes(UtcOffsetMinutes));
 
     /// <summary>Applies the shared chrome + hover to the latch/spinlock charts up front (constructor),
     /// so they don't flash white before the tab's first load — matching the CPU/Memory charts.</summary>
@@ -78,10 +83,6 @@ public partial class ServerTab : UserControl
     /// <see cref="UpdateLockWaitTrendChart"/>.</summary>
     private void UpdateLatchStatsChart(List<LatchStatsTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
-        ClearChart(LatchStatsChart);
-        ApplyTheme(LatchStatsChart);
-        _latchStatsHover?.Clear();
-
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
         {
@@ -94,56 +95,9 @@ public partial class ServerTab : UserControl
             rangeStart = rangeEnd.AddHours(-hoursBack);
         }
 
-        if (data.Count == 0)
-        {
-            var zeroLine = LatchStatsChart.Plot.Add.Scatter(
-                new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
-                new[] { 0.0, 0.0 });
-            zeroLine.LegendText = "Latch Waits";
-            zeroLine.Color = ScottPlot.Color.FromHex(SeriesColors[0]);
-            zeroLine.MarkerSize = 0;
-            LatchStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
-            LatchStatsChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-            ReapplyAxisColors(LatchStatsChart);
-            LatchStatsChart.Plot.YLabel("Wait Time (ms/sec)");
-            SetChartYLimitsWithLegendPadding(LatchStatsChart, 0, 1);
-            ShowChartLegend(LatchStatsChart);
-            LatchStatsChart.Refresh();
-            return;
-        }
-
-        /* Order the series by total ms/sec desc so the heaviest latch gets the first palette color
-           (deterministic, mirrors Darling's re-group-by-total). */
-        var byClass = data
-            .GroupBy(d => d.LatchClass)
-            .OrderByDescending(g => g.Sum(d => d.WaitTimeMsPerSecond))
-            .ToList();
-
-        double globalMax = 0;
-        int colorIdx = 0;
-        foreach (var group in byClass)
-        {
-            var points = group.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
-            var values = points.Select(d => d.WaitTimeMsPerSecond).ToArray();
-
-            var plot = LatchStatsChart.Plot.Add.Scatter(times, values);
-            plot.LegendText = TruncateName(group.Key);
-            plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
-            ChartStyle.StyleScatter(plot);
-            _latchStatsHover?.Add(plot, group.Key);
-            colorIdx++;
-
-            if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
-        }
-
-        LatchStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        LatchStatsChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-        ReapplyAxisColors(LatchStatsChart);
-        LatchStatsChart.Plot.YLabel("Wait Time (ms/sec)");
-        SetChartYLimitsWithLegendPadding(LatchStatsChart, 0, globalMax > 0 ? globalMax : 1);
-        ShowChartLegend(LatchStatsChart);
-        LatchStatsChart.Refresh();
+        LatchSpinlockRenderer.Render(LatchStatsChart, _latchStatsHover, data,
+            d => d.CollectionTime, d => d.LatchClass, d => d.WaitTimeMsPerSecond,
+            "Latch Waits", "Wait Time (ms/sec)", rangeStart.ToOADate(), rangeEnd.ToOADate());
     }
 
     /// <summary>The spinlock collisions trend: one collisions/sec series per top-5 spinlock (heaviest
@@ -151,10 +105,6 @@ public partial class ServerTab : UserControl
     /// <see cref="UpdateLatchStatsChart"/>.</summary>
     private void UpdateSpinlockStatsChart(List<SpinlockStatsTrendPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
-        ClearChart(SpinlockStatsChart);
-        ApplyTheme(SpinlockStatsChart);
-        _spinlockStatsHover?.Clear();
-
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
         {
@@ -167,60 +117,10 @@ public partial class ServerTab : UserControl
             rangeStart = rangeEnd.AddHours(-hoursBack);
         }
 
-        if (data.Count == 0)
-        {
-            var zeroLine = SpinlockStatsChart.Plot.Add.Scatter(
-                new[] { rangeStart.ToOADate(), rangeEnd.ToOADate() },
-                new[] { 0.0, 0.0 });
-            zeroLine.LegendText = "Spinlock Collisions";
-            zeroLine.Color = ScottPlot.Color.FromHex(SeriesColors[0]);
-            zeroLine.MarkerSize = 0;
-            SpinlockStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
-            SpinlockStatsChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-            ReapplyAxisColors(SpinlockStatsChart);
-            SpinlockStatsChart.Plot.YLabel("Collisions/sec");
-            SetChartYLimitsWithLegendPadding(SpinlockStatsChart, 0, 1);
-            ShowChartLegend(SpinlockStatsChart);
-            SpinlockStatsChart.Refresh();
-            return;
-        }
-
-        var byName = data
-            .GroupBy(d => d.SpinlockName)
-            .OrderByDescending(g => g.Sum(d => d.CollisionsPerSecond))
-            .ToList();
-
-        double globalMax = 0;
-        int colorIdx = 0;
-        foreach (var group in byName)
-        {
-            var points = group.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
-            var values = points.Select(d => d.CollisionsPerSecond).ToArray();
-
-            var plot = SpinlockStatsChart.Plot.Add.Scatter(times, values);
-            plot.LegendText = TruncateName(group.Key);
-            plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
-            ChartStyle.StyleScatter(plot);
-            _spinlockStatsHover?.Add(plot, group.Key);
-            colorIdx++;
-
-            if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
-        }
-
-        SpinlockStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        SpinlockStatsChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-        ReapplyAxisColors(SpinlockStatsChart);
-        SpinlockStatsChart.Plot.YLabel("Collisions/sec");
-        SetChartYLimitsWithLegendPadding(SpinlockStatsChart, 0, globalMax > 0 ? globalMax : 1);
-        ShowChartLegend(SpinlockStatsChart);
-        SpinlockStatsChart.Refresh();
+        LatchSpinlockRenderer.Render(SpinlockStatsChart, _spinlockStatsHover, data,
+            d => d.CollectionTime, d => d.SpinlockName, d => d.CollisionsPerSecond,
+            "Spinlock Collisions", "Collisions/sec", rangeStart.ToOADate(), rangeEnd.ToOADate());
     }
-
-    /// <summary>Legend names for latch classes / spinlock names get long; clip to 20 chars + ellipsis
-    /// exactly like the Darling / Dashboard Latch/Spinlock chart legends.</summary>
-    private static string TruncateName(string name)
-        => name.Length > 20 ? name.Substring(0, 20) + "..." : name;
 
     /// <summary>Tears down the latch/spinlock hover helpers (mirrors the other tabs' dispose) so their
     /// tooltip popups + chart event handlers don't outlive a closed server tab.</summary>

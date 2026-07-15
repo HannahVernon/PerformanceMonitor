@@ -6,9 +6,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Ui;
@@ -33,6 +31,12 @@ public partial class ViewerServerTab
 {
     private ChartHoverHelper? _latchStatsHover;
     private ChartHoverHelper? _spinlockStatsHover;
+
+    /* One shared grouped-trend renderer serves BOTH the latch and spinlock charts; built lazily with the
+       viewer's ForDisplay projection (mirrors the CpuScheduler renderer's per-app wiring). */
+    private GroupedTrendChartRenderer? _latchSpinlockRendererField;
+    private GroupedTrendChartRenderer LatchSpinlockRenderer =>
+        _latchSpinlockRendererField ??= new GroupedTrendChartRenderer(_chartHelper, ViewerTimeHelper.ForDisplay);
 
     /// <summary>Applies the shared chrome + hover to the latch/spinlock charts up front (constructor),
     /// so they don't flash white before the tab's first load — matching the CPU/Memory charts.</summary>
@@ -71,106 +75,21 @@ public partial class ViewerServerTab
 
     private void RenderLatchStatsChart(List<LatchStatsTrendPoint> data)
     {
-        ClearChart(LatchStatsChart);
-        _latchStatsHover?.Clear();
-        ApplyTheme(LatchStatsChart);
-
         var (startUtc, endUtc) = GetWindowUtc();
-        LatchStatsChart.Plot.YLabel("Wait Time (ms/sec)");
-
-        if (data.Count == 0)
-        {
-            FinishContentionChart(LatchStatsChart, startUtc, endUtc, 0);
-            return;
-        }
-
-        /* Order the series by total ms/sec desc so the heaviest latch gets the first palette color
-           (deterministic, mirrors the Dashboard's re-group-by-total). */
-        var byClass = data
-            .GroupBy(d => d.LatchClass)
-            .OrderByDescending(g => g.Sum(d => d.WaitTimeMsPerSecond))
-            .ToList();
-
-        double globalMax = 0;
-        int colorIdx = 0;
-        foreach (var group in byClass)
-        {
-            var points = group.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
-            var values = points.Select(d => d.WaitTimeMsPerSecond).ToArray();
-
-            var plot = LatchStatsChart.Plot.Add.Scatter(times, values);
-            plot.LegendText = TruncateName(group.Key);
-            plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
-            ChartStyle.StyleScatter(plot);
-            _latchStatsHover?.Add(plot, group.Key);
-            colorIdx++;
-
-            if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
-        }
-
-        FinishContentionChart(LatchStatsChart, startUtc, endUtc, globalMax);
+        LatchSpinlockRenderer.Render(LatchStatsChart, _latchStatsHover, data,
+            d => d.CollectionTime, d => d.LatchClass, d => d.WaitTimeMsPerSecond,
+            "Latch Waits", "Wait Time (ms/sec)",
+            ViewerTimeHelper.ForDisplay(startUtc).ToOADate(), ViewerTimeHelper.ForDisplay(endUtc).ToOADate());
     }
 
     private void RenderSpinlockStatsChart(List<SpinlockStatsTrendPoint> data)
     {
-        ClearChart(SpinlockStatsChart);
-        _spinlockStatsHover?.Clear();
-        ApplyTheme(SpinlockStatsChart);
-
         var (startUtc, endUtc) = GetWindowUtc();
-        SpinlockStatsChart.Plot.YLabel("Collisions/sec");
-
-        if (data.Count == 0)
-        {
-            FinishContentionChart(SpinlockStatsChart, startUtc, endUtc, 0);
-            return;
-        }
-
-        var byName = data
-            .GroupBy(d => d.SpinlockName)
-            .OrderByDescending(g => g.Sum(d => d.CollisionsPerSecond))
-            .ToList();
-
-        double globalMax = 0;
-        int colorIdx = 0;
-        foreach (var group in byName)
-        {
-            var points = group.OrderBy(d => d.CollectionTime).ToList();
-            var times = points.Select(d => ViewerTimeHelper.ForDisplay(d.CollectionTime).ToOADate()).ToArray();
-            var values = points.Select(d => d.CollisionsPerSecond).ToArray();
-
-            var plot = SpinlockStatsChart.Plot.Add.Scatter(times, values);
-            plot.LegendText = TruncateName(group.Key);
-            plot.Color = ScottPlot.Color.FromHex(SeriesColors[colorIdx % SeriesColors.Length]);
-            ChartStyle.StyleScatter(plot);
-            _spinlockStatsHover?.Add(plot, group.Key);
-            colorIdx++;
-
-            if (values.Length > 0) globalMax = Math.Max(globalMax, values.Max());
-        }
-
-        FinishContentionChart(SpinlockStatsChart, startUtc, endUtc, globalMax);
+        LatchSpinlockRenderer.Render(SpinlockStatsChart, _spinlockStatsHover, data,
+            d => d.CollectionTime, d => d.SpinlockName, d => d.CollisionsPerSecond,
+            "Spinlock Collisions", "Collisions/sec",
+            ViewerTimeHelper.ForDisplay(startUtc).ToOADate(), ViewerTimeHelper.ForDisplay(endUtc).ToOADate());
     }
-
-    /// <summary>Shared chart finish for the latch/spinlock trends: date axis, window X-limits, Y floor at
-    /// 0 with legend padding, and the legend — the one place the window bounds + Y-floor fix apply.</summary>
-    private void FinishContentionChart(ScottPlot.WPF.WpfPlot chart, DateTime startUtc, DateTime endUtc, double globalMax)
-    {
-        chart.Plot.Axes.DateTimeTicksBottomDateChange();
-        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc);
-        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc);
-        chart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-        ReapplyAxisColors(chart);
-        SetChartYLimitsWithLegendPadding(chart, 0, globalMax > 0 ? globalMax : 10);
-        ShowChartLegend(chart);
-        chart.Refresh();
-    }
-
-    /// <summary>Legend names for latch classes / spinlock names get long; clip to 20 chars + ellipsis
-    /// exactly like the Dashboard's Latch/Spinlock chart legends.</summary>
-    private static string TruncateName(string name)
-        => name.Length > 20 ? name.Substring(0, 20) + "..." : name;
 
     /// <summary>Tears down the latch/spinlock hover helpers (mirrors the other tabs' dispose) so their
     /// tooltip popups + chart event handlers don't outlive a closed server tab.</summary>
