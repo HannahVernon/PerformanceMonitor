@@ -15,6 +15,7 @@ using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Darling.Viewer;
+using PerformanceMonitor.Ui;
 using Xunit;
 
 namespace Darling.Tests;
@@ -127,7 +128,7 @@ public sealed class ViewerSessionStatsMappingTests
     [Fact]
     public void SessionSeriesSpecs_AreTheSevenDashboardSeries_InOrder()
     {
-        var legends = ViewerServerTab.SessionSeriesSpecs.Select(s => s.Legend).ToList();
+        var legends = SessionStatsChartRenderer.SessionSeriesSpecs.Select(s => s.Legend).ToList();
 
         Assert.Equal(
             new[] { "Total", "Running", "Sleeping", "Background", "Dormant", "Idle >30m", "Waiting for Memory" },
@@ -137,7 +138,7 @@ public sealed class ViewerSessionStatsMappingTests
     [Fact]
     public void SessionSeriesSpecs_EachSeriesResolvesToADistinctSharedPaletteColor()
     {
-        var keys = ViewerServerTab.SessionSeriesSpecs.Select(s => s.PaletteKey).ToList();
+        var keys = SessionStatsChartRenderer.SessionSeriesSpecs.Select(s => s.PaletteKey).ToList();
 
         Assert.Equal(
             new[] { "SessionTotal", "SessionRunning", "SessionSleeping", "SessionBackground", "SessionDormant", "SessionIdle", "SessionWaiting" },
@@ -171,7 +172,7 @@ public sealed class ViewerSessionStatsMappingTests
             TopHostName: "Host1",
             TopHostConnections: 30);
 
-        var byLegend = ViewerServerTab.SessionSeriesSpecs.ToDictionary(s => s.Legend, s => s.Value(point));
+        var byLegend = SessionStatsChartRenderer.SessionSeriesSpecs.ToDictionary(s => s.Legend, s => s.Value(point));
 
         Assert.Equal(100, byLegend["Total"]);
         Assert.Equal(11, byLegend["Running"]);
@@ -185,7 +186,7 @@ public sealed class ViewerSessionStatsMappingTests
     [Fact]
     public void FormatSessionSummary_Null_YieldsNAForAllThree()
     {
-        var (topApp, topHost, databases) = ViewerServerTab.FormatSessionSummary(null);
+        var (topApp, topHost, databases) = SessionStatsSummary.Format(null);
 
         Assert.Equal("N/A", topApp);
         Assert.Equal("N/A", topHost);
@@ -197,7 +198,7 @@ public sealed class ViewerSessionStatsMappingTests
     {
         var point = Point(topApp: "SQLAgent", topAppConns: 42, topHost: "APPSRV01", topHostConns: 18, dbs: 9);
 
-        var (topApp, topHost, databases) = ViewerServerTab.FormatSessionSummary(point);
+        var (topApp, topHost, databases) = SessionStatsSummary.Format(point);
 
         Assert.Equal("SQLAgent (42)", topApp);
         Assert.Equal("APPSRV01 (18)", topHost);
@@ -209,7 +210,7 @@ public sealed class ViewerSessionStatsMappingTests
     {
         var point = Point(topApp: null, topAppConns: null, topHost: "", topHostConns: null, dbs: 3);
 
-        var (topApp, topHost, databases) = ViewerServerTab.FormatSessionSummary(point);
+        var (topApp, topHost, databases) = SessionStatsSummary.Format(point);
 
         Assert.Equal("N/A", topApp);
         Assert.Equal("N/A", topHost);
@@ -296,7 +297,7 @@ public sealed class ViewerSessionStatsLivePostgresTests
             Assert.Equal(45, latest.TopHostConnections);
 
             /* The summary strip reads that latest snapshot. */
-            var (topApp, topHost, databases) = ViewerServerTab.FormatSessionSummary(latest);
+            var (topApp, topHost, databases) = SessionStatsSummary.Format(latest);
             Assert.Equal("AppB (55)", topApp);
             Assert.Equal("Host2 (45)", topHost);
             Assert.Equal("9", databases);

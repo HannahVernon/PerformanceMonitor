@@ -25,32 +25,20 @@ namespace PerformanceMonitorLite.Controls;
 /// non-chartable attribution the latest snapshot carries: the top application and top host by connection
 /// count, and the number of distinct databases with connections. The feed is the server-wide
 /// v_session_summary_stats (1:1 with the Dashboard's session_stats table) — NOT the per-application
-/// v_session_stats FinOps' Application Connections read uses. Each status series rides its own fixed
-/// <see cref="ChartPalette"/> "Session*" key (the same the Dashboard chart uses), and — mirroring the
-/// Dashboard — a series is only drawn when it has a non-zero value in the window so all-zero states don't
-/// clutter the legend. Loads on tab activation via the RefreshVisibleTabAsync switch.
+/// v_session_stats FinOps' Application Connections read uses. The chart BODY is the shared
+/// <see cref="SessionStatsChartRenderer"/> (byte-identical to Darling's, each series on its own fixed
+/// <see cref="ChartPalette"/> "Session*" key, all-zero series skipped); this partial keeps the per-app data
+/// read, the hover wiring, the display-time projection it hands the renderer, and the summary strip (shaped
+/// by the shared <see cref="SessionStatsSummary"/>). Loads on tab activation via the RefreshVisibleTabAsync switch.
 /// </summary>
 public partial class ServerTab : UserControl
 {
     private ChartHoverHelper? _sessionStatsHover;
 
-    /// <summary>One chart series: its legend label, its shared-palette color key, and the accessor that
-    /// pulls its status count out of a <see cref="SessionStatsPoint"/>. Pure data so the mapping is
-    /// unit-testable without a WpfPlot; the render loop and any tests share this single source of truth.</summary>
-    internal readonly record struct SessionSeriesSpec(string Legend, string PaletteKey, Func<SessionStatsPoint, double> Value);
-
-    /// <summary>The seven session-status series in the Dashboard's order (Total first, then the status
-    /// breakdown), each pinned to the shared <c>Session*</c> palette key the Dashboard chart uses.</summary>
-    internal static IReadOnlyList<SessionSeriesSpec> SessionSeriesSpecs { get; } = new[]
-    {
-        new SessionSeriesSpec("Total", "SessionTotal", p => p.TotalSessions),
-        new SessionSeriesSpec("Running", "SessionRunning", p => p.RunningSessions),
-        new SessionSeriesSpec("Sleeping", "SessionSleeping", p => p.SleepingSessions),
-        new SessionSeriesSpec("Background", "SessionBackground", p => p.BackgroundSessions),
-        new SessionSeriesSpec("Dormant", "SessionDormant", p => p.DormantSessions),
-        new SessionSeriesSpec("Idle >30m", "SessionIdle", p => p.IdleSessionsOver30Min),
-        new SessionSeriesSpec("Waiting for Memory", "SessionWaiting", p => p.SessionsWaitingForMemory),
-    };
+    private SessionStatsChartRenderer? _sessionStatsRendererField;
+    /// <summary>The shared Session Stats trend-chart renderer, bound to Lite's settable display-time offset.</summary>
+    private SessionStatsChartRenderer SessionStatsRenderer =>
+        _sessionStatsRendererField ??= new SessionStatsChartRenderer(_chartHelper, t => t.AddMinutes(UtcOffsetMinutes));
 
     /// <summary>Applies the shared chrome + hover to the Session Stats chart up front (constructor), so it
     /// doesn't flash white before the tab's first load — matching the CPU/Memory/latch charts.</summary>
@@ -76,15 +64,10 @@ public partial class ServerTab : UserControl
         }
     }
 
-    /// <summary>The session-status trend: one series per non-zero status (heaviest states drawn on their
-    /// fixed palette keys), plus the summary strip from the latest snapshot. Mirrors Darling's
-    /// RenderSessionStatsChart.</summary>
+    /// <summary>The session-status trend: hands the settable-window bounds + snapshots to the shared
+    /// <see cref="SessionStatsChartRenderer"/>, then updates the summary strip from the latest snapshot.</summary>
     private void UpdateSessionStatsChart(List<SessionStatsPoint> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
-        ClearChart(SessionStatsChart);
-        ApplyTheme(SessionStatsChart);
-        _sessionStatsHover?.Clear();
-
         DateTime rangeStart, rangeEnd;
         if (fromDate.HasValue && toDate.HasValue)
         {
@@ -97,83 +80,22 @@ public partial class ServerTab : UserControl
             rangeStart = rangeEnd.AddHours(-hoursBack);
         }
 
+        SessionStatsRenderer.Render(SessionStatsChart, _sessionStatsHover, data, rangeStart.ToOADate(), rangeEnd.ToOADate());
+
+        /* Summary panel reflects the latest snapshot in the window (Dashboard uses the last point). */
         var ordered = data.OrderBy(d => d.CollectionTime).ToList();
-
-        double globalMax = 0;
-        if (ordered.Count > 0)
-        {
-            var times = ordered.Select(d => d.CollectionTime.AddMinutes(UtcOffsetMinutes).ToOADate()).ToArray();
-
-            foreach (var spec in SessionSeriesSpecs)
-            {
-                var values = ordered.Select(spec.Value).ToArray();
-
-                /* Mirror the Dashboard: only draw a series that is non-zero somewhere in the window, so
-                   all-zero states (often Background / Dormant / Waiting for Memory) stay out of the legend. */
-                if (!values.Any(v => v > 0))
-                {
-                    continue;
-                }
-
-                var plot = SessionStatsChart.Plot.Add.Scatter(times, values);
-                plot.LegendText = spec.Legend;
-                plot.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor(spec.PaletteKey));
-                ChartStyle.StyleScatter(plot);
-                _sessionStatsHover?.Add(plot, spec.Legend);
-
-                globalMax = Math.Max(globalMax, values.Max());
-            }
-
-            /* Summary panel reflects the latest snapshot in the window (Dashboard uses the last point). */
-            UpdateSessionStatsSummary(ordered[^1]);
-        }
-        else
-        {
-            UpdateSessionStatsSummary(null);
-        }
-
-        SessionStatsChart.Plot.Axes.DateTimeTicksBottomDateChange();
-        SessionStatsChart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
-        ReapplyAxisColors(SessionStatsChart);
-        SessionStatsChart.Plot.YLabel("Session Count");
-        SetChartYLimitsWithLegendPadding(SessionStatsChart, 0, globalMax > 0 ? globalMax : 10);
-        ShowChartLegend(SessionStatsChart);
-        SessionStatsChart.Refresh();
+        UpdateSessionStatsSummary(ordered.Count > 0 ? ordered[^1] : null);
     }
 
     /// <summary>Writes the latest snapshot's attribution into the summary strip (Dashboard parity: the
-    /// non-chartable Top Application / Top Host / Databases values), delegating the shaping to the pure
-    /// <see cref="FormatSessionSummary"/>.</summary>
+    /// non-chartable Top Application / Top Host / Databases values), delegating the shaping to the shared
+    /// <see cref="SessionStatsSummary.Format"/>.</summary>
     private void UpdateSessionStatsSummary(SessionStatsPoint? data)
     {
-        var (topApp, topHost, databases) = FormatSessionSummary(data);
+        var (topApp, topHost, databases) = SessionStatsSummary.Format(data);
         SessionStatsTopAppText.Text = topApp;
         SessionStatsTopHostText.Text = topHost;
         SessionStatsDatabasesText.Text = databases;
-    }
-
-    /// <summary>
-    /// Pure formatter for the summary strip (mirrors the Darling/Dashboard UpdateSessionStatsSummary):
-    /// Top Application / Top Host render as "<c>name (count)</c>" when the latest snapshot has one and
-    /// "N/A" otherwise; Databases is the distinct-databases count. A null point (no data in the window)
-    /// yields "N/A" for all three. Internal + static so the shaping is unit-testable.
-    /// </summary>
-    internal static (string TopApplication, string TopHost, string Databases) FormatSessionSummary(SessionStatsPoint? data)
-    {
-        if (data is null)
-        {
-            return ("N/A", "N/A", "N/A");
-        }
-
-        var topApp = !string.IsNullOrEmpty(data.TopApplicationName)
-            ? $"{data.TopApplicationName} ({data.TopApplicationConnections ?? 0})"
-            : "N/A";
-        var topHost = !string.IsNullOrEmpty(data.TopHostName)
-            ? $"{data.TopHostName} ({data.TopHostConnections ?? 0})"
-            : "N/A";
-        var databases = data.DatabasesWithConnections.ToString();
-
-        return (topApp, topHost, databases);
     }
 
     /// <summary>Tears down the Session Stats hover helper (mirrors the other tabs' dispose) so its tooltip

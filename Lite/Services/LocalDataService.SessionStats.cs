@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -91,7 +92,7 @@ ORDER BY collection_time";
 /// <summary>One point on the Session Stats trend: a single server-wide session-summary snapshot — the
 /// status-count breakdown that drives the chart's seven series plus the attribution columns (top
 /// application / top host / distinct databases) the summary panel shows.</summary>
-public class SessionStatsPoint
+public class SessionStatsPoint : ISessionStatsPoint
 {
     public DateTime CollectionTime { get; set; }
     public int TotalSessions { get; set; }
