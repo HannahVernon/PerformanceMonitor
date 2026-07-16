@@ -74,8 +74,6 @@ public sealed class DatabaseFilterTests
     [InlineData(nameof(ViewerDataService.QueryStoreTopSql), "database_name", 5)]
     [InlineData(nameof(ViewerDataService.QueryStoreComparisonSql), "database_name", 6)]
     [InlineData(nameof(ViewerDataService.QueryStoreSlicerSql), "database_name", 4)]
-    // Expensive queries: window ($1-$3) + topPerSource ($4) + finalTop ($5) → $6.
-    [InlineData(nameof(ViewerDataService.UnifiedExpensiveQueriesSql), "database_name", 6)]
     // Active-query snapshots.
     [InlineData(nameof(ViewerDataService.LatestQuerySnapshotsSql), "database_name", 4)]
     [InlineData(nameof(ViewerDataService.ActiveQuerySlicerSql), "database_name", 4)]

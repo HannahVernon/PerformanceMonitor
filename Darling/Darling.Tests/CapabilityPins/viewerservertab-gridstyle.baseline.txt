@@ -9,7 +9,6 @@ DatabaseConfigGrid=>(none)
 DatabaseScopedConfigGrid=>(none)
 DeadlockGrid=>DeadlockRowStyle
 DefaultTraceGrid=>(none)
-ExpensiveQueriesGrid=>QueryPlanGridRowStyle
 IoIssuesGrid=>(none)
 LatchStatsGrid=>(none)
 MemoryBrokerGrid=>(none)

@@ -8,7 +8,6 @@ DatabaseConfigGrid=>GridRowStyle
 DatabaseScopedConfigGrid=>GridRowStyle
 DeadlockGrid=>DeadlockRowStyle
 DefaultTraceGrid=>GridRowStyle
-ExpensiveQueriesGrid=>GridRowStyle
 IoIssuesGrid=>GridRowStyle
 LatchStatsGrid=>GridRowStyle
 MemoryBrokerGrid=>GridRowStyle

@@ -73,7 +73,7 @@ namespace PerformanceMonitor.Ui
         public event EventHandler<PerformanceCalendarMonthEventArgs>? MonthChanged;
 
         /// <summary>Raised when the user clicks a drill button in the day-detail panel (View Deadlocks /
-        /// Blocking / Expensive Queries), carrying the day + which grid to jump to. The host scopes its
+        /// Blocking / Top Queries), carrying the day + which grid to jump to. The host scopes its
         /// toolbar to that day's window and switches to the target tab.</summary>
         public event EventHandler<PerformanceCalendarDrillEventArgs>? DayDrillRequested;
 
@@ -246,7 +246,7 @@ namespace PerformanceMonitor.Ui
             var drills = DailyHealthBandCalculator.AvailableDrills(signals);
             DeadlocksDrillButton.Visibility = drills.Contains(DayDrillTarget.Deadlocks) ? Visibility.Visible : Visibility.Collapsed;
             BlockingDrillButton.Visibility = drills.Contains(DayDrillTarget.Blocking) ? Visibility.Visible : Visibility.Collapsed;
-            ExpensiveQueriesDrillButton.Visibility = drills.Contains(DayDrillTarget.ExpensiveQueries) ? Visibility.Visible : Visibility.Collapsed;
+            TopQueriesDrillButton.Visibility = drills.Contains(DayDrillTarget.TopQueries) ? Visibility.Visible : Visibility.Collapsed;
 
             DayDetailPanel.Visibility = Visibility.Visible;
         }
@@ -255,7 +255,7 @@ namespace PerformanceMonitor.Ui
 
         private void BlockingDrillButton_Click(object sender, RoutedEventArgs e) => RaiseDrill(DayDrillTarget.Blocking);
 
-        private void ExpensiveQueriesDrillButton_Click(object sender, RoutedEventArgs e) => RaiseDrill(DayDrillTarget.ExpensiveQueries);
+        private void TopQueriesDrillButton_Click(object sender, RoutedEventArgs e) => RaiseDrill(DayDrillTarget.TopQueries);
 
         private void RaiseDrill(DayDrillTarget target)
         {

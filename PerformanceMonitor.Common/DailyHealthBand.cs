@@ -50,8 +50,8 @@ namespace PerformanceMonitor.Common
         /// <summary>Jump to the Blocked Process Reports grid scoped to the day — offered only when the day had blocking.</summary>
         Blocking,
 
-        /// <summary>Jump to the expensive / top-queries grid scoped to the day — offered on any collected day.</summary>
-        ExpensiveQueries,
+        /// <summary>Jump to the Top Queries grid scoped to the day — offered on any collected day.</summary>
+        TopQueries,
     }
 
     /// <summary>
@@ -221,7 +221,7 @@ namespace PerformanceMonitor.Common
 
         /// <summary>
         /// Which day-detail drill buttons to offer for a day, in panel order. A day with no collection offers
-        /// none (there is nothing to drill into). Otherwise Expensive Queries is always offered (you can always
+        /// none (there is nothing to drill into). Otherwise Top Queries is always offered (you can always
         /// inspect what ran), Deadlocks is offered only when the day had any deadlock, and Blocking only when it
         /// had any blocking event. Pure + static so both hosts and the tests share one decision.
         /// </summary>
@@ -235,7 +235,7 @@ namespace PerformanceMonitor.Common
                 drills.Add(DayDrillTarget.Deadlocks);
             if (signals.BlockingEvents > 0)
                 drills.Add(DayDrillTarget.Blocking);
-            drills.Add(DayDrillTarget.ExpensiveQueries);
+            drills.Add(DayDrillTarget.TopQueries);
             return drills;
         }
 

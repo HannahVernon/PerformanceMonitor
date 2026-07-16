@@ -182,22 +182,22 @@ public class DailyHealthBandTests
     }
 
     [Fact]
-    public void AvailableDrills_CollectedDay_AlwaysOffersExpensiveQueries()
+    public void AvailableDrills_CollectedDay_AlwaysOffersTopQueries()
     {
-        Assert.Equal(new[] { DayDrillTarget.ExpensiveQueries }, DailyHealthBandCalculator.AvailableDrills(Signals()));
+        Assert.Equal(new[] { DayDrillTarget.TopQueries }, DailyHealthBandCalculator.AvailableDrills(Signals()));
     }
 
     [Fact]
     public void AvailableDrills_AddsDeadlocks_And_Blocking_OnlyWhenPresent_InPanelOrder()
     {
         Assert.Equal(
-            new[] { DayDrillTarget.Deadlocks, DayDrillTarget.Blocking, DayDrillTarget.ExpensiveQueries },
+            new[] { DayDrillTarget.Deadlocks, DayDrillTarget.Blocking, DayDrillTarget.TopQueries },
             DailyHealthBandCalculator.AvailableDrills(Signals(deadlocks: 1, blocking: 2)));
         Assert.Equal(
-            new[] { DayDrillTarget.Deadlocks, DayDrillTarget.ExpensiveQueries },
+            new[] { DayDrillTarget.Deadlocks, DayDrillTarget.TopQueries },
             DailyHealthBandCalculator.AvailableDrills(Signals(deadlocks: 3)));
         Assert.Equal(
-            new[] { DayDrillTarget.Blocking, DayDrillTarget.ExpensiveQueries },
+            new[] { DayDrillTarget.Blocking, DayDrillTarget.TopQueries },
             DailyHealthBandCalculator.AvailableDrills(Signals(blocking: 7)));
     }
 

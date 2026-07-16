@@ -34,14 +34,13 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// </summary>
 public partial class ViewerServerTab
 {
-    /* Queries sub-tab order — matches Lite's QueriesSubTabControl (W1f-2), plus the Darling-only unified
-       Expensive Queries grid inserted after the three per-source grids (Dashboard parity), keeping Query
-       Heatmap last, the Darling-only LIVE "Current Active Queries" tab inserted right after the stored
-       "Active Queries" tab, and the Query Store Regressions grid (Dashboard parity) inserted right after
-       Query Store — matching the Dashboard's Query Store → Query Store Regressions adjacency: Performance
-       Trends, Active Queries, Current Active Queries (live), the three grids, Query Store Regressions,
-       Expensive Queries, Query Heatmap. Every reference below uses the NAMED constant, so inserting a tab
-       only shifts these values — no literal-index caller needs touching. */
+    /* Queries sub-tab order — matches Lite's QueriesSubTabControl (W1f-2), keeping Query Heatmap last, the
+       Darling-only LIVE "Current Active Queries" tab inserted right after the stored "Active Queries" tab,
+       and the Query Store Regressions grid (Dashboard parity) inserted right after Query Store — matching
+       the Dashboard's Query Store → Query Store Regressions adjacency: Performance Trends, Active Queries,
+       Current Active Queries (live), the three grids, Query Store Regressions, Query Heatmap. Every
+       reference below uses the NAMED constant, so inserting a tab only shifts these values — no literal-index
+       caller needs touching. */
     private const int PerformanceTrendsSubTabIndex = 0;
     private const int ActiveQueriesSubTabIndex = 1;
     private const int CurrentActiveQueriesSubTabIndex = 2;
@@ -49,8 +48,7 @@ public partial class ViewerServerTab
     private const int TopProceduresSubTabIndex = 4;
     private const int QueryStoreSubTabIndex = 5;
     private const int QueryStoreRegressionsSubTabIndex = 6;
-    private const int ExpensiveQueriesSubTabIndex = 7;
-    private const int QueryHeatmapSubTabIndex = 8;
+    private const int QueryHeatmapSubTabIndex = 7;
 
     private string _queryStatsSlicerMetric = "TotalCpu";
     private List<TimeSliceBucket>? _queryStatsSlicerData;
@@ -147,9 +145,6 @@ public partial class ViewerServerTab
             case QueryStoreRegressionsSubTabIndex:
                 await LoadQueryStoreRegressionsAsync(startUtc, endUtc);
                 break;
-            case ExpensiveQueriesSubTabIndex:
-                await LoadExpensiveQueriesAsync(startUtc, endUtc);
-                break;
             case QueryHeatmapSubTabIndex:
                 await LoadQueryHeatmapAsync(startUtc, endUtc);
                 break;
@@ -185,19 +180,6 @@ public partial class ViewerServerTab
         SetDefaultSortIfNone(QueryStoreGrid, "TotalDurationMs", ListSortDirection.Descending);
         await LoadQueryStoreSlicerAsync(startUtc, endUtc);
         await RefreshQueryStoreComparisonAsync(startUtc, endUtc);
-    }
-
-    /// <summary>
-    /// Loads the unified Expensive Queries grid — one cross-source ranked list (Query Stats + Stored
-    /// Procedures + Query Store) over the toolbar's settable window. No slicer / comparison (the read is
-    /// already a cross-source merge, not a single time series); the default sort matches the read's
-    /// average-CPU ranking so the first render is stable.
-    /// </summary>
-    private async Task LoadExpensiveQueriesAsync(DateTime startUtc, DateTime endUtc)
-    {
-        var rows = await _dataService.GetUnifiedExpensiveQueriesAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
-        _expensiveQueriesFilterMgr!.UpdateData(rows);
-        SetDefaultSortIfNone(ExpensiveQueriesGrid, "AvgWorkerTimeMs", ListSortDirection.Descending);
     }
 
     /// <summary>

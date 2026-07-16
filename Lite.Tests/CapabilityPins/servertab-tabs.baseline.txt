@@ -18,7 +18,6 @@ Database Configuration
 Deadlocks
 Default Trace
 Duration Trends
-Expensive Queries
 File I/O
 File I/O Latency
 File I/O Throughput

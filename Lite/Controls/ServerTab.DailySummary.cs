@@ -61,7 +61,7 @@ public partial class ServerTab : UserControl
         => await LoadCalendarMonthAsync(DailyCalendar.DisplayMonth);
 
     /// <summary>
-    /// A day-detail drill button (View Deadlocks / Blocking / Expensive Queries): scope the toolbar to the
+    /// A day-detail drill button (View Deadlocks / Blocking / Top Queries): scope the toolbar to the
     /// clicked day's [00:00, next-day 00:00) window and jump to the target tab, then load it over the day.
     /// This reuses the exact mechanism the per-chart drills use — <see cref="SetDrillDownTimeRange"/> sets the
     /// toolbar's custom window, the tab switches run under <see cref="_suppressActiveQueriesAutoRefresh"/> (so
@@ -94,7 +94,7 @@ public partial class ServerTab : UserControl
                         MainTabControl.SelectedIndex = 8;        // Blocking
                         BlockingSubTabControl.SelectedIndex = 2; // Blocked Process Reports
                         break;
-                    case DayDrillTarget.ExpensiveQueries:
+                    case DayDrillTarget.TopQueries:
                         MainTabControl.SelectedIndex = 2;        // Queries
                         QueriesSubTabControl.SelectedIndex = 2;  // Top Queries by Duration
                         break;

@@ -10,7 +10,6 @@ ServerTab.Filters.cs:DatabaseConfigGrid
 ServerTab.Filters.cs:DatabaseScopedConfigGrid
 ServerTab.Filters.cs:DeadlockGrid
 ServerTab.Filters.cs:DefaultTraceGrid
-ServerTab.Filters.cs:ExpensiveQueriesGrid
 ServerTab.Filters.cs:IoIssuesGrid
 ServerTab.Filters.cs:LatchStatsGrid
 ServerTab.Filters.cs:MemoryBrokerGrid
