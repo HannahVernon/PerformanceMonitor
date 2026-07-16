@@ -39,7 +39,6 @@ public partial class ServerTab : UserControl
         _collectionLogFilterMgr = new DataGridFilterManager<CollectionLogRow>(CollectionLogGrid);
         _latchStatsFilterMgr = new DataGridFilterManager<LatchStatsSnapshotRow>(LatchStatsGrid);
         _spinlockStatsFilterMgr = new DataGridFilterManager<SpinlockStatsSnapshotRow>(SpinlockStatsGrid);
-        _planCacheCompositionFilterMgr = new DataGridFilterManager<PlanCacheSnapshotRow>(PlanCacheCompositionGrid);
         /* System Events grids (the two chart sub-tabs have no grid, so register no filter manager). */
         _seSchedulerFilterMgr = new DataGridFilterManager<SchedulerIssueRow>(SchedulerIssuesGrid);
         _seSevereErrorFilterMgr = new DataGridFilterManager<SevereErrorRow>(SevereErrorsGrid);
@@ -72,7 +71,6 @@ public partial class ServerTab : UserControl
         _filterManagers[CollectionLogGrid] = _collectionLogFilterMgr;
         _filterManagers[LatchStatsGrid] = _latchStatsFilterMgr;
         _filterManagers[SpinlockStatsGrid] = _spinlockStatsFilterMgr;
-        _filterManagers[PlanCacheCompositionGrid] = _planCacheCompositionFilterMgr;
         _filterManagers[SchedulerIssuesGrid] = _seSchedulerFilterMgr;
         _filterManagers[SevereErrorsGrid] = _seSevereErrorFilterMgr;
         _filterManagers[MemoryConditionsGrid] = _seMemoryConditionsFilterMgr;

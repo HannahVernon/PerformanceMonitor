@@ -16,7 +16,6 @@ ServerTab.Filters.cs:LatchStatsGrid
 ServerTab.Filters.cs:MemoryBrokerGrid
 ServerTab.Filters.cs:MemoryConditionsGrid
 ServerTab.Filters.cs:MemoryNodeOomGrid
-ServerTab.Filters.cs:PlanCacheCompositionGrid
 ServerTab.Filters.cs:ProcedureStatsGrid
 ServerTab.Filters.cs:QuerySnapshotsGrid
 ServerTab.Filters.cs:QueryStatsGrid

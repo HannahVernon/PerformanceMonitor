@@ -14,7 +14,6 @@ LatchStatsGrid=>GridRowStyle
 MemoryBrokerGrid=>GridRowStyle
 MemoryConditionsGrid=>GridRowStyle
 MemoryNodeOomGrid=>GridRowStyle
-PlanCacheCompositionGrid=>GridRowStyle
 ProcStatsComparisonGrid=>GridRowStyle
 ProcedureStatsGrid=>GridRowStyle
 QuerySnapshotsGrid=>GridRowStyle

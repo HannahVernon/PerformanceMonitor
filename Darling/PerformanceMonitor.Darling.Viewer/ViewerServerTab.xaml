@@ -1982,14 +1982,13 @@
                 </TabItem>
 
                 <!-- Plan Cache Sub-Tab (plan_cache_stats parity, matching the Dashboard's Memory > Plan
-                     Cache): single-use vs multi-use size trend + total-plans / oldest-plan summary + a
-                     per-(cacheobjtype, objtype) composition grid for the latest snapshot in the window. -->
+                     Cache): single-use vs multi-use size trend over the total-plans / oldest-plan
+                     summary strip. -->
                 <TabItem Header="Plan Cache">
                     <Grid Margin="8">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="2*"/>
-                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <scottplot:WpfPlot Grid.Row="0" x:Name="PlanCacheChart"/>
                         <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,8,0,0">
@@ -2005,21 +2004,6 @@
                                 <TextBlock x:Name="PlanCacheRecommendationText" Text="" FontStyle="Italic" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
-                        <DataGrid Grid.Row="2" x:Name="PlanCacheCompositionGrid" Style="{StaticResource DarkGrid}" Margin="0,8,0,0"
-                                  HeadersVisibility="Column" AutoGenerateColumns="False">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Cache Object Type" Binding="{Binding Cacheobjtype}" Width="*"/>
-                                <DataGridTextColumn Header="Object Type" Binding="{Binding Objtype}" Width="120"/>
-                                <DataGridTextColumn Header="Total Plans" Binding="{Binding TotalPlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
-                                <DataGridTextColumn Header="Total Size (MB)" Binding="{Binding TotalSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
-                                <DataGridTextColumn Header="Single-Use Plans" Binding="{Binding SingleUsePlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
-                                <DataGridTextColumn Header="Single-Use (MB)" Binding="{Binding SingleUseSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
-                                <DataGridTextColumn Header="Multi-Use Plans" Binding="{Binding MultiUsePlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
-                                <DataGridTextColumn Header="Multi-Use (MB)" Binding="{Binding MultiUseSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
-                                <DataGridTextColumn Header="Avg Use Count" Binding="{Binding AvgUseCount, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
-                                <DataGridTextColumn Header="Avg Size (KB)" Binding="{Binding AvgSizeKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="105"/>
-                            </DataGrid.Columns>
-                        </DataGrid>
                     </Grid>
                 </TabItem>
 

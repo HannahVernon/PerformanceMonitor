@@ -111,7 +111,6 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
     private DataGridFilterManager<LatchStatsSnapshotRow>? _latchStatsFilterMgr;
     private DataGridFilterManager<SpinlockStatsSnapshotRow>? _spinlockStatsFilterMgr;
-    private DataGridFilterManager<PlanCacheSnapshotRow>? _planCacheCompositionFilterMgr;
     /* System Events tab: one filter manager per grid category (the two chart sub-tabs have no grid). */
     private DataGridFilterManager<SchedulerIssueRow>? _seSchedulerFilterMgr;
     private DataGridFilterManager<SevereErrorRow>? _seSevereErrorFilterMgr;
@@ -222,7 +221,7 @@ public partial class ServerTab : UserControl
             QueryStoreGrid, BlockedProcessReportGrid, DeadlockGrid, RunningJobsGrid,
             ServerConfigGrid, DatabaseConfigGrid, DatabaseScopedConfigGrid, TraceFlagsGrid,
             CollectionHealthGrid, CollectionLogGrid, LatchStatsGrid, SpinlockStatsGrid,
-            PlanCacheCompositionGrid, SchedulerIssuesGrid, SevereErrorsGrid, MemoryConditionsGrid,
+            SchedulerIssuesGrid, SevereErrorsGrid, MemoryConditionsGrid,
             MemoryBrokerGrid, MemoryNodeOomGrid, SignificantWaitsGrid, CpuTasksGrid, IoIssuesGrid,
             DefaultTraceGrid, ServerConfigChangesGrid, DatabaseConfigChangesGrid, TraceFlagChangesGrid })
         {
