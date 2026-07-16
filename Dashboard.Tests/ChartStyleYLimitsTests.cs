@@ -46,10 +46,10 @@ public class ChartStyleYLimitsTests
     }
 
     [Fact]
-    public void TopPadding_IsFivePercentOfRange()
+    public void TopPadding_IsFifteenPercentOfRange()
     {
         var (_, yMax) = ChartStyle.ComputeYLimitsWithLegendPadding(0, 6000);
-        Assert.Equal(6300.0, yMax, 6);  // 6000 + (6000 * 0.05)
+        Assert.Equal(6900.0, yMax, 6);  // 6000 + (6000 * 0.15)
     }
 
     [Fact]
@@ -58,6 +58,6 @@ public class ChartStyleYLimitsTests
         // dataYMax <= dataYMin forces range to 1 so a flat non-negative series still gets a visible band.
         var (yMin, yMax) = ChartStyle.ComputeYLimitsWithLegendPadding(5, 5);
         Assert.Equal(0.0, yMin);
-        Assert.Equal(6.05, yMax, 6);    // dataYMax -> 6, + (1 * 0.05)
+        Assert.Equal(6.15, yMax, 6);    // dataYMax -> 6, + (1 * 0.15)
     }
 }

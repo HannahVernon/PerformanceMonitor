@@ -126,8 +126,50 @@ public partial class App : Application
     }
 
     private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
-        => ViewerLogger.Error("App", "Unhandled UI exception", e.Exception);
+    {
+        /* Silently swallow the Hardcodet TrayToolTip race condition (issue #422): showing the custom
+           visual tooltip can throw "root Visual of a VisualTarget cannot have a parent" in
+           Popup.CreateWindow, and it is harmless (the tooltip just does not show that one time). Setting
+           e.Handled here on the Dispatcher path is what actually keeps the viewer alive. Ported from
+           Lite's App.xaml.cs (562269f6 / 50257182) to restore Lite<->Darling parity -- the shared
+           SystemTrayService custom TrayToolTip is the common crash source. */
+        if (IsTrayToolTipCrash(e.Exception))
+        {
+            ViewerLogger.Warn("Dispatcher", "Suppressed Hardcodet TrayToolTip crash (issue #422)");
+            e.Handled = true;
+            return;
+        }
+
+        ViewerLogger.Error("App", "Unhandled UI exception", e.Exception);
+    }
 
     private static void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
-        => ViewerLogger.Error("App", "Unhandled domain exception", e.ExceptionObject as Exception);
+    {
+        var exception = e.ExceptionObject as Exception;
+
+        /* Same #422 crash when it escapes the Dispatcher path (e.g. during tray-Exit shutdown after the
+           Dispatcher hooks are torn down). AppDomain.UnhandledException cannot mark it handled, but the
+           Dispatcher branch above catches the live case; log-and-return so it is not surfaced as a fatal
+           domain crash. */
+        if (exception != null && IsTrayToolTipCrash(exception))
+        {
+            ViewerLogger.Warn("AppDomain", "Suppressed Hardcodet TrayToolTip crash (issue #422)");
+            ViewerLogger.Flush();
+            return;
+        }
+
+        ViewerLogger.Error("App", "Unhandled domain exception", exception);
+    }
+
+    /// <summary>
+    /// Detects the Hardcodet TrayToolTip race-condition crash (issue #422): an ArgumentException from
+    /// Popup.CreateWindow ("root Visual of a VisualTarget cannot have a parent") surfacing on the
+    /// TaskbarIcon tooltip path. Matches Lite's detector so both front ends suppress identically.
+    /// </summary>
+    private static bool IsTrayToolTipCrash(Exception ex)
+    {
+        return ex is System.ArgumentException
+            && ex.Message.Contains("VisualTarget")
+            && ex.StackTrace?.Contains("TaskbarIcon") == true;
+    }
 }
