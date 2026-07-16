@@ -154,11 +154,11 @@
             <!-- Live plan fetch (headless-plan live-plan wave): asks the service to read the process's plan from
                  the target's LIVE cache by the sql_handle in its report XML — works for a process whose plan the
                  collector never stashed. Gated on HasReportXml so a DMV-snapshot fallback row (no XML) disables it. -->
-            <MenuItem Header="Fetch Blocked Live Plan" Click="FetchBlockedSideLivePlan_Click"
+            <MenuItem Header="View Blocked Cached Plan" Click="FetchBlockedSideLivePlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasReportXml, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
-            <MenuItem Header="Fetch Blocking Live Plan" Click="FetchBlockingSideLivePlan_Click"
+            <MenuItem Header="View Blocking Cached Plan" Click="FetchBlockingSideLivePlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasReportXml, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
@@ -196,7 +196,7 @@
                  deadlock graph — not limited to the single best-effort victim plan the collector stashed. Gated
                  on HasDeadlockXml (the graph is where the sql_handle is resolved from) for consistency with the
                  query-grid + blocked-process Fetch items, which disable rather than error when there's no source. -->
-            <MenuItem Header="Fetch Live Plan (This Process)" Click="FetchDeadlockProcessLivePlan_Click"
+            <MenuItem Header="View Cached Plan (This Process)" Click="FetchDeadlockProcessLivePlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasDeadlockXml, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
@@ -277,13 +277,13 @@
                 <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
             </MenuItem>
             <Separator/>
-            <MenuItem Header="View Plan" Click="ViewPlan_Click">
+            <MenuItem Header="View Stored Plan" Click="ViewPlan_Click">
                 <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
             </MenuItem>
             <!-- Live plan fetch (headless-plan live-plan wave): asks the service to read the plan CURRENTLY in
                  the target's cache by this row's plan_handle — distinct from the stored plan "View Plan" opens.
                  Gated on HasLivePlanHandle so rows without a plan_handle (Query Store / Expensive Queries) disable it. -->
-            <MenuItem Header="Fetch Live Plan" Click="FetchLiveQueryPlan_Click"
+            <MenuItem Header="View Cached Plan" Click="FetchLiveQueryPlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasLivePlanHandle, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
@@ -292,7 +292,7 @@
                  rows (query text + query_hash) enable it — Query Store / Top Procedures rows (no CanGetActualPlan)
                  fall back to disabled. Side-effecting: the click runs an informed-consent dialog that flags
                  data-modifying queries prominently before enqueuing. -->
-            <MenuItem Header="Get Actual Plan" Click="GetActualQueryPlan_Click"
+            <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualQueryPlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
             </MenuItem>
@@ -336,7 +336,7 @@
                       IsEnabled="{Binding PlacementTarget.DataContext.HasQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
             </MenuItem>
-            <MenuItem Header="View Actual Plan" Click="ViewSnapshotActualPlan_Click"
+            <MenuItem Header="View Live Plan" Click="ViewSnapshotActualPlan_Click"
                       IsEnabled="{Binding PlacementTarget.DataContext.HasLiveQueryPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
@@ -718,7 +718,7 @@
                                                             IsEnabled="{Binding HasQueryPlan}"
                                                             VerticalAlignment="Center"
                                                             Padding="6,4" Margin="0,0,4,0"/>
-                                                    <Button Content="Actual" Click="OpenSnapshotActualPlan_Click"
+                                                    <Button Content="Live" Click="OpenSnapshotActualPlan_Click"
                                                             IsEnabled="{Binding HasLiveQueryPlan}"
                                                             VerticalAlignment="Center"
                                                             Padding="6,4"/>
@@ -795,7 +795,7 @@
                                                             IsEnabled="{Binding HasQueryPlan}"
                                                             VerticalAlignment="Center"
                                                             Padding="6,4" Margin="0,0,4,0"/>
-                                                    <Button Content="Actual" Click="OpenSnapshotActualPlan_Click"
+                                                    <Button Content="Live" Click="OpenSnapshotActualPlan_Click"
                                                             IsEnabled="{Binding HasLiveQueryPlan}"
                                                             VerticalAlignment="Center"
                                                             Padding="6,4"/>

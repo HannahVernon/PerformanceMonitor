@@ -239,7 +239,7 @@ public partial class ViewerServerTab
     private void OpenSnapshotActualPlan(ViewerQuerySnapshotRow row)
     {
         if (string.IsNullOrEmpty(row.LiveQueryPlan)) return;
-        OpenPlanTab(row.LiveQueryPlan, $"Actual Plan — Session {row.SessionId}", row.QueryText);
+        OpenPlanTab(row.LiveQueryPlan, $"Live Plan — Session {row.SessionId}", row.QueryText);
     }
 
     /// <summary>

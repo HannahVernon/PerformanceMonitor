@@ -156,7 +156,7 @@ public static class ViewerActualPlanFlow
         var result = MessageBox.Show(
             owner,
             prompt.ToString(),
-            modification.ModifiesData ? "Get Actual Plan — DATA WILL BE MODIFIED" : "Get Actual Plan",
+            modification.ModifiesData ? "Get Actual Plan (re-run) — DATA WILL BE MODIFIED" : "Get Actual Plan (re-run)",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
 

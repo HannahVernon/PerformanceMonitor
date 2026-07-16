@@ -158,18 +158,18 @@ public partial class ViewerServerTab
         {
             case ViewerQueryStatsRow stats:
                 if (string.IsNullOrEmpty(stats.QueryHash)) return;
-                label = $"Plan - {stats.QueryHash}";
+                label = $"Stored Plan - {stats.QueryHash}";
                 queryText = stats.QueryText;
                 fetch = ct => _dataService.GetQueryStatsPlanXmlAsync(_server.ServerId, stats.DatabaseName, stats.QueryHash, ct);
                 break;
             case ViewerQueryStoreRow qs:
-                label = $"Plan - QS {qs.QueryId}";
+                label = $"Stored Plan - QS {qs.QueryId}";
                 queryText = qs.QueryText;
                 fetch = ct => _dataService.GetQueryStorePlanTextAsync(_server.ServerId, qs.DatabaseName, qs.QueryId, qs.PlanId, ct);
                 break;
             case ViewerProcedureStatsRow proc:
                 if (string.IsNullOrEmpty(proc.ObjectName)) return;
-                label = $"Plan - {proc.FullName}";
+                label = $"Stored Plan - {proc.FullName}";
                 queryText = null; /* the procedure grid carries no statement text; the plan XML holds its own */
                 fetch = ct => _dataService.GetProcedureStatsPlanXmlAsync(_server.ServerId, proc.DatabaseName, proc.SchemaName, proc.ObjectName, ct);
                 break;
@@ -177,7 +177,7 @@ public partial class ViewerServerTab
                 /* The unified Expensive Queries row carries its STORED plan in-row (like the Active Queries
                    snapshot grid) — the merged row has no single per-source key to re-fetch by — so hand the
                    in-row XML straight to the host (null → the null-plan branch below shows "No Plan Available"). */
-                label = $"Plan - {expensive.Source}: {expensive.ObjectName}";
+                label = $"Stored Plan - {expensive.Source}: {expensive.ObjectName}";
                 queryText = expensive.IsStatementSource ? expensive.QueryText : null;
                 fetch = _ => Task.FromResult(expensive.QueryPlanXml);
                 break;

@@ -268,7 +268,7 @@ public partial class ServerTab : UserControl
 
         string? planXml = null;
         string? queryText = null;
-        string label = "Estimated Plan";
+        string label = "Stored Plan";
 
         switch (grid.CurrentItem)
         {
@@ -458,7 +458,7 @@ public partial class ServerTab : UserControl
 
         var result = MessageBox.Show(
             prompt.ToString(),
-            modification.ModifiesData ? "Get Actual Plan — DATA WILL BE MODIFIED" : "Get Actual Plan",
+            modification.ModifiesData ? "Get Actual Plan (re-run) — DATA WILL BE MODIFIED" : "Get Actual Plan (re-run)",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
 

@@ -41,20 +41,20 @@
                     <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
-                <MenuItem Header="View Plan" Click="ViewPlan_Click">
+                <MenuItem Header="View Stored Plan" Click="ViewPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
                 <!-- Live plan fetch for the RIGHT-CLICKED snapshot by its plan_handle (headless-safe cached read,
                      no re-exec) — distinct from the stored "View Plan". Gated on the current row's
                      HasLivePlanHandle so a snapshot without a plan_handle shows it disabled. -->
-                <MenuItem Header="Fetch Live Plan" Click="FetchLivePlan_Click"
+                <MenuItem Header="View Cached Plan" Click="FetchLivePlan_Click"
                           IsEnabled="{Binding CurrentItem.HasLivePlanHandle, ElementName=HistoryDataGrid, FallbackValue=False}">
                     <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
                 </MenuItem>
                 <!-- Get Actual Plan (Dashboard parity): asks the SERVICE to RE-EXECUTE this query (identifier-only:
                      query_hash + database) and float the actual plan. Window-scoped to this query_hash, so always
                      enabled; the informed-consent + data-modification flag runs before it executes. -->
-                <MenuItem Header="Get Actual Plan" Click="GetActualPlan_Click">
+                <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
                 </MenuItem>
             </ContextMenu>
