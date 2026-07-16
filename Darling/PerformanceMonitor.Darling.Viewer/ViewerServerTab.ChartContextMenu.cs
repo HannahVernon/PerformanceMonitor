@@ -253,11 +253,28 @@ public partial class ViewerServerTab
         newWindow.Show();
     }
 
-    private static void RevertChartAxes(WpfPlot chart)
+    private void RevertChartAxes(WpfPlot chart)
     {
         /* Clear an active click-isolate first so it doesn't leave series dimmed / state stale (Lite parity). */
         if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
-        chart.Plot.Axes.AutoScale();
+
+        /* Revert re-pins X to the toolbar's settable window (+ auto-fit Y) instead of AutoScale()'ing to the
+           data range — a bare AutoScale fits X to the data plus ScottPlot's ~10% side margins, which re-creates
+           the symmetric dead-space the window-pin campaign removed, on every Revert / double-click. The Query
+           Heatmap is the one exception: its X axis is categorical (bucket columns), so it keeps AutoScale. */
+        if (ReferenceEquals(chart, QueryHeatmapChart))
+        {
+            chart.Plot.Axes.AutoScale();
+        }
+        else
+        {
+            var (startUtc, endUtc) = GetWindowUtc();
+            chart.Plot.Axes.SetLimitsX(
+                ViewerTimeHelper.ForDisplay(startUtc).ToOADate(),
+                ViewerTimeHelper.ForDisplay(endUtc).ToOADate());
+            chart.Plot.Axes.AutoScaleY();
+        }
+
         chart.Refresh();
     }
 
