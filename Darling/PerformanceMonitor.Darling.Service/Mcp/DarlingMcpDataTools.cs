@@ -599,7 +599,11 @@ public sealed class DarlingMcpDataTools
                 avg_physical_reads = r.AvgPhysicalReads,
                 avg_rowcount = r.AvgRowcount,
                 last_execution_time = r.LastExecutionTime?.ToString("o"),
-                query_text = McpHelpers.Truncate(r.QueryText, 2000)
+                query_text = McpHelpers.Truncate(r.QueryText, 2000),
+                /* Emitted because it is a grouping key: on a 2022+ AG the same query can appear once per
+                   replica role, and without this the caller would see duplicate-looking rows with no way
+                   to tell them apart. NULL when the server did not attribute the row. */
+                replica_role = r.ReplicaRole
             });
 
             return JsonSerializer.Serialize(new

@@ -98,7 +98,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 46;
+    internal const int CurrentSchemaVersion = 47;
 
     private readonly string _archivePath;
 
@@ -1077,6 +1077,28 @@ public class DuckDbInitializer
             catch (Exception ex)
             {
                 _logger?.LogWarning("Migration to v46 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 47)
+        {
+            /* v47: query_store_stats.replica_role — the replica role SQL Server 2022+ attributed each
+                    runtime-stats row to (sys.query_store_replicas.replica_name). With "Query Store for
+                    secondary replicas" on, an AG has ONE shared Query Store living on the primary, so the
+                    primary's rows silently blend in secondary workload unless split by replica. Appended at
+                    the end to keep the positional appender aligned; the collector writes it unconditionally
+                    (NULL pre-2022, and NULL on a 2022 standalone whose sys.query_store_replicas is empty),
+                    so an un-migrated DB would mis-align on the next append — this ALTER is required. The v_
+                    view (SELECT *) is rebuilt every startup and picks it up; old parquet reads back NULL
+                    (union BY NAME). */
+            _logger?.LogInformation("Running migration to v47: query_store_stats replica_role column");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_store_stats ADD COLUMN IF NOT EXISTS replica_role VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v47 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
     }

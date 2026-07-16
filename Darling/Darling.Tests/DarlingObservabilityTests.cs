@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentySevenVersions_V26GenericWebhook_V27DeadlocksDatabaseName()
+    public void MigrationScripts_TwentyEightVersions_V27DeadlocksDatabaseName_V28QueryStoreReplicaRole()
     {
-        Assert.Equal(27, PgMigrations.Scripts.Count);
+        Assert.Equal(28, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -62,7 +62,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(25, PgMigrations.Scripts[24].Version);
         Assert.Equal(26, PgMigrations.Scripts[25].Version);
         Assert.Equal(27, PgMigrations.Scripts[26].Version);
-        Assert.Equal(27, StorageVersion.SchemaVersion);
+        Assert.Equal(28, PgMigrations.Scripts[27].Version);
+        Assert.Equal(28, StorageVersion.SchemaVersion);
 
         /* V26 (#1506) adds the generic webhook channel's four columns to the V17 control-plane table.
            Schema-qualified config.* and IF NOT EXISTS, per the file's additive-ALTER idiom. */
@@ -77,6 +78,14 @@ public sealed class DarlingObservabilityTests
         var v27 = PgMigrations.Scripts[26].Sql;
         Assert.Contains("ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS database_name text;", v27, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_deadlocks AS SELECT * FROM deadlocks;", v27, StringComparison.Ordinal);
+
+        /* V28 (#1546) appends the SQL 2022+ replica attribution to query_store_stats and re-expands the
+           pinned v_query_store_stats SELECT *. Appended (never inserted) so an upgraded store's physical
+           column order still matches a fresh store's catalog-generated one — the positional binary COPY
+           depends on it. */
+        var v28 = PgMigrations.Scripts[27].Sql;
+        Assert.Contains("ALTER TABLE query_store_stats ADD COLUMN IF NOT EXISTS replica_role text;", v28, StringComparison.Ordinal);
+        Assert.Contains("CREATE OR REPLACE VIEW v_query_store_stats AS SELECT * FROM query_store_stats;", v28, StringComparison.Ordinal);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so

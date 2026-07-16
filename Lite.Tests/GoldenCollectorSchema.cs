@@ -692,7 +692,8 @@ internal static class GoldenCollectorSchema
     last_force_failure_reason VARCHAR,
     compatibility_level INTEGER,
     query_plan_text VARCHAR,
-    query_plan_hash VARCHAR
+    query_plan_hash VARCHAR,
+    replica_role VARCHAR
 )",
         ["deadlocks"] = @"CREATE TABLE IF NOT EXISTS deadlocks (
     deadlock_id BIGINT PRIMARY KEY,

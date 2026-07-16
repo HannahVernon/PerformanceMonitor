@@ -20,7 +20,7 @@ namespace Lite.Tests;
 /// Pins the parity contract of the extracted query_store definition: the actual_state enumeration
 /// (on-prem AG-aware, Azure not), the live PRODUCTVERSION probe deciding the 2017+/2022+ column
 /// gates (default 13 when the probe fails), the last_execution_time incremental watermark with its
-/// 60-minute fallback, and the 53-column payload. Second Name≠TargetTable case (query_store →
+/// 60-minute fallback, and the 54-column payload. Second Name≠TargetTable case (query_store →
 /// query_store_stats).
 /// </summary>
 public sealed class QueryStoreCollectorDefinitionTests
@@ -82,7 +82,9 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.NotNull(plan);
         Assert.Contains("sys.dm_hadr_database_replica_states", plan!.Text, StringComparison.Ordinal);
         Assert.Contains("drs.is_primary_replica = 1", plan.Text, StringComparison.Ordinal);
-        Assert.Contains("WHERE actual_state > 0", plan.Text, StringComparison.Ordinal);
+        /* IN (1, 2, 4) = READ_ONLY/READ_WRITE/READ_CAPTURE_SECONDARY, not "> 0": 3 = ERROR must not
+           pass the "is QS usable" gate. */
+        Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
         Assert.Contains("AND d.name NOT IN (@excl_db_0)", plan.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("/*EXCLUSION_FILTER*/", plan.Text, StringComparison.Ordinal);
         Assert.Equal("SO", Assert.Single(plan.Parameters).Value);
@@ -95,7 +97,7 @@ public sealed class QueryStoreCollectorDefinitionTests
 
         Assert.NotNull(plan);
         Assert.DoesNotContain("dm_hadr_database_replica_states", plan!.Text, StringComparison.Ordinal);
-        Assert.Contains("WHERE actual_state > 0", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
         Assert.Empty(plan.Parameters);
     }
 
@@ -121,6 +123,8 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.Contains("avg_tempdb_space_used = NULL", plan.Text, StringComparison.Ordinal);
         Assert.Contains("plan_forcing_type = NULL,", plan.Text, StringComparison.Ordinal);
         Assert.Contains("plan_type = NULL,", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("replica_role = CONVERT(nvarchar(1), NULL)", plan.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("sys.query_store_replicas", plan.Text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -133,6 +137,10 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.Contains("avg_tempdb_space_used = qsrs.avg_tempdb_space_used", plan.Text, StringComparison.Ordinal);
         Assert.Contains("plan_forcing_type = qsp.plan_forcing_type_desc,", plan.Text, StringComparison.Ordinal);
         Assert.Contains("plan_type = NULL,", plan.Text, StringComparison.Ordinal);
+
+        /* Replica attribution is 2022+ only — sys.query_store_replicas does not exist on 2017. */
+        Assert.Contains("replica_role = CONVERT(nvarchar(1), NULL)", plan.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("sys.query_store_replicas", plan.Text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -142,6 +150,43 @@ public sealed class QueryStoreCollectorDefinitionTests
 
         Assert.Contains("plan_type = qsp.plan_type_desc,", plan.Text, StringComparison.Ordinal);
         Assert.Contains("plan_forcing_type = qsp.plan_forcing_type_desc,", plan.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Replica attribution turns on at major 16 — sys.query_store_replicas and
+    /// sys.query_store_runtime_stats.replica_group_id both exist from SQL 2022, verified live against
+    /// 16.0.4255.1 (the docs' "2025+" claim for the view is wrong), so the gate is >= 16, not >= 17.
+    /// </summary>
+    [Fact]
+    public void BuildPerItemQuery_2022Probe_ReplicaRole_LeftJoinsReplicas()
+    {
+        var plan = QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext(probeResult: 16));
+
+        /* replica_name read directly: contrary to the docs it IS populated on box SQL Server
+           ('Primary', 'Secondary', 'Geo Secondary', 'Geo HA Secondary'), so no role_type CASE. */
+        Assert.Contains("replica_role = qsr.replica_name", plan.Text, StringComparison.Ordinal);
+
+        /* MUST be a LEFT JOIN. On a 2022 standalone sys.query_store_replicas has ZERO rows while real
+           runtime-stats rows still carry replica_group_id = 1 — an INNER JOIN would match nothing and
+           silently delete ALL Query Store collection on every 2022 standalone server. */
+        Assert.Contains(
+            "LEFT JOIN sys.query_store_replicas AS qsr",
+            plan.Text,
+            StringComparison.Ordinal);
+        Assert.Contains("ON qsr.replica_group_id = qsrs.replica_group_id", plan.Text, StringComparison.Ordinal);
+
+        /* No filter to a single role: rows are attributed, never dropped. */
+        Assert.DoesNotContain("replica_name = N''Primary''", plan.Text, StringComparison.Ordinal);
+    }
+
+    /// <summary>SQL 2025 (major 17) keeps the 2022 attribution — the gate is >=, not ==.</summary>
+    [Fact]
+    public void BuildPerItemQuery_2025Probe_ReplicaRole_StillAttributed()
+    {
+        var plan = QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext(probeResult: 17));
+
+        Assert.Contains("replica_role = qsr.replica_name", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("LEFT JOIN sys.query_store_replicas AS qsr", plan.Text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -187,7 +232,11 @@ public sealed class QueryStoreCollectorDefinitionTests
 
         var on = QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext(capturePlanXml: true));
         Assert.Contains("query_plan_text = CONVERT(nvarchar(max), qsp.query_plan),", on.Text, StringComparison.Ordinal);
-        Assert.DoesNotContain("CONVERT(nvarchar(1), NULL)", on.Text, StringComparison.Ordinal);
+
+        /* Scoped to query_plan_text rather than the bare placeholder: replica_role shares the same
+           nvarchar(1) NULL idiom on a pre-2022 target (this context's probe defaults to 13), so an
+           unqualified DoesNotContain would assert on an unrelated column. */
+        Assert.DoesNotContain("query_plan_text = CONVERT(nvarchar(1), NULL)", on.Text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -200,11 +249,11 @@ public sealed class QueryStoreCollectorDefinitionTests
     }
 
     [Fact]
-    public void PayloadColumns_MatchSchemaOrder_53Columns()
+    public void PayloadColumns_MatchSchemaOrder_54Columns()
     {
         var names = QueryStoreCollector.Instance.PayloadColumns.Select(c => c.Name).ToArray();
 
-        Assert.Equal(53, names.Length);
+        Assert.Equal(54, names.Length);
         Assert.Equal("database_name", names[0]);
         Assert.Equal("query_id", names[1]);
         Assert.Equal("execution_count", names[9]);
@@ -213,16 +262,22 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.Equal("is_forced_plan", names[47]);
         Assert.Equal("compatibility_level", names[50]);
         Assert.Equal("query_plan_hash", names[52]);
+
+        /* replica_role is pinned LAST deliberately: both hosts' bulk writers are positional, and an
+           upgraded store receives this column from an ALTER TABLE ADD COLUMN, which can only append.
+           Moving it earlier would desync a fresh store (DDL generated from this list) from an upgraded
+           one. See the CollectorColumn comment in QueryStoreCollector. */
+        Assert.Equal("replica_role", names[53]);
     }
 
     [Fact]
-    public async Task ReadItemAsync_WritePayload_Pins53ColumnOrder_AndTypeCoercions()
+    public async Task ReadItemAsync_WritePayload_Pins54ColumnOrder_AndTypeCoercions()
     {
         var context = MakeContext();
         var firstExec = new DateTimeOffset(2026, 7, 2, 10, 0, 0, TimeSpan.FromHours(-4));
         var lastExec = new DateTimeOffset(2026, 7, 2, 11, 0, 0, TimeSpan.FromHours(-4));
 
-        var row = new object[52];
+        var row = new object[53];
         row[0] = 101L;                      /* query_id */
         row[1] = 202L;                      /* plan_id */
         row[2] = "Regular";                 /* execution_type_desc */
@@ -247,6 +302,7 @@ public sealed class QueryStoreCollectorDefinitionTests
         row[49] = (short)160;               /* compatibility_level: smallint -> int */
         row[50] = DBNull.Value;             /* query_plan_text (always NULL literal) */
         row[51] = "0xPH";                   /* query_plan_hash */
+        row[52] = "Secondary";              /* replica_role (2022+ attributed the row to a secondary) */
 
         using var reader = new FakeCollectorDataReader(row);
         var rows = new System.Collections.Generic.List<QueryStoreCollector.Row>();
@@ -255,7 +311,7 @@ public sealed class QueryStoreCollectorDefinitionTests
         var writer = new RecordingCollectorRowWriter();
         QueryStoreCollector.Instance.WritePayload(Assert.Single(rows), writer, context);
 
-        Assert.Equal(53, writer.Values.Count);
+        Assert.Equal(54, writer.Values.Count);
         Assert.Equal("SO", writer.Values[0]);                       /* enumerated item leads the payload */
         Assert.Equal(101L, writer.Values[1]);
         Assert.Equal(firstExec.UtcDateTime, writer.Values[4]);      /* datetimeoffset -> UTC DateTime */
@@ -270,6 +326,7 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.Equal(160, writer.Values[50]);                       /* smallint compat -> int */
         Assert.Null(writer.Values[51]);
         Assert.Equal("0xPH", writer.Values[52]);
+        Assert.Equal("Secondary", writer.Values[53]);               /* replica_role rides last, after query_plan_hash */
         Assert.Empty(s_deltas.Calls);                               /* incremental snapshot — no deltas */
     }
 }

@@ -320,6 +320,11 @@ BEGIN
         Build list of databases where Query Store is actually enabled.
         Uses sys.database_query_store_options.actual_state instead of
         sys.databases.is_query_store_on, which can be out of sync on Azure SQL DB.
+
+        actual_state is matched against the explicit usable set IN (1, 2, 4) —
+        READ_ONLY, READ_WRITE, READ_CAPTURE_SECONDARY — rather than the looser
+        "> 0", which also admits 3 = ERROR: an errored Query Store is not readable
+        and must not pass the "is QS usable" gate (0 = OFF).
         */
         DECLARE
             @database_name sysname,
@@ -376,7 +381,7 @@ BEGIN
                         SELECT
                             1
                         FROM sys.database_query_store_options
-                        WHERE actual_state > 0
+                        WHERE actual_state IN (1, 2, 4)
                     );';
 
                 DECLARE @qs_exec_sp nvarchar(256) = QUOTENAME(@database_name) + N'.sys.sp_executesql';
