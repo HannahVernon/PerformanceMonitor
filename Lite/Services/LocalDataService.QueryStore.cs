@@ -639,6 +639,9 @@ ORDER BY collection_time";
 
 public class QueryStoreRow
 {
+    /// <summary>Gates "Get Actual Plan (re-run)" — see <see cref="QuerySnapshotRow.CanGetActualPlan"/>.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText);
+
     public string DatabaseName { get; set; } = "";
     public long QueryId { get; set; }
     public long PlanId { get; set; }

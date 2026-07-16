@@ -10,6 +10,11 @@ namespace PerformanceMonitor.Ui;
 
 public class QueryStatsComparisonItem : ComparisonItemBase
 {
+    /// <summary>Gates "Get Actual Plan (re-run)" in Lite's query-grid plan menu — the re-run executes this row's
+    /// query text. The sibling ProcedureStatsComparisonItem deliberately has no such property: the re-run handler
+    /// has no case for it, so its menu binding falls back to Collapsed and the verb is hidden there.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText);
+
     public string QueryHash { get; set; } = "";
     public string? ObjectName { get; set; }
     public string? SchemaName { get; set; }
