@@ -319,26 +319,11 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>
-    /// Reads settings.json (or starts fresh), applies <paramref name="mutate"/>, and writes it back
-    /// indented; logs and swallows any error under <paramref name="what"/>. Shared by the single-value
-    /// Save* methods so the read/merge/write/catch boilerplate lives in one place.
+    /// Delegates to <see cref="App.WriteSetting"/> — the single read/merge/write/catch home for
+    /// settings.json single-value updates (now shared with MainWindow's Overview sort selector). Kept as a
+    /// thin alias so the existing Save* call sites and their JsonNode mutate lambdas are untouched.
     /// </summary>
-    private static void WriteSetting(string what, Action<JsonNode> mutate)
-    {
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode root = File.Exists(settingsPath)
-                ? JsonNode.Parse(File.ReadAllText(settingsPath)) ?? new JsonObject()
-                : new JsonObject();
-            mutate(root);
-            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save {what}: {ex.Message}");
-        }
-    }
+    private static void WriteSetting(string what, Action<JsonNode> mutate) => App.WriteSetting(what, mutate);
 
     private void SaveDefaultTimeRange()
     {

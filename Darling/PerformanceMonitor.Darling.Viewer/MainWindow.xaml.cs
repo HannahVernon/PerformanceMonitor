@@ -115,6 +115,11 @@ public partial class MainWindow : Window
     /// <summary>Seen-row retention (poll window + margin) so a row still inside the window is never pruned early.</summary>
     private static readonly TimeSpan s_alertSeenRetention = TimeSpan.FromMinutes(20);
 
+    /// <summary>The Overview tile sort mode (CPU% descending default / Name): seeded from ViewerAppSettings in
+    /// the constructor, persisted back on selector change, and applied by <see cref="ServerOverviewSort.Order"/>
+    /// at the fleet bind site so tiles re-sort deterministically every refresh.</summary>
+    private ServerOverviewSortMode _overviewSortMode;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -143,6 +148,11 @@ public partial class MainWindow : Window
         _connectionTimeoutSeconds = appSettings.ConnectionTimeoutSeconds;
         _refreshInterval = TimeSpan.FromSeconds(appSettings.NocRefreshIntervalSeconds);
         ApplyTimeDisplayMode(appSettings.TimeDisplayMode);
+        /* Overview tile sort: seed the mode from settings and select the matching header-selector item. There is
+           deliberately NO XAML default selection, so this is the only pre-load SelectedIndex assignment; the
+           handler's IsLoaded guard suppresses the SelectionChanged it raises here. */
+        _overviewSortMode = ServerOverviewSort.ParseMode(appSettings.OverviewSortMode);
+        OverviewSortSelector.SelectedIndex = _overviewSortMode == ServerOverviewSortMode.Name ? 1 : 0;
         Loaded += OnLoaded;
         Closed += OnClosed;
     }
@@ -914,6 +924,33 @@ public partial class MainWindow : Window
 
     // ── Overview tab (all-servers server cards; refreshes on its own timer at the fleet interval) ──────
 
+    /// <summary>Re-sorts the Overview tiles when the header selector changes and persists the choice to
+    /// ViewerAppSettings (mirroring <see cref="OnDisplayModeChanged"/>'s load/set/save). Maps the two fixed
+    /// selector positions EXPLICITLY (index 1 = Name, else CPU%) so a transient -1 during seeding is never
+    /// treated as an undefined enum. Re-sorts the already-bound list directly — no store round-trip.</summary>
+    private void OverviewSortSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        _overviewSortMode = OverviewSortSelector.SelectedIndex == 1
+            ? ServerOverviewSortMode.Name
+            : ServerOverviewSortMode.Cpu;
+
+        var settings = _appSettingsStore.Load();
+        settings.OverviewSortMode = ServerOverviewSort.ToToken(_overviewSortMode);
+        _appSettingsStore.Save(settings);
+
+        if (OverviewItemsControl.ItemsSource is IEnumerable<ServerSummaryItem> current)
+        {
+            OverviewItemsControl.ItemsSource = ServerOverviewSort.Order(
+                current.ToList(), _overviewSortMode,
+                s => s.CpuPercentForAlert, s => s.DisplayName, s => s.ServerId);
+        }
+    }
+
     /// <summary>
     /// Loads a summary card for every registered server (Lite's RefreshOverviewAsync), reading each
     /// server's latest metrics concurrently over the pooled data source. Status is derived from
@@ -960,7 +997,10 @@ public partial class MainWindow : Window
             }
         }));
 
-        var cards = summaries.OfType<ServerSummaryItem>().ToList();
+        var cards = ServerOverviewSort.Order(
+            summaries.OfType<ServerSummaryItem>().ToList(),
+            _overviewSortMode,
+            s => s.CpuPercentForAlert, s => s.DisplayName, s => s.ServerId);
         OverviewItemsControl.ItemsSource = cards;
 
         /* Fleet-wide NOC roll-up above the cards — the cross-server totals SQL aggregate (the read only
