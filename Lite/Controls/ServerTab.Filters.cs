@@ -53,8 +53,6 @@ public partial class ServerTab : UserControl
         _serverConfigChangesFilterMgr = new DataGridFilterManager<ServerConfigChangeRow>(ServerConfigChangesGrid);
         _databaseConfigChangesFilterMgr = new DataGridFilterManager<DatabaseConfigChangeRow>(DatabaseConfigChangesGrid);
         _traceFlagChangesFilterMgr = new DataGridFilterManager<TraceFlagChangeRow>(TraceFlagChangesGrid);
-        /* Expensive Queries grid (the LAST Queries sub-tab). */
-        _expensiveQueriesFilterMgr = new DataGridFilterManager<UnifiedExpensiveQueryRow>(ExpensiveQueriesGrid);
 
         _filterManagers[QuerySnapshotsGrid] = _querySnapshotsFilterMgr;
         _filterManagers[QueryStatsGrid] = _queryStatsFilterMgr;
@@ -83,7 +81,6 @@ public partial class ServerTab : UserControl
         _filterManagers[ServerConfigChangesGrid] = _serverConfigChangesFilterMgr;
         _filterManagers[DatabaseConfigChangesGrid] = _databaseConfigChangesFilterMgr;
         _filterManagers[TraceFlagChangesGrid] = _traceFlagChangesFilterMgr;
-        _filterManagers[ExpensiveQueriesGrid] = _expensiveQueriesFilterMgr;
     }
 
     /* Host/apply plumbing lives in the shared Ui controller. Lazy (a field initializer can't reference the

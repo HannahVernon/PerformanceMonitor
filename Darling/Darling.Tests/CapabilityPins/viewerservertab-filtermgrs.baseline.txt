@@ -8,7 +8,6 @@ ViewerServerTab.Filters.cs:DatabaseConfigChangesGrid
 ViewerServerTab.Filters.cs:DatabaseConfigGrid
 ViewerServerTab.Filters.cs:DatabaseScopedConfigGrid
 ViewerServerTab.Filters.cs:DeadlockGrid
-ViewerServerTab.Filters.cs:ExpensiveQueriesGrid
 ViewerServerTab.Filters.cs:ProcedureStatsGrid
 ViewerServerTab.Filters.cs:QuerySnapshotsGrid
 ViewerServerTab.Filters.cs:QueryStatsGrid

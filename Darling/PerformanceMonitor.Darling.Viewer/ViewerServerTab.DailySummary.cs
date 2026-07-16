@@ -86,7 +86,7 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
-    /// A day-detail drill button (View Deadlocks / Blocking / Expensive Queries): scope the toolbar to the
+    /// A day-detail drill button (View Deadlocks / Blocking / Top Queries): scope the toolbar to the
     /// clicked day's [00:00, next-day 00:00) UTC window and jump to the target inner tab, then load that grid
     /// over the day. This reuses the exact mechanism the per-chart drills use — set the toolbar's custom
     /// window, switch the inner tab under <see cref="_suppressDrillDownAutoRefresh"/> (so the tab-switch
@@ -119,9 +119,9 @@ public partial class ViewerServerTab
                         InnerTabs.SelectedIndex = BlockingInnerTabIndex;
                         BlockingSubTabs.SelectedIndex = BlockedProcessReportsSubTabIndex;
                         break;
-                    case DayDrillTarget.ExpensiveQueries:
+                    case DayDrillTarget.TopQueries:
                         InnerTabs.SelectedIndex = QueriesInnerTabIndex;
-                        QueriesSubTabControl.SelectedIndex = ExpensiveQueriesSubTabIndex;
+                        QueriesSubTabControl.SelectedIndex = TopQueriesSubTabIndex;
                         break;
                 }
             }
@@ -138,8 +138,8 @@ public partial class ViewerServerTab
                 case DayDrillTarget.Blocking:
                     await LoadBlockedProcessReportsAsync(startUtc, endUtc);
                     break;
-                case DayDrillTarget.ExpensiveQueries:
-                    await LoadExpensiveQueriesAsync(startUtc, endUtc);
+                case DayDrillTarget.TopQueries:
+                    await LoadTopQueriesAsync(startUtc, endUtc);
                     break;
             }
         }

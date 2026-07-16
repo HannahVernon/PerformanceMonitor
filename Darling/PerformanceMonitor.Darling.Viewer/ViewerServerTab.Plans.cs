@@ -173,14 +173,6 @@ public partial class ViewerServerTab
                 queryText = null; /* the procedure grid carries no statement text; the plan XML holds its own */
                 fetch = ct => _dataService.GetProcedureStatsPlanXmlAsync(_server.ServerId, proc.DatabaseName, proc.SchemaName, proc.ObjectName, ct);
                 break;
-            case ViewerExpensiveQueryRow expensive:
-                /* The unified Expensive Queries row carries its STORED plan in-row (like the Active Queries
-                   snapshot grid) — the merged row has no single per-source key to re-fetch by — so hand the
-                   in-row XML straight to the host (null → the null-plan branch below shows "No Plan Available"). */
-                label = $"Stored Plan - {expensive.Source}: {expensive.ObjectName}";
-                queryText = expensive.IsStatementSource ? expensive.QueryText : null;
-                fetch = _ => Task.FromResult(expensive.QueryPlanXml);
-                break;
             default:
                 /* Comparison items / anything else: no stored plan keyed on the row — deferred. */
                 return;

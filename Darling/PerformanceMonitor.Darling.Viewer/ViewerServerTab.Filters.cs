@@ -43,7 +43,6 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<ViewerProcedureStatsRow>? _procStatsFilterMgr;
     private DataGridFilterManager<ViewerQueryStoreRow>? _queryStoreFilterMgr;
     private DataGridFilterManager<ViewerQueryStoreRegressionRow>? _queryStoreRegressionsFilterMgr;
-    private DataGridFilterManager<ViewerExpensiveQueryRow>? _expensiveQueriesFilterMgr;
     private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
     private DataGridFilterManager<ServerConfigChangeRow>? _serverConfigChangesFilterMgr;
@@ -66,7 +65,6 @@ public partial class ViewerServerTab : UserControl
         _procStatsFilterMgr = new DataGridFilterManager<ViewerProcedureStatsRow>(ProcedureStatsGrid);
         _queryStoreFilterMgr = new DataGridFilterManager<ViewerQueryStoreRow>(QueryStoreGrid);
         _queryStoreRegressionsFilterMgr = new DataGridFilterManager<ViewerQueryStoreRegressionRow>(QueryStoreRegressionsGrid);
-        _expensiveQueriesFilterMgr = new DataGridFilterManager<ViewerExpensiveQueryRow>(ExpensiveQueriesGrid);
         _collectionHealthFilterMgr = new DataGridFilterManager<CollectorHealthRow>(CollectionHealthGrid);
         _collectionLogFilterMgr = new DataGridFilterManager<CollectionLogRow>(CollectionLogGrid);
         _serverConfigChangesFilterMgr = new DataGridFilterManager<ServerConfigChangeRow>(ServerConfigChangesGrid);
@@ -85,7 +83,6 @@ public partial class ViewerServerTab : UserControl
         _filterManagers[ProcedureStatsGrid] = _procStatsFilterMgr;
         _filterManagers[QueryStoreGrid] = _queryStoreFilterMgr;
         _filterManagers[QueryStoreRegressionsGrid] = _queryStoreRegressionsFilterMgr;
-        _filterManagers[ExpensiveQueriesGrid] = _expensiveQueriesFilterMgr;
         _filterManagers[CollectionHealthGrid] = _collectionHealthFilterMgr;
         _filterManagers[CollectionLogGrid] = _collectionLogFilterMgr;
         _filterManagers[ServerConfigChangesGrid] = _serverConfigChangesFilterMgr;

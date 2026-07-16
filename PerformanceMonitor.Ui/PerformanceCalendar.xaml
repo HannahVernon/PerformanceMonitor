@@ -163,7 +163,7 @@
         <!--
           Row 3: the day-detail panel. Shown when a day is clicked (replacing the old one-row Daily Summary
           popup): a band-colored header, the "why this day is <band>" reasons that drove the band, a
-          key-metrics line, and drill buttons that jump to that day's Deadlocks / Blocking / Expensive Queries.
+          key-metrics line, and drill buttons that jump to that day's Deadlocks / Blocking / Top Queries.
           The reasons / metrics / which buttons appear are all computed by the shared DailyHealthBandCalculator;
           clicking a drill button raises DayDrillRequested for the host to scope + navigate. All colors are
           theme DynamicResources so the panel themes with its host.
@@ -198,8 +198,8 @@
                             Visibility="Collapsed" Click="DeadlocksDrillButton_Click"/>
                     <Button x:Name="BlockingDrillButton" Content="View Blocking" Margin="0,0,8,0" Padding="12,4"
                             Visibility="Collapsed" Click="BlockingDrillButton_Click"/>
-                    <Button x:Name="ExpensiveQueriesDrillButton" Content="View Expensive Queries" Margin="0,0,8,0" Padding="12,4"
-                            Visibility="Collapsed" Click="ExpensiveQueriesDrillButton_Click"/>
+                    <Button x:Name="TopQueriesDrillButton" Content="View Top Queries" Margin="0,0,8,0" Padding="12,4"
+                            Visibility="Collapsed" Click="TopQueriesDrillButton_Click"/>
                 </StackPanel>
             </StackPanel>
         </Border>
