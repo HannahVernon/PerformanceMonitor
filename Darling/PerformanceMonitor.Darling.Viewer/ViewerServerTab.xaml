@@ -92,6 +92,10 @@
         </Style>
 
         <Style x:Key="DarkGrid" TargetType="DataGrid">
+            <!-- DarkGrid has no BasedOn, so it must re-declare the implicit DataGrid style's behaviors or grids using it silently lose them (this is why the query grids were sorting ascending-first on the first header click). -->
+            <Setter Property="ui:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+            <Setter Property="ui:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
+            <Setter Property="ui:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
             <Setter Property="AutoGenerateColumns" Value="False"/>
             <Setter Property="IsReadOnly" Value="True"/>
             <Setter Property="CanUserAddRows" Value="False"/>

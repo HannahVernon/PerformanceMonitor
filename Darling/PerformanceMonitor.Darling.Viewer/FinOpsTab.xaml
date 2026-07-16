@@ -59,6 +59,10 @@
         </Style>
 
         <Style x:Key="DarkGrid" TargetType="DataGrid">
+            <!-- DarkGrid has no BasedOn, so it must re-declare the implicit DataGrid style's behaviors or grids using it silently lose them (sort-descending-first, header-copy, middle-click panning). -->
+            <Setter Property="ui:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+            <Setter Property="ui:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
+            <Setter Property="ui:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
             <Setter Property="AutoGenerateColumns" Value="False"/>
             <Setter Property="IsReadOnly" Value="True"/>
             <Setter Property="CanUserAddRows" Value="False"/>

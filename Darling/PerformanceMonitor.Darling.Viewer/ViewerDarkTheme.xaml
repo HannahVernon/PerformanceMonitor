@@ -1,5 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:ui="clr-namespace:PerformanceMonitor.Ui;assembly=PerformanceMonitor.Ui">
     <!--
         Shared control styles for the viewer's read-only write-back / dialog windows (Manage Mute
         Rules, the Mute Rule editor, history popups, collection log, etc.). Merged locally by those
@@ -201,6 +202,10 @@
     </Style>
 
     <Style x:Key="DarkGrid" TargetType="DataGrid">
+        <!-- DarkGrid has no BasedOn, so it must re-declare the implicit DataGrid style's behaviors or grids using it silently lose them (sort-descending-first, header-copy, middle-click panning). -->
+        <Setter Property="ui:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+        <Setter Property="ui:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
+        <Setter Property="ui:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
         <Setter Property="AutoGenerateColumns" Value="False"/>
         <Setter Property="IsReadOnly" Value="True"/>
         <Setter Property="CanUserAddRows" Value="False"/>
