@@ -17,7 +17,7 @@ using static PerformanceMonitor.Ui.DataGridHelpers;
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
-/// The "Fetch Live Plan" surfaces (headless-plan live-plan wave): the piece Darling's stored-plan-only viewer
+/// The "View Cached Plan" surfaces (headless-plan live-plan wave): the piece Darling's stored-plan-only viewer
 /// had to drop when it lost Lite's direct SqlClient path. The viewer never touches SQL Server, but the SERVICE
 /// holds a live runtime connection to every monitored server, so these hand a handle to the service over the
 /// Stage-2 command channel (<see cref="ViewerDataService.FetchLivePlanAsync"/> → a <c>fetch_plan</c> command)
@@ -43,7 +43,7 @@ public partial class ViewerServerTab
     // ── Query / Procedure grids: fetch the currently-cached plan by plan_handle ──
 
     /// <summary>
-    /// "Fetch Live Plan" on a Top Queries / Top Procedures row — fetches the plan CURRENTLY in the server's plan
+    /// "View Cached Plan" on a Top Queries / Top Procedures row — fetches the plan CURRENTLY in the server's plan
     /// cache by the row's plan_handle (distinct from the collector's stored plan, which "View Plan" opens). Gated
     /// in XAML on the row's <c>HasLivePlanHandle</c>, so it only fires for a row that carries a plan_handle.
     /// </summary>
@@ -63,13 +63,13 @@ public partial class ViewerServerTab
             case ViewerQueryStatsRow stats when !string.IsNullOrEmpty(stats.PlanHandle):
                 planHandle = stats.PlanHandle;
                 databaseName = stats.DatabaseName;
-                label = $"Live Plan - {stats.QueryHash}";
+                label = $"Cached Plan - {stats.QueryHash}";
                 queryText = stats.QueryText;
                 break;
             case ViewerProcedureStatsRow proc when !string.IsNullOrEmpty(proc.PlanHandle):
                 planHandle = proc.PlanHandle;
                 databaseName = proc.DatabaseName;
-                label = $"Live Plan - {proc.FullName}";
+                label = $"Cached Plan - {proc.FullName}";
                 queryText = null; /* the procedure grid carries no statement text; the plan XML holds its own */
                 break;
             case ViewerExpensiveQueryRow expensive when !string.IsNullOrEmpty(expensive.PlanHandle):
@@ -78,7 +78,7 @@ public partial class ViewerServerTab
                    sources; the procedure sources carry the object name, whose plan XML holds its own text. */
                 planHandle = expensive.PlanHandle;
                 databaseName = expensive.DatabaseName;
-                label = $"Live Plan - {expensive.Source}: {expensive.ObjectName}";
+                label = $"Cached Plan - {expensive.Source}: {expensive.ObjectName}";
                 queryText = expensive.IsStatementSource ? expensive.QueryText : null;
                 break;
             default:
@@ -92,7 +92,7 @@ public partial class ViewerServerTab
     // ── Deadlock grid: fetch the live plan for THIS process (any process in the graph) by its sql_handle ──
 
     /// <summary>
-    /// "Fetch Live Plan (This Process)" on a deadlock row — fetches the live plan for the RIGHT-CLICKED process
+    /// "View Cached Plan (This Process)" on a deadlock row — fetches the live plan for the RIGHT-CLICKED process
     /// (victim OR deadlocker) by the sql_handle in its deadlock-graph executionStack, closing Lite's "any
     /// process, not just the stored victim" gap. Tries the process-level handle then each frame top-down (Lite's
     /// order), first cached plan wins.
@@ -111,7 +111,7 @@ public partial class ViewerServerTab
             return;
         }
 
-        await FetchAndOpenBySqlHandleFramesAsync(frames, row.DatabaseName, $"Live Plan - {sideLabel} SPID {row.Spid}", row.SqlText);
+        await FetchAndOpenBySqlHandleFramesAsync(frames, row.DatabaseName, $"Cached Plan - {sideLabel} SPID {row.Spid}", row.SqlText);
     }
 
     // ── Blocked Process Reports grid: fetch the live plan for the blocked / blocking process by its sql_handle ──
@@ -123,7 +123,7 @@ public partial class ViewerServerTab
         => await FetchBlockedProcessLivePlanAsync(sender, blockingSide: true);
 
     /// <summary>
-    /// "Fetch Blocked/Blocking Live Plan" on a blocked-process-report row — fetches the live plan for the blocked
+    /// "View Blocked/Blocking Cached Plan" on a blocked-process-report row — fetches the live plan for the blocked
     /// or blocking process by the sql_handle in its executionStack frames. Gated in XAML on the row's
     /// <c>HasReportXml</c>, so a DMV-snapshot fallback row (no report XML → no sql_handle) shows the items
     /// disabled rather than shown-and-empty.
@@ -145,7 +145,7 @@ public partial class ViewerServerTab
             return;
         }
 
-        await FetchAndOpenBySqlHandleFramesAsync(frames, row.DatabaseName, $"Live Plan - {sideLabel} SPID {spid}", queryText);
+        await FetchAndOpenBySqlHandleFramesAsync(frames, row.DatabaseName, $"Cached Plan - {sideLabel} SPID {spid}", queryText);
     }
 
     // ── Shared fetch/display flow ──
@@ -185,7 +185,7 @@ public partial class ViewerServerTab
         catch (Exception ex)
         {
             HidePlanLoading();
-            MessageBox.Show($"Failed to fetch the live plan:\n\n{ex.Message}", "Live Plan Error",
+            MessageBox.Show($"Failed to fetch the live plan:\n\n{ex.Message}", "Cached Plan Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -255,7 +255,7 @@ public partial class ViewerServerTab
         catch (Exception ex)
         {
             HidePlanLoading();
-            MessageBox.Show($"Failed to fetch the live plan:\n\n{ex.Message}", "Live Plan Error",
+            MessageBox.Show($"Failed to fetch the live plan:\n\n{ex.Message}", "Cached Plan Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -274,7 +274,7 @@ public partial class ViewerServerTab
     {
         var (caption, icon) = result.Status == LivePlanFetchStatus.NotInCache
             ? ("Plan Not In Cache", MessageBoxImage.Information)
-            : ("Live Plan Fetch Failed", MessageBoxImage.Warning);
+            : ("Cached Plan Fetch Failed", MessageBoxImage.Warning);
         MessageBox.Show(result.Message ?? "The plan could not be fetched.", caption, MessageBoxButton.OK, icon);
     }
 

@@ -354,7 +354,7 @@ public partial class WaitDrillDownWindow : Window
 
         /* Prefer the stored ACTUAL (live) plan; fall through to the estimated plan on null OR empty (an empty
            live_query_plan is "not captured", not a plan). Label names whichever one is actually shown —
-           mirrors the Active Queries grid's separate Estimated / Actual buttons. */
+           mirrors the Active Queries grid's separate Estimated / Live buttons. */
         var isActual = !string.IsNullOrEmpty(row.LiveQueryPlan);
         var planXml = isActual ? row.LiveQueryPlan : row.QueryPlan;
         if (string.IsNullOrEmpty(planXml))
@@ -365,7 +365,7 @@ public partial class WaitDrillDownWindow : Window
             return;
         }
 
-        var label = $"{(isActual ? "Actual" : "Est")} Plan - SPID {row.SessionId}";
+        var label = $"{(isActual ? "Live" : "Est")} Plan - SPID {row.SessionId}";
         var viewer = new PlanViewerControl();
         try
         {

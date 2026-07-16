@@ -39,13 +39,13 @@
                     <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
-                <MenuItem Header="View Plan" Click="ViewPlan_Click">
+                <MenuItem Header="View Stored Plan" Click="ViewPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
                 <!-- Get Actual Plan (Dashboard parity): asks the SERVICE to RE-EXECUTE the right-clicked snapshot's
                      query (identifier-only: collection_time + session_id) and float the actual plan. The
                      informed-consent + data-modification flag runs before it executes. -->
-                <MenuItem Header="Get Actual Plan" Click="GetActualPlan_Click">
+                <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
                 </MenuItem>
             </ContextMenu>

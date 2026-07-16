@@ -286,7 +286,7 @@ public partial class QueryStatsHistoryWindow : Window
             await ViewerActualPlanFlow.OpenFloatingPlanAsync(this, planXml, label, _queryText);
     }
 
-    /// <summary>"Fetch Live Plan" — asks the service to read the RIGHT-CLICKED snapshot's plan from the target's
+    /// <summary>"View Cached Plan" — asks the service to read the RIGHT-CLICKED snapshot's plan from the target's
     /// LIVE cache by its plan_handle (headless-safe: a cached read via the fetch_plan command, no re-execution),
     /// mirroring the parent grid's FetchLiveQueryPlan_Click. Distinct from "View Plan" (the stored plan XML).
     /// Gated per row on HasLivePlanHandle; the same plan_handle-bearing row gets it on the parent Top Queries grid.</summary>
@@ -295,7 +295,7 @@ public partial class QueryStatsHistoryWindow : Window
         if (HistoryDataGrid.CurrentItem is not ViewerQueryStatsHistoryRow row || string.IsNullOrEmpty(row.PlanHandle))
             return;
 
-        var label = $"Live Plan - {_queryHash}";
+        var label = $"Cached Plan - {_queryHash}";
         var argsJson = ViewerDataService.BuildPlanFetchArgsByPlanHandle(row.PlanHandle, _databaseName);
         await FetchAndShowLivePlanAsync(argsJson, label, _queryText);
     }
@@ -318,7 +318,7 @@ public partial class QueryStatsHistoryWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to fetch the live plan: {ex.Message}", "Live Plan Error",
+            MessageBox.Show(this, $"Failed to fetch the live plan: {ex.Message}", "Cached Plan Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
@@ -326,7 +326,7 @@ public partial class QueryStatsHistoryWindow : Window
         if (result.Status != LivePlanFetchStatus.Fetched || string.IsNullOrEmpty(result.PlanXml))
         {
             MessageBox.Show(this, result.Message ?? "The live plan could not be fetched.",
-                "Live Plan", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Cached Plan", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
