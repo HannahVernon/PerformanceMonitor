@@ -101,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **Plan Cache tab: dropped the momentary Cache Object Type breakdown grid (both apps)** ([#NNNN]) — a time-series chart doesn't need a point-in-time aggregate grid beneath it; kept the over-time single-use vs multi-use size chart plus the Total Plans / Oldest Plan Age / Bloat Level summary strip. Removed the `PlanCacheCompositionGrid` from both the Lite `ServerTab` and the Darling viewer's `ViewerServerTab` (the Plan Cache tab's row layout collapses from chart / summary / grid to chart-over-summary), the grid's Lite filter-manager (`_planCacheCompositionFilterMgr`) and its copy-header registration, and the matching capability-pin baseline lines (Lite `servertab-filtermgrs` + `servertab-gridstyle`, Darling `viewerservertab-gridstyle`). The `PlanCacheSnapshotRow` type and the `GetPlanCacheSnapshotAsync` reader are RETAINED in both apps — Lite's `get_plan_cache_bloat` MCP tool and the Darling `ViewerPlanCacheTests` snapshot round-trip still consume them. The deprecated Full Dashboard has no such tab and is untouched.
+- **Plan Cache tab: dropped the momentary Cache Object Type breakdown grid (both apps)** ([#1539]) — a time-series chart doesn't need a point-in-time aggregate grid beneath it; kept the over-time single-use vs multi-use size chart plus the Total Plans / Oldest Plan Age / Bloat Level summary strip. Removed the `PlanCacheCompositionGrid` from both the Lite `ServerTab` and the Darling viewer's `ViewerServerTab` (the Plan Cache tab's row layout collapses from chart / summary / grid to chart-over-summary), the grid's Lite filter-manager (`_planCacheCompositionFilterMgr`) and its copy-header registration, and the matching capability-pin baseline lines (Lite `servertab-filtermgrs` + `servertab-gridstyle`, Darling `viewerservertab-gridstyle`). The `PlanCacheSnapshotRow` type and the `GetPlanCacheSnapshotAsync` reader are RETAINED in both apps — Lite's `get_plan_cache_bloat` MCP tool and the Darling `ViewerPlanCacheTests` snapshot round-trip still consume them. The deprecated Full Dashboard has no such tab and is untouched.
 
 ### Fixed
 
@@ -327,7 +327,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1485]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1485
 [#1484]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1484
 [#1488]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1488
-[#NNNN]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/NNNN
+[#1539]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1539
 [#1486]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1486
 [#1517]: https://github.com/erikdarlingdata/PerformanceMonitor/pull/1517
 [#1346]: https://github.com/erikdarlingdata/PerformanceMonitor/issues/1346
