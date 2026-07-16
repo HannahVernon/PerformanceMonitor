@@ -17,6 +17,7 @@
         timer refreshes only the active inner tab of the visible server tab.
     -->
     <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -284,7 +285,7 @@
                  the target's cache by this row's plan_handle — distinct from the stored plan "View Plan" opens.
                  Gated on HasLivePlanHandle so rows without a plan_handle (Query Store / Expensive Queries) disable it. -->
             <MenuItem Header="View Cached Plan" Click="FetchLiveQueryPlan_Click"
-                      IsEnabled="{Binding PlacementTarget.DataContext.HasLivePlanHandle, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                      Visibility="{Binding PlacementTarget.DataContext.HasLivePlanHandle, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
                 <MenuItem.Icon><TextBlock Text="&#x1F310;"/></MenuItem.Icon>
             </MenuItem>
             <!-- Get Actual Plan (Lite parity): asks the service to RE-EXECUTE the stored query (SET STATISTICS
@@ -293,7 +294,7 @@
                  fall back to disabled. Side-effecting: the click runs an informed-consent dialog that flags
                  data-modifying queries prominently before enqueuing. -->
             <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualQueryPlan_Click"
-                      IsEnabled="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, FallbackValue=False}">
+                      Visibility="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
                 <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
             </MenuItem>
         </ContextMenu>
@@ -344,6 +345,44 @@
 
         <Style x:Key="QuerySnapshotGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
             <Setter Property="ContextMenu" Value="{StaticResource QuerySnapshotGridContextMenu}"/>
+        </Style>
+
+        <!-- PLAN variant for Query Store + Query Store Regressions. Plan access is by QueryId: the read carries
+             no plan_handle (so no "View Cached Plan"), and Regression rows aggregate across plans so they have
+             no single stored plan. "View Stored Plan" is gated HasStoredPlan (Query Store yes, Regressions no);
+             "Get Actual Plan (re-run)" RE-EXECUTES by QueryId via GetActualQueryStorePlan_Click, the same
+             service path the Query Store history window uses. Non-applicable verbs are HIDDEN (BoolToVis), not
+             greyed, so neither grid shows a disabled item. -->
+        <ContextMenu x:Key="QueryStorePlanContextMenu">
+            <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Copy Repro Script" Click="CopyReproScript_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4DD;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="View Stored Plan" Click="ViewPlan_Click"
+                      Visibility="{Binding PlacementTarget.DataContext.HasStoredPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualQueryStorePlan_Click"
+                      Visibility="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
+            </MenuItem>
+        </ContextMenu>
+
+        <Style x:Key="QueryStorePlanGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DarkGridRow}">
+            <Setter Property="ContextMenu" Value="{StaticResource QueryStorePlanContextMenu}"/>
         </Style>
 
     </UserControl.Resources>
@@ -753,7 +792,7 @@
                                            FontSize="12" Foreground="DarkGoldenrod" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             </StackPanel>
                             <DataGrid Grid.Row="1" x:Name="CurrentActiveQueriesGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource DarkGridRow}"
+                                      RowStyle="{StaticResource QuerySnapshotGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="SPID" Binding="{Binding SessionId}" ElementStyle="{StaticResource NumericCell}" Width="55"/>
@@ -1313,7 +1352,7 @@
                                        Foreground="{DynamicResource ForegroundBrush}"
                                        Background="#2244AAFF"/>
                             <DataGrid Grid.Row="2" x:Name="QueryStoreGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource QueryPlanGridRowStyle}"
+                                      RowStyle="{StaticResource QueryStorePlanGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                       Sorting="QueryStoreGrid_Sorting">
                                 <DataGrid.Columns>
@@ -1567,12 +1606,13 @@
                          regressed-query grid comparing each (database, query_id) group's RECENT-window
                          Query Store averages to its BASELINE (everything captured before the window), kept
                          when CPU regressed > 25% and ranked by execution-count-weighted added duration.
-                         Inserted right after Query Store by Duration, matching the Dashboard's Query Store →
-                         Query Store Regressions adjacency. No slicer / comparison / plan surface (the read is
-                         already a baseline-vs-recent contrast and carries no plan XML — like the Dashboard
-                         grid); double-clicking a row opens that query's history window (ViewerServerTab.History.cs),
-                         and the plan-less query-grid menu (QueryGridRowStyle) offers Copy Repro from the
-                         query-text sample + copy/export. -->
+                         Inserted right after Query Store by Duration, matching the Dashboard's Query Store ->
+                         Query Store Regressions adjacency. No slicer / comparison. The read aggregates across
+                         plans and carries no plan XML, so there is no single stored plan to VIEW — but each row's
+                         QueryId lets "Get Actual Plan (re-run)" RE-EXECUTE via the service (QueryStorePlanGridRowStyle
+                         -> QueryStorePlanContextMenu, shared with the Query Store grid: "View Stored Plan" is hidden
+                         here, "Get Actual Plan (re-run)" shown). Double-clicking a row opens that query's history
+                         window (ViewerServerTab.History.cs); the menu also offers Copy Repro + copy/export. -->
                     <TabItem Header="Query Store Regressions">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -1583,7 +1623,7 @@
                                        Foreground="{DynamicResource ForegroundMutedBrush}"
                                        Text="Queries whose Query Store performance regressed — recent-window averages vs. the baseline captured before the window, kept when CPU regressed more than 25%, ranked by total added duration. Double-click a row for its execution history."/>
                             <DataGrid Grid.Row="1" x:Name="QueryStoreRegressionsGrid" Style="{StaticResource DarkGrid}"
-                                      RowStyle="{StaticResource QueryGridRowStyle}"
+                                      RowStyle="{StaticResource QueryStorePlanGridRowStyle}"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Binding="{Binding LastExecutionTimeLocal}" Width="150">

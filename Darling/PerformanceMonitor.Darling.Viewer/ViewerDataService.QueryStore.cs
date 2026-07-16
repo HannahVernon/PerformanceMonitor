@@ -31,6 +31,12 @@ public sealed class ViewerQueryStoreRow
     public string QueryHash { get; set; } = "";
     public string QueryText { get; set; } = "";
     public string ModuleName { get; set; } = "";
+
+    /// <summary>Gates "View Stored Plan" in the QueryStorePlanContextMenu — Query Store rows carry a stored plan.</summary>
+    public bool HasStoredPlan => true;
+
+    /// <summary>Gates "Get Actual Plan (re-run)" — the service re-executes by QueryId (BuildActualPlanArgsForQueryStore).</summary>
+    public bool CanGetActualPlan => QueryId != 0;
     public long TotalExecutions { get; set; }
     public double AvgDurationMs { get; set; }
     public double AvgCpuTimeMs { get; set; }

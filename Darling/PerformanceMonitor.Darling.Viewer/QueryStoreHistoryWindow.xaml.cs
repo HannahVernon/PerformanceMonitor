@@ -28,7 +28,7 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// plus a filterable grid of its per-collection snapshots. Reads come from
 /// <see cref="ViewerDataService.GetQueryStoreHistoryAsync"/> (Postgres, query-scoped). "View Plan" and the
 /// per-row Download button surface the STORED Query Store plan for that row's plan_id
-/// (<see cref="ViewerDataService.GetQueryStorePlanTextAsync"/>); Lite's live "Get Actual Plan" is dropped.
+/// (<see cref="ViewerDataService.GetQueryStorePlanTextAsync"/>); "Get Actual Plan (re-run)" asks the service to RE-EXECUTE by QueryId for a runtime plan.
 /// </summary>
 public partial class QueryStoreHistoryWindow : Window
 {

@@ -97,6 +97,12 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
         base.OnStartup(e);
+
+        // Right-click selects the DataGrid row under the cursor app-wide, so context-menu actions
+        // (e.g. View Stored Plan) act on the clicked row even after an auto-refresh cleared the selection.
+        // (Lite/Dashboard already do this; the viewer's plan handlers read CurrentItem, so without it a
+        // right-click could act on a different row than the one whose enablement was evaluated.)
+        PerformanceMonitor.Ui.DataGridRowSelectionBehavior.Enable();
     }
 
     /// <summary>

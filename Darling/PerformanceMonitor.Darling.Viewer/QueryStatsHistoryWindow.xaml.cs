@@ -27,8 +27,8 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// over the window plus a filterable grid of its per-collection snapshots, with a metric selector driving the
 /// chart. The reads come from <see cref="ViewerDataService.GetQueryStatsHistoryAsync"/> (Postgres). The one
 /// viewer adaptation: Lite fetches the plan live (DuckDB cache then the monitored server) — the viewer never
-/// opens a SqlClient, so "View Plan" and the per-row Download button surface the STORED plan
-/// (<see cref="ViewerDataService.GetQueryStatsPlanXmlAsync"/>), and Lite's live "Get Actual Plan" is dropped.
+/// opens a SqlClient, so "View Stored Plan" and the per-row Download button surface the STORED plan
+/// (<see cref="ViewerDataService.GetQueryStatsPlanXmlAsync"/>); "Get Actual Plan (re-run)" asks the service to RE-EXECUTE the query for a runtime plan.
 /// </summary>
 public partial class QueryStatsHistoryWindow : Window
 {
@@ -219,8 +219,8 @@ public partial class QueryStatsHistoryWindow : Window
         }
     }
 
-    /// <summary>"View Plan" — shows the row's stored estimated plan in a shared <see cref="PlanViewerControl"/>
-    /// floated above this window. No live "Get Actual Plan" (the viewer never re-executes).</summary>
+    /// <summary>"View Stored Plan" — shows the row's stored estimated plan in a shared <see cref="PlanViewerControl"/>
+    /// floated above this window. "Get Actual Plan (re-run)" (a separate menu item) re-executes via the service.</summary>
     private async void ViewPlan_Click(object sender, RoutedEventArgs e)
     {
         string? planXml;
