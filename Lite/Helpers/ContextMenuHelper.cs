@@ -170,8 +170,11 @@ public static class ContextMenuHelper
     /// <summary>
     /// Sets up a context menu for a ScottPlot chart with standard options:
     /// Copy Image, Save Image As, Open in New Window, Revert, Export Data to CSV.
+    /// <paramref name="revertAction"/> lets a windowed caller (ServerTab) re-pin the X axis to its current
+    /// settable time window on Revert / double-click instead of AutoScale()'ing to the data range (which
+    /// re-introduces ScottPlot's ~10% side dead-space); windowless callers omit it and fall back to AutoScale.
     /// </summary>
-    public static ContextMenu SetupChartContextMenu(WpfPlot chart, string chartName, string? dataSource = null)
+    public static ContextMenu SetupChartContextMenu(WpfPlot chart, string chartName, string? dataSource = null, Action<WpfPlot>? revertAction = null)
     {
         var contextMenu = new ContextMenu();
 
@@ -251,15 +254,9 @@ public static class ContextMenuHelper
 
         contextMenu.Items.Add(new Separator());
 
-        // Revert (Autoscale)
+        // Revert (re-pin to the settable window when a revertAction is supplied; AutoScale otherwise)
         var autoscaleItem = new MenuItem { Header = "Revert (or double-click)", Icon = new TextBlock { Text = "\u21a9" } };
-        autoscaleItem.Click += (s, e) =>
-        {
-            // Clear an active click-isolate first so it doesn't leave series dimmed / state stale.
-            if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
-            chart.Plot.Axes.AutoScale();
-            chart.Refresh();
-        };
+        autoscaleItem.Click += (s, e) => RevertChart(chart, revertAction);
         contextMenu.Items.Add(autoscaleItem);
 
         contextMenu.Items.Add(new Separator());
@@ -358,12 +355,29 @@ public static class ContextMenuHelper
         chart.PreviewMouseDoubleClick += (s, e) =>
         {
             e.Handled = true;
-            // Clear an active click-isolate first so it doesn't leave series dimmed / state stale.
-            if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
-            chart.Plot.Axes.AutoScale();
-            chart.Refresh();
+            RevertChart(chart, revertAction);
         };
 
         return contextMenu;
+    }
+
+    /// <summary>
+    /// Shared Revert body for the menu item + double-click. A ServerTab caller supplies
+    /// <paramref name="revertAction"/> to re-pin X to the current settable window (+ auto-fit Y); it also
+    /// clears any active click-isolate. Windowless callers (standalone windows) have no window to pin to, so
+    /// this clears the isolate and falls back to AutoScale.
+    /// </summary>
+    private static void RevertChart(WpfPlot chart, Action<WpfPlot>? revertAction)
+    {
+        if (revertAction != null)
+        {
+            revertAction(chart);
+            return;
+        }
+
+        // Clear an active click-isolate first so it doesn't leave series dimmed / state stale.
+        if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
+        chart.Plot.Axes.AutoScale();
+        chart.Refresh();
     }
 }

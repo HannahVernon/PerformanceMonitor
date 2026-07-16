@@ -15,7 +15,6 @@ LatchStatsGrid=>(none)
 MemoryBrokerGrid=>(none)
 MemoryConditionsGrid=>(none)
 MemoryNodeOomGrid=>(none)
-PlanCacheCompositionGrid=>(none)
 ProcStatsComparisonGrid=>QueryGridRowStyle
 ProcedureStatsGrid=>QueryPlanGridRowStyle
 QuerySnapshotsGrid=>QuerySnapshotGridRowStyle

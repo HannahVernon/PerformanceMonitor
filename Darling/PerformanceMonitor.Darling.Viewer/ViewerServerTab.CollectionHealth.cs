@@ -188,7 +188,22 @@ public partial class ViewerServerTab
         ClearChart(CollectorDurationChart);
         ApplyTheme(CollectorDurationChart);
 
-        if (data.Count == 0) { CollectorDurationChart.Refresh(); return; }
+        /* Pin the X axis to the toolbar's settable window (the same idiom as the wait / tempdb-size charts)
+           rather than AutoScale()'ing to the data — an AutoScale fits X to the data plus ScottPlot's ~10%
+           side margins, which reads as symmetric dead space. This is the one chart the #1483/#1484/#1487
+           window-pin campaign missed. The store is naive-UTC; display converts through ViewerTimeHelper.ForDisplay. */
+        var (startUtc, endUtc) = GetWindowUtc();
+        var rangeStart = ViewerTimeHelper.ForDisplay(startUtc).ToOADate();
+        var rangeEnd = ViewerTimeHelper.ForDisplay(endUtc).ToOADate();
+
+        if (data.Count == 0)
+        {
+            CollectorDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            CollectorDurationChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
+            ReapplyAxisColors(CollectorDurationChart);
+            CollectorDurationChart.Refresh();
+            return;
+        }
 
         /* Group by collector, plot each as a separate series */
         var groups = data
@@ -218,7 +233,8 @@ public partial class ViewerServerTab
         CollectorDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
         ReapplyAxisColors(CollectorDurationChart);
         CollectorDurationChart.Plot.YLabel("Duration (ms)");
-        CollectorDurationChart.Plot.Axes.AutoScale();
+        CollectorDurationChart.Plot.Axes.AutoScaleY();
+        CollectorDurationChart.Plot.Axes.SetLimitsX(rangeStart, rangeEnd);
         ShowChartLegend(CollectorDurationChart);
         CollectorDurationChart.Refresh();
     }
