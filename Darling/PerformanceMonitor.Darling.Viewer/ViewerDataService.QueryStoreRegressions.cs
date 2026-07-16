@@ -52,6 +52,12 @@ public sealed class ViewerQueryStoreRegressionRow
     public int RecentPlanCount { get; set; }
     public string Severity { get; set; } = "";
     public string QueryTextSample { get; set; } = "";
+
+    /// <summary>Regression rows aggregate across plans, so there is no single stored plan to view (View Stored Plan hidden).</summary>
+    public bool HasStoredPlan => false;
+
+    /// <summary>Gates "Get Actual Plan (re-run)" — the service re-executes by QueryId (BuildActualPlanArgsForQueryStore).</summary>
+    public bool CanGetActualPlan => QueryId != 0;
     public DateTime? LastExecutionTime { get; set; }
 
     /// <summary>The last-execution wall clock shown raw (the sibling Query Store tab's convention).</summary>

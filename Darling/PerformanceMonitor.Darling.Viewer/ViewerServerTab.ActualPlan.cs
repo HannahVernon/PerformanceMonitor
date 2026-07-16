@@ -77,4 +77,72 @@ public partial class ViewerServerTab
             HidePlanLoading();
         }
     }
+
+    /// <summary>
+    /// "Get Actual Plan (re-run)" for the Query Store + Query Store Regressions grids. Both rows carry a
+    /// QueryId; Regression rows aggregate across plans so they have no single PlanId or stored plan to view,
+    /// so this RE-EXECUTES by QueryId via the same service path the Query Store history window uses
+    /// (<see cref="ViewerDataService.BuildActualPlanArgsForQueryStore"/>). Gated per-row on CanGetActualPlan.
+    /// </summary>
+    private async void GetActualQueryStorePlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem) return;
+        var grid = FindParentDataGrid(menuItem);
+
+        long queryId;
+        string databaseName;
+        string queryText;
+        long planId;
+        switch (grid?.CurrentItem)
+        {
+            case ViewerQueryStoreRow qs when qs.QueryId != 0:
+                queryId = qs.QueryId; databaseName = qs.DatabaseName; queryText = qs.QueryText; planId = qs.PlanId;
+                break;
+            case ViewerQueryStoreRegressionRow reg when reg.QueryId != 0:
+                queryId = reg.QueryId; databaseName = reg.DatabaseName; queryText = reg.QueryTextSample; planId = 0;
+                break;
+            default:
+                return;
+        }
+
+        var label = $"Actual Plan - QS {queryId}";
+
+        /* Best-effort stored ESTIMATED plan for modification detection; null degrades to the fail-safe
+           "treat as modifying" consent (Regression rows have no single PlanId, so they take that path). */
+        string? estimatedPlanXml = null;
+        try
+        {
+            estimatedPlanXml = await _dataService.GetQueryStorePlanTextAsync(_server.ServerId, databaseName, queryId, planId);
+        }
+        catch
+        {
+            /* detection degrades to the fail-safe uncertain path */
+        }
+
+        var argsJson = ViewerDataService.BuildActualPlanArgsForQueryStore(queryId, databaseName);
+
+        /* The Plan Viewer overlay's Cancel button cancels this token (shared with Fetch Live Plan). */
+        _planLoadCts?.Dispose();
+        _planLoadCts = new CancellationTokenSource();
+
+        var planXml = await ViewerActualPlanFlow.RequestActualPlanAsync(
+            Window.GetWindow(this)!, _dataService, _server.ServerId, _server.DisplayName, databaseName,
+            queryText, estimatedPlanXml, argsJson,
+            onStarted: () =>
+            {
+                ShowPlanLoading(label);
+                PlanLoadingLabel.Text = $"Capturing actual plan (re-executing): {label}";
+            },
+            onFinished: null,
+            _planLoadCts.Token);
+
+        if (planXml != null)
+        {
+            OpenPlanTab(planXml, label, queryText); /* HidePlanLoading runs inside OpenPlanTab */
+        }
+        else
+        {
+            HidePlanLoading();
+        }
+    }
 }
