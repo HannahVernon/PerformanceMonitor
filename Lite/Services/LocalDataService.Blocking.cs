@@ -851,6 +851,11 @@ public class BlockedProcessReportRow : BlockedProcessAlertRow
 
 public class QuerySnapshotRow
 {
+    /// <summary>Gates "Get Actual Plan (re-run)" in the query grids' plan menu — the re-run executes this row's
+    /// query text (ServerTab.Plans.cs). Row types the re-run handler has no case for simply omit this property,
+    /// so the menu item's binding falls back to Collapsed and the verb is hidden rather than silently no-op.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText);
+
     public int SessionId { get; set; }
     public string DatabaseName { get; set; } = "";
     public string ElapsedTimeFormatted { get; set; } = "";
