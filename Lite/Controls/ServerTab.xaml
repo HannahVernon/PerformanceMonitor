@@ -6,8 +6,37 @@
              xmlns:controls="clr-namespace:PerformanceMonitorLite.Controls">
     <UserControl.Resources>
         <ResourceDictionary>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
             <!-- Context Menu for DataGrid Copy -->
             <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy Repro Script" Click="CopyReproScript_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4DD;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+                </MenuItem>
+            </ContextMenu>
+
+            <!-- PLAN variant, for the query grids whose row types the plan handlers actually support
+                 (ServerTab.Plans.cs switches on row type). The plain DataGridContextMenu above is the
+                 DEFAULT for the ~21 config / health / non-query grids, which carry no plan at all: the
+                 plan verbs used to sit on EVERY grid via GridRowStyle and silently no-op there (the
+                 handler's switch has no case for a ServerConfig / Latch / Memory row). "Get Actual Plan
+                 (re-run)" is additionally HIDDEN per-row on CanGetActualPlan, because the re-run handler
+                 supports fewer row types than View Stored Plan does - the Procedure rows have no re-run
+                 case, so the binding falls back to Collapsed there. Mirrors the Darling viewer's menus. -->
+            <ContextMenu x:Key="DataGridPlanContextMenu">
                 <MenuItem Header="Copy Cell" Click="CopyCell_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
                 </MenuItem>
@@ -28,7 +57,8 @@
                 <MenuItem Header="View Stored Plan" Click="ViewEstimatedPlan_Click">
                     <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualPlan_Click">
+                <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualPlan_Click"
+                          Visibility="{Binding PlacementTarget.DataContext.CanGetActualPlan, RelativeSource={RelativeSource AncestorType=ContextMenu}, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
                     <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
                 </MenuItem>
             </ContextMenu>
@@ -90,6 +120,11 @@
 
             <Style x:Key="GridRowStyle" TargetType="DataGridRow">
                 <Setter Property="ContextMenu" Value="{StaticResource DataGridContextMenu}"/>
+            </Style>
+
+            <!-- Row style for the query grids that actually have plans (see DataGridPlanContextMenu). -->
+            <Style x:Key="GridPlanRowStyle" TargetType="DataGridRow">
+                <Setter Property="ContextMenu" Value="{StaticResource DataGridPlanContextMenu}"/>
             </Style>
 
             <!-- Row style for blocking grid - highlight long-duration blocks -->
@@ -339,7 +374,7 @@
                                 </StackPanel>
                                 <DataGrid Grid.Row="2" x:Name="QuerySnapshotsGrid"
                                           AutoGenerateColumns="False" IsReadOnly="True"
-                                          RowStyle="{StaticResource GridRowStyle}"
+                                          RowStyle="{StaticResource GridPlanRowStyle}"
                                           HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                           CanUserSortColumns="True"
                                           Sorting="QuerySnapshotsGrid_Sorting">
@@ -463,7 +498,7 @@
                                 </StackPanel>
                             <DataGrid Grid.Row="2" x:Name="QueryStatsGrid"
                                       AutoGenerateColumns="False" IsReadOnly="True"
-                                      RowStyle="{StaticResource GridRowStyle}"
+                                      RowStyle="{StaticResource GridPlanRowStyle}"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       CanUserSortColumns="True"
                                       SelectionChanged="QueryStatsGrid_SelectionChanged"
@@ -633,7 +668,7 @@
                             </DataGrid>
                             <DataGrid Grid.Row="2" x:Name="QueryStatsComparisonGrid" Visibility="Collapsed"
                                       AutoGenerateColumns="False" IsReadOnly="True"
-                                      RowStyle="{StaticResource GridRowStyle}"
+                                      RowStyle="{StaticResource GridPlanRowStyle}"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       CanUserSortColumns="True">
                                 <DataGrid.Columns>
@@ -755,7 +790,7 @@
                                            Background="#2244AAFF"/>
                             <DataGrid Grid.Row="2" x:Name="ProcedureStatsGrid"
                                       AutoGenerateColumns="False" IsReadOnly="True"
-                                      RowStyle="{StaticResource GridRowStyle}"
+                                      RowStyle="{StaticResource GridPlanRowStyle}"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       CanUserSortColumns="True"
                                       SelectionChanged="ProcedureStatsGrid_SelectionChanged"
@@ -862,7 +897,7 @@
                             </DataGrid>
                             <DataGrid Grid.Row="2" x:Name="ProcStatsComparisonGrid" Visibility="Collapsed"
                                       AutoGenerateColumns="False" IsReadOnly="True"
-                                      RowStyle="{StaticResource GridRowStyle}"
+                                      RowStyle="{StaticResource GridPlanRowStyle}"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       CanUserSortColumns="True">
                                 <DataGrid.Columns>
@@ -943,7 +978,7 @@
                                            Background="#2244AAFF"/>
                             <DataGrid Grid.Row="2" x:Name="QueryStoreGrid"
                                       AutoGenerateColumns="False" IsReadOnly="True"
-                                      RowStyle="{StaticResource GridRowStyle}"
+                                      RowStyle="{StaticResource GridPlanRowStyle}"
                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                       CanUserSortColumns="True"
                                       SelectionChanged="QueryStoreGrid_SelectionChanged"

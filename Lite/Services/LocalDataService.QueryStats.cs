@@ -1341,6 +1341,9 @@ public class QueryTrendPoint
 
 public class QueryStatsRow
 {
+    /// <summary>Gates "Get Actual Plan (re-run)" — see <see cref="QuerySnapshotRow.CanGetActualPlan"/>.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText);
+
     public string DatabaseName { get; set; } = "";
     public string QueryHash { get; set; } = "";
     public DateTime? LastExecutionTime { get; set; }
