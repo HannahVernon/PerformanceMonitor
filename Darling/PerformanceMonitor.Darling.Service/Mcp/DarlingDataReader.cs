@@ -90,11 +90,18 @@ internal static class DarlingDataReader
         long TotalExecutions, long TotalCpuUs, long TotalElapsedUs, long TotalLogicalReads, long TotalLogicalWrites,
         long TotalPhysicalReads, long TotalSpills, long MinCpuUs, long MaxCpuUs, long MinElapsedUs, long MaxElapsedUs);
 
-    /// <summary>One Query Store (database, query_id, plan_id, query_hash) group's interval averages.</summary>
+    /// <summary>
+    /// One Query Store (database, query_id, plan_id, query_hash, replica_role) group's interval averages.
+    /// <c>ReplicaRole</c> is part of the grouping key, not a decoration: on SQL 2022+ with Query Store for
+    /// secondary replicas the primary holds one shared Query Store carrying every replica's rows, so
+    /// omitting it would report primary and secondary workload blended into one row. NULL when the server
+    /// did not attribute the row (pre-2022, or a 2022 standalone).
+    /// </summary>
     public sealed record QueryStoreRow(
         string DatabaseName, long QueryId, long PlanId, string QueryHash, string QueryPlanHash,
         long TotalExecutions, double AvgDurationMs, double AvgCpuTimeMs, double AvgLogicalReads,
-        double AvgLogicalWrites, double AvgPhysicalReads, double AvgRowcount, DateTime? LastExecutionTime, string QueryText);
+        double AvgLogicalWrites, double AvgPhysicalReads, double AvgRowcount, DateTime? LastExecutionTime, string QueryText,
+        string? ReplicaRole);
 
     /// <summary>One server-list entry — the registry row plus its newest collection instant (drives the
     /// freshness-derived status the tool assigns; the viewer has no live ping either).</summary>
@@ -682,7 +689,7 @@ internal static class DarlingDataReader
     /// <summary>
     /// Top Query Store groups over the window — a focused projection of the viewer's
     /// <c>QueryStoreTopSql</c> (the columns Lite's get_query_store_top returns): group by
-    /// (database, query_id, plan_id, query_hash), average the per-interval metrics, rank by total duration
+    /// (database, query_id, plan_id, query_hash, replica_role), average the per-interval metrics, rank by total duration
     /// (<c>SUM(execution_count) * AVG(avg_duration_us)</c>) descending, over-fetch by 5 for the WAITFOR
     /// trim, cap at top. The avg columns are bigint (per-interval averages) → double precision before the
     /// AVG/scale. Reads the base <c>query_store_stats</c> table (no v_ view). $1 server_id, $2/$3 window
@@ -695,6 +702,11 @@ internal static class DarlingDataReader
                 query_id,
                 plan_id,
                 query_hash,
+                /* A GROUP BY key, not MAX(): an AG's Query Store for secondary replicas (2022+) keeps ONE
+                   shared store on the primary holding every replica's rows, so grouping without it would
+                   average primary and secondary workload into a single blended row. No-op on a
+                   standalone/non-AG server, where every row shares one value. */
+                replica_role,
                 CAST(SUM(execution_count) AS bigint) AS total_executions,
                 AVG(CAST(avg_duration_us AS double precision)) / 1000.0 AS avg_duration_ms,
                 AVG(CAST(avg_cpu_time_us AS double precision)) / 1000.0 AS avg_cpu_time_ms,
@@ -709,7 +721,7 @@ internal static class DarlingDataReader
             AND   collection_time >= $2
             AND   collection_time <= $3
             AND   ($5::text IS NULL OR database_name = $5)
-            GROUP BY database_name, query_id, plan_id, query_hash
+            GROUP BY database_name, query_id, plan_id, query_hash, replica_role
             ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS double precision)) DESC
             LIMIT $4 + 5
         )
@@ -727,7 +739,8 @@ internal static class DarlingDataReader
             r.avg_physical_reads,
             r.avg_rowcount,
             r.last_execution_time,
-            t.query_text
+            t.query_text,
+            r.replica_role
         FROM ranked AS r
         LEFT JOIN LATERAL (
             SELECT query_text
@@ -769,7 +782,8 @@ internal static class DarlingDataReader
                 reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
                 reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
                 reader.IsDBNull(12) ? null : reader.GetDateTime(12),
-                reader.IsDBNull(13) ? "" : reader.GetString(13)));
+                reader.IsDBNull(13) ? "" : reader.GetString(13),
+                reader.IsDBNull(14) ? null : reader.GetString(14)));
         }
 
         return rows;

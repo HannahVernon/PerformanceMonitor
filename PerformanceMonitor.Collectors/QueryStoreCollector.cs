@@ -20,7 +20,10 @@ namespace PerformanceMonitor.Collectors;
 /// verbatim from Lite's RemoteCollectorService.QueryStore.cs: the enumeration cursor probes each
 /// database's sys.database_query_store_options.actual_state (NOT sys.databases.is_query_store_on,
 /// which can be out of sync on Azure SQL DB; on-prem additionally filters to non-AG or
-/// primary-replica databases), the per-item [db].sys.sp_executesql query is incremental on the
+/// primary-replica databases). actual_state is matched against the explicit usable set
+/// IN (1, 2, 4) — READ_ONLY, READ_WRITE, READ_CAPTURE_SECONDARY — rather than the looser
+/// "> 0", which also admits 3 = ERROR: an errored Query Store is not readable and must not
+/// pass the "is QS usable" gate (0 = OFF). The per-item [db].sys.sp_executesql query is incremental on the
 /// last_execution_time watermark (fallback: 60 minutes back), and the 2017+/2022+ column gates
 /// are decided by a live PRODUCTVERSION probe each cycle (default 13 when the probe fails) —
 /// deliberately probed rather than trusting cached connection status, which can be
@@ -89,6 +92,14 @@ public sealed class QueryStoreCollector : CollectorDefinitionBase<QueryStoreColl
         public int CompatibilityLevel { get; set; }
         public string? QueryPlanText { get; set; }
         public string? QueryPlanHash { get; set; }
+
+        /// <summary>
+        /// The replica role sys.query_store_replicas attributed this runtime-stats row to ('Primary',
+        /// 'Secondary', 'Geo Secondary', 'Geo HA Secondary'). NULL = the server did not attribute it
+        /// (pre-2022, or a 2022 standalone whose sys.query_store_replicas is empty) — deliberately not
+        /// coalesced. See hasReplicaAttribution in BuildPerItemQuery.
+        /// </summary>
+        public string? ReplicaRole { get; set; }
     }
 
     private const string OnPremDatabaseListQueryText = @"
@@ -138,7 +149,7 @@ BEGIN
                 SELECT
                     1
                 FROM sys.database_query_store_options
-                WHERE actual_state > 0
+                WHERE actual_state IN (1, 2, 4)
             );';
 
         SET @exec_sp = QUOTENAME(@db) + N'.sys.sp_executesql';
@@ -202,7 +213,7 @@ BEGIN
                 SELECT
                     1
                 FROM sys.database_query_store_options
-                WHERE actual_state > 0
+                WHERE actual_state IN (1, 2, 4)
             );';
 
         SET @exec_sp = QUOTENAME(@db) + N'.sys.sp_executesql';
@@ -281,6 +292,35 @@ ORDER BY
         bool isNew = productVersion > 13 || context.Target.IsAzureSqlDb || context.Target.IsAzureManagedInstance;
         bool hasPlanType = productVersion >= 16;
 
+        /* Replica attribution — SQL Server 2022+ (product version >= 16). Controls: replica_role.
+
+           "Query Store for secondary replicas" (2022+) gives an AG ONE shared Query Store that lives
+           on the PRIMARY: secondary-replica workload is streamed to the primary and persisted in the
+           primary's QS tables, distinguishable only by replica_group_id. We collect from primaries
+           only (is_primary_replica = 1, in the enumeration cursor) — which is correct and stays — but
+           without this attribution the primary's "Top Queries by CPU" silently BLENDS secondary
+           workload into the primary's own numbers, with no way for a reader to tell. (Microsoft's own
+           Query Performance Insight has this exact bug.)
+
+           Gated on >= 16, NOT the docs' claimed 2025+: sys.query_store_replicas and
+           sys.query_store_runtime_stats.replica_group_id both verified present on SQL 2022
+           (16.0.4255.1) and SQL 2025 (17.0.4045.5).
+
+           LEFT JOIN, deliberately: on a 2022 standalone (non-AG) server sys.query_store_replicas has
+           ZERO rows, yet real runtime-stats rows still carry replica_group_id = 1. An INNER JOIN — or
+           a WHERE replica_name = 'Primary' filter — would match nothing and silently delete ALL Query
+           Store collection on every 2022 standalone server. Do not "tighten" this.
+
+           replica_name is read DIRECTLY rather than mapped from role_type: contrary to the docs, it IS
+           populated on box SQL Server (observed: Primary, Secondary, Geo Secondary, Geo HA Secondary),
+           and the docs' sample CASEs replica_group_id as though it were role_type — it is not, it is a
+           replica SET number that accumulates per role across failovers.
+
+           Resulting replica_role: NULL on a 2022 standalone, 'Primary' on a 2025 standalone, the actual
+           role on an AG with the feature enabled. NULL honestly means "the server did not attribute
+           this row" and is deliberately NOT coalesced to an invented value. */
+        bool hasReplicaAttribution = productVersion >= 16;
+
         /* Build version-conditional column fragments for the Query Store query.
            These are injected into the sp_executesql parameter string — no single quotes needed. */
         string numPhysIoReadsCols = isNew
@@ -311,6 +351,17 @@ ORDER BY
         string planTextCol = context.CapturePlanXml
             ? "query_plan_text = CONVERT(nvarchar(max), qsp.query_plan),"
             : "query_plan_text = CONVERT(nvarchar(1), NULL),";
+
+        /* The replica-attribution column + its join (see hasReplicaAttribution above). Selected LAST,
+           so pre-2022 targets read the nvarchar(1) NULL placeholder at the same ordinal — byte-identical
+           shape to the attributed form. No trailing comma: it is the final SELECT item. */
+        string replicaRoleCol = hasReplicaAttribution
+            ? "replica_role = qsr.replica_name"
+            : "replica_role = CONVERT(nvarchar(1), NULL)";
+
+        string replicaJoin = hasReplicaAttribution
+            ? "LEFT JOIN sys.query_store_replicas AS qsr\n       ON qsr.replica_group_id = qsrs.replica_group_id"
+            : "";
 
         /* Incremental: only fetch runtime_stats intervals newer than what we already have. */
         var cutoffTime = context.Watermark ?? context.CollectionTime.AddMinutes(-60);
@@ -373,7 +424,8 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
          last_force_failure_reason = qsp.last_force_failure_reason_desc,
          compatibility_level = qsp.compatibility_level,
          {planTextCol}
-         query_plan_hash = CONVERT(varchar(64), qsp.query_plan_hash, 1)
+         query_plan_hash = CONVERT(varchar(64), qsp.query_plan_hash, 1),
+         {replicaRoleCol}
      FROM sys.query_store_runtime_stats AS qsrs
      JOIN sys.query_store_plan AS qsp
        ON qsp.plan_id = qsrs.plan_id
@@ -381,6 +433,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
        ON qsq.query_id = qsp.query_id
      JOIN sys.query_store_query_text AS qst
        ON qst.query_text_id = qsq.query_text_id
+     {replicaJoin}
      WHERE qsrs.last_execution_time > @cutoff_time
      AND   qst.query_sql_text NOT LIKE N''%PerformanceMonitorLite%''
      OPTION(RECOMPILE, LOOP JOIN);',
@@ -452,6 +505,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
                 CompatibilityLevel = reader.IsDBNull(49) ? 0 : Convert.ToInt32(reader.GetValue(49), CultureInfo.InvariantCulture),
                 QueryPlanText = reader.IsDBNull(50) ? null : reader.GetString(50),
                 QueryPlanHash = reader.IsDBNull(51) ? null : reader.GetString(51),
+                ReplicaRole = reader.IsDBNull(52) ? null : reader.GetString(52),
             });
         }
     }
@@ -536,6 +590,13 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
         new CollectorColumn("compatibility_level", CollectorColumnType.Integer),
         new CollectorColumn("query_plan_text", CollectorColumnType.Varchar),
         new CollectorColumn("query_plan_hash", CollectorColumnType.Varchar),
+        /* Appended at the END, not grouped with the identity columns: both hosts' bulk writers are
+           POSITIONAL (Lite's DuckDB appender, Darling's Npgsql binary COPY), and an upgraded store gets
+           this column from an ALTER TABLE ADD COLUMN, which can only append. A mid-list position would
+           put it mid-table on a FRESH store (whose DDL is generated from this list) and last on an
+           UPGRADED one — the same COPY then writing shifted values on one of them. Same reasoning as
+           deadlocks.database_name (Darling V27 / Lite v46). */
+        new CollectorColumn("replica_role", CollectorColumnType.Varchar),
     };
 
     public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
@@ -593,6 +654,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
             .Value(row.LastForceFailureReason)
             .Value(row.CompatibilityLevel)
             .Value(row.QueryPlanText)
-            .Value(row.QueryPlanHash);
+            .Value(row.QueryPlanHash)
+            .Value(row.ReplicaRole);
     }
 }

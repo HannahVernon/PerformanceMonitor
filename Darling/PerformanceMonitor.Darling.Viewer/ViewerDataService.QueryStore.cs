@@ -28,6 +28,14 @@ public sealed class ViewerQueryStoreRow
     public string DatabaseName { get; set; } = "";
     public long QueryId { get; set; }
     public long PlanId { get; set; }
+
+    /// <summary>
+    /// The replica role SQL Server 2022+ attributed these runtime stats to ('Primary', 'Secondary',
+    /// 'Geo Secondary', 'Geo HA Secondary'), a GROUP BY key so an AG's shared Query Store does not
+    /// blend replicas into one row. NULL/blank = the server did not attribute it (pre-2022, or a 2022
+    /// standalone) — expected, and deliberately not coalesced.
+    /// </summary>
+    public string? ReplicaRole { get; set; }
     public string QueryHash { get; set; } = "";
     public string QueryText { get; set; } = "";
     public string ModuleName { get; set; } = "";
@@ -111,6 +119,13 @@ public sealed partial class ViewerDataService
                 query_id,
                 plan_id,
                 query_hash,
+                /* A GROUP BY key, not MAX(): with Query Store for secondary replicas (2022+) the primary
+                   holds ONE shared Query Store carrying every replica's rows, so grouping without it would
+                   average primary and secondary workload into a single blended row — the conflation this
+                   column exists to expose. Grouping splits them into one row per replica role instead. On a
+                   standalone/non-AG server every row shares one value (NULL, or 'Primary' on 2025), so the
+                   grouping is a no-op and the grid is unchanged. Twins Lite's QueryStore reader. */
+                replica_role,
                 MAX(module_name) AS module_name,
                 CAST(SUM(execution_count) AS bigint) AS total_executions,
                 AVG(CAST(avg_duration_us AS double precision)) / 1000.0 AS avg_duration_ms,
@@ -163,7 +178,7 @@ public sealed partial class ViewerDataService
             AND   collection_time >= $2
             AND   collection_time <= $3
             AND   ($5::text[] IS NULL OR database_name = ANY($5))
-            GROUP BY database_name, query_id, plan_id, query_hash
+            GROUP BY database_name, query_id, plan_id, query_hash, replica_role
             ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS double precision)) DESC
             LIMIT $4 + 5
         )
@@ -219,7 +234,8 @@ public sealed partial class ViewerDataService
             r.max_memory_mb,
             r.avg_num_physical_io_reads,
             r.min_num_physical_io_reads,
-            r.max_num_physical_io_reads
+            r.max_num_physical_io_reads,
+            r.replica_role
         FROM ranked AS r
         LEFT JOIN LATERAL (
             SELECT query_text
@@ -306,6 +322,7 @@ public sealed partial class ViewerDataService
                 AvgNumPhysicalIoReads = reader.IsDBNull(49) ? 0 : Convert.ToDouble(reader.GetValue(49)),
                 MinNumPhysicalIoReads = reader.IsDBNull(50) ? 0 : Convert.ToDouble(reader.GetValue(50)),
                 MaxNumPhysicalIoReads = reader.IsDBNull(51) ? 0 : Convert.ToDouble(reader.GetValue(51)),
+                ReplicaRole = reader.IsDBNull(52) ? null : reader.GetString(52),
             });
         }
 

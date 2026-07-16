@@ -128,7 +128,9 @@ public sealed class ViewerQueriesSqlTests
         var sql = ViewerDataService.QueryStoreTopSql;
         Assert.Contains("FROM query_store_stats", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE server_id = $1", sql, StringComparison.Ordinal);
-        Assert.Contains("GROUP BY database_name, query_id, plan_id, query_hash", sql, StringComparison.Ordinal);
+        /* replica_role is a grouping key: an AG's shared Query Store (2022+) would otherwise report
+           primary and secondary workload blended into one row. */
+        Assert.Contains("GROUP BY database_name, query_id, plan_id, query_hash, replica_role", sql, StringComparison.Ordinal);
         /* Rank by total duration = executions * avg duration, over-fetch 5, cap at top (Lite's shape). */
         Assert.Contains("ORDER BY SUM(execution_count) * AVG(CAST(avg_duration_us AS double precision)) DESC", sql, StringComparison.Ordinal);
         Assert.Contains("LIMIT $4 + 5", sql, StringComparison.Ordinal);

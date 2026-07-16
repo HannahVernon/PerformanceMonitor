@@ -255,7 +255,9 @@ public sealed class DarlingMcpDataToolsSurfaceAndSqlTests
         var sql = DarlingDataReader.QueryStoreTopSql;
         Assert.Contains("FROM query_store_stats", sql, StringComparison.Ordinal);
         Assert.Contains("AVG(CAST(avg_duration_us AS double precision))", sql, StringComparison.Ordinal);
-        Assert.Contains("GROUP BY database_name, query_id, plan_id, query_hash", sql, StringComparison.Ordinal);
+        /* replica_role is a grouping key: an AG's shared Query Store (2022+) would otherwise report
+           primary and secondary workload blended into one row. */
+        Assert.Contains("GROUP BY database_name, query_id, plan_id, query_hash, replica_role", sql, StringComparison.Ordinal);
         Assert.Contains("$5::text IS NULL OR database_name = $5", sql, StringComparison.Ordinal);
         Assert.Contains("SUM(execution_count)", sql, StringComparison.Ordinal);
     }

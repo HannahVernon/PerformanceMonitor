@@ -71,6 +71,7 @@ public static class PgMigrations
         new Migration(25, "agent-status-collector", V25Sql),
         new Migration(26, "generic-webhook-channel", V26Sql),
         new Migration(27, "deadlocks-database-name", V27Sql),
+        new Migration(28, "query-store-replica-role", V28Sql),
     };
 
     /// <summary>
@@ -286,6 +287,20 @@ ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml text;";
     private const string V27Sql = @"
 ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS database_name text;
 CREATE OR REPLACE VIEW v_deadlocks AS SELECT * FROM deadlocks;";
+
+    /* V28 — query_store_stats.replica_role: the replica role SQL Server 2022+ attributed each
+       runtime-stats row to (sys.query_store_replicas.replica_name, LEFT JOINed by replica_group_id).
+       With "Query Store for secondary replicas" enabled an AG keeps ONE shared Query Store on the
+       PRIMARY holding every replica's rows, so the primary's numbers silently blend in secondary
+       workload unless split by this column. Nullable text appended at the end (identical physical
+       column order for the binary COPY whether fresh — V1 is generated from the current collector
+       definition, which now includes it — or upgraded; ADD COLUMN IF NOT EXISTS no-ops on fresh).
+       The trailing CREATE OR REPLACE VIEW re-expands v_query_store_stats' pinned SELECT * (Postgres
+       freezes it at CREATE; append-only ADDs keep the refresh legal), mirroring V15/V27. Runs after
+       V8, so the bare names resolve through search_path = collect, config, public. */
+    private const string V28Sql = @"
+ALTER TABLE query_store_stats ADD COLUMN IF NOT EXISTS replica_role text;
+CREATE OR REPLACE VIEW v_query_store_stats AS SELECT * FROM query_store_stats;";
 
     /// <summary>
     /// V9 — the FinOps copy-parity fields that were user-input config or previously live-only:
