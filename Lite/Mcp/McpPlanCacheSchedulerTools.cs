@@ -9,7 +9,7 @@ namespace PerformanceMonitorLite.Mcp;
 /// <summary>
 /// The plan-cache + CPU-scheduler snapshot MCP tools — get_plan_cache_bloat, get_cpu_scheduler_pressure —
 /// served over Lite's DuckDB store. get_plan_cache_bloat folds the true (uncapped) plan-count summary
-/// (GetPlanCacheSummaryAsync) with the per-(cacheobjtype,objtype) composition grid (GetPlanCacheSnapshotAsync)
+/// (GetPlanCacheSummaryAsync) with the per-(cacheobjtype,objtype) composition breakdown (GetPlanCacheSnapshotAsync)
 /// and the shared ClassifyPlanCacheBloat banding; get_cpu_scheduler_pressure returns the latest
 /// cpu_scheduler_stats snapshot (GetCpuSchedulerSnapshotAsync) with the collector's warning flags. STORED
 /// reads, no live monitored-server hit.

@@ -20,9 +20,9 @@ namespace PerformanceMonitor.Darling.Viewer;
 /// The Plan Cache sub-tab (under the Memory tab, matching the Dashboard's Memory &gt; Plan Cache) — the
 /// Darling-viewer surface for the plan_cache_stats collector. The trend chart plots single-use vs
 /// multi-use plan-cache size (MB) over the settable window (the single-use bloat signal, the Dashboard's
-/// Plan Cache chart shape), the summary strip shows total plans + oldest-plan age, and the latest-snapshot
-/// grid breaks the cache down per (cacheobjtype, objtype) group. Loaded from <c>LoadMemoryAsync</c>
-/// alongside the other Memory sub-tabs (the Memory tab's full-refresh branch). Chart chrome flows through
+/// Plan Cache chart shape), and the summary strip shows total plans + oldest-plan age. Loaded from
+/// <c>LoadMemoryAsync</c> alongside the other Memory sub-tabs (the Memory tab's full-refresh branch). Chart
+/// chrome flows through
 /// the shared <see cref="ChartStyle"/> / <see cref="ChartPalette"/> and the ChartHelpers bridge, so the
 /// Y-floor-at-0 fix applies, and the two series ride the same palette keys the Dashboard uses for cross-app
 /// color identity.
@@ -40,8 +40,8 @@ public partial class ViewerServerTab
     }
 
     /// <summary>
-    /// Loads the Plan Cache sub-tab over the toolbar's settable window: the size trend and the latest
-    /// composition snapshot read concurrently, then the chart, summary strip, and grid render. Called from
+    /// Loads the Plan Cache sub-tab over the toolbar's settable window: the size trend and the summary
+    /// totals read concurrently, then the chart and summary strip render. Called from
     /// <see cref="LoadMemoryAsync"/> (the Memory tab loads all its sub-tabs on activation).
     /// </summary>
     private async Task LoadPlanCacheAsync()
@@ -49,14 +49,12 @@ public partial class ViewerServerTab
         var (startUtc, endUtc) = GetWindowUtc();
 
         var trendTask = _dataService.GetPlanCacheTrendAsync(_server.ServerId, startUtc, endUtc);
-        var snapshotTask = _dataService.GetPlanCacheSnapshotAsync(_server.ServerId, startUtc, endUtc);
-        /* The summary strip's totals come from a dedicated uncapped aggregate, NOT the top-30 grid rows,
-           so "Total Plans" is exact even though the composition grid is capped (Dashboard parity). */
+        /* The summary strip's totals come from a dedicated uncapped aggregate (not a capped grid),
+           so "Total Plans" is exact (Dashboard parity). */
         var summaryTask = _dataService.GetPlanCacheSummaryAsync(_server.ServerId, startUtc, endUtc);
-        await Task.WhenAll(trendTask, snapshotTask, summaryTask);
+        await Task.WhenAll(trendTask, summaryTask);
 
         RenderPlanCacheChart(trendTask.Result);
-        PlanCacheCompositionGrid.ItemsSource = snapshotTask.Result;
         RenderPlanCacheSummary(summaryTask.Result);
     }
 
@@ -102,8 +100,8 @@ public partial class ViewerServerTab
     }
 
     /// <summary>The summary strip: TRUE total plans at the latest snapshot (uncapped, from the dedicated
-    /// aggregate — not the top-30 grid) + the oldest cached plan's age (a plan-cache-stability signal —
-    /// older = more stable), mirroring the Dashboard's Plan Cache summary.</summary>
+    /// aggregate) + the oldest cached plan's age (a plan-cache-stability signal — older = more stable),
+    /// mirroring the Dashboard's Plan Cache summary.</summary>
     private void RenderPlanCacheSummary(PlanCacheSummary summary)
     {
         if (summary.TotalPlans <= 0 && summary.OldestPlanCreateTime is null)

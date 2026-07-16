@@ -2270,15 +2270,14 @@
             </TabItem>
 
             <!-- Plan Cache Tab — the Lite port of Darling's Plan Cache surface (plan_cache_stats). The
-                 single-use vs multi-use plan-cache size (MB) trend on top (the single-use bloat signal),
-                 a summary strip (true total plans + oldest-plan age + derived bloat badge), and a
-                 latest-snapshot composition grid per (cacheobjtype, objtype). RefreshVisibleTabAsync index 15. -->
+                 single-use vs multi-use plan-cache size (MB) trend on top (the single-use bloat signal)
+                 over a summary strip (true total plans + oldest-plan age + derived bloat badge).
+                 RefreshVisibleTabAsync index 15. -->
             <TabItem Header="Plan Cache">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="2*"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <ScottPlot:WpfPlot Grid.Row="0" x:Name="PlanCacheChart"/>
                     <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" CornerRadius="4" Padding="12,8" Margin="0,8,0,0">
@@ -2294,43 +2293,6 @@
                             <TextBlock x:Name="PlanCacheRecommendationText" Text="" FontStyle="Italic" Foreground="{DynamicResource ForegroundDimBrush}" VerticalAlignment="Center" TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
-                    <DataGrid Grid.Row="2" x:Name="PlanCacheCompositionGrid"
-                              AutoGenerateColumns="False" IsReadOnly="True"
-                              RowStyle="{StaticResource GridRowStyle}"
-                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" Margin="0,8,0,0">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Binding="{Binding Cacheobjtype}" Width="*">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Cacheobjtype" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Cache Object Type" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding Objtype}" Width="120">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Objtype" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Object Type" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding TotalPlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalPlans" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total Plans" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding TotalSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="TotalSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Total Size (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding SingleUsePlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SingleUsePlans" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Single-Use Plans" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding SingleUseSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="SingleUseSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Single-Use (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding MultiUsePlans, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="115">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MultiUsePlans" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Multi-Use Plans" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding MultiUseSizeMb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="110">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="MultiUseSizeMb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Multi-Use (MB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding AvgUseCount, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="110">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgUseCount" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Use Count" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding AvgSizeKb, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="105">
-                                <DataGridTextColumn.Header><StackPanel Orientation="Horizontal"><Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="AvgSizeKb" Click="FilterButton_Click" Margin="0,0,4,0"/><TextBlock Text="Avg Size (KB)" FontWeight="Bold" VerticalAlignment="Center"/></StackPanel></DataGridTextColumn.Header>
-                            </DataGridTextColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
                 </Grid>
             </TabItem>
 
