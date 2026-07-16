@@ -51,14 +51,16 @@ public partial class ServerTab : UserControl
         });
     }
 
-    private async System.Threading.Tasks.Task RefreshAllDataAsync()
+    /// <summary>
+    /// The current toolbar window as (hoursBack, fromDate, toDate) in server time — the single derivation
+    /// shared by the data refresh and the per-chart Revert / double-click axis re-pin, so both read the same
+    /// window. A preset leaves from/to null (charts fall back to now − hoursBack); a valid custom range
+    /// converts the local picker dates/times to server time.
+    /// </summary>
+    private (int hoursBack, DateTime? fromDate, DateTime? toDate) GetCurrentWindow()
     {
-        if (_isRefreshing) return;
-        _isRefreshing = true;
-
         var hoursBack = GetHoursBack();
 
-        /* Get custom date range if selected, converting local picker dates/times to server time */
         DateTime? fromDate = null;
         DateTime? toDate = null;
         if (IsCustomRange)
@@ -71,6 +73,16 @@ public partial class ServerTab : UserControl
                 toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
             }
         }
+
+        return (hoursBack, fromDate, toDate);
+    }
+
+    private async System.Threading.Tasks.Task RefreshAllDataAsync()
+    {
+        if (_isRefreshing) return;
+        _isRefreshing = true;
+
+        var (hoursBack, fromDate, toDate) = GetCurrentWindow();
 
         try
         {
@@ -691,7 +703,7 @@ public partial class ServerTab : UserControl
 
             _collectionHealthFilterMgr!.UpdateData(collectionHealthTask.Result);
             _collectionLogFilterMgr!.UpdateData(collectionLogTask.Result);
-            UpdateCollectorDurationChart(collectionLogTask.Result);
+            UpdateCollectorDurationChart(collectionLogTask.Result, hoursBack, fromDate, toDate);
         }
         catch (Exception ex)
         {

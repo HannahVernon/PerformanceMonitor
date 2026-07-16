@@ -1464,14 +1464,55 @@ public partial class ServerTab : UserControl
     private static void SetChartYLimitsWithLegendPadding(ScottPlot.WPF.WpfPlot chart, double dataYMin = 0, double dataYMax = 0)
         => ChartStyle.SetChartYLimitsWithLegendPadding(chart, dataYMin, dataYMax);
 
+    /// <summary>
+    /// Per-chart Revert / double-click axis reset (passed to <see cref="ContextMenuHelper.SetupChartContextMenu"/>
+    /// as its revertAction). Re-pins the X axis to the current settable window (+ auto-fit Y) instead of
+    /// AutoScale()'ing to the data range, which would re-introduce ScottPlot's ~10% side dead-space on every
+    /// interaction. Clears an active click-isolate first (state parity). The Query Heatmap is the one exception:
+    /// its X axis is categorical (bucket columns), not a time window, so it keeps AutoScale.
+    /// </summary>
+    private void RevertChartAxes(ScottPlot.WPF.WpfPlot chart)
+    {
+        if (ChartHoverHelper.TryGetForChart(chart, out var h)) h.Restore();
+
+        if (ReferenceEquals(chart, QueryHeatmapChart))
+        {
+            chart.Plot.Axes.AutoScale();
+            chart.Refresh();
+            return;
+        }
+
+        var (hoursBack, fromDate, toDate) = GetCurrentWindow();
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        chart.Plot.Axes.SetLimitsX(rangeStart.ToOADate(), rangeEnd.ToOADate());
+        chart.Plot.Axes.AutoScaleY();
+        chart.Refresh();
+    }
+
     /* ========== Collection Health ========== */
 
-    private void UpdateCollectorDurationChart(List<CollectionLogRow> data)
+    private void UpdateCollectorDurationChart(List<CollectionLogRow> data, int hoursBack, DateTime? fromDate, DateTime? toDate)
     {
         ClearChart(CollectorDurationChart);
         ApplyTheme(CollectorDurationChart);
 
-        if (data.Count == 0) { CollectorDurationChart.Refresh(); return; }
+        /* Pin the X axis to the settable window (the same idiom as the CPU / tempdb-size charts) rather than
+           AutoScale()'ing to the data — a bare AutoScale fits X to the data plus ScottPlot's ~10% side margins,
+           which reads as symmetric dead space. This is the one chart the window-pin campaign missed. */
+        DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+        DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+        double xMin = rangeStart.ToOADate();
+        double xMax = rangeEnd.ToOADate();
+
+        if (data.Count == 0)
+        {
+            CollectorDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            CollectorDurationChart.Plot.Axes.SetLimitsX(xMin, xMax);
+            ReapplyAxisColors(CollectorDurationChart);
+            CollectorDurationChart.Refresh();
+            return;
+        }
 
         /* Group by collector, plot each as a separate series */
         var groups = data
@@ -1502,7 +1543,8 @@ public partial class ServerTab : UserControl
         CollectorDurationChart.Plot.Axes.DateTimeTicksBottomDateChange();
         ReapplyAxisColors(CollectorDurationChart);
         CollectorDurationChart.Plot.YLabel("Duration (ms)");
-        CollectorDurationChart.Plot.Axes.AutoScale();
+        CollectorDurationChart.Plot.Axes.AutoScaleY();
+        CollectorDurationChart.Plot.Axes.SetLimitsX(xMin, xMax);
         ShowChartLegend(CollectorDurationChart);
         CollectorDurationChart.Refresh();
     }
