@@ -65,7 +65,6 @@ jobs:
           dotnet restore Lite/PerformanceMonitorLite.csproj --locked-mode
           dotnet restore Installer/PerformanceMonitorInstaller.csproj --locked-mode
           dotnet restore Lite.Tests/Lite.Tests.csproj --locked-mode
-          dotnet restore Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj --locked-mode
           dotnet restore Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj --locked-mode
 
       - name: Run tests
