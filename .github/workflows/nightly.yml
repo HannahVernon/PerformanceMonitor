@@ -65,6 +65,7 @@ jobs:
           dotnet restore Lite/PerformanceMonitorLite.csproj --locked-mode
           dotnet restore Installer/PerformanceMonitorInstaller.csproj --locked-mode
           dotnet restore Lite.Tests/Lite.Tests.csproj --locked-mode
+          dotnet restore Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj --locked-mode
 
       - name: Run tests
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --verbosity normal
@@ -77,6 +78,27 @@ jobs:
 
       - name: Publish CLI Installer
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
+
+      - name: Publish Darling Service
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj -c Release -o publish/DarlingService
+
+      - name: Publish Darling Viewer
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
+
+      # Same cache key as build.yml's release path: the fetch script's content hash (the SHA256
+      # pins live inside it). The ~340MB EDB/TimescaleDB fetch runs at most once per pin-set per
+      # branch; nightly and release runs share the assembled zip whenever the cache is visible.
+      - name: Cache Darling pg-runtime.zip
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip
+        if: steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
 
       - name: Package artifacts
         shell: pwsh
@@ -101,6 +123,18 @@ jobs:
           if (Test-Path 'THIRD_PARTY_NOTICES.md') { Copy-Item 'THIRD_PARTY_NOTICES.md' $instDir }
 
           Compress-Archive -Path 'publish/Installer/*' -DestinationPath "releases/PerformanceMonitorInstaller-$version.zip" -Force
+
+          # Same layout as the release zip (build.yml "Package Darling (signed)"): service at the
+          # archive root with darling.sample.json alongside, viewer under viewer\, pg-runtime.zip
+          # beside the service exe where DarlingManagedPostgres extracts it on first run. Nightly
+          # zips are unsigned across the board, so this stages from publish/ instead of signed/.
+          $darlingDir = 'publish/Darling'
+          New-Item -ItemType Directory -Force -Path "$darlingDir/viewer" | Out-Null
+          Copy-Item 'publish/DarlingService/*' $darlingDir -Recurse
+          Copy-Item 'publish/DarlingViewer/*' "$darlingDir/viewer" -Recurse
+          Copy-Item 'Darling/artifacts/pg-runtime.zip' $darlingDir
+
+          Compress-Archive -Path 'publish/Darling/*' -DestinationPath "releases/PerformanceMonitorDarling-$version.zip" -Force
 
       - name: Generate checksums
         shell: pwsh
