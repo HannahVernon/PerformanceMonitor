@@ -301,6 +301,10 @@ public partial class AddMultipleServersDialog : Window
         {
             AddButton.IsEnabled = false;
             TestAllButton.IsEnabled = false;
+            // Freeze the paste box during the async add too (same rationale as the Test-All freeze): a
+            // TextChanged re-parse would rebuild the row VMs while MarkRow is writing failure statuses,
+            // orphaning them. The adds themselves work from the parse snapshot either way.
+            PasteBox.IsEnabled = false;
 
             // Seed the gate from the authoritative store (secret-free), REAL (host, db, ro). Each candidate's
             // key derives FROM THE BUILT row (one composition feeds the gate AND the stored server_id);
@@ -385,6 +389,7 @@ public partial class AddMultipleServersDialog : Window
         finally
         {
             bool writable = _dataService is { IsReadOnly: false };
+            PasteBox.IsEnabled = true;
             AddButton.IsEnabled = writable;
             TestAllButton.IsEnabled = writable;
         }
