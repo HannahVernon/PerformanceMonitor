@@ -392,7 +392,9 @@ public sealed class DarlingManagedPostgresTests
             var conf = File.ReadAllText(Path.Combine(dataDirectory, "postgresql.conf"));
             Assert.Contains("shared_preload_libraries = 'timescaledb'", conf, StringComparison.Ordinal);
             Assert.Contains("listen_addresses = '127.0.0.1'", conf, StringComparison.Ordinal);
-            Assert.Contains($"max_worker_processes = {3 + (TimescaleSupport.HypertableTables.Count + 2) + 8}", conf, StringComparison.Ordinal);
+            /* HypertableCount, not HypertableTables.Count: the product sizes workers from the TRUE
+               hypertable count (catalog + collection_log, the V23 non-catalog hypertable). */
+            Assert.Contains($"max_worker_processes = {3 + (TimescaleSupport.HypertableCount + 2) + 8}", conf, StringComparison.Ordinal);
 
             /* v3 memory sizing rode the SAME append path on first run, derived from THIS host's physical RAM
                (the exact MB depend on the runner, so pin the marker + that the settings are present). */

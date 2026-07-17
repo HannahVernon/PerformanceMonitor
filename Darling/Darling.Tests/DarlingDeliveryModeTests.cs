@@ -189,19 +189,23 @@ public sealed class DarlingDeliveryModeTests
     [Fact]
     public async Task SeedAndRead_RoundTripsDeliveryMode_AndPerServerOverride_AgainstScratchPostgres()
     {
-        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
-        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
-            "Set DARLING_TEST_PG to an ISOLATED scratch Postgres (it seeds the singleton config rows) to run the seed/read round-trip.");
+        var baseConnectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(baseConnectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the seed/read round-trip (the test mints its own scratch database).");
 
         var ct = TestContext.Current.CancellationToken;
 
-        await using (var connection = new NpgsqlConnection(connectionString))
+        /* SeedIfEmptyAsync no-ops on a store any earlier test already seeded, so this test needs
+           a database of its own — see ScratchPostgres. */
+        await using var scratch = await ScratchPostgres.CreateAsync(baseConnectionString!, ct);
+
+        await using (var connection = new NpgsqlConnection(scratch.ConnectionString))
         {
             await connection.OpenAsync(ct);
             await PgMigrations.MigrateAsync(connection, ct); // brings the scratch store to V18
         }
 
-        await using var dataSource = NpgsqlDataSource.Create(connectionString!);
+        await using var dataSource = NpgsqlDataSource.Create(scratch.ConnectionString);
         var provider = new StoreConfigProvider(dataSource);
 
         var config = new DarlingConfig();

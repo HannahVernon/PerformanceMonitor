@@ -321,7 +321,7 @@ public sealed class DarlingMcpHealthParserToolsLivePostgresTests
 
             async Task PlantEvent(string eventType, string fixture) =>
                 await DarlingMcpTestData.ExecAsync(connection, ct,
-                    @"INSERT INTO system_health_events (collection_id, collection_time, server_id, server_name, event_time, event_type, event_xml)
+                    @"INSERT INTO system_health_events (system_health_event_id, collection_time, server_id, server_name, event_time, event_type, event_xml)
 VALUES ($1,$2,$3,$4,$5,$6,$7)",
                     CollectionIdGenerator.Next(), t, ServerId, ServerName, t, eventType, LoadFixture(fixture));
 

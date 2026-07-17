@@ -167,9 +167,16 @@ public sealed class TimescaleSupportTests
             Assert.Equal(1L, await isHypertable.ExecuteScalarAsync(ct));
         }
 
-        /* collection_log is ALSO a hypertable now — converted by the V23 migration (MigrateAsync above), NOT by
-           ConvertToHypertablesAsync (it is outside the collector catalog). So its purge below genuinely exercises
-           drop_chunks too, not the DELETE fallback. */
+        /* collection_log is ALSO a hypertable now — but NOT via ConvertToHypertablesAsync (it is outside the
+           collector catalog). The V23 migration converts it only on an upgrade where the extension already
+           exists; on a store whose migrations ran BEFORE CREATE EXTENSION (this shared test database, and any
+           fresh managed store) V23's guard skips and the AUTHORITATIVE runtime path is
+           EnsureCollectionLogHypertableAsync — the same call the service makes right after TryEnableAsync on
+           every start. Exercise it exactly like the service does, then the purge below genuinely hits
+           drop_chunks, not the DELETE fallback. */
+        Assert.True(await TimescaleSupport.EnsureCollectionLogHypertableAsync(connection, null, ct),
+            "EnsureCollectionLogHypertableAsync is expected to convert (or no-op on) collection_log once the extension is enabled");
+
         using (var logIsHypertable = new NpgsqlCommand(
             "SELECT COUNT(*) FROM timescaledb_information.hypertables WHERE hypertable_name = 'collection_log'", connection))
         {
