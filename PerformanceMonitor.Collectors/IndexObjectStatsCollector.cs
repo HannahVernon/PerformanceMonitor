@@ -259,6 +259,12 @@ SELECT
             WHERE ic.object_id = i.object_id
             AND   ic.index_id = i.index_id
             AND   ic.is_included_column = 0
+            /* key_ordinal > 0: on a partitioned index the partitioning column rides along in
+               sys.index_columns at key_ordinal = 0 when it is NOT a real key, and without this
+               guard it lands FIRST (ORDER BY key_ordinal) as a phantom leading key -- poisoning
+               every Stage-2 duplicate/subset comparison and any DDL rendered from key_columns.
+               Mirrors sp_IndexCleanup fix ae32a4c (five aggregations gained this same filter). */
+            AND   ic.key_ordinal > 0
             ORDER BY
                 ic.key_ordinal
             FOR

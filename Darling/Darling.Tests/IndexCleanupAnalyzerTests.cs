@@ -879,4 +879,148 @@ public class IndexCleanupAnalyzerTests
         // Same Keys Different Order remains out of scope (Unique Constraint Replacement, incl. Rules 7.5b/7.6, is implemented).
         Assert.Contains(r.Notes, n => n.Contains("Same Keys Different Order"));
     }
+
+    // ── Review-parity guards (sp_IndexCleanup fix waves ae32a4c / 0abb3ef) ────────────────────────
+    // A constraint-backed index cannot be rebuilt with CREATE INDEX ... DROP_EXISTING (Msg 1907), so it
+    // must never be the surviving side of a merge; a filtered or partitioned index must never be promoted
+    // to replace a unique constraint (uniqueness hole / unverifiable Msg-1908 alignment); the usage floors
+    // must each bite on their own.
+
+    [Fact]
+    public void KeySubset_SupersetTarget_SkipsConstraintBackedIndex()
+    {
+        // Closest superset by key length is the PK-backed index — but its DROP_EXISTING merge rebuild
+        // would fail (Msg 1907) while the subset's DISABLE succeeded. The plain wider index must win.
+        var narrow = Idx("IX_Narrow", "[a]", indexId: 2, includes: "[z]", seeks: 10);
+        var pkBacked = Idx("PK_AB", "[a], [b]", indexId: 3, primaryKey: true, seeks: 10);
+        var wide = Idx("IX_Wide", "[a], [b], [c]", indexId: 4, seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { narrow, pkBacked, wide }, Opts());
+
+        var narrowRec = Rec(r, "IX_Narrow");
+        Assert.NotNull(narrowRec);
+        Assert.Equal(IndexCleanupAction.Disable, narrowRec!.Action);
+        Assert.Equal("IX_Wide", narrowRec.TargetIndexName);
+        Assert.DoesNotContain(r.Recommendations, x =>
+            x.IndexName == "PK_AB"
+            && (x.Action == IndexCleanupAction.MergeIncludes || x.Action == IndexCleanupAction.Disable));
+    }
+
+    [Fact]
+    public void KeySubset_OnlyConstraintBackedSupersetExists_LeavesNarrowAlone()
+    {
+        // The ONLY wider index is PK-backed: better to keep the redundant narrow index than disable it
+        // deferring to a rebuild that cannot execute.
+        var narrow = Idx("IX_Narrow", "[a]", indexId: 2, seeks: 10);
+        var pkBacked = Idx("PK_AB", "[a], [b]", indexId: 3, primaryKey: true, seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { narrow, pkBacked }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MergeIncludes);
+    }
+
+    [Fact]
+    public void KeyDuplicate_PkBackedMember_IsNeverTheMergeKeeper()
+    {
+        // Same keys, different includes. The PK-backed member is Protected (sorts first in the old keeper
+        // pick) — but as keeper it would draw the Msg-1907 rebuild. The plain index must keep and absorb;
+        // the PK-backed member is protected and must not be disabled.
+        var pkBacked = Idx("PK_A", "[a]", indexId: 3, primaryKey: true, includes: "[p]", seeks: 100);
+        var plain = Idx("IX_A", "[a]", indexId: 2, includes: "[q]", seeks: 10);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { pkBacked, plain }, Opts());
+
+        var keeperRec = Rec(r, "IX_A");
+        Assert.NotNull(keeperRec);
+        Assert.Equal(IndexCleanupAction.MergeIncludes, keeperRec!.Action);
+        Assert.Contains("[p]", keeperRec.Script);   // the PK member's include was absorbed
+        Assert.DoesNotContain(r.Recommendations, x =>
+            x.IndexName == "PK_A"
+            && (x.Action == IndexCleanupAction.Disable || x.Action == IndexCleanupAction.MergeIncludes));
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_FilteredIndex_IsNeverPromoted()
+    {
+        // A filtered unique index enforces uniqueness only over rows matching its predicate — promoting it
+        // to replace the constraint opens a uniqueness hole outside the filter (ae32a4c).
+        var constraint = Idx("UQ_A", "[a]", indexId: 3, uniqueConstraint: true, seeks: 5);
+        var filtered = Idx("IX_F", "[a]", indexId: 2, filter: "([x]>(0))", seeks: 5);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { constraint, filtered }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_PartitionedIndex_IsNeverPromoted()
+    {
+        // Stage 1 does not capture the partitioning column, so the Msg-1908 alignment requirement (a
+        // unique index's partitioning column must be part of its key) cannot be verified monitor-side.
+        var constraint = Idx("UQ_A", "[a]", indexId: 3, uniqueConstraint: true, seeks: 5);
+        var partitioned = Idx("IX_P", "[a]", indexId: 2, partitionCount: 4, seeks: 5);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { constraint, partitioned }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_PkBackedIndex_IsNeverPromoted()
+    {
+        // Rule 7.5 step 2's old gate skipped only unique CONSTRAINTS — a PK-backed nonclustered index with
+        // the exact key drew a MAKE UNIQUE (a DROP_EXISTING rebuild of a PK: Msg 1907), pairing a failing
+        // script with a live DROP CONSTRAINT.
+        var constraint = Idx("UQ_A", "[a]", indexId: 3, uniqueConstraint: true, seeks: 5);
+        var pkBacked = Idx("PK_A", "[a]", indexId: 4, primaryKey: true, seeks: 5);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { constraint, pkBacked }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+    }
+
+    [Fact]
+    public void UniqueConstraintReplacement_ClusteredIndex_IsNeverPromoted()
+    {
+        // The step-2 comment always promised "every TRUE nonclustered index"; the code now enforces it —
+        // a clustered index with the exact key must not be re-marked MAKE UNIQUE.
+        var constraint = Idx("UQ_A", "[a]", indexId: 3, uniqueConstraint: true, seeks: 5);
+        var clustered = Idx("CX_A", "[a]", indexId: 1, type: "CLUSTERED", seeks: 5);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { constraint, clustered }, Opts());
+
+        Assert.DoesNotContain(r.Recommendations, x => x.Action == IndexCleanupAction.MakeUnique);
+        Assert.DoesNotContain(r.Recommendations, x => x.ResultKind == IndexCleanupResultKind.DisableConstraint);
+    }
+
+    [Fact]
+    public void ObjectUsageFloor_SingleFloorAlone_IsEffective()
+    {
+        // ae32a4c: with only MinReads set, the old keep-condition's other half was `writes >= 0` — always
+        // true — so the filter did nothing. The exact-duplicate pair below is only analyzed if the object
+        // passes the floor; reads across the object = 2, floor = 100 → the object must be filtered out.
+        var d1 = Idx("IX_D1", "[a]", indexId: 2, includes: "[c]", seeks: 1);
+        var d2 = Idx("IX_D2", "[a]", indexId: 3, includes: "[c]", seeks: 1);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { d1, d2 }, Opts(minReads: 100));
+
+        Assert.Empty(r.Recommendations);
+    }
+
+    [Fact]
+    public void ObjectUsageFloor_EitherSetFloorPasses()
+    {
+        // The OR is intended (the proc's own comment): an object counts as used if it clears EITHER set
+        // floor. Reads fail the floor, writes clear it → the object is analyzed and the duplicate surfaces.
+        var d1 = Idx("IX_D1", "[a]", indexId: 2, includes: "[c]", seeks: 1, updates: 200000);
+        var d2 = Idx("IX_D2", "[a]", indexId: 3, includes: "[c]", seeks: 1);
+
+        var r = IndexCleanupAnalyzer.Analyze(new[] { d1, d2 }, Opts(minReads: 100, minWrites: 100));
+
+        Assert.Contains(r.Recommendations, x => x.Action == IndexCleanupAction.Disable);
+    }
 }

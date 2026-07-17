@@ -45,6 +45,19 @@ namespace PerformanceMonitor.Common
     /// reproducible from the captured data if later required. Script details that need metadata Stage 1 did not
     /// capture (the trailing <c>ON &lt;filegroup/partition_scheme&gt;</c> placement; sparse/legacy-LOB
     /// compression exclusions) are surfaced, never guessed.</para>
+    ///
+    /// <para><b>Review-parity (July 2026 sp_IndexCleanup fix waves ae32a4c + 0abb3ef)</b>: this port carries
+    /// the proc review's analysis fixes — constraint-backed (PK/UC) indexes are never merge targets
+    /// (<see cref="IsSafeMergeTarget"/>, Msg 1907, with a script-generator backstop); filtered and
+    /// partitioned indexes are never promoted to MAKE UNIQUE (<see cref="IsPromotableToUnique"/> — the
+    /// filtered case opens a uniqueness hole, the partitioned case can't be alignment-verified monitor-side,
+    /// Msg 1908); the Rule 7.5 DROP CONSTRAINT / MAKE UNIQUE pairing shares one promotability gate so a
+    /// constraint is never dropped pointing at an index the rebuild step refuses; and the
+    /// <c>MinReads</c>/<c>MinWrites</c> object gates apply per-term. The phantom-partitioning-key guard
+    /// (<c>key_ordinal &gt; 0</c>) lives upstream in <c>IndexObjectStatsCollector</c>. ONE deliberate
+    /// non-port: the proc's PER-INDEX usage floors (<c>meets_usage_floor</c>, fix 0abb3ef) — both hosts
+    /// hardwire the floors to 0 and no UI exposes them, so that machinery would be unreachable here; port it
+    /// when a floor knob ships.</para>
     /// </summary>
     public static class IndexCleanupAnalyzer
     {
@@ -218,6 +231,7 @@ namespace PerformanceMonitor.Common
                     .Where(w => !ReferenceEquals(w, narrow)
                         && !w.Processed
                         && w.IsEligibleForDedupe
+                        && IsSafeMergeTarget(w)   // never defer to a PK/UC-backed index: its DROP_EXISTING merge rebuild fails (Msg 1907) while this subset's DISABLE succeeds
                         && string.Equals(w.Filter, narrow.Filter, StringComparison.Ordinal)
                         && w.KeyColumns.StartsWith(prefix, StringComparison.Ordinal))
                     .OrderBy(w => w.KeyColumns.Length)          // closest superset = fewest extra key columns
@@ -417,6 +431,15 @@ namespace PerformanceMonitor.Common
 
                 if (hasKeySetMatchingConstraint)
                 {
+                    // The MAKE UNIQUE arm only fires for a promotable index (not filtered, not
+                    // partitioned, not constraint-backed — see IsPromotableToUnique). An already-unique
+                    // row still gets its informational KEEP; a non-promotable non-unique row is left
+                    // for the other rules rather than mislabelled as a constraint replacement.
+                    if (!w.Src.IsUnique && !IsPromotableToUnique(w))
+                    {
+                        continue;
+                    }
+
                     w.ConsolidationRule = Ucr;
                     w.Action = w.Src.IsUnique ? IndexCleanupAction.Keep : IndexCleanupAction.MakeUnique;
                     w.Processed = true;
@@ -436,7 +459,7 @@ namespace PerformanceMonitor.Common
                 }
 
                 var replacement = scope
-                    .Where(n => !n.Src.IsUniqueConstraint
+                    .Where(n => IsPromotableToUnique(n)   // same gate as step 2, so a constraint is never disabled pointing at an index step 2 will refuse to promote (an orphaned DROP CONSTRAINT = uniqueness silently gone)
                         && !string.Equals(n.Name, uc.Name, StringComparison.Ordinal)
                         && string.Equals(n.KeyColumns, uc.KeyColumns, StringComparison.Ordinal))
                     .OrderBy(n => n.Name, StringComparer.Ordinal)   // deterministic pick if several match
@@ -456,7 +479,11 @@ namespace PerformanceMonitor.Common
             // marking (the proc's UPDATE has no such guard; verified live).
             foreach (var nc in scope)
             {
-                if (nc.Src.IsUniqueConstraint)
+                // IsPromotableToUnique enforces what this step's comment always promised ("every TRUE
+                // nonclustered index"): nonclustered, not constraint-backed (a PK-backed or clustered row
+                // here would draw a DROP_EXISTING rebuild that fails Msg 1907), not filtered, not
+                // partitioned — mirroring sp_IndexCleanup fixes ae32a4c.
+                if (!IsPromotableToUnique(nc))
                 {
                     continue;
                 }
@@ -669,6 +696,34 @@ namespace PerformanceMonitor.Common
             scope.Where(w => !w.Processed && w.IsEligibleForDedupe && !w.Src.IsUniqueConstraint);
 
         /// <summary>
+        /// Whether an index may survive a consolidation as the REBUILT side (Rule 5 keeper / Rule 4-6
+        /// superset). A constraint-backed index (PK/UC) cannot be rebuilt with CREATE INDEX ...
+        /// DROP_EXISTING (Msg 1907), so choosing one pairs a script that fails with loser DISABLEs that
+        /// succeed — the losers' covering columns vanish with nothing absorbing them. Mirrors
+        /// sp_IndexCleanup fix ae32a4c ("constraints are now excluded as merge targets"). A plain unique
+        /// index (no backing constraint) IS a legal target (fix 0abb3ef).
+        /// </summary>
+        private static bool IsSafeMergeTarget(WorkIndex w) =>
+            !w.Src.IsPrimaryKey && !w.Src.IsUniqueConstraint;
+
+        /// <summary>
+        /// Whether an index may be promoted to MAKE UNIQUE as a unique-constraint replacement (Rule 7
+        /// family). On top of <see cref="IsSafeMergeTarget"/> (the rebuild is a DROP_EXISTING), the
+        /// replacement must be a TRUE nonclustered index (both step comments always said so; the checks
+        /// now enforce it), must NOT be filtered (a filtered unique index enforces uniqueness only over
+        /// rows matching its predicate — replacing a constraint with one opens a uniqueness hole;
+        /// sp_IndexCleanup fix ae32a4c), and must NOT be partitioned: a unique index's partitioning column
+        /// must be part of its key (Msg 1908), and Stage 1 does not capture the partitioning column, so
+        /// the alignment requirement cannot be verified monitor-side — the proc permits the verified
+        /// aligned case; we conservatively skip all partitioned candidates.
+        /// </summary>
+        private static bool IsPromotableToUnique(WorkIndex w) =>
+            w.IsEligibleForDedupe
+            && IsSafeMergeTarget(w)
+            && w.Filter.Length == 0
+            && (w.Src.PartitionCount ?? 1) <= 1;
+
+        /// <summary>
         /// Labels a set of equivalent duplicates: the highest-priority (then lowest-name) member is the
         /// keeper (KEEP); the rest are disabled (unless protected, in which case the disable is skipped —
         /// the protection is a hard guarantee). If the natural keeper is unprotected but a protected member
@@ -708,6 +763,7 @@ namespace PerformanceMonitor.Common
         /// <summary>Rule 5 keeper: prefer a unique member, then priority, then name.</summary>
         private static WorkIndex? PickKeyDuplicateKeeper(List<WorkIndex> members) =>
             members
+                .Where(IsSafeMergeTarget)   // the keeper is REBUILT (MERGE INCLUDES via DROP_EXISTING) — a PK-backed member can't be (Msg 1907); it stays protected among the losers instead (never disabled)
                 .OrderByDescending(m => m.Protected)
                 .ThenByDescending(m => m.Src.IsUnique)
                 .ThenByDescending(m => m.Priority)
@@ -853,6 +909,15 @@ namespace PerformanceMonitor.Common
 
         private static IndexCleanupRecommendation BuildMerge(WorkIndex w, IndexCleanupOptions options)
         {
+            // Backstop (mirrors sp_IndexCleanup ae32a4c's script-generator guard): a constraint-backed
+            // index cannot be rebuilt via DROP_EXISTING (Msg 1907). The rules exclude these as merge
+            // targets; if one ever slips through, emit a no-script review row rather than a failing
+            // script paired with loser DISABLEs that succeed.
+            if (!IsSafeMergeTarget(w))
+            {
+                return ConstraintBackedRebuildReview(w);
+            }
+
             string additionalInfo = w.ConsolidationRule == IndexCleanupRules.KeySuperset
                 ? "This index will absorb includes from the narrower indexes it supersedes"
                 : "This index will absorb includes from duplicate indexes";
@@ -879,6 +944,12 @@ namespace PerformanceMonitor.Common
         /// </summary>
         private static IndexCleanupRecommendation BuildMakeUnique(WorkIndex w, IndexCleanupOptions options)
         {
+            // Same Msg-1907 backstop as BuildMerge — a MAKE UNIQUE render is also a DROP_EXISTING rebuild.
+            if (!IsSafeMergeTarget(w))
+            {
+                return ConstraintBackedRebuildReview(w);
+            }
+
             var (script, omitsPlacement) = MergeScript(w, options, forceUnique: true);
 
             return NewRecommendation(w) with
@@ -921,6 +992,18 @@ namespace PerformanceMonitor.Common
                 AdditionalInfo = "Compression type: PAGE (All Partitions)",
             };
         }
+
+        /// <summary>The Msg-1907 backstop row: keep the constraint-backed index, emit no script.</summary>
+        private static IndexCleanupRecommendation ConstraintBackedRebuildReview(WorkIndex w) =>
+            NewRecommendation(w) with
+            {
+                Action = IndexCleanupAction.Keep,
+                ResultKind = IndexCleanupResultKind.Review,
+                ConsolidationRule = w.ConsolidationRule,
+                ScriptType = "REVIEW",
+                Script = "",   // a DROP_EXISTING rebuild of a constraint-backed index fails (Msg 1907)
+                AdditionalInfo = "Constraint-backed index cannot be rebuilt with DROP_EXISTING (Msg 1907) — review manually",
+            };
 
         private static IndexCleanupRecommendation BuildReview(WorkIndex w, string rule, List<string> siblings, string additionalInfo) =>
             NewRecommendation(w) with
@@ -1206,7 +1289,15 @@ namespace PerformanceMonitor.Common
             {
                 long reads = scopeIndexes.Sum(w => w.Reads);
                 long writes = scopeIndexes.Sum(w => w.Src.UserUpdates);
-                if (reads < options.MinReads && writes < options.MinWrites)
+
+                // Each term is gated on ITS OWN threshold being set (sp_IndexCleanup fix ae32a4c):
+                // without the per-term gate, a caller who set only MinReads still had `writes >= 0` as
+                // the other half of the keep-condition — always true — so the whole filter did nothing.
+                // The OR itself is intended: an object counts as used if it clears EITHER set floor.
+                bool used =
+                    (options.MinReads > 0 && reads >= options.MinReads)
+                    || (options.MinWrites > 0 && writes >= options.MinWrites);
+                if (!used)
                 {
                     return false;
                 }
