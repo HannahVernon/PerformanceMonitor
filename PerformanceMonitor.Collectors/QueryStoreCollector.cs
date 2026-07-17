@@ -245,6 +245,25 @@ ORDER BY
     /// <summary>PRODUCTVERSION assumed when the probe fails or returns NULL (SQL Server 2016).</summary>
     public const int DefaultProductVersion = 13;
 
+    /// <summary>
+    /// Server-side per-database row backstop (#1556): a coarse ceiling — ~10× a healthy per-cycle
+    /// volume — spliced as <c>TOP</c> so the SQL engine bounds its own work and the wire transfer before
+    /// the client byte budget ever engages. Deliberately NOT the siblings' curation caps (query_stats
+    /// TOP 200, procedure_stats TOP 150): those curate the "top N"; this only trims a pathological cycle.
+    /// It bounds COUNT, not BYTES — <see cref="MaxTextBytesPerDatabase"/> is the primary memory bound —
+    /// and is the same const the host warns on (<see cref="PerItemRowCountWarnThreshold"/>).
+    /// </summary>
+    public const int MaxRowsPerDatabase = 50_000;
+
+    /// <summary>
+    /// The PRIMARY memory bound (#1556): the cumulative per-database TEXT byte budget the client stops
+    /// reading at, enforced in <see cref="ReadItemAsync"/>. 256 MB per database composes with the #1553
+    /// 4-wide sweep to a bounded peak of ≈ 4 × 256 MB ≈ 1 GB transient — the field incident (0→13GB) was
+    /// exactly this un-bounded: 50k rows × ~40KB plan XML is ~2GB for ONE database, ×4 = 8GB, with the
+    /// row cap firing no defense (it caps rows, not bytes). Kept alongside the SQL <c>TOP</c> backstop.
+    /// </summary>
+    public const int MaxTextBytesPerDatabase = 256 * 1024 * 1024;
+
     public override string Name => "query_store";
 
     public override string TargetTable => "query_store_stats";
@@ -262,6 +281,24 @@ ORDER BY
 
     /// <summary>Incremental: only intervals with newer last_execution_time are fetched per cycle.</summary>
     public override string? WatermarkColumn => "last_execution_time";
+
+    /// <summary>
+    /// Per-database watermark (#1556): query_store enumerates databases and now FLUSHES each database's
+    /// rows before reading the next, so its cutoff must be per-database — otherwise any mid-run abort
+    /// (shutdown, OOM, a store-write failure) would strand the un-flushed databases' intervals behind the
+    /// committed databases' advanced server-wide watermark. Keyed on the already-collected
+    /// <c>database_name</c> column, the same precedent the deadlocks / blocked_process_report XE
+    /// collectors set. With this, each database's commit advances only its own watermark and an abort
+    /// loses nothing. This also relocates query_store's cutoff computation into the per-item loop, which
+    /// is exactly where the 24h catch-up clamp (<see cref="WatermarkPolicy"/>) must be applied.
+    /// </summary>
+    public override string? PerDatabaseWatermarkColumn => "database_name";
+
+    /// <summary>Host warns when a per-database read hits the row backstop (see <see cref="MaxRowsPerDatabase"/>).</summary>
+    public override int? PerItemRowCountWarnThreshold => MaxRowsPerDatabase;
+
+    /// <summary>The client-side per-database text byte budget enforced in <see cref="ReadItemAsync"/> (see <see cref="MaxTextBytesPerDatabase"/>).</summary>
+    public override int? PerItemTextByteBudget => MaxTextBytesPerDatabase;
 
     /// <summary>Enumerating collector — the primary query is never used.</summary>
     public override CollectorQuery BuildQuery(CollectorContext context)
@@ -347,9 +384,18 @@ ORDER BY
            install/09_collect_query_store.sql: CONVERT(nvarchar(max), qsp.query_plan) from
            sys.query_store_plan, no size guard. On only when the host sets CapturePlanXml (Darling);
            off = the nvarchar(1) NULL placeholder (Lite), byte-identical to the no-plan form. No
-           single quotes, so it splices straight into the sp_executesql body. */
+           single quotes, so it splices straight into the sp_executesql body.
+
+           #1556 plan-text dedupe (ON branch only): a plan is landed ONCE per plan_id per cycle — on its
+           newest runtime-stats interval (rn = 1) — and NULL on the older intervals, instead of repeating
+           the full plan XML on every interval row of the same plan. Composes with the TOP backstop below
+           because both sort by last_execution_time DESC: a plan that survives TOP always keeps its rn = 1
+           row (its newest interval is among the newest overall). The consumers tolerate the per-row NULL —
+           Lite selects NULL for the grid and fetches plans live, and Darling's stored-plan readers all
+           guard `query_plan_text IS NOT NULL`. Not mirrored into the Dashboard proc: its "Download Plan"
+           reads by exact collection_id, where per-row NULLs would break a real reader. */
         string planTextCol = context.CapturePlanXml
-            ? "query_plan_text = CONVERT(nvarchar(max), qsp.query_plan),"
+            ? "query_plan_text = CASE WHEN ROW_NUMBER() OVER (PARTITION BY qsp.plan_id ORDER BY qsrs.last_execution_time DESC) = 1 THEN CONVERT(nvarchar(max), qsp.query_plan) ELSE CONVERT(nvarchar(max), NULL) END,"
             : "query_plan_text = CONVERT(nvarchar(1), NULL),";
 
         /* The replica-attribution column + its join (see hasReplicaAttribution above). Selected LAST,
@@ -371,7 +417,7 @@ ORDER BY
 EXECUTE [{escapedDbName}].sys.sp_executesql
     N'SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-     SELECT /* PerformanceMonitorLite */
+     SELECT /* PerformanceMonitorLite */ TOP ({MaxRowsPerDatabase})
          query_id = qsq.query_id,
          plan_id = qsp.plan_id,
          execution_type_desc = qsrs.execution_type_desc,
@@ -436,6 +482,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
      {replicaJoin}
      WHERE qsrs.last_execution_time > @cutoff_time
      AND   qst.query_sql_text NOT LIKE N''%PerformanceMonitorLite%''
+     ORDER BY qsrs.last_execution_time DESC
      OPTION(RECOMPILE, LOOP JOIN);',
     N'@cutoff_time datetime2(7)',
     @cutoff_time;";
@@ -448,9 +495,19 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
 
     public override async ValueTask ReadItemAsync(string item, DbDataReader reader, List<Row> rows, CollectorContext context, CancellationToken cancellationToken)
     {
+        /* Reset the per-item truncation signal — the host reads it immediately after this returns. */
+        context.PerItemTextBudgetExceeded = false;
+
+        /* Client-side cumulative BYTE budget (#1556) — the PRIMARY memory bound. The server-side TOP caps
+           the ROW COUNT, but a row carries two nvarchar(max) fields (query text + plan XML), so 50k rows
+           can still be gigabytes. Accumulate the materialized text size and STOP reading at the budget,
+           disposing the reader early, so one database can never balloon the process. */
+        var budget = PerItemTextByteBudget ?? int.MaxValue;
+        long textBytes = 0;
+
         while (await reader.ReadAsync(cancellationToken))
         {
-            rows.Add(new Row
+            var row = new Row
             {
                 DatabaseName = item,
                 QueryId = reader.GetInt64(0),
@@ -506,7 +563,19 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
                 QueryPlanText = reader.IsDBNull(50) ? null : reader.GetString(50),
                 QueryPlanHash = reader.IsDBNull(51) ? null : reader.GetString(51),
                 ReplicaRole = reader.IsDBNull(52) ? null : reader.GetString(52),
-            });
+            };
+            rows.Add(row);
+
+            /* char count × 2 for UTF-16. The plan XML is deduped server-side (NULL on all but the newest
+               interval per plan_id), but the query text repeats on every interval row, so this budget is
+               what bounds that repetition too. At the budget, signal truncation and stop — the host
+               surfaces the WARNING and the remaining rows self-heal on the next cycle. */
+            textBytes += ((long)(row.QueryText?.Length ?? 0) + (row.QueryPlanText?.Length ?? 0)) * 2L;
+            if (textBytes >= budget)
+            {
+                context.PerItemTextBudgetExceeded = true;
+                break;
+            }
         }
     }
 

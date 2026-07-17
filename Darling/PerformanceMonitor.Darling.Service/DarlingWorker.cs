@@ -95,6 +95,34 @@ public sealed class DarlingWorker : BackgroundService
     /// </summary>
     internal const int MaxConcurrentServerSweeps = 4;
 
+    /// <summary>
+    /// The working-set launch-guard threshold, as a fraction of available memory (#1556). Pinned by a test
+    /// (a drift tripwire): the launch guard is the fleet-level backstop against the commit-limit exhaustion
+    /// the field incident hit, so its threshold must not silently drift.
+    /// </summary>
+    internal const double MemoryGuardFraction = 0.80;
+
+    /// <summary>
+    /// The working-set launch guard (#1556): whether the fleet sweep may launch NEW collection bodies this
+    /// tick. Once the process working set crosses <see cref="MemoryGuardFraction"/> of available memory this
+    /// returns false, so the launch loop stops STARTING new bodies and lets the in-flight ones drain — the
+    /// process backs away from the 0→13GB commit-limit blowout instead of piling on more concurrent
+    /// collectors. Purge/disk/analysis/delay keep running (the guard only gates NEW launches). Pure so a unit
+    /// test pins the bands and the constant; the caller passes <c>Process.PrivateMemorySize64</c> (the metric
+    /// that matched the incident — committed private bytes, not the GC heap) and
+    /// <c>GC.GetGCMemoryInfo().TotalAvailableMemoryBytes</c>. A non-positive available figure (an unknown
+    /// budget) never blocks collection.
+    /// </summary>
+    internal static bool ShouldLaunchSweeps(long workingSetBytes, long availableBytes)
+    {
+        if (availableBytes <= 0)
+        {
+            return true;
+        }
+
+        return workingSetBytes < MemoryGuardFraction * availableBytes;
+    }
+
     /* The shutdown drain budget for the in-flight per-server bodies (#1553 fire-and-track): wait at most this
        long for launched bodies to finish before falling through to the serial command-loop drain. Budgeted
        INSIDE the host's default 30s ShutdownTimeout with headroom for that command-loop drain — a future bump
@@ -196,6 +224,12 @@ public sealed class DarlingWorker : BackgroundService
     /* MinValue = the first sweep after startup evaluates the store disk-pressure self-alert, then every
        s_diskCheckInterval. Fleet-level (one shared store), so it is a single field, not per-server. */
     private DateTime _nextDiskCheckUtc = DateTime.MinValue;
+
+    /* Fleet-level working-set launch-guard latch (#1556): true once ShouldLaunchSweeps has tripped this
+       episode, so its CRITICAL log is emitted ONCE rather than every sweep (the WarnedThisEpisode idiom —
+       but fleet-wide: the guard is about the whole process's working set, so it is a single worker field,
+       NOT a per-ServerLoopState flag). Cleared when the working set recovers below the threshold. */
+    private bool _memoryGuardTrippedThisEpisode;
 
     /* Set once at startup by the TimescaleSupport detection (cached per data source — the
        extension can't appear or vanish under a running service without a restart anyway);
@@ -642,12 +676,47 @@ public sealed class DarlingWorker : BackgroundService
                connection at once (serverSweepGate, acquired inside the body). All tracking / skip-log state
                (InFlightSweep, SweepStartedUtc, WarnedThisEpisode) is written ONLY here on the outer sweep thread
                — the body never touches it, so there is no cross-thread tear on these fields. */
+
+            /* Working-set launch guard (#1556): before launching ANY new bodies this tick, check the process
+               working set against the guard threshold. Over the line, launch NOTHING this sweep so the in-flight
+               bodies drain and the process backs away from the commit-limit exhaustion the field incident hit —
+               but the purge / disk-pressure / delay steps below keep running. ONE CRITICAL per episode; a
+               recovery re-arms and logs at Information. */
+            long workingSetBytes;
+            using (var currentProcess = System.Diagnostics.Process.GetCurrentProcess())
+            {
+                workingSetBytes = currentProcess.PrivateMemorySize64;
+            }
+            var availableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+            var mayLaunchSweeps = ShouldLaunchSweeps(workingSetBytes, availableMemoryBytes);
+            if (!mayLaunchSweeps && !_memoryGuardTrippedThisEpisode)
+            {
+                _memoryGuardTrippedThisEpisode = true;
+                _logger.LogCritical(
+                    "Working set {WorkingSetMb}MB is over {Pct:P0} of {AvailableMb}MB available — PAUSING new collection-body launches this tick so in-flight bodies drain (the #1556 commit-limit backstop). Purge/disk/analysis continue.",
+                    workingSetBytes / (1024 * 1024), MemoryGuardFraction, availableMemoryBytes / (1024 * 1024));
+            }
+            else if (mayLaunchSweeps && _memoryGuardTrippedThisEpisode)
+            {
+                _memoryGuardTrippedThisEpisode = false;
+                _logger.LogInformation(
+                    "Working set recovered to {WorkingSetMb}MB of {AvailableMb}MB — resuming collection-body launches.",
+                    workingSetBytes / (1024 * 1024), availableMemoryBytes / (1024 * 1024));
+            }
+
             foreach (var server in sweepTargets)
             {
                 /* D3: the per-sweep cancellation check HOISTS here from the old inline body — a bare `break`
                    inside the extracted async body would not compile (CS0139), and this launch loop is the loop
                    it belongs to. */
                 if (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                /* Working-set guard tripped this tick: stop launching new bodies (evaluated once, before the
+                   loop, so the decision applies uniformly to every server this sweep). */
+                if (!mayLaunchSweeps)
                 {
                     break;
                 }
@@ -2077,7 +2146,15 @@ LIMIT 1";
 
     /// <summary>The <c>query_store_stats</c> resolver — the Query Store history surface's identifier (server_id +
     /// database_name + query_id) to its captured query text + stored plan. $1 server_id, $2 database_name, $3
-    /// query_id. Isolation is NULL (Query Store does not capture it).</summary>
+    /// query_id. Isolation is NULL (Query Store does not capture it).
+    /// <para>
+    /// The plan-presence tiebreak leads the sort (#1556): query_store now dedupes plan XML to ONE runtime-stats
+    /// interval per plan_id per cycle (NULL on the others), so a plain <c>collection_time DESC</c> could land on
+    /// a newer NULL-plan interval of the same query. <c>(query_plan_text IS NOT NULL) DESC</c> first prefers the
+    /// row that actually carries the plan; <c>collection_time DESC</c> then breaks ties toward the newest. The
+    /// query_text is the same query either way, so this is strictly more robust — the sibling stored-plan
+    /// readers' semantics.
+    /// </para></summary>
     public const string ResolveStoredQueryStoreForActualPlanSql = @"
 SELECT query_text, query_plan_text, NULL::text AS transaction_isolation_level
 FROM query_store_stats
@@ -2085,7 +2162,7 @@ WHERE server_id = $1
 AND   database_name = $2
 AND   query_id = $3
 AND   query_text IS NOT NULL
-ORDER BY collection_time DESC
+ORDER BY (query_plan_text IS NOT NULL) DESC, collection_time DESC
 LIMIT 1";
 
     /// <summary>The <c>query_snapshots</c> resolver — the Wait drill-down surface's identifier (server_id +
@@ -2373,8 +2450,22 @@ LIMIT 1";
                 _logger.LogWarning("[{Server}] Connection-level failure — will reconnect", server.Config.DisplayName);
             }
 
-            await DarlingObservability.LogCollectionAsync(
-                _postgres!, runtime, collectorName, "ERROR", 0, 0, 0, ex.Message, _logger, cancellationToken);
+            /* Best-effort store write (#1556): this is also the OutOfMemoryException landing pad (OOM is an
+               Exception and no earlier catch claims it), and under an OOM this handler's own LogCollectionAsync
+               allocation can itself fail. A throw HERE would fault the fire-and-track body task instead of being
+               the isolated, already-logged ERROR above — so swallow a secondary failure (nothing is allocated in
+               the catch, to stay safe under the very condition it guards against). The LogError above already
+               recorded the fault to the app log, so no signal is lost. */
+            try
+            {
+                await DarlingObservability.LogCollectionAsync(
+                    _postgres!, runtime, collectorName, "ERROR", 0, 0, 0, ex.Message, _logger, cancellationToken);
+            }
+            catch
+            {
+                /* Intentionally empty — see the comment above. Do not add logging here; it must not throw. */
+            }
+
             return 0;
         }
     }

@@ -13,6 +13,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Collectors;
@@ -93,8 +94,12 @@ public partial class RemoteCollectorService
             PerfmonCounterOverride = GetPerfmonCounterOverride(),
         };
 
-        var sqlSw = Stopwatch.StartNew();
-        List<TRow> rows;
+        /* Two accumulators, not one contiguous read-then-write pair: the enumeration and Azure paths now
+           FLUSH each database's rows before reading the next (#1556), so SQL and storage slices interleave.
+           _lastSqlMs / _lastDuckDbMs stay the #1180 fetch/store split — now sums of interleaved slices. */
+        long sqlMs = 0;
+        long storageMs = 0;
+        var rowsWritten = 0;
 
         if (definition.RunsPerDatabase(context.Target))
         {
@@ -111,12 +116,16 @@ public partial class RemoteCollectorService
                 ? definition.BuildQuery(context)
                 : null;
             var commandTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
-            rows = new List<TRow>();
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
             var attempted = 0;
             var failed = 0;
             Exception? firstFailure = null;
+
+            /* One DuckDB connection for the whole body; one appender per database on it (disposing an
+               appender flushes that database — commit-1..N-1 semantics on abort). */
+            using var duckConnection = _duckDb.CreateConnection();
+            await duckConnection.OpenAsync(cancellationToken);
 
             foreach (var databaseName in databases)
             {
@@ -132,20 +141,36 @@ public partial class RemoteCollectorService
                     if (dbPlan is null)
                     {
                         /* Null (no rows for this database yet) falls back to the definition's
-                           documented first-run window, per database. */
+                           documented first-run window, per database. This is the XE ring-buffer path
+                           (deadlocks / BPR), NOT query_store — no 24h clamp here. */
                         context.Watermark = await GetLastCollectedTimeForDatabaseAsync(
                             serverId, definition.TargetTable, definition.WatermarkColumn!,
                             definition.PerDatabaseWatermarkColumn!, databaseName, cancellationToken);
                         dbPlan = definition.BuildQuery(context);
                     }
 
-                    using var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
-                    using var dbCommand = CreateCollectorCommand(dbPlan, dbConnection, commandTimeout);
-                    using var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken);
-                    rows.AddRange(await definition.ReadAsync(dbReader, context, cancellationToken));
+                    var sqlSlice = Stopwatch.StartNew();
+                    List<TRow> batch;
+                    using (var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken))
+                    using (var dbCommand = CreateCollectorCommand(dbPlan, dbConnection, commandTimeout))
+                    using (var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken))
+                    {
+                        batch = await definition.ReadAsync(dbReader, context, cancellationToken);
+                    }
+                    sqlMs += sqlSlice.ElapsedMilliseconds;
+
+                    /* Flush this database before reading the next — peak memory is one database's rows. */
+                    if (batch.Count > 0)
+                    {
+                        var storageSlice = Stopwatch.StartNew();
+                        rowsWritten += WriteBatch(duckConnection, definition, batch, serverId, context.ServerName, collectionTime, context);
+                        storageMs += storageSlice.ElapsedMilliseconds;
+                    }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException)
                 {
+                    /* OOM is filtered OUT of this per-database skip and propagates: it is fatal, not a
+                       routine one-database miss. */
                     failed++;
                     firstFailure ??= ex;
                     _logger?.LogDebug("Skipping database '{Database}' for {Collector}: {Error}", databaseName, definition.Name, ex.Message);
@@ -176,6 +201,7 @@ public partial class RemoteCollectorService
                 /* Enumeration shape (the [db].sys.sp_executesql idiom): list items first, then
                    run one query per item ON THE SAME CONNECTION; an item that fails with a
                    SqlException is skipped with a warning, matching the original collectors. */
+                var listSlice = Stopwatch.StartNew();
                 var items = new List<string>();
                 /* Enumeration always uses the host default timeout, matching the originals —
                    the per-collector override applies only to the heavy per-item commands. */
@@ -187,6 +213,7 @@ public partial class RemoteCollectorService
                         items.Add(enumerationReader.GetString(0));
                     }
                 }
+                sqlMs += listSlice.ElapsedMilliseconds;
 
                 if (items.Count == 0)
                 {
@@ -198,6 +225,7 @@ public partial class RemoteCollectorService
                    deliberately probed per cycle rather than trusting cached status). Best-effort
                    on a 10-second budget, matching the original; failure leaves the definition on
                    its documented default via a null EnumerationProbeResult. */
+                var probeSlice = Stopwatch.StartNew();
                 var probePlan = definition.BuildEnumerationProbe(context);
                 if (probePlan is not null)
                 {
@@ -216,29 +244,74 @@ public partial class RemoteCollectorService
                             definition.Name, ex.Message);
                     }
                 }
+                sqlMs += probeSlice.ElapsedMilliseconds;
 
                 var itemTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
-                rows = new List<TRow>();
-                foreach (var item in items)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    try
-                    {
-                        using var itemCommand = CreateCollectorCommand(definition.BuildPerItemQuery(item, context), sqlConnection, itemTimeout);
-                        using var itemReader = await itemCommand.ExecuteReaderAsync(cancellationToken);
-                        await definition.ReadItemAsync(item, itemReader, rows, context, cancellationToken);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        _logger?.LogWarning("Failed to collect {Collector} from [{Database}] on '{Server}': {Message}",
-                            definition.Name, item, server.DisplayName, ex.Message);
-                    }
-                }
 
+                /* One DuckDB connection for the whole body; the driver writes one appender per database
+                   on it, flushing each before reading the next. */
+                using var duckConnection = _duckDb.CreateConnection();
+                await duckConnection.OpenAsync(cancellationToken);
+
+                var driverResult = await EnumeratedCollectorDriver.RunAsync<TRow>(
+                    items,
+                    /* Per-database watermark refresh + the 24h catch-up clamp, computed INSIDE the loop —
+                       this is the per-item cutoff site the plan's LOUD FLAG requires the clamp to live at.
+                       Only query_store (the sole enumeration collector with a per-database timestamp
+                       watermark) reaches this; the two snapshot collectors are watermark-less. */
+                    perItemWatermark: definition.PerDatabaseWatermarkColumn is null || definition.WatermarkColumn is null
+                        ? null
+                        : async (item, ct) =>
+                        {
+                            var raw = await GetLastCollectedTimeForDatabaseAsync(
+                                serverId, definition.TargetTable, definition.WatermarkColumn!,
+                                definition.PerDatabaseWatermarkColumn!, item, ct);
+                            var clamped = WatermarkPolicy.ClampCatchup(raw, collectionTime);
+                            if (raw.HasValue && clamped != raw)
+                            {
+                                _logger?.LogWarning(
+                                    "{Collector} on '{Server}' database [{Database}] catch-up clamped to {Hours}h (stored watermark {Raw:o} is older) — a bounded, logged history hole.",
+                                    definition.Name, server.DisplayName, item, WatermarkPolicy.MaxCatchup.TotalHours, raw.Value);
+                            }
+                            context.Watermark = clamped;
+                        },
+                    readItem: async (item, ct) =>
+                    {
+                        var batch = new List<TRow>();
+                        using var itemCommand = CreateCollectorCommand(definition.BuildPerItemQuery(item, context), sqlConnection, itemTimeout);
+                        using var itemReader = await itemCommand.ExecuteReaderAsync(ct);
+                        await definition.ReadItemAsync(item, itemReader, batch, context, ct);
+                        return batch;
+                    },
+                    writeBatch: (batch, ct) => Task.FromResult(WriteBatch(duckConnection, definition, batch, serverId, context.ServerName, collectionTime, context)),
+                    onItemComplete: (item, batchCount) =>
+                    {
+                        var capHit = definition.PerItemRowCountWarnThreshold is int cap && batchCount >= cap;
+                        if (capHit || context.PerItemTextBudgetExceeded)
+                        {
+                            _logger?.LogWarning(
+                                "{Collector} on '{Server}' database [{Database}] hit its per-database collection bound ({Reason}) — oldest rows dropped this cycle.",
+                                definition.Name, server.DisplayName, item,
+                                capHit ? $"row cap {definition.PerItemRowCountWarnThreshold}" : "256MB text budget");
+                        }
+                    },
+                    onItemError: (item, ex) =>
+                        _logger?.LogWarning("Failed to collect {Collector} from [{Database}] on '{Server}': {Message}",
+                            definition.Name, item, server.DisplayName, ex.Message),
+                    cancellationToken);
+
+                rowsWritten = driverResult.Rows;
+                sqlMs += driverResult.SqlMs;
+                storageMs += driverResult.StorageMs;
             }
             else
             {
+                /* Plain single-query path — unchanged: read all rows, then write them in one batch
+                   (supplemental never runs for per-database collectors). Routed through WriteBatch so
+                   all three paths share one writer. */
+                var sqlSlice = Stopwatch.StartNew();
                 var plan = definition.BuildQuery(context);
+                List<TRow> rows;
                 using (var command = CreateCollectorCommand(plan, sqlConnection, definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds))
                 using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                 {
@@ -263,49 +336,72 @@ public partial class RemoteCollectorService
                         _logger?.LogDebug(ex, "Supplemental query for {Collector} failed; continuing without it", definition.Name);
                     }
                 }
+                sqlMs += sqlSlice.ElapsedMilliseconds;
+
+                var storageSlice = Stopwatch.StartNew();
+                using var duckConnection = _duckDb.CreateConnection();
+                await duckConnection.OpenAsync(cancellationToken);
+                rowsWritten = WriteBatch(duckConnection, definition, rows, serverId, context.ServerName, collectionTime, context);
+                storageMs += storageSlice.ElapsedMilliseconds;
             }
         }
 
-        sqlSw.Stop();
-        _lastSqlMs = sqlSw.ElapsedMilliseconds;
-
-        var duckSw = Stopwatch.StartNew();
-        var rowsWritten = 0;
-
-        using (var duckConnection = _duckDb.CreateConnection())
-        {
-            await duckConnection.OpenAsync(cancellationToken);
-
-            using (var appender = duckConnection.CreateAppender(definition.TargetTable))
-            {
-                var writer = new AppenderCollectorRowWriter();
-
-                foreach (var item in rows)
-                {
-                    var row = appender.CreateRow();
-
-                    if (definition.IncludesCollectionId)
-                    {
-                        row.AppendValue(GenerateCollectionId()); /* collection_id BIGINT */
-                    }
-
-                    row.AppendValue(collectionTime)              /* collection_time TIMESTAMP */
-                       .AppendValue(serverId)                    /* server_id INTEGER */
-                       .AppendValue(context.ServerName);         /* server_name VARCHAR */
-
-                    writer.CurrentRow = row;
-                    definition.WritePayload(item, writer, context);
-                    row.EndRow();
-
-                    rowsWritten++;
-                }
-            }
-        }
-
-        duckSw.Stop();
-        _lastDuckDbMs = duckSw.ElapsedMilliseconds;
+        _lastSqlMs = sqlMs;
+        _lastDuckDbMs = storageMs;
 
         _logger?.LogDebug("Collected {RowCount} {Collector} rows for server '{Server}'", rowsWritten, definition.Name, server.DisplayName);
+        return rowsWritten;
+    }
+
+    /// <summary>
+    /// Writes ONE batch (one enumerated item / one database, or the whole result set for a plain
+    /// collector) to DuckDB via a single appender on the caller's already-open connection (#1556). The
+    /// three collection paths route through here so the storage logic — the prefix columns, the positional
+    /// payload — lives once. Disposing the appender FLUSHES the batch, so on a mid-run abort the batches
+    /// already written stay committed (commit-1..N-1). An empty batch opens no appender and returns 0
+    /// (rows_collected = Σ non-empty batch counts). Synchronous (the DuckDB appender API is), returning the
+    /// count so the driver can await it as a completed task.
+    /// </summary>
+    private static int WriteBatch<TRow>(
+        DuckDBConnection duckConnection,
+        ICollectorDefinition<TRow> definition,
+        List<TRow> rows,
+        int serverId,
+        string serverName,
+        DateTime collectionTime,
+        CollectorContext context)
+    {
+        if (rows.Count == 0)
+        {
+            return 0;
+        }
+
+        var rowsWritten = 0;
+        using (var appender = duckConnection.CreateAppender(definition.TargetTable))
+        {
+            var writer = new AppenderCollectorRowWriter();
+
+            foreach (var item in rows)
+            {
+                var row = appender.CreateRow();
+
+                if (definition.IncludesCollectionId)
+                {
+                    row.AppendValue(GenerateCollectionId()); /* collection_id BIGINT */
+                }
+
+                row.AppendValue(collectionTime)              /* collection_time TIMESTAMP */
+                   .AppendValue(serverId)                    /* server_id INTEGER */
+                   .AppendValue(serverName);                 /* server_name VARCHAR */
+
+                writer.CurrentRow = row;
+                definition.WritePayload(item, writer, context);
+                row.EndRow();
+
+                rowsWritten++;
+            }
+        }
+
         return rowsWritten;
     }
 

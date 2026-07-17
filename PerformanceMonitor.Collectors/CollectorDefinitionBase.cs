@@ -41,6 +41,10 @@ public abstract class CollectorDefinitionBase<TRow> : ICollectorDefinition<TRow>
 
     public virtual string? PerDatabaseWatermarkColumn => null;
 
+    public virtual int? PerItemRowCountWarnThreshold => null;
+
+    public virtual int? PerItemTextByteBudget => null;
+
     public virtual bool AppliesTo(CollectorTargetInfo target) => true;
 
     public virtual bool RunsPerDatabase(CollectorTargetInfo target) => false;

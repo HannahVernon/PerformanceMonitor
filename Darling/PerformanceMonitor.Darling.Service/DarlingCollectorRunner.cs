@@ -139,8 +139,13 @@ public sealed class DarlingCollectorRunner
             CollectSchemaChangeEvents = _collectSchemaChanges(),
         };
 
-        var sqlSw = Stopwatch.StartNew();
-        List<TRow> rows;
+        /* Two accumulators, not one contiguous read-then-write pair: the enumeration and Azure paths now
+           FLUSH each database's rows before reading the next (#1556), so SQL and storage slices interleave.
+           Wall-clock (sqlMs + storageMs) and rows_collected totals stay coherent — collection_log is
+           unchanged; only the split is now a sum of interleaved slices. */
+        long sqlMs = 0;
+        long storageMs = 0;
+        var rowsWritten = 0;
 
         if (definition.RunsPerDatabase(context.Target))
         {
@@ -152,16 +157,25 @@ public sealed class DarlingCollectorRunner
                against that database's own newest already-collected value — the single server-wide
                watermark would let one busy database's newer event silence another database's older
                event still sitting in its ring buffer (#1535). Everything else keeps the
-               build-once plan. */
+               build-once plan.
+
+               Honor CommandTimeoutSecondsOverride here (#1556): this path previously passed the constant
+               60s cap where Lite's twin already honored the override, a latent bug — index_object_stats
+               needs 300s per database on Azure, so on a large Azure database its per-database read would
+               have timed out at 60s. */
             var plan = definition.PerDatabaseWatermarkColumn is null || definition.WatermarkColumn is null
                 ? definition.BuildQuery(context)
                 : null;
-            rows = new List<TRow>();
+            var perDbTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
             var databases = await GetAzureDatabaseListAsync(server, cancellationToken);
 
             var attempted = 0;
             var failed = 0;
             Exception? firstFailure = null;
+
+            /* One pooled store connection for the whole body; one binary COPY per database on it
+               (completing an importer commits that database — commit-1..N-1 semantics on abort). */
+            await using var pgConnection = await _postgres.OpenConnectionAsync(cancellationToken);
 
             foreach (var databaseName in databases)
             {
@@ -177,20 +191,37 @@ public sealed class DarlingCollectorRunner
                     if (dbPlan is null)
                     {
                         /* Null (no rows for this database yet) falls back to the definition's
-                           documented first-run window, per database. */
+                           documented first-run window, per database. This is the XE ring-buffer path
+                           (deadlocks / BPR), NOT query_store — no 24h clamp here (those sources roll
+                           past 24h on their own; the clamp is scoped to query_store's enumeration path). */
                         context.Watermark = await GetLastCollectedTimeForDatabaseAsync(
                             server.ServerId, definition.TargetTable, definition.WatermarkColumn!,
                             definition.PerDatabaseWatermarkColumn!, databaseName, cancellationToken);
                         dbPlan = definition.BuildQuery(context);
                     }
 
-                    using var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
-                    using var dbCommand = CreateCollectorCommand(dbPlan, dbConnection, CommandTimeoutSeconds);
-                    using var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken);
-                    rows.AddRange(await definition.ReadAsync(dbReader, context, cancellationToken));
+                    var sqlSlice = Stopwatch.StartNew();
+                    List<TRow> batch;
+                    using (var dbConnection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken))
+                    using (var dbCommand = CreateCollectorCommand(dbPlan, dbConnection, perDbTimeout))
+                    using (var dbReader = await dbCommand.ExecuteReaderAsync(cancellationToken))
+                    {
+                        batch = await definition.ReadAsync(dbReader, context, cancellationToken);
+                    }
+                    sqlMs += sqlSlice.ElapsedMilliseconds;
+
+                    /* Flush this database before reading the next — peak memory is one database's rows. */
+                    if (batch.Count > 0)
+                    {
+                        var storageSlice = Stopwatch.StartNew();
+                        rowsWritten += await WriteBatchAsync(pgConnection, definition, batch, server, collectionTime, context, cancellationToken);
+                        storageMs += storageSlice.ElapsedMilliseconds;
+                    }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException)
                 {
+                    /* OOM is filtered OUT of this per-database skip and propagates: it is fatal, not a
+                       routine one-database miss. */
                     failed++;
                     firstFailure ??= ex;
                     _logger?.LogDebug("Skipping database '{Database}' for {Collector}: {Error}", databaseName, definition.Name, ex.Message);
@@ -223,6 +254,7 @@ public sealed class DarlingCollectorRunner
                 /* Enumeration shape (the [db].sys.sp_executesql idiom): list items first, then
                    run one query per item ON THE SAME CONNECTION; an item that fails is skipped
                    with a warning, matching Lite. */
+                var listSlice = Stopwatch.StartNew();
                 var items = new List<string>();
                 using (var enumerationCommand = CreateCollectorCommand(enumerationPlan, sqlConnection, CommandTimeoutSeconds))
                 using (var enumerationReader = await enumerationCommand.ExecuteReaderAsync(cancellationToken))
@@ -232,14 +264,16 @@ public sealed class DarlingCollectorRunner
                         items.Add(enumerationReader.GetString(0));
                     }
                 }
+                sqlMs += listSlice.ElapsedMilliseconds;
 
                 if (items.Count == 0)
                 {
-                    return new CollectorRunResult(0, sqlSw.ElapsedMilliseconds, 0);
+                    return new CollectorRunResult(0, sqlMs, 0);
                 }
 
                 /* Optional quick scalar probe (query_store's live PRODUCTVERSION check) —
                    best-effort on a 10-second budget; failure leaves the documented default. */
+                var probeSlice = Stopwatch.StartNew();
                 var probePlan = definition.BuildEnumerationProbe(context);
                 if (probePlan is not null)
                 {
@@ -258,28 +292,73 @@ public sealed class DarlingCollectorRunner
                             definition.Name, ex.Message);
                     }
                 }
+                sqlMs += probeSlice.ElapsedMilliseconds;
 
                 var itemTimeout = definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds;
-                rows = new List<TRow>();
-                foreach (var item in items)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    try
+
+                /* One pooled store connection for the whole body; the driver writes one binary COPY per
+                   database on it, flushing each before reading the next. */
+                await using var pgConnection = await _postgres.OpenConnectionAsync(cancellationToken);
+
+                var driverResult = await EnumeratedCollectorDriver.RunAsync<TRow>(
+                    items,
+                    /* Per-database watermark refresh + the 24h catch-up clamp, computed INSIDE the loop —
+                       this is the per-item cutoff site the plan's LOUD FLAG requires the clamp to live at.
+                       Only query_store (the sole enumeration collector with a per-database timestamp
+                       watermark) reaches this; the two snapshot collectors are watermark-less. */
+                    perItemWatermark: definition.PerDatabaseWatermarkColumn is null || definition.WatermarkColumn is null
+                        ? null
+                        : async (item, ct) =>
+                        {
+                            var raw = await GetLastCollectedTimeForDatabaseAsync(
+                                server.ServerId, definition.TargetTable, definition.WatermarkColumn!,
+                                definition.PerDatabaseWatermarkColumn!, item, ct);
+                            var clamped = WatermarkPolicy.ClampCatchup(raw, collectionTime);
+                            if (raw.HasValue && clamped != raw)
+                            {
+                                _logger?.LogWarning(
+                                    "{Collector} on '{Server}' database [{Database}] catch-up clamped to {Hours}h (stored watermark {Raw:o} is older) — a bounded, logged history hole.",
+                                    definition.Name, server.Config.DisplayName, item, WatermarkPolicy.MaxCatchup.TotalHours, raw.Value);
+                            }
+                            context.Watermark = clamped;
+                        },
+                    readItem: async (item, ct) =>
                     {
+                        var batch = new List<TRow>();
                         using var itemCommand = CreateCollectorCommand(definition.BuildPerItemQuery(item, context), sqlConnection, itemTimeout);
-                        using var itemReader = await itemCommand.ExecuteReaderAsync(cancellationToken);
-                        await definition.ReadItemAsync(item, itemReader, rows, context, cancellationToken);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
+                        using var itemReader = await itemCommand.ExecuteReaderAsync(ct);
+                        await definition.ReadItemAsync(item, itemReader, batch, context, ct);
+                        return batch;
+                    },
+                    writeBatch: (batch, ct) => WriteBatchAsync(pgConnection, definition, batch, server, collectionTime, context, ct),
+                    onItemComplete: (item, batchCount) =>
                     {
+                        var capHit = definition.PerItemRowCountWarnThreshold is int cap && batchCount >= cap;
+                        if (capHit || context.PerItemTextBudgetExceeded)
+                        {
+                            _logger?.LogWarning(
+                                "{Collector} on '{Server}' database [{Database}] hit its per-database collection bound ({Reason}) — oldest rows dropped this cycle.",
+                                definition.Name, server.Config.DisplayName, item,
+                                capHit ? $"row cap {definition.PerItemRowCountWarnThreshold}" : "256MB text budget");
+                        }
+                    },
+                    onItemError: (item, ex) =>
                         _logger?.LogWarning("Failed to collect {Collector} from [{Database}] on '{Server}': {Message}",
-                            definition.Name, item, server.Config.DisplayName, ex.Message);
-                    }
-                }
+                            definition.Name, item, server.Config.DisplayName, ex.Message),
+                    cancellationToken);
+
+                rowsWritten = driverResult.Rows;
+                sqlMs += driverResult.SqlMs;
+                storageMs += driverResult.StorageMs;
             }
             else
             {
+                /* Plain single-query path — unchanged: read all rows, then write them in one batch
+                   (supplemental never runs for per-database collectors). Routed through WriteBatchAsync
+                   so all three paths share one writer. */
+                var sqlSlice = Stopwatch.StartNew();
                 var plan = definition.BuildQuery(context);
+                List<TRow> rows;
                 using (var command = CreateCollectorCommand(plan, sqlConnection, definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds))
                 using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                 {
@@ -302,49 +381,70 @@ public sealed class DarlingCollectorRunner
                         _logger?.LogDebug(ex, "Supplemental query for {Collector} failed; continuing without it", definition.Name);
                     }
                 }
+                sqlMs += sqlSlice.ElapsedMilliseconds;
+
+                var storageSlice = Stopwatch.StartNew();
+                await using var pgConnection = await _postgres.OpenConnectionAsync(cancellationToken);
+                rowsWritten = await WriteBatchAsync(pgConnection, definition, rows, server, collectionTime, context, cancellationToken);
+                storageMs += storageSlice.ElapsedMilliseconds;
             }
         }
-
-        sqlSw.Stop();
-
-        var storageSw = Stopwatch.StartNew();
-        var rowsWritten = 0;
-
-        await using (var pgConnection = await _postgres.OpenConnectionAsync(cancellationToken))
-        {
-            var writer = new PgCollectorRowWriter();
-            using var importer = await pgConnection.BeginBinaryImportAsync(
-                PgCollectorRowWriter.CopyCommandFor(definition), cancellationToken);
-            writer.Importer = importer;
-
-            /* Naive-UTC storage — see PgCollectorRowWriter. */
-            var storedCollectionTime = DateTime.SpecifyKind(collectionTime, DateTimeKind.Unspecified);
-
-            foreach (var row in rows)
-            {
-                await importer.StartRowAsync(cancellationToken);
-
-                if (definition.IncludesCollectionId)
-                {
-                    writer.Value(CollectionIdGenerator.Next());
-                }
-
-                writer.Value(storedCollectionTime)
-                      .Value(server.ServerId)
-                      .Value(server.StorageName);
-
-                definition.WritePayload(row, writer, context);
-                rowsWritten++;
-            }
-
-            await importer.CompleteAsync(cancellationToken);
-        }
-
-        storageSw.Stop();
 
         _logger?.LogDebug("Collected {RowCount} {Collector} rows for server '{Server}'",
             rowsWritten, definition.Name, server.Config.DisplayName);
-        return new CollectorRunResult(rowsWritten, sqlSw.ElapsedMilliseconds, storageSw.ElapsedMilliseconds);
+        return new CollectorRunResult(rowsWritten, sqlMs, storageMs);
+    }
+
+    /// <summary>
+    /// Writes ONE batch (one enumerated item / one database, or the whole result set for a plain
+    /// collector) to Postgres as a single binary COPY on the caller's already-open connection (#1556).
+    /// The three collection paths route through here so the storage logic — the prefix columns, the
+    /// naive-UTC stamp, the positional payload — lives once. Completing the importer COMMITS the batch,
+    /// so on a mid-run abort the batches already written stay committed (commit-1..N-1). An empty batch
+    /// opens no COPY and returns 0 (rows_collected = Σ non-empty batch counts).
+    /// </summary>
+    private async Task<int> WriteBatchAsync<TRow>(
+        NpgsqlConnection pgConnection,
+        ICollectorDefinition<TRow> definition,
+        List<TRow> rows,
+        ServerRuntime server,
+        DateTime collectionTime,
+        CollectorContext context,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+        {
+            return 0;
+        }
+
+        var rowsWritten = 0;
+        var writer = new PgCollectorRowWriter();
+        using var importer = await pgConnection.BeginBinaryImportAsync(
+            PgCollectorRowWriter.CopyCommandFor(definition), cancellationToken);
+        writer.Importer = importer;
+
+        /* Naive-UTC storage — see PgCollectorRowWriter. */
+        var storedCollectionTime = DateTime.SpecifyKind(collectionTime, DateTimeKind.Unspecified);
+
+        foreach (var row in rows)
+        {
+            await importer.StartRowAsync(cancellationToken);
+
+            if (definition.IncludesCollectionId)
+            {
+                writer.Value(CollectionIdGenerator.Next());
+            }
+
+            writer.Value(storedCollectionTime)
+                  .Value(server.ServerId)
+                  .Value(server.StorageName);
+
+            definition.WritePayload(row, writer, context);
+            rowsWritten++;
+        }
+
+        await importer.CompleteAsync(cancellationToken);
+        return rowsWritten;
     }
 
     /// <summary>

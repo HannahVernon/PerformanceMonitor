@@ -230,13 +230,94 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.Contains("query_plan_text = CONVERT(nvarchar(1), NULL),", off.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("qsp.query_plan,", off.Text, StringComparison.Ordinal);
 
+        /* #1556 plan-text dedupe (ON branch): the plan lands once per plan_id per cycle — on the newest
+           runtime-stats interval (rn = 1) — and NULL on the older intervals, instead of the full plan XML
+           repeating on every interval row. */
         var on = QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext(capturePlanXml: true));
-        Assert.Contains("query_plan_text = CONVERT(nvarchar(max), qsp.query_plan),", on.Text, StringComparison.Ordinal);
+        Assert.Contains(
+            "query_plan_text = CASE WHEN ROW_NUMBER() OVER (PARTITION BY qsp.plan_id ORDER BY qsrs.last_execution_time DESC) = 1 THEN CONVERT(nvarchar(max), qsp.query_plan) ELSE CONVERT(nvarchar(max), NULL) END,",
+            on.Text,
+            StringComparison.Ordinal);
 
         /* Scoped to query_plan_text rather than the bare placeholder: replica_role shares the same
            nvarchar(1) NULL idiom on a pre-2022 target (this context's probe defaults to 13), so an
            unqualified DoesNotContain would assert on an unrelated column. */
         Assert.DoesNotContain("query_plan_text = CONVERT(nvarchar(1), NULL)", on.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildPerItemQuery_RowCapAndOrderByDesc_BoundBothCaptureModes()
+    {
+        /* #1556: a per-database server-side backstop — TOP (50000) keeps only the newest rows and
+           ORDER BY last_execution_time DESC makes "newest" deterministic. Present in BOTH capture modes:
+           the ORDER BY is load-bearing for the client byte budget's early-stop too (it keeps the newest
+           rows when the reader is cut short). */
+        foreach (var plan in new[]
+        {
+            QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext()),
+            QueryStoreCollector.Instance.BuildPerItemQuery("SO", MakeContext(capturePlanXml: true)),
+        })
+        {
+            Assert.Contains($"TOP ({QueryStoreCollector.MaxRowsPerDatabase})", plan.Text, StringComparison.Ordinal);
+            Assert.Contains("ORDER BY qsrs.last_execution_time DESC", plan.Text, StringComparison.Ordinal);
+            /* The row-bounding ORDER BY sits before the existing query hint, which the OPTION pin still checks. */
+            Assert.Contains("OPTION(RECOMPILE, LOOP JOIN);", plan.Text, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(50_000, QueryStoreCollector.MaxRowsPerDatabase);
+    }
+
+    [Fact]
+    public void PerDatabaseBounds_ExposeWatermarkColumnAndBudgets()
+    {
+        /* #1556: query_store now flushes per database, so its watermark is per-database (keyed on
+           database_name — the deadlocks/BPR precedent), and it advertises both the row-cap warn threshold
+           and the 256MB client byte budget so the host can surface the WARNING and the definition can
+           enforce the early-stop. */
+        Assert.Equal("database_name", QueryStoreCollector.Instance.PerDatabaseWatermarkColumn);
+        Assert.Equal(QueryStoreCollector.MaxRowsPerDatabase, QueryStoreCollector.Instance.PerItemRowCountWarnThreshold);
+        Assert.Equal(QueryStoreCollector.MaxTextBytesPerDatabase, QueryStoreCollector.Instance.PerItemTextByteBudget);
+        Assert.Equal(256 * 1024 * 1024, QueryStoreCollector.MaxTextBytesPerDatabase);
+    }
+
+    [Fact]
+    public async Task ReadItemAsync_ResetsTextBudgetSignal_AndNormalRowsDoNotTripIt()
+    {
+        /* #1556: ReadItemAsync resets the per-item truncation signal at entry (pre-set here to prove it),
+           and a normal, small row never trips the 256MB budget — the signal stays false, so the host emits
+           no spurious WARNING and every row is read. The 256MB early-stop itself is a `>= budget` break
+           that cannot be sanely driven to a real quarter-gig in a unit test; its threshold is pinned above
+           and its WARNING wiring is exercised by the shared-driver tests. */
+        var context = MakeContext();
+        context.PerItemTextBudgetExceeded = true;
+
+        var row = new object[53];
+        row[0] = 101L;
+        row[1] = 202L;
+        row[2] = "Regular";
+        row[3] = new DateTimeOffset(2026, 7, 2, 10, 0, 0, TimeSpan.Zero);
+        row[4] = new DateTimeOffset(2026, 7, 2, 11, 0, 0, TimeSpan.Zero);
+        row[5] = "dbo.Proc";
+        row[6] = "SELECT 1";
+        row[7] = "0xQH";
+        row[8] = 33L;
+        for (int i = 9; i <= 43; i++) row[i] = (long)i;
+        row[44] = DBNull.Value;
+        row[45] = "MANUAL";
+        row[46] = true;
+        row[47] = 5L;
+        row[48] = "NONE";
+        row[49] = (short)160;
+        row[50] = DBNull.Value;
+        row[51] = "0xPH";
+        row[52] = DBNull.Value;
+
+        using var reader = new FakeCollectorDataReader(row);
+        var rows = new System.Collections.Generic.List<QueryStoreCollector.Row>();
+        await QueryStoreCollector.Instance.ReadItemAsync("SO", reader, rows, context, CancellationToken.None);
+
+        Assert.False(context.PerItemTextBudgetExceeded);
+        Assert.Single(rows);
     }
 
     [Fact]

@@ -165,4 +165,47 @@ public sealed class DarlingSweepSchedulingTests
     {
         Assert.Equal(4, DarlingWorker.MaxConcurrentServerSweeps);
     }
+
+    /// <summary>
+    /// #1556 working-set launch guard: below the threshold the fleet may launch new collection bodies;
+    /// at or above it, launches are held so the process backs away from the commit-limit exhaustion the
+    /// field incident hit. The 0.80 fraction is exercised directly at, just below, and just above the line.
+    /// </summary>
+    [Fact]
+    public void ShouldLaunchSweeps_GatesOnEightyPercentOfAvailable()
+    {
+        const long available = 16L * 1024 * 1024 * 1024; /* 16 GB */
+        var thresholdBytes = DarlingWorker.MemoryGuardFraction * available;
+        var margin = (long)(available * 0.01); /* 1% (~160 MB) — clear of any float rounding at the line. */
+
+        /* Comfortably under the line → launch. */
+        Assert.True(DarlingWorker.ShouldLaunchSweeps(1L * 1024 * 1024 * 1024, available));
+        Assert.True(DarlingWorker.ShouldLaunchSweeps((long)thresholdBytes - margin, available));
+
+        /* Comfortably over the line → hold new launches so in-flight bodies drain. */
+        Assert.False(DarlingWorker.ShouldLaunchSweeps((long)thresholdBytes + margin, available));
+        Assert.False(DarlingWorker.ShouldLaunchSweeps(15L * 1024 * 1024 * 1024, available));
+    }
+
+    /// <summary>
+    /// An unknown memory budget (a non-positive available figure — GC could not report it) must NEVER block
+    /// collection: the guard is a backstop, not a hard gate, so it fails open.
+    /// </summary>
+    [Fact]
+    public void ShouldLaunchSweeps_UnknownBudget_NeverBlocks()
+    {
+        Assert.True(DarlingWorker.ShouldLaunchSweeps(long.MaxValue, 0));
+        Assert.True(DarlingWorker.ShouldLaunchSweeps(long.MaxValue, -1));
+    }
+
+    /// <summary>
+    /// Drift tripwire: the launch-guard fraction is 0.80. It is the fleet-level backstop against the exact
+    /// commit-limit blowout of the field incident, so a change here is a deliberate capacity decision that
+    /// must break this test first (the MaxConcurrentServerSweeps rationale, applied to the memory guard).
+    /// </summary>
+    [Fact]
+    public void MemoryGuardFraction_IsEightyPercent()
+    {
+        Assert.Equal(0.80, DarlingWorker.MemoryGuardFraction);
+    }
 }
