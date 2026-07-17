@@ -42,6 +42,27 @@ public sealed class DarlingCollectorRunnerTests
         Assert.Contains("FROM sys.dm_os_sys_info", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #1556 M1: the Darling Azure per-database read resolves its command timeout as
+    /// <c>definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds</c> — the resolution the runner's
+    /// Azure branch now applies (it previously passed the constant 60s cap, where Lite's twin already honored
+    /// the override). index_object_stats declares a 300s per-database budget, so without the override its Azure
+    /// per-database read would have timed out at 60s on a large database. This pins the resolution contract and
+    /// the values it depends on; the runner's per-database read passes the resolved value verbatim.
+    /// </summary>
+    [Fact]
+    public void PerDatabaseTimeout_HonorsCollectorOverride_FixingTheLatentSixtySecondCap()
+    {
+        Assert.Equal(60, DarlingCollectorRunner.CommandTimeoutSeconds);
+
+        Assert.Equal(300, IndexObjectStatsCollector.Instance.CommandTimeoutSecondsOverride);
+        Assert.Equal(300, IndexObjectStatsCollector.Instance.CommandTimeoutSecondsOverride ?? DarlingCollectorRunner.CommandTimeoutSeconds);
+
+        /* A collector with no override falls back to the 60s default — the same resolution, unchanged. */
+        Assert.Null(WaitStatsCollector.Instance.CommandTimeoutSecondsOverride);
+        Assert.Equal(60, WaitStatsCollector.Instance.CommandTimeoutSecondsOverride ?? DarlingCollectorRunner.CommandTimeoutSeconds);
+    }
+
     [Fact]
     public async Task EndToEnd_CollectWaitStats_FromLiveSqlServer_IntoLivePostgres()
     {

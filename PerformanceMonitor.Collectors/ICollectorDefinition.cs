@@ -76,6 +76,27 @@ public interface ICollectorDefinition<TRow> : ICollectorSchemaInfo
     string? PerDatabaseWatermarkColumn { get; }
 
     /// <summary>
+    /// Per-enumerated-item row count at or above which the host logs a WARNING naming the server and
+    /// item (#1556): a per-database read that returns this many rows in a single cycle is producing far
+    /// more than a healthy volume and its oldest rows were trimmed by the definition's own server-side
+    /// backstop (query_store's <c>TOP</c>). Null (the common case) = no cap, no warning. One const with
+    /// the SQL <c>TOP</c>: the runner warns exactly when the definition's own backstop engaged.
+    /// </summary>
+    int? PerItemRowCountWarnThreshold { get; }
+
+    /// <summary>
+    /// Cumulative per-enumerated-item TEXT byte budget (#1556): a definition carrying large nvarchar(max)
+    /// payloads (query_store's query text + plan XML) enforces this budget CLIENT-SIDE inside its
+    /// <see cref="ReadItemAsync"/> — accumulating the materialized text bytes and stopping the read once
+    /// the budget is reached, signalling truncation via <see cref="CollectorContext.PerItemTextBudgetExceeded"/>
+    /// so the host surfaces the same WARNING. This is the PRIMARY memory bound: a row COUNT cap does not
+    /// bound BYTES (50k rows each carrying a 40KB plan is 2GB), so the byte budget is what keeps peak
+    /// allocation bounded. Null (the common case) = no budget. Enforced by the definition, not the host —
+    /// only the definition holds the reader.
+    /// </summary>
+    int? PerItemTextByteBudget { get; }
+
+    /// <summary>
     /// Builds the T-SQL (and any bound parameters) for this cycle. Constant for most collectors;
     /// target-aware definitions branch on <see cref="CollectorContext.Target"/> and
     /// <see cref="CollectorContext.Watermark"/>.

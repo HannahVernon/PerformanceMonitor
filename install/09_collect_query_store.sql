@@ -430,7 +430,15 @@ BEGIN
             END;
 
             /*
-            Collect Query Store data for this database
+            Collect Query Store data for this database.
+
+            #1556 per-database OOM backstop: the main data SELECT below is capped at TOP (50000) with
+            ORDER BY rs.last_execution_time DESC, so a pathological cycle keeps only the newest 50k rows per
+            database instead of streaming an unbounded backlog (the shared collectors' MaxRowsPerDatabase,
+            mirrored here for the deprecated Dashboard proc). The plan-text dedupe is deliberately NOT
+            mirrored: the Dashboard "Download Plan" reads a plan by exact collection_id, so per-row NULLs
+            would break a real reader, and this proc COMPRESSes at rest and runs server-side — a different
+            failure mode than the streaming service collectors.
             */
            SET @sql = N'
 
@@ -446,7 +454,7 @@ BEGIN
               ON s.schema_id = o.schema_id
             WHERE o.type IN (''P'', ''FN'', ''FS'', ''FT'', ''TF'');
 
-            SELECT
+            SELECT TOP (50000)
                 database_name = @database_name,
                 query_id = p.query_id,
                 plan_id = rs.plan_id,
@@ -609,7 +617,8 @@ BEGIN
               ON qt.query_text_id = q.query_text_id
             LEFT JOIN #objects AS o
               ON q.object_id = o.object_id
-            WHERE rs.last_execution_time >= @cutoff_time;';
+            WHERE rs.last_execution_time >= @cutoff_time
+            ORDER BY rs.last_execution_time DESC;';
 
             IF @debug = 1
             BEGIN

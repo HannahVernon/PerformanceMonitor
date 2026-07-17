@@ -126,4 +126,14 @@ public sealed class CollectorContext
     /// Azure per-database loop).
     /// </summary>
     public object? EnumerationProbeResult { get; set; }
+
+    /// <summary>
+    /// Truncation signal for the per-item text-byte budget (#1556), set by a definition's
+    /// <see cref="ICollectorDefinition{TRow}.ReadItemAsync"/> when it stops reading an enumerated item
+    /// because its <see cref="ICollectorDefinition{TRow}.PerItemTextByteBudget"/> was reached, and read
+    /// back by the host to surface the collection WARNING. Written per item (each definition that
+    /// enforces a budget resets it at the top of its ReadItemAsync), so the host reads it immediately
+    /// after ReadItemAsync returns. False in the common case — only budgeted collectors touch it.
+    /// </summary>
+    public bool PerItemTextBudgetExceeded { get; set; }
 }
