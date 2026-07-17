@@ -1111,6 +1111,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private void AddMultipleServersButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new AddMultipleServersDialog(_serverManager, _profileManager) { Owner = this };
+        if (dialog.ShowDialog() == true && dialog.AddedCount > 0)
+        {
+            RefreshServerList();
+            var msg = $"Added {dialog.AddedCount} server(s)";
+            if (dialog.SkippedCount > 0) msg += $", skipped {dialog.SkippedCount} duplicate(s)";
+            if (dialog.FailedCount > 0) msg += $", {dialog.FailedCount} failed";
+            StatusText.Text = msg + ".";
+        }
+    }
+
     private void ManageServersButton_Click(object sender, RoutedEventArgs e)
     {
         var window = new ManageServersWindow(_serverManager, _profileManager) { Owner = this };

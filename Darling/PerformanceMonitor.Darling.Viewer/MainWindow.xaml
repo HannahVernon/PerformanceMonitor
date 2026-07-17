@@ -291,6 +291,17 @@
                                 <TextBlock Text="Add Server" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
+                        <Button Click="AddMultipleServersButton_Click"
+                                Style="{StaticResource DarkButton}"
+                                Padding="8,5"
+                                Margin="0,8,0,0"
+                                ToolTip="Paste a list of servers and add them all at once with shared credentials">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Add Multiple" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                         <Button Click="ManageServersButton_Click"
                                 Style="{StaticResource DarkButton}"
                                 Padding="8,5"

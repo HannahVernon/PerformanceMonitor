@@ -162,6 +162,8 @@
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
                     <StackPanel>
                         <Button x:Name="AddServerButton" Content="+ Add Server" Click="AddServerButton_Click"/>
+                        <Button x:Name="AddMultipleServersButton" Content="Add Multiple Servers…" Click="AddMultipleServersButton_Click" Margin="0,8,0,0"
+                                ToolTip="Paste a list of servers and add them all at once with shared credentials"/>
                         <Button x:Name="ManageServersButton" Content="Manage Servers" Click="ManageServersButton_Click" Margin="0,8,0,0"/>
                         <Button Click="OpenPlanViewerButton_Click" Margin="0,8,0,0"
                                 ToolTip="Open or paste an execution plan (independent of any server)">
