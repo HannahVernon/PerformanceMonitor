@@ -79,6 +79,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        LoadOverviewSortMode();
 
         // Initialize services (with loggers wired to AppLogger)
         _databaseInitializer = new DuckDbInitializer(App.DatabasePath, new AppLoggerAdapter<DuckDbInitializer>());
@@ -585,6 +586,7 @@ public partial class MainWindow : Window
         if (_dataService == null) return;
 
         var servers = _serverManager.GetAllServers();
+        OverviewSortToolbar.Visibility = servers.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (servers.Count == 0) return;
 
         try
@@ -612,9 +614,12 @@ public partial class MainWindow : Window
                 }
             }
 
-            OverviewItemsControl.ItemsSource = summaries;
+            var sorted = ServerOverviewSort.Order(
+                summaries, App.OverviewSortMode,
+                s => s.CpuPercentForAlert, s => s.DisplayName, s => s.ServerId);
+            OverviewItemsControl.ItemsSource = sorted;
 
-            foreach (var summary in summaries)
+            foreach (var summary in sorted)
             {
                 CheckPerformanceAlerts(summary);
             }
@@ -643,6 +648,44 @@ public partial class MainWindow : Window
             {
                 ConnectToServer(server);
             }
+        }
+    }
+
+    /// <summary>Guards <see cref="OverviewSortCombo_SelectionChanged"/> against the programmatic selection
+    /// <see cref="LoadOverviewSortMode"/> makes while seeding the combo at startup.</summary>
+    private bool _isLoadingSortMode;
+
+    /// <summary>Selects the Overview sort-selector item whose Tag matches the persisted
+    /// <see cref="App.OverviewSortMode"/>; called once after InitializeComponent (mirrors the Settings
+    /// window's LoadColorTheme idiom). The guard suppresses the resulting SelectionChanged.</summary>
+    private void LoadOverviewSortMode()
+    {
+        _isLoadingSortMode = true;
+        foreach (ComboBoxItem item in OverviewSortCombo.Items)
+        {
+            if (item.Tag?.ToString() == ServerOverviewSort.ToToken(App.OverviewSortMode))
+            {
+                OverviewSortCombo.SelectedItem = item;
+                break;
+            }
+        }
+        if (OverviewSortCombo.SelectedItem == null)
+            OverviewSortCombo.SelectedIndex = 0;
+        _isLoadingSortMode = false;
+    }
+
+    private void OverviewSortCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isLoadingSortMode) return;
+        if (OverviewSortCombo.SelectedItem is ComboBoxItem it && it.Tag is string tag)
+        {
+            var mode = ServerOverviewSort.ParseMode(tag);
+            App.OverviewSortMode = mode;
+            App.WriteSetting("overview sort",
+                root => root["overview_sort_mode"] = ServerOverviewSort.ToToken(mode));
+            if (OverviewItemsControl.ItemsSource is IEnumerable<ServerSummaryItem> items)
+                OverviewItemsControl.ItemsSource = ServerOverviewSort.Order(
+                    items, mode, s => s.CpuPercentForAlert, s => s.DisplayName, s => s.ServerId);
         }
     }
 
