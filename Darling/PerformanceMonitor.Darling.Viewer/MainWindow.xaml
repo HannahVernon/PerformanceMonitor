@@ -591,11 +591,22 @@
                             <StackPanel>
                                 <!-- Header -->
                                 <DockPanel Margin="0,0,0,10">
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="Sort:" FontSize="11" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,6,0"/>
+                                        <ComboBox x:Name="OverviewSortSelector" Width="120" VerticalAlignment="Center"
+                                                  Style="{StaticResource DarkCombo}"
+                                                  SelectionChanged="OverviewSortSelector_SelectionChanged">
+                                            <ComboBoxItem Content="CPU %"/>
+                                            <ComboBoxItem Content="Name"/>
+                                        </ComboBox>
+                                    </StackPanel>
                                     <TextBlock Text="Fleet Health" FontSize="16" FontWeight="SemiBold"
                                                Foreground="{DynamicResource ForegroundBrush}"/>
                                     <TextBlock Text="{Binding MonitoringText}" FontSize="11"
                                                Foreground="{DynamicResource ForegroundMutedBrush}"
-                                               VerticalAlignment="Center" Margin="12,1,0,0"/>
+                                               VerticalAlignment="Center" Margin="12,1,0,0"
+                                               TextTrimming="CharacterEllipsis"/>
                                 </DockPanel>
 
                                 <!-- (1) Health-band summary tiles: total + counts by band. Tile colours are

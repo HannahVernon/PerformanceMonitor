@@ -74,6 +74,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
             NocRefreshIntervalSeconds = 120,
             CsvSeparator = ";",
             TimeDisplayMode = "UTC",
+            OverviewSortMode = "Name",
             AlertsEnabled = false,
             AlertCpuThreshold = 65,
             AlertCpuMode = "SqlOnly",
@@ -111,6 +112,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
         Assert.Equal(120, reloaded.NocRefreshIntervalSeconds);
         Assert.Equal(";", reloaded.CsvSeparator);
         Assert.Equal("UTC", reloaded.TimeDisplayMode);
+        Assert.Equal("Name", reloaded.OverviewSortMode);
         Assert.False(reloaded.AlertsEnabled);
         Assert.Equal(65, reloaded.AlertCpuThreshold);
         Assert.Equal("SqlOnly", reloaded.AlertCpuMode);
@@ -160,6 +162,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
               "AlertDeliveryMode": "Whenever",
               "MuteRuleDefaultExpiration": "Whenever",
               "TimeDisplayMode": "Martian",
+              "OverviewSortMode": "Bogus",
               "CsvSeparator": "|"
             }
             """);
@@ -178,6 +181,7 @@ public sealed class ViewerAppSettingsStoreTests : IDisposable
         Assert.Equal("Summary", settings.AlertDeliveryMode);  // unknown -> Summary
         Assert.Equal("24 hours", settings.MuteRuleDefaultExpiration); // unknown -> 24 hours
         Assert.Equal("ServerTime", settings.TimeDisplayMode); // unknown -> ServerTime
+        Assert.Equal("Cpu", settings.OverviewSortMode);       // unknown -> Cpu
         Assert.Contains(settings.CsvSeparator, new[] { ",", ";", "\t" }); // unknown -> a valid locale default
     }
 

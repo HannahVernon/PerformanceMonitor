@@ -11,6 +11,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -158,6 +160,9 @@ public partial class App : Application
 
     /* Color theme ("Dark" or "Light") */
     public static string ColorTheme { get; set; } = "Dark";
+
+    /* NOC Overview tile sort ("Cpu" = CPU% descending default, or "Name") */
+    public static ServerOverviewSortMode OverviewSortMode { get; set; } = ServerOverviewSort.Default;
 
     /* Update check settings */
     public static bool CheckForUpdatesOnStartup { get; set; } = true;
@@ -592,6 +597,9 @@ public partial class App : Application
                 if (t == "Dark" || t == "Light" || t == "CoolBreeze") ColorTheme = t;
             }
 
+            /* NOC Overview tile sort */
+            if (root.TryGetProperty("overview_sort_mode", out v)) OverviewSortMode = ServerOverviewSort.ParseMode(v.GetString());
+
             /* Update check settings */
             if (root.TryGetProperty("check_for_updates_on_startup", out v)) CheckForUpdatesOnStartup = v.GetBoolean();
 
@@ -651,6 +659,29 @@ public partial class App : Application
             if (root.TryGetProperty("analysis_timeout_seconds", out v)) AnalysisTimeoutSeconds = (int)Math.Clamp(v.GetInt64(), 30, 600);
         }
         catch { /* Use defaults */ }
+    }
+
+    /// <summary>
+    /// Reads settings.json (or starts fresh), applies <paramref name="mutate"/>, and writes it back
+    /// indented; logs and swallows any error under <paramref name="what"/>. Shared by the single-value
+    /// Save* methods (and MainWindow's Overview sort selector) so the read/merge/write/catch boilerplate
+    /// lives in one place.
+    /// </summary>
+    public static void WriteSetting(string what, Action<JsonNode> mutate)
+    {
+        var settingsPath = Path.Combine(ConfigDirectory, "settings.json");
+        try
+        {
+            JsonNode root = File.Exists(settingsPath)
+                ? JsonNode.Parse(File.ReadAllText(settingsPath)) ?? new JsonObject()
+                : new JsonObject();
+            mutate(root);
+            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Settings", $"Failed to save {what}: {ex.Message}");
+        }
     }
 
     private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)

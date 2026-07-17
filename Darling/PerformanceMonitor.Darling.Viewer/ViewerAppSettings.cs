@@ -81,6 +81,9 @@ public sealed class ViewerAppSettings
     /// <summary>Timestamp display mode: "ServerTime", "LocalTime", or "UTC".</summary>
     public string TimeDisplayMode { get; set; } = "ServerTime";
 
+    /// <summary>Overview tile sort: "Cpu" (CPU% descending, default) or "Name".</summary>
+    public string OverviewSortMode { get; set; } = "Cpu";
+
     /// <summary>Color theme: "Dark" (default), "Light", or "CoolBreeze". Mirrors Lite's <c>App.ColorTheme</c>;
     /// applied at startup and live-previewed from the Settings window via the shared <c>ThemeManager</c>.</summary>
     public string ColorTheme { get; set; } = "Dark";
@@ -191,6 +194,7 @@ public sealed class ViewerAppSettings
         NocRefreshIntervalSeconds = Clamp(NocRefreshIntervalSeconds, 10, 600, 30);
         CsvSeparator = (CsvSeparator == "," || CsvSeparator == ";" || CsvSeparator == "\t") ? CsvSeparator : DefaultCsvSeparator();
         TimeDisplayMode = (TimeDisplayMode is "ServerTime" or "LocalTime" or "UTC") ? TimeDisplayMode : "ServerTime";
+        OverviewSortMode = (OverviewSortMode is "Cpu" or "Name") ? OverviewSortMode : "Cpu";
         ColorTheme = (ColorTheme is "Dark" or "Light" or "CoolBreeze") ? ColorTheme : "Dark";
 
         AlertCpuThreshold = Clamp(AlertCpuThreshold, 1, 100, 80);

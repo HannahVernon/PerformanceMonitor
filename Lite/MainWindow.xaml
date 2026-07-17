@@ -239,6 +239,17 @@
                 <!-- Server Tab Control (hidden until servers are connected) -->
                 <TabControl x:Name="ServerTabControl" Visibility="Collapsed" Background="Transparent" BorderThickness="0">
                     <TabItem Header="Overview" x:Name="OverviewTab">
+                        <DockPanel LastChildFill="True">
+                        <StackPanel x:Name="OverviewSortToolbar" DockPanel.Dock="Top" Orientation="Horizontal"
+                                    Margin="14,10,14,0" Visibility="Collapsed">
+                            <TextBlock Text="Sort:" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,8,0"/>
+                            <ComboBox x:Name="OverviewSortCombo" Width="120" VerticalAlignment="Center"
+                                      SelectionChanged="OverviewSortCombo_SelectionChanged">
+                                <ComboBoxItem Content="CPU %" Tag="Cpu"/>
+                                <ComboBoxItem Content="Name" Tag="Name"/>
+                            </ComboBox>
+                        </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="8">
                             <ItemsControl x:Name="OverviewItemsControl">
                                 <ItemsControl.ItemsPanel>
@@ -305,6 +316,7 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </ScrollViewer>
+                        </DockPanel>
                     </TabItem>
                     <TabItem Header="Alert History" x:Name="AlertsTab">
                         <controls:AlertsHistoryTab x:Name="AlertsHistoryContent"/>
