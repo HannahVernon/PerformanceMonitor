@@ -569,7 +569,9 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
             /* char count × 2 for UTF-16. The plan XML is deduped server-side (NULL on all but the newest
                interval per plan_id), but the query text repeats on every interval row, so this budget is
                what bounds that repetition too. At the budget, signal truncation and stop — the host
-               surfaces the WARNING and the remaining rows self-heal on the next cycle. */
+               surfaces the WARNING. Rows are read newest-first and the per-database watermark advances to
+               the newest KEPT row, so the older unread intervals are deliberately ABANDONED behind it
+               (bounded per cycle, by design) — not retried next cycle. */
             textBytes += ((long)(row.QueryText?.Length ?? 0) + (row.QueryPlanText?.Length ?? 0)) * 2L;
             if (textBytes >= budget)
             {
