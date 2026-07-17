@@ -469,3 +469,178 @@ public sealed class ViewerServerManagementReadOnlyTests
         public void Delete(string id) { }
     }
 }
+
+/// <summary>
+/// The Darling "Add Multiple Servers" pure mapping + gate helpers (WPF-free statics on
+/// <see cref="AddMultipleServersDialog"/>): the row → <see cref="MonitoredServerRow"/> / → <see cref="TestConnectServer"/>
+/// projection, the service-honors-only-Windows/SQL belt (mirroring the single dialog's MapAuth block), the
+/// blank-db → NULL trap, the single-Protect blob reused per row, and the ratified OrdinalIgnoreCase dedupe gate
+/// over the shared <see cref="ServerIdHelper"/> storage name (mirrors Lite's B7 pins).
+/// </summary>
+public sealed class BulkServerOnboardingMappingTests
+{
+    private static BulkServerParseLine Line(string server, string? display = null, string? database = null) =>
+        new(1, server, server, display, database);
+
+    [Fact]
+    public void BuildMonitoredServerRow_WindowsAuth_MapsToIntegrated_NoSecret()
+    {
+        var (row, error) = AddMultipleServersDialog.BuildMonitoredServerRow(
+            Line("SQL2022"),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.Windows });
+
+        Assert.Null(error);
+        Assert.NotNull(row);
+        Assert.Equal("integrated", row!.Auth);
+        Assert.Null(row.EncryptedPassword);
+        Assert.True(row.IsEnabled);
+        Assert.False(row.ReadOnlyIntent);
+    }
+
+    [Fact]
+    public void BuildMonitoredServerRow_SqlAuth_MapsToSql_CarriesBlobAndUsername()
+    {
+        var (row, _) = AddMultipleServersDialog.BuildMonitoredServerRow(
+            Line("SQL2022"),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.SqlServer, Username = "monitor", EncryptedPassword = "DPAPI-BLOB==" });
+
+        Assert.Equal("sql", row!.Auth);
+        Assert.Equal("monitor", row.Username);
+        Assert.Equal("DPAPI-BLOB==", row.EncryptedPassword);
+    }
+
+    [Theory]
+    [InlineData(AuthenticationTypes.EntraMFA)]
+    [InlineData(AuthenticationTypes.ServicePrincipal)]
+    [InlineData(AuthenticationTypes.ManagedIdentity)]
+    public void BuildMonitoredServerRow_AzureAuth_IsRejected_TheBelt(string authType)
+    {
+        // The trimmed radios never offer these, but a picked profile could resolve to one — the mapping helper
+        // still rejects (mirrors the single dialog's MapAuth-null block).
+        var (row, error) = AddMultipleServersDialog.BuildMonitoredServerRow(
+            Line("azure.database.windows.net"),
+            new BulkSharedSettings { AuthType = authType });
+
+        Assert.Null(row);
+        Assert.False(string.IsNullOrEmpty(error));
+    }
+
+    [Fact]
+    public void BuildMonitoredServerRow_ServerId_MatchesComputeServerId()
+    {
+        var (row, _) = AddMultipleServersDialog.BuildMonitoredServerRow(
+            Line("myazure.database.windows.net", null, "AdventureWorks"),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.Windows });
+
+        Assert.Equal(ViewerDataService.ComputeServerId("myazure.database.windows.net", "AdventureWorks", false), row!.ServerId);
+    }
+
+    [Fact]
+    public void BuildMonitoredServerRow_BlankDatabase_IsNull_NeverMaster()
+    {
+        // The builder trap: a blank/whitespace database must map to NULL, not "master". Coercing would derive a
+        // MISMATCHED server_id (master's), breaking dedupe against single-added rows and splitting collected data.
+        var (row, _) = AddMultipleServersDialog.BuildMonitoredServerRow(
+            Line("SQL2022", null, "   "),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.Windows });
+
+        Assert.Null(row!.Database);
+        Assert.Equal(ViewerDataService.ComputeServerId("SQL2022", null, false), row.ServerId);
+    }
+
+    [Fact]
+    public void BuildMonitoredServerRow_CarriesEncryptTrustDatabase_AndDisplayFallback()
+    {
+        var (row, _) = AddMultipleServersDialog.BuildMonitoredServerRow(
+            Line("SQL2022", null, "  tpcc  "),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.Windows, EncryptMode = "Strict", TrustServerCertificate = true });
+
+        Assert.Equal("Strict", row!.EncryptMode);
+        Assert.True(row.TrustServerCertificate);
+        Assert.Equal("tpcc", row.Database);
+        Assert.Equal("SQL2022", row.Name); // display name falls back to host
+    }
+
+    [Fact]
+    public void SharedBlob_IsReusedAcrossRows_ProtectNotCalledPerRow()
+    {
+        // The shared settings carry ONE pre-Protected blob (Protect is called once at resolve time); the mapping
+        // helper reuses it verbatim on every row rather than re-encrypting per server.
+        var shared = new BulkSharedSettings { AuthType = AuthenticationTypes.SqlServer, Username = "u", EncryptedPassword = "ONE-BLOB==" };
+        var (a, _) = AddMultipleServersDialog.BuildMonitoredServerRow(Line("SQL2022"), shared);
+        var (b, _) = AddMultipleServersDialog.BuildMonitoredServerRow(Line("SQL2019"), shared);
+
+        Assert.Equal("ONE-BLOB==", a!.EncryptedPassword);
+        Assert.Same(a.EncryptedPassword, b!.EncryptedPassword);
+    }
+
+    [Fact]
+    public void BuildTestConnectServer_ProjectsTheSameFields()
+    {
+        var (test, error) = AddMultipleServersDialog.BuildTestConnectServer(
+            Line("SQL2022", "Prod", "tpcc"),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.SqlServer, Username = "monitor", EncryptedPassword = "BLOB==", EncryptMode = "Strict", TrustServerCertificate = true });
+
+        Assert.Null(error);
+        Assert.NotNull(test);
+        Assert.Equal("SQL2022", test!.Host);
+        Assert.Equal("Prod", test.Name);
+        Assert.Equal("tpcc", test.Database);
+        Assert.Equal("sql", test.Auth);
+        Assert.Equal("monitor", test.Username);
+        Assert.Equal("BLOB==", test.EncryptedPassword);
+        Assert.Equal("Strict", test.EncryptMode);
+        Assert.True(test.TrustServerCertificate);
+    }
+
+    [Fact]
+    public void BuildTestConnectServer_AzureAuth_IsRejected()
+    {
+        var (test, error) = AddMultipleServersDialog.BuildTestConnectServer(
+            Line("azure"),
+            new BulkSharedSettings { AuthType = AuthenticationTypes.ServicePrincipal });
+
+        Assert.Null(test);
+        Assert.False(string.IsNullOrEmpty(error));
+    }
+
+    [Fact]
+    public void DedupeGate_CaseVariant_IsSkipped_EvenThoughStoredHashesDiffer()
+    {
+        // Hostnames are case-insensitive in reality, so an existing SQL01 must block a bulk 'sql01' even though
+        // the stored server_id differs by case. Pins against a "simplify back to the raw hash" regression.
+        Assert.NotEqual(
+            ViewerDataService.ComputeServerId("SQL01", null, false),
+            ViewerDataService.ComputeServerId("sql01", null, false));
+
+        var seen = AddMultipleServersDialog.SeedGate(new[] { Row("SQL01", null, false) });
+        Assert.False(seen.Add(AddMultipleServersDialog.GateKey(Row("sql01", null, false))));
+    }
+
+    [Fact]
+    public void DedupeGate_ReadOnlyIntent_SeedDoesNotBlockReadWrite_ButReadWriteDoes()
+    {
+        // An existing read-only SQL01:RO does NOT block a bulk read-write SQL01 (bulk rows are read-write)…
+        var seenRo = AddMultipleServersDialog.SeedGate(new[] { Row("SQL01", null, true) });
+        Assert.True(seenRo.Add(AddMultipleServersDialog.GateKey(Row("SQL01", null, false))));
+
+        // …but an existing read-write SQL01 DOES.
+        var seenRw = AddMultipleServersDialog.SeedGate(new[] { Row("SQL01", null, false) });
+        Assert.False(seenRw.Add(AddMultipleServersDialog.GateKey(Row("SQL01", null, false))));
+    }
+
+    [Fact]
+    public void DedupeGate_DifferentDatabases_StayDistinct()
+    {
+        var seen = AddMultipleServersDialog.SeedGate(new[] { Row("host", "db1", false) });
+        Assert.True(seen.Add(AddMultipleServersDialog.GateKey(Row("host", "db2", false))));
+    }
+
+    private static MonitoredServerRow Row(string host, string? database, bool readOnlyIntent) => new()
+    {
+        ServerId = ViewerDataService.ComputeServerId(host, database, readOnlyIntent),
+        Host = host,
+        Database = database,
+        ReadOnlyIntent = readOnlyIntent,
+    };
+}

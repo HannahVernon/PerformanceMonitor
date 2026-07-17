@@ -458,6 +458,25 @@ public partial class MainWindow
         }
     }
 
+    private async void AddMultipleServersButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dataService is null)
+        {
+            StatusText.Text = "Connect to a Darling store before adding servers.";
+            return;
+        }
+
+        var dialog = new AddMultipleServersDialog(_dataService, _serverStore, ProfileStore) { Owner = this };
+        if (dialog.ShowDialog() == true && dialog.AddedCount > 0)
+        {
+            await LoadServersAsync(preserveSelection: true);
+            var msg = $"Added {dialog.AddedCount} server(s)";
+            if (dialog.SkippedCount > 0) msg += $", skipped {dialog.SkippedCount} duplicate(s)";
+            if (dialog.FailedCount > 0) msg += $", {dialog.FailedCount} failed";
+            StatusText.Text = msg + ". The Darling service will start collecting them on its next reload.";
+        }
+    }
+
     private async void ManageServersButton_Click(object sender, RoutedEventArgs e)
     {
         var window = new ManageServersWindow(_serverStore, ProfileStore, _dataService) { Owner = this };
