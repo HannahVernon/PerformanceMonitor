@@ -84,6 +84,23 @@ public sealed class DarlingWorker : BackgroundService
     private const int MinAnalysisIntervalMinutes = 5;
     private const int MaxAnalysisIntervalMinutes = 360;
 
+    /// <summary>
+    /// The bounded per-server collection concurrency (the fire-and-track sweep, #1553): at most this many
+    /// servers' collection bodies run at once, each opening at most ONE SQL connection (collectors stay
+    /// sequential within a body — Lite's RemoteCollectorService shape). Hardcoded, no control-plane knob
+    /// (defaults-over-config): 4 clears a 24-server worst case in ~6 waves while the 120s analysis budget stays
+    /// de-clustered by the cadence jitter, so one slow/hung server can never head-of-line-block the fleet the
+    /// way the old strictly-sequential foreach did (the 24-server field incident). Internal so a unit test pins
+    /// the value against this rationale (a cheap drift tripwire — see the plan).
+    /// </summary>
+    internal const int MaxConcurrentServerSweeps = 4;
+
+    /* The shutdown drain budget for the in-flight per-server bodies (#1553 fire-and-track): wait at most this
+       long for launched bodies to finish before falling through to the serial command-loop drain. Budgeted
+       INSIDE the host's default 30s ShutdownTimeout with headroom for that command-loop drain — a future bump
+       MUST respect that ceiling or shutdown starts being force-killed mid-drain. */
+    private static readonly TimeSpan s_shutdownDrainBudget = TimeSpan.FromSeconds(15);
+
     /// <summary>Test hook: the hardcoded per-run analysis budget, pinned against Lite's default.</summary>
     internal static TimeSpan AnalysisTimeout => s_analysisTimeout;
 
@@ -203,7 +220,13 @@ public sealed class DarlingWorker : BackgroundService
            change (host/auth/excluded-dbs/cost) — paired with dropping Runtime to force a reconnect. */
         public required MonitoredServer Config { get; set; }
         public ServerRuntime? Runtime { get; set; }
-        public Dictionary<string, DateTime> NextDue { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        /* ConcurrentDictionary (#1553 D1): with the fire-and-track sweep the per-server body runs on a pool
+           thread, so a reload's RecomputeNextDue on the OUTER thread can touch this map concurrently with the
+           body's RunDueCollectorsAsync read-and-advance. It is only ever INDEXED by the static collector-catalog
+           keys (never enumerated), so a lock-free concurrent map is a drop-in and eliminates the one structure
+           the old strict single-threaded invariant (INV-1) existed to protect from tearing. */
+        public ConcurrentDictionary<string, DateTime> NextDue { get; } = new(StringComparer.OrdinalIgnoreCase);
         public DateTime NextConnectAttempt { get; set; } = DateTime.MinValue;
 
         /* MinValue = the first loop pass after connect evaluates alerts immediately. */
@@ -215,10 +238,13 @@ public sealed class DarlingWorker : BackgroundService
            the Runtime-null connect gate. */
         public DateTime NextSelfAlertSweep { get; set; } = DateTime.MinValue;
 
-        /* MinValue = the first loop pass after connect runs analysis immediately; the
-           pipeline's own 24h data-span gate no-ops it until the store has enough history
-           (Lite's GetTotalDataSpanHoursAsync gate), so a fresh server simply re-checks
-           every interval while an already-populated store analyzes right away. */
+        /* Default MinValue; on connect TryConnectAsync PHASES this to now + a sub-2.5-minute per-server offset
+           (#1553 jitter site 3) when analysis is enabled, so a fleet restart does not make every freshly
+           connected server analysis-due in the same sweep (with N=4 that would cluster 4 analysis passes at
+           once). The pipeline's own 24h data-span gate still no-ops it until the store has enough history
+           (Lite's GetTotalDataSpanHoursAsync gate), so a fresh server simply re-checks every interval while an
+           already-populated store analyzes promptly (within a ~2.5-minute phase spread). Left at MinValue when
+           analysis is disabled so re-enabling runs immediately. */
         public DateTime NextAnalysisDue { get; set; } = DateTime.MinValue;
 
         /* Serializes this server's collector batch so an on-demand snapshot_now (from the command loop)
@@ -227,6 +253,27 @@ public sealed class DarlingWorker : BackgroundService
            try-acquires with a zero timeout (skip this server this sweep if a snapshot holds it); the
            snapshot waits its turn. Binary (1,1). */
         public SemaphoreSlim CollectionGate { get; } = new(1, 1);
+
+        /* Fire-and-track sweep bookkeeping (#1553 D2/D2b) — ALL THREE written ONLY by the OUTER sweep thread
+           (the launch loop and the shutdown drain); the per-server body NEVER touches them, so there is no
+           cross-thread tear to reason about (the torn-read note that applies to the DateTime schedule fields
+           above deliberately does NOT apply here). InFlightSweep is this server's currently-running (or
+           last-completed) body Task — the launch loop skips relaunch while it is not completed (INV-2: one body
+           per server) and the shutdown drain awaits it. SweepStartedUtc is stamped at LAUNCH (queue time is part
+           of the episode — a body queued minutes behind the N=4 gate IS unserved), and WarnedThisEpisode gates
+           the one-Warning-per-episode hang log so a long-running body is flagged once, not every sweep. */
+        public Task? InFlightSweep { get; set; }
+        public DateTime SweepStartedUtc { get; set; }
+        public bool WarnedThisEpisode { get; set; }
+
+        /* Retired containment (#1553 D1): set TRUE (write-once) by the reconcile-remove branch when this server
+           is disabled/deleted, alongside Runtime=null and _selfAlerts.Forget. A body launched — or gate-queued —
+           before the removal re-checks this as its FIRST statement after acquiring the fleet gate and no-ops, so
+           a just-disabled server is never connected, never has XE CREATE SESSION DDL run against it, and never
+           re-writes self-alert edge state after Forget removed it. volatile because the body reads it on a pool
+           thread after the outer thread's write. A remove+re-add mints a FRESH ServerLoopState, so there is no
+           reset and no ABA. */
+        public volatile bool Retired;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -533,6 +580,17 @@ public sealed class DarlingWorker : BackgroundService
         var commandExecutor = new DarlingCommandExecutor(postgres, commandHost, serviceInstance, _logger);
         var commandLoop = RunCommandLoopAsync(commandExecutor, stoppingToken);
 
+        /* The fleet concurrency gate (#1553 D2): at most N=4 per-server collection bodies open a SQL connection
+           at once, so one slow or hung server cannot head-of-line-block the fleet the way the old strictly
+           sequential foreach did. Deliberately NOT disposed (CA2000 suppressed, not "fixed" back by an analyzer
+           or a later builder): a body still running past the shutdown drain — or a reconcile-removed server's
+           body detached from the drain list — would otherwise reach its finally { gate.Release() } on a disposed
+           SemaphoreSlim and throw ObjectDisposedException, faulting an unobserved Task. A SemaphoreSlim needs no
+           deterministic disposal unless its AvailableWaitHandle is used, which it never is here. */
+#pragma warning disable CA2000
+        var serverSweepGate = new SemaphoreSlim(MaxConcurrentServerSweeps, MaxConcurrentServerSweeps);
+#pragma warning restore CA2000
+
         _logger.LogInformation("PerformanceMonitor Darling collection loop started");
 
         while (!stoppingToken.IsCancellationRequested)
@@ -568,62 +626,76 @@ public sealed class DarlingWorker : BackgroundService
                 continue;
             }
 
-            foreach (var server in servers)
+            /* P1: snapshot the server list under the lock so the fire-and-track launch loop below iterates a
+               STABLE array while the command loop reconciles the list concurrently (this also keeps the
+               deliverer's / plan-fetcher's own locked Find/Select provably race-free). Taken AFTER the reload
+               above so this sweep launches against the freshly reconciled set. */
+            ServerLoopState[] sweepTargets;
+            lock (_serversLock)
             {
+                sweepTargets = servers.ToArray();
+            }
+
+            /* Fire-and-track launch loop (#1553 D2/D2b): LAUNCH each server's collection body WITHOUT awaiting
+               it, so one slow or hung server can no longer stall the fleet or the fleet-level steps below (the
+               old foreach awaited every step inline — the 24-server field incident). At most N=4 bodies open a
+               connection at once (serverSweepGate, acquired inside the body). All tracking / skip-log state
+               (InFlightSweep, SweepStartedUtc, WarnedThisEpisode) is written ONLY here on the outer sweep thread
+               — the body never touches it, so there is no cross-thread tear on these fields. */
+            foreach (var server in sweepTargets)
+            {
+                /* D3: the per-sweep cancellation check HOISTS here from the old inline body — a bare `break`
+                   inside the extracted async body would not compile (CS0139), and this launch loop is the loop
+                   it belongs to. */
                 if (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }
 
-                /* Stage 4 service self-alerts (store-polled): collection-stopped is evaluated for EVERY
-                   server — connected or not — because an unreachable server has stopped collecting, which
-                   is exactly the case a headless service must page on. Capture-down is evaluated only for a
-                   connected server. Own 30s cadence; the master alerts gate + edge-trigger live inside the
-                   evaluator. Runs ABOVE the Runtime-null connect gate so a disconnected server is still
-                   checked. Connection lost/restored fire on the connect edges in TryConnectAsync. */
-                if (DateTime.UtcNow >= server.NextSelfAlertSweep)
+                if (server.InFlightSweep is { IsCompleted: false })
                 {
-                    server.NextSelfAlertSweep = DateTime.UtcNow.Add(s_alertSweepInterval);
-                    await _selfAlerts!.EvaluateStoreAlertsAsync(
-                        postgres,
-                        ServerIdHelper.GetDeterministicHashCode(server.Config.StorageName),
-                        server.Config.DisplayName,
-                        connected: server.Runtime is not null,
-                        stoppingToken);
-                }
+                    /* Still in flight: do NOT relaunch (INV-2, one body per server). The field incident was
+                       HANGS, not throws, and the body's catch-all (D3) only covers throws — so the stall is
+                       surfaced HERE. Queue time counts: SweepStartedUtc was stamped at LAUNCH, so a body queued
+                       for minutes behind the N=4 gate is correctly measured as unserved from launch, not from
+                       the moment it finally began running. */
+                    var stalledForSeconds = (DateTime.UtcNow - server.SweepStartedUtc).TotalSeconds;
+                    _logger.LogDebug(
+                        "[{Server}] collection body still in flight after {Elapsed:F0}s — skipping this sweep",
+                        server.Config.DisplayName, stalledForSeconds);
 
-                if (server.Runtime is null)
-                {
-                    await TryConnectAsync(server, runner, stoppingToken);
+                    /* ONE Warning per episode, the first time the body crosses 60s continuous. The text does
+                       NOT claim slot occupancy — a gate-QUEUED body holds no slot, it is merely unfinished. */
+                    if (!server.WarnedThisEpisode && stalledForSeconds >= 60)
+                    {
+                        server.WarnedThisEpisode = true;
+                        _logger.LogWarning(
+                            "[{Server}] collection body has not completed after {Elapsed:F0}s — skipping relaunch",
+                            server.Config.DisplayName, stalledForSeconds);
+                    }
+
                     continue;
                 }
 
-                await RunDueCollectorsAsync(server, runner, stoppingToken);
-
-                /* After the server's collector sweep: evaluate alerts against the freshly
-                   collected store — per-server sequential within this loop, on Lite's 30-second
-                   overview cadence. */
-                if (DateTime.UtcNow >= server.NextAlertSweep)
+                /* The body is null (never launched) or has completed since the last sweep. If we had WARNED
+                   about a long-running episode, log its resolution with the total elapsed and re-arm before
+                   relaunching — the re-arm happens HERE on observing IsCompleted, never in the body's finally
+                   (which would race this launch loop). A body that finished under the threshold was never
+                   warned, so it simply relaunches. */
+                if (server.WarnedThisEpisode)
                 {
-                    server.NextAlertSweep = DateTime.UtcNow.Add(s_alertSweepInterval);
-                    await EvaluateAlertsAsync(engine, server, stoppingToken);
+                    var ranForSeconds = (DateTime.UtcNow - server.SweepStartedUtc).TotalSeconds;
+                    _logger.LogInformation(
+                        "[{Server}] collection body completed after {Elapsed:F0}s", server.Config.DisplayName, ranForSeconds);
+                    server.WarnedThisEpisode = false;
                 }
 
-                /* AN3: the scheduled analysis pipeline, per-server. The cadence, the enabled gate, and
-                   the notify gate are now control-plane knobs read LIVE from config.Analysis (a reload
-                   takes effect on the next tick). When analysis is disabled the pass is skipped and
-                   NextAnalysisDue is left in the past, so re-enabling runs immediately. The next-due
-                   stamp advances up front (Lite's scheduler shape), so a timed-out pass is skipped, not
-                   retried immediately. Delivery is gated on analysis_notifications_enabled (Lite's D0
-                   split: production unconditional, delivery gated) — replacing the old alerts.enabled
-                   gate; the interval is clamped to Lite's 5-360 range. */
-                if (config.Analysis.Enabled && DateTime.UtcNow >= server.NextAnalysisDue)
-                {
-                    var intervalMinutes = Math.Clamp(config.Analysis.IntervalMinutes, MinAnalysisIntervalMinutes, MaxAnalysisIntervalMinutes);
-                    server.NextAnalysisDue = DateTime.UtcNow.AddMinutes(intervalMinutes);
-                    await RunScheduledAnalysisAsync(
-                        server, planFetcher, notificationService, config.Analysis.NotificationsEnabled, stoppingToken);
-                }
+                /* Stamp the launch time BEFORE launching — time spent QUEUED on the gate is part of this
+                   episode — then fire-and-track: assign the Task to InFlightSweep (so it is observed and the
+                   next sweep + the shutdown drain can see it) but do NOT await it here. */
+                server.SweepStartedUtc = DateTime.UtcNow;
+                server.InFlightSweep = ProcessServerSweepAsync(
+                    server, engine, runner, planFetcher, notificationService, config, serverSweepGate, stoppingToken);
             }
 
             if (DateTime.UtcNow >= _nextPurgeUtc)
@@ -664,6 +736,31 @@ public sealed class DarlingWorker : BackgroundService
             }
         }
 
+        /* Shutdown drain for the fire-and-track bodies (#1553): the launch loop does NOT await the per-server
+           bodies, so on cancellation some may still be running (or queued on the gate). Collect the live ones
+           under the servers lock (the command loop reconciles concurrently) and wait up to the drain budget for
+           them to finish, bounded so a genuinely hung body cannot hold shutdown open indefinitely. Bodies never
+           fault (ProcessServerSweepAsync's catch-all), so Task.WhenAll completes cleanly rather than throwing.
+           A reconcile-removed server's body is not in `servers` and so is not awaited here — it detaches, but
+           its own catch-all + the never-disposed gate keep it non-fatal. The delay uses CancellationToken.None
+           because stoppingToken is already cancelled at this point. */
+        List<Task> inFlightSweeps;
+        lock (_serversLock)
+        {
+            inFlightSweeps = servers
+                .Select(s => s.InFlightSweep)
+                .Where(t => t is not null)
+                .Select(t => t!)
+                .ToList();
+        }
+
+        if (inFlightSweeps.Count > 0)
+        {
+            await Task.WhenAny(
+                Task.WhenAll(inFlightSweeps),
+                Task.Delay(s_shutdownDrainBudget, CancellationToken.None));
+        }
+
         /* Drain the concurrent command loop on shutdown (it observes the same token). */
         try
         {
@@ -675,6 +772,114 @@ public sealed class DarlingWorker : BackgroundService
         }
 
         _logger.LogInformation("PerformanceMonitor Darling collection loop stopped");
+    }
+
+    /// <summary>
+    /// One server's collection body (#1553 D3), extracted from the old inline sweep loop for the fire-and-track
+    /// model (self-alert call rebased to the _postgres field, the loop's continue/break reshaped to a body
+    /// return + a hoisted cancellation check): self-alert eval -> connect-or-collect -> alert eval -> analysis, in that order,
+    /// SEQUENTIAL within this one server (Lite's RemoteCollectorService shape — parallel across servers,
+    /// sequential collectors per server). Runs on a pool thread; the outer launch loop tracks the returned Task
+    /// in <see cref="ServerLoopState.InFlightSweep"/> and never awaits it inline, so one slow/hung server cannot
+    /// head-of-line-block the fleet. The fleet gate is acquired here (bounding fleet-wide concurrency to
+    /// <see cref="MaxConcurrentServerSweeps"/>), and the whole body is wrapped so a hung server cannot starve
+    /// the fleet and one server's unexpected throw is CONTAINED (Design Goal 4) rather than killing the loop or
+    /// surfacing as an unobserved fire-and-track fault.
+    /// </summary>
+    private async Task ProcessServerSweepAsync(
+        ServerLoopState server,
+        AlertEngine engine,
+        DarlingCollectorRunner runner,
+        PgPlanFetcher planFetcher,
+        AnalysisNotificationService notificationService,
+        DarlingConfig config,
+        SemaphoreSlim gate,
+        CancellationToken stoppingToken)
+    {
+        /* Acquire the fleet concurrency gate OUTSIDE the try (the never-faulting-probe idiom): WaitAsync either
+           returns having TAKEN a permit — matched by the finally's Release — or THROWS owning nothing (a cancel
+           while queued on shutdown), so the finally can never over-release a permit we do not hold. */
+        await gate.WaitAsync(stoppingToken);
+        try
+        {
+            /* Retired containment (#1553 D1), the AUTHORITATIVE check: a reconcile-remove may have retired this
+               server AFTER this body was launched or while it sat QUEUED on the gate. An async method runs
+               synchronously only to its first await, so a check BEFORE WaitAsync would evaluate at LAUNCH time
+               (Retired still false) and a gate-queued body would never re-check on dequeue — so the check lives
+               HERE, as the first statement after acquiring the permit. A retired body no-ops entirely: it never
+               connects, never runs XE DDL, and never re-writes self-alert edge state after Forget removed it.
+               (The connect path adds a SECOND re-check for the narrow window where removal lands DURING the
+               connect I/O; this entry check covers the dominant queued-dequeue path.) */
+            if (server.Retired)
+            {
+                return;
+            }
+
+            /* Stage 4 service self-alerts (store-polled): collection-stopped is evaluated for EVERY server —
+               connected or not — because an unreachable server has stopped collecting, which is exactly the
+               case a headless service must page on. Capture-down is evaluated only for a connected server. Own
+               30s cadence; the master alerts gate + edge-trigger live inside the evaluator. Runs ABOVE the
+               Runtime-null connect gate so a disconnected server is still checked. Connection lost/restored fire
+               on the connect edges in TryConnectAsync. (Uses the _postgres field — the loop-local `postgres` of
+               RunCollectionLoopAsync is out of scope in this extracted body.) */
+            if (DateTime.UtcNow >= server.NextSelfAlertSweep)
+            {
+                server.NextSelfAlertSweep = DateTime.UtcNow.Add(s_alertSweepInterval);
+                await _selfAlerts!.EvaluateStoreAlertsAsync(
+                    _postgres!,
+                    ServerIdHelper.GetDeterministicHashCode(server.Config.StorageName),
+                    server.Config.DisplayName,
+                    connected: server.Runtime is not null,
+                    stoppingToken);
+            }
+
+            if (server.Runtime is null)
+            {
+                await TryConnectAsync(server, runner, config, stoppingToken);
+                return;
+            }
+
+            await RunDueCollectorsAsync(server, runner, stoppingToken);
+
+            /* After the server's collector sweep: evaluate alerts against the freshly collected store — on
+               Lite's 30-second overview cadence. */
+            if (DateTime.UtcNow >= server.NextAlertSweep)
+            {
+                server.NextAlertSweep = DateTime.UtcNow.Add(s_alertSweepInterval);
+                await EvaluateAlertsAsync(engine, server, stoppingToken);
+            }
+
+            /* AN3: the scheduled analysis pipeline, per-server. The cadence, the enabled gate, and the notify
+               gate are now control-plane knobs read LIVE from config.Analysis (a reload takes effect on the next
+               tick). When analysis is disabled the pass is skipped and NextAnalysisDue is left in the past, so
+               re-enabling runs immediately. The next-due stamp advances up front (Lite's scheduler shape), so a
+               timed-out pass is skipped, not retried immediately. Delivery is gated on
+               analysis_notifications_enabled (Lite's D0 split: production unconditional, delivery gated) —
+               replacing the old alerts.enabled gate; the interval is clamped to Lite's 5-360 range. */
+            if (config.Analysis.Enabled && DateTime.UtcNow >= server.NextAnalysisDue)
+            {
+                var intervalMinutes = Math.Clamp(config.Analysis.IntervalMinutes, MinAnalysisIntervalMinutes, MaxAnalysisIntervalMinutes);
+                server.NextAnalysisDue = DateTime.UtcNow.AddMinutes(intervalMinutes);
+                await RunScheduledAnalysisAsync(
+                    server, planFetcher, notificationService, config.Analysis.NotificationsEnabled, stoppingToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            /* Shutdown (a body-internal await observed the token) — quiet and expected. */
+        }
+        catch (Exception ex)
+        {
+            /* Design Goal 4 (exception containment — the gap the sweep loop previously acknowledged it had no
+               catch-all for): one server's unexpected throw must never kill the collection loop, and a faulted
+               fire-and-track Task must never surface as an unobserved exception. Log and isolate; the server
+               retries on its next sweep exactly like a failed collector. */
+            _logger.LogError("[{Server}] Collection sweep failed: {Message}", server.Config.DisplayName, ex.Message);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>
@@ -803,6 +1008,12 @@ public sealed class DarlingWorker : BackgroundService
                     "[{Server}] Removed from the monitored set (disabled/deleted) — stopping collection",
                     state.Config.DisplayName);
                 state.Runtime = null;
+                /* Retired containment (#1553 D1): mark this state retired so any in-flight or gate-queued
+                   fire-and-track body for it no-ops at its entry check (and its connect path bails before any
+                   durable side-effect) instead of connecting / upserting / running XE DDL against a just-disabled
+                   target, or re-writing self-alert edge state after the Forget below. Write-once; a re-add mints
+                   a fresh ServerLoopState, so there is no reset and no ABA. */
+                state.Retired = true;
                 /* Drop the Stage 4 self-alert edge state so a later re-add starts from the Unknown baseline
                    (no stale "was online" / "was stopped" flag carried across a remove+re-add). */
                 _selfAlerts?.Forget(id);
@@ -859,14 +1070,27 @@ public sealed class DarlingWorker : BackgroundService
                 var effective = StoreConfigProvider.ResolveSchedule(name, runtime.ServerId, _scheduleOverrides);
                 if (!effective.Enabled || effective.FrequencyMinutes == 0)
                 {
-                    server.NextDue.Remove(name);
+                    /* ConcurrentDictionary has no Remove(key) — TryRemove is the drop-in for the old Remove. */
+                    server.NextDue.TryRemove(name, out _);
                     continue;
                 }
 
-                var capped = now.AddMinutes(effective.FrequencyMinutes);
-                server.NextDue[name] = server.NextDue.TryGetValue(name, out var existing) && existing < capped
-                    ? existing
-                    : capped;
+                if (server.NextDue.TryGetValue(name, out var existing))
+                {
+                    /* Existing entry KEEPS its already-applied phase, but is pulled in to at most now + the
+                       (possibly shortened) interval so a frequency change takes effect promptly without
+                       over-firing — unchanged from before. */
+                    var capped = now.AddMinutes(effective.FrequencyMinutes);
+                    server.NextDue[name] = existing < capped ? existing : capped;
+                }
+                else
+                {
+                    /* NEW entry — a collector this reload newly enables. Phase its FIRST due time by the
+                       deterministic per-server offset (#1553 jitter site 2) so enabling a collector fleet-wide
+                       does not fire it in lockstep across servers. Only initial stamps are jittered; the
+                       steady-state advance in RunDueCollectorsAsync stays on the exact interval. */
+                    server.NextDue[name] = now.Add(CadencePhaseOffset(runtime.ServerId, effective.FrequencyMinutes * 60));
+                }
             }
         }
     }
@@ -893,6 +1117,30 @@ public sealed class DarlingWorker : BackgroundService
         && a.ReadOnlyIntent == b.ReadOnlyIntent
         && a.MultiSubnetFailover == b.MultiSubnetFailover
         && a.ExcludedDatabases.SequenceEqual(b.ExcludedDatabases, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A deterministic, restart-stable per-server phase offset within a cadence period (#1553 cadence jitter),
+    /// used to break the fleet-wide lockstep at cadence boundaries — the field incident re-herded every server
+    /// at once, so at each boundary all collectors fired together. The <paramref name="serverId"/> is ALREADY an
+    /// FNV-1a hash (<see cref="ServerIdHelper.GetDeterministicHashCode"/>), so a plain modulo spreads it across
+    /// <c>[0, period)</c> without any further mixing (an extra multiply was reviewed out as unnecessary — the
+    /// input is already avalanched). Restart-stable because it is a pure function of the id — no <see cref="Random"/>.
+    /// A non-positive period yields no offset (guards the on-load / recompute call sites where a frequency could
+    /// in principle be zero, and keeps the result well-defined for tests). Applied ONLY at initial cadence stamps
+    /// (collector on-load, RecomputeNextDue new entries, the on-connect analysis stamp), never the steady-state
+    /// advance. Internal so a unit test can pin its shape.
+    /// </summary>
+    internal static TimeSpan CadencePhaseOffset(int serverId, int periodSeconds)
+    {
+        if (periodSeconds <= 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        /* Cast to uint first so a negative FNV hash still maps into [0, period): a signed modulo would yield a
+           negative offset and pull the due time into the past. */
+        return TimeSpan.FromSeconds((uint)serverId % periodSeconds);
+    }
 
     /// <summary>
     /// Ensures the store connection string carries the collect/config search path (the V8 schema
@@ -1433,7 +1681,7 @@ LIMIT 1", connection);
         }
     }
 
-    private async Task TryConnectAsync(ServerLoopState server, DarlingCollectorRunner runner, CancellationToken cancellationToken)
+    private async Task TryConnectAsync(ServerLoopState server, DarlingCollectorRunner runner, DarlingConfig config, CancellationToken cancellationToken)
     {
         if (DateTime.UtcNow < server.NextConnectAttempt)
         {
@@ -1448,6 +1696,19 @@ LIMIT 1", connection);
                RunOneAsync below can drop server.Runtime on a mid-collection connection-level failure, so any
                later read of server.Runtime.ServerId (the schedule resolve, the connection edge) would NRE. */
             var serverId = runtime.ServerId;
+
+            /* Retired containment (#1553 D1), the CONNECT-path re-check: a reconcile-remove may have retired this
+               server while this connect body sat QUEUED on the fleet gate or ran the connect I/O (3+ min under
+               distress). The connect SUCCEEDED, but a just-disabled server must incur ZERO durable side-effects —
+               so bail BEFORE the registry upsert, the XE CREATE SESSION DDL, and the Server-Restored edge,
+               dropping the runtime we just took. The entry check in ProcessServerSweepAsync covers the queued-
+               dequeue case; this closes the window where removal lands DURING the connect itself. */
+            if (server.Retired)
+            {
+                server.Runtime = null;
+                return;
+            }
+
             _logger.LogInformation("[{Server}] Connected (major {Major}, edition {Edition}, server_id {ServerId})",
                 server.Config.DisplayName,
                 runtime.Target.SqlMajorVersion,
@@ -1500,9 +1761,25 @@ LIMIT 1", connection);
                 }
                 else
                 {
-                    server.NextDue[name] = now;
+                    /* Phase this collector's FIRST due time by the deterministic per-server offset (#1553 jitter
+                       site 1) so the fleet does not fire it in lockstep at the first post-connect cadence
+                       boundary — the field incident re-herded every server at once. Only this initial stamp is
+                       jittered; the steady-state advance in RunDueCollectorsAsync stays on the exact interval. */
+                    server.NextDue[name] = now.Add(CadencePhaseOffset(serverId, effective.FrequencyMinutes * 60));
                 }
             }
+
+            /* Phase the first scheduled analysis over a SMALL fixed sub-2.5-minute window (#1553 jitter site 3):
+               at a fleet restart every freshly connected server would otherwise become analysis-due in the same
+               sweep, and with N=4 concurrency that clusters 4 analysis passes at once. A deterministic per-server
+               offset de-clusters them while keeping post-restart analysis prompt (state-M3). The window is a
+               fixed 150s, NOT the full analysis interval — full-interval phasing would break the "already-
+               populated store analyzes promptly" promise by up to the interval, and is redundant since analysis
+               already runs inside the N=4-bounded body. Left at MinValue when analysis is disabled so re-enabling
+               still runs immediately (the sweep gates on config.Analysis.Enabled). */
+            server.NextAnalysisDue = config.Analysis.Enabled
+                ? DateTime.UtcNow.Add(CadencePhaseOffset(serverId, 150))
+                : DateTime.MinValue;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
