@@ -343,7 +343,7 @@ WHERE server_id = $1";
         instantUtc.HasValue ? Math.Max(0, (int)(nowUtc - instantUtc.Value).TotalMinutes) : null;
 }
 
-/// <summary>The three collection-freshness bands the viewer derives a card's status from.</summary>
+/// <summary>The collection-freshness bands the viewer derives a card's status from.</summary>
 public enum ServerFreshness
 {
     /// <summary>The newest collection is within twice the fastest collector's cadence — Online (green).</summary>
@@ -352,8 +352,17 @@ public enum ServerFreshness
     /// <summary>Collection has lagged past twice the cadence but the server isn't long-dead — Warning (amber).</summary>
     Stale,
 
-    /// <summary>No collection at all, or the newest is long-dead — the Offline overlay (red).</summary>
+    /// <summary>The newest collection is long-dead — the Offline overlay (red).</summary>
     Offline,
+
+    /// <summary>
+    /// No collection has EVER landed for this server (this run or any prior) — the service has not
+    /// reached it yet. Distinct from <see cref="Offline"/> (which means data STOPPED): during a slow
+    /// fleet bootstrap a red "Offline" on a server that was merely still queued sent a 24-server field
+    /// report chasing a phantom scheduler bug. Rendered as an amber "Awaiting first collection", never
+    /// the red overlay.
+    /// </summary>
+    NeverCollected,
 }
 
 /// <summary>
@@ -410,6 +419,13 @@ public sealed class ServerSummaryItem
 
     /// <summary>Warning (amber) state — in the viewer this means the collection has gone stale.</summary>
     public bool HasCollectorErrors { get; set; }
+
+    /// <summary>
+    /// True when no collection has EVER landed for this server (<see cref="ServerFreshness.NeverCollected"/>):
+    /// the service hasn't reached it yet — a registered-but-queued server during bootstrap, not a dead one.
+    /// Drives the amber "Awaiting first collection" status instead of the red Offline overlay.
+    /// </summary>
+    public bool AwaitingFirstCollection { get; set; }
 
     /// <summary>SQL Server scheduler ProcessUtilization from sys.dm_os_ring_buffers. NULL on Azure SQL DB.</summary>
     public double? CpuPercent { get; set; }
@@ -582,13 +598,14 @@ public sealed class ServerSummaryItem
         ? ViewerTimeHelper.ForDisplay(LastCollectionTime.Value).ToString("HH:mm:ss")
         : "Never";
 
-    /* Connection status — verbatim from Lite; in the viewer the inputs come from ApplyFreshness. */
+    /* Connection status — verbatim from Lite; in the viewer the inputs come from ApplyFreshness.
+       The null arm distinguishes "not reached yet" (bootstrap) from a legacy unknown. */
     public string StatusDisplay => IsOnline switch
     {
         true when HasCollectorErrors => "Warning",
         true => "Online",
         false => "Offline",
-        _ => "Unknown"
+        _ => AwaitingFirstCollection ? "Awaiting first collection" : "Unknown"
     };
 
     public SolidColorBrush StatusBrush => MakeBrush(IsOnline switch
@@ -596,7 +613,7 @@ public sealed class ServerSummaryItem
         true when HasCollectorErrors => "#FFD54F",  // amber — stale collection
         true => "#81C784",
         false => "#E57373",
-        _ => "#888888"
+        _ => AwaitingFirstCollection ? "#FFD54F" : "#888888"  // amber — queued, not dead
     });
 
     public bool IsOffline => IsOnline == false;
@@ -716,7 +733,7 @@ public sealed class ServerSummaryItem
             {
                 HealthSeverity.Critical => s_criticalBrush,
                 HealthSeverity.Warning => s_warningBrush,
-                _ => HasCollectorErrors ? MakeBrush("#FFD54F") : MakeBrush("#2a2d35"),
+                _ => HasCollectorErrors || AwaitingFirstCollection ? MakeBrush("#FFD54F") : MakeBrush("#2a2d35"),
             };
         }
     }
@@ -729,7 +746,7 @@ public sealed class ServerSummaryItem
     /// </summary>
     public static ServerFreshness ClassifyFreshness(DateTime? lastCollectionUtc, DateTime nowUtc)
     {
-        if (!lastCollectionUtc.HasValue) return ServerFreshness.Offline;
+        if (!lastCollectionUtc.HasValue) return ServerFreshness.NeverCollected;
 
         var age = nowUtc - lastCollectionUtc.Value;
         if (age > OfflineThreshold) return ServerFreshness.Offline;
@@ -739,11 +756,22 @@ public sealed class ServerSummaryItem
 
     /// <summary>
     /// Maps the freshness band onto Lite's card inputs, taking the live-ping's place: Fresh → Online,
-    /// Stale → the amber Warning state, Offline → the red Offline overlay.
+    /// Stale → the amber Warning state, Offline → the red Offline overlay, NeverCollected → the amber
+    /// "Awaiting first collection" state (IsOnline stays null: the truth is "unknown, not reached yet",
+    /// not "was up and died").
     /// </summary>
     public void ApplyFreshness(DateTime nowUtc)
     {
         var freshness = ClassifyFreshness(LastCollectionTime, nowUtc);
+        if (freshness == ServerFreshness.NeverCollected)
+        {
+            IsOnline = null;
+            HasCollectorErrors = false;
+            AwaitingFirstCollection = true;
+            return;
+        }
+
+        AwaitingFirstCollection = false;
         IsOnline = freshness != ServerFreshness.Offline;
         HasCollectorErrors = freshness == ServerFreshness.Stale;
     }

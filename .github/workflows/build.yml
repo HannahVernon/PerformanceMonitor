@@ -140,7 +140,7 @@ jobs:
         if: steps.filter.outputs.code != 'false'
         run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
 
-      # Darling bundles a PostgreSQL 17 + TimescaleDB runtime (pg-runtime.zip) that ships beside
+      # Darling bundles a PostgreSQL 18 + TimescaleDB runtime (pg-runtime.zip) that ships beside
       # the service exe; DarlingManagedPostgres extracts it on first run. The fetch script pulls
       # ~340MB of pinned EDB/TimescaleDB archives, so this is release-only and cached. The key is
       # the fetch script's own content hash (the SHA256 pins live inside it): a re-release with

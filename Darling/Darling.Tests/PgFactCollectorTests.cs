@@ -29,7 +29,7 @@ namespace Darling.Tests;
 /// (no QUALIFY, no bare NOW()/CURRENT_TIMESTAMP, no read_parquet, no DuckDB UNION ALL BY NAME,
 /// $N positional parameters only, no N'' literals); every FROM/JOIN target resolves to a V4
 /// passthrough view or a shared-catalog collector table; and the single any_value() use (PG 16+,
-/// product minimum PG 17) stays confined to the plan-regression query. Gated on DARLING_TEST_PG:
+/// below the supported floor: BYO PG 16+, bundled PG 18) stays confined to the plan-regression query. Gated on DARLING_TEST_PG:
 /// migrate, plant rows for two representative collectors (wait-stats and CPU facts), run the full
 /// CollectFactsAsync, assert the expected fact keys/values and Lite's emission order, and assert
 /// an EMPTY store yields zero facts with NO exception (the swallow posture).

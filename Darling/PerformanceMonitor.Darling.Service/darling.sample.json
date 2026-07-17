@@ -13,7 +13,7 @@
   // The Postgres store has TWO modes:
   //
   // 1) Managed (the shipped default, below): the service runs its own bundled
-  //    PostgreSQL 17 + TimescaleDB — on first run it unpacks pg-runtime.zip (shipped beside
+  //    PostgreSQL 18 + TimescaleDB — on first run it unpacks pg-runtime.zip (shipped beside
   //    the binary), initializes a cluster with scram-sha-256 auth and a generated password
   //    (DPAPI-protected in pg-credential.dpapi beside the data directory; never trust auth,
   //    even on localhost), preloads TimescaleDB, and starts the server on 127.0.0.1 by default

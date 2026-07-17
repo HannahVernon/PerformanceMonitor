@@ -140,6 +140,9 @@ public sealed class ViewerFleetRollupBuilderTests
     private static ServerSummaryItem Offline(string name, int id) =>
         new() { DisplayName = name, ServerId = id, IsOnline = false };
 
+    private static ServerSummaryItem Awaiting(string name, int id) =>
+        new() { DisplayName = name, ServerId = id, IsOnline = null, AwaitingFirstCollection = true };
+
     private static readonly FleetTotals NoTotals = new();
 
     // ── ClassifyBand: the fleet band is the card's banding, collapsed to one label ─────────────────
@@ -148,6 +151,14 @@ public sealed class ViewerFleetRollupBuilderTests
     public void ClassifyBand_OfflineCollection_IsOffline()
     {
         Assert.Equal(FleetHealthBand.Offline, FleetRollup.ClassifyBand(Offline("s", 1)));
+    }
+
+    [Fact]
+    public void ClassifyBand_AwaitingFirstCollection_IsWarning_NeverOfflineOrHealthy()
+    {
+        /* A queued-during-bootstrap server is attention-worthy (never Healthy) but truthfully
+           amber, never the red Offline overlay (24-server field incident, 2026-07-17). */
+        Assert.Equal(FleetHealthBand.Warning, FleetRollup.ClassifyBand(Awaiting("s", 1)));
     }
 
     [Fact]
@@ -330,6 +341,12 @@ public sealed class ViewerFleetRollupBuilderTests
     public void BuildReason_Offline_SaysSo()
     {
         Assert.Equal("Offline — no recent collection", FleetRollup.BuildReason(Offline("s", 1)));
+    }
+
+    [Fact]
+    public void BuildReason_AwaitingFirstCollection_SaysSo()
+    {
+        Assert.Equal("Awaiting first collection", FleetRollup.BuildReason(Awaiting("s", 1)));
     }
 
     [Fact]

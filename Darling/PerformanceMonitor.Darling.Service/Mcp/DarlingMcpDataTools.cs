@@ -751,11 +751,13 @@ public sealed class DarlingMcpDataTools
 
     /// <summary>
     /// The freshness-derived status the headless viewer's cards use (<c>ServerSummaryItem.ClassifyFreshness</c>):
-    /// Fresh → Online, Stale → Warning, Offline / never-collected → Offline. Both instants are UTC.
+    /// Fresh → Online, Stale → Warning, long-dead → Offline, never-collected → AwaitingFirstCollection
+    /// (the service hasn't reached the server yet — a bootstrap state, not an outage; additive status
+    /// value, existing values unchanged). Both instants are UTC.
     /// </summary>
     private static string FreshnessStatus(DateTime? lastCollectionUtc, DateTime nowUtc)
     {
-        if (!lastCollectionUtc.HasValue) return "Offline";
+        if (!lastCollectionUtc.HasValue) return "AwaitingFirstCollection";
         var age = nowUtc - lastCollectionUtc.Value;
         if (age > OfflineThreshold) return "Offline";
         if (age > StaleThreshold) return "Warning";

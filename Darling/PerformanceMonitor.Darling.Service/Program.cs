@@ -10,6 +10,7 @@ using System;
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Darling.Service;
 using PerformanceMonitor.Darling.Service.Mcp;
 
@@ -68,6 +69,35 @@ builder.Services.AddWindowsService(options =>
 {
     options.ServiceName = "PerformanceMonitor Darling";
 });
+
+/* The rolling file log under %ProgramData%\PerformanceMonitorDarling\logs — the service's PRIMARY
+   diagnostic surface (see DarlingFileLoggerProvider remarks). Registered unconditionally: console
+   runs get the same file, which is exactly what an operator collecting a bug report wants. */
+builder.Logging.AddProvider(new DarlingFileLoggerProvider());
+
+if (OperatingSystem.IsWindows())
+{
+    /* Pin the Event Log source to the SERVICE NAME so operators find events where the docs say to
+       look ("PerformanceMonitor Darling"), not under the assembly name AddWindowsService defaults
+       to. The source itself can only be REGISTERED by an elevated principal: the recommended
+       NT SERVICE virtual account cannot, so the attempt below is best-effort (it succeeds on an
+       elevated console run or an install script that pre-created it; see the README install step).
+       When the source does not exist, the Event Log provider silently drops events — which is why
+       the file log above, not this, is the primary surface. */
+    builder.Logging.AddEventLog(settings => settings.SourceName = "PerformanceMonitor Darling");
+    try
+    {
+        if (!System.Diagnostics.EventLog.SourceExists("PerformanceMonitor Darling"))
+        {
+            System.Diagnostics.EventLog.CreateEventSource("PerformanceMonitor Darling", "Application");
+        }
+    }
+    catch
+    {
+        /* SourceExists itself throws for a non-elevated caller when the source is missing (it
+           probes the Security log). Degrade: the file log carries the diagnostics regardless. */
+    }
+}
 
 builder.Services.AddHostedService<DarlingWorker>();
 
