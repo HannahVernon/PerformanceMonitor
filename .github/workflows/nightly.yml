@@ -206,7 +206,7 @@ jobs:
           cache: true
           cache-dependency-path: '**/packages.lock.json'
 
-      # Darling bundles a PostgreSQL 17 + TimescaleDB runtime (pg-runtime.zip). The fetch script
+      # Darling bundles a PostgreSQL 18 + TimescaleDB runtime (pg-runtime.zip). The fetch script
       # pulls ~340MB of pinned EDB/TimescaleDB archives, so cache the assembled zip on the SAME
       # key build.yml's release job uses (the fetch script's own content hash) — nightly and
       # release share one cache entry, so a warm cache means no download here.

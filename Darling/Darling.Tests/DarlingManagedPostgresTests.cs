@@ -144,6 +144,27 @@ public sealed class DarlingManagedPostgresTests
     }
 
     /// <summary>
+    /// The v4 write-throughput block (24-server field incident): PG's default max_connections = 100
+    /// and max_wal_size = 1GB are toy-sized — a fleet bootstrap's write burst forced back-to-back
+    /// spread checkpoints while backend spawn churn surfaced as transient store write failures.
+    /// Fixed values, deliberately not derived (WAL space is a ceiling, idle connections are cheap).
+    /// </summary>
+    [Fact]
+    public void WriteThroughputConfAppend_PinsV4Marker_ConnectionsAndWalCeiling()
+    {
+        var block = DarlingManagedPostgres.BuildWriteThroughputConfAppend();
+
+        Assert.Contains(DarlingManagedPostgres.ConfMarkerV4, block, StringComparison.Ordinal);
+        Assert.Contains("max_connections = 200", block, StringComparison.Ordinal);
+        Assert.Contains("max_wal_size = 4GB", block, StringComparison.Ordinal);
+
+        /* The blocks compose, they don't compete — v4 must not restate v1/v2/v3 settings. */
+        Assert.DoesNotContain("shared_preload_libraries", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("max_worker_processes", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("shared_buffers", block, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// On a big box every cap/ceiling engages: shared_buffers pins at 8 GB (not 25% = 16 GB),
     /// maintenance_work_mem at 1 GB (not 5% = 3.2 GB), work_mem at 64 MB (not RAM/512 = 128 MB);
     /// effective_cache_size stays the uncapped 75% planner hint.
@@ -403,6 +424,11 @@ public sealed class DarlingManagedPostgresTests
             Assert.Contains("shared_buffers = ", conf, StringComparison.Ordinal);
             Assert.Contains("work_mem = ", conf, StringComparison.Ordinal);
 
+            /* v4 write throughput rode the same first-run append: connection headroom + WAL ceiling. */
+            Assert.Contains(DarlingManagedPostgres.ConfMarkerV4, conf, StringComparison.Ordinal);
+            Assert.Contains("max_connections = 200", conf, StringComparison.Ordinal);
+            Assert.Contains("max_wal_size = 4GB", conf, StringComparison.Ordinal);
+
             /* The derived credential really authenticates (scram, not trust) into the darling
                database — and the server started with our appended conf, so the timescaledb
                preload line was accepted; the v2 worker sizing was accepted too (the setting is
@@ -442,6 +468,7 @@ public sealed class DarlingManagedPostgresTests
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarker));
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV2));
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV3));
+            Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV4));
 
             /* Both up/down probes below must bypass Npgsql's pool: OpenAsync on a pooled string
                can hand back an idle socket with no I/O at all, which "succeeds" against a stopped

@@ -349,6 +349,13 @@ public sealed class FleetRollup
             return FleetHealthBand.Offline;
         }
 
+        /* Never-collected = the service hasn't reached the server yet (bootstrap). Attention-worthy
+           (it must not read Healthy) but truthfully amber, never the red Offline overlay. */
+        if (s.AwaitingFirstCollection)
+        {
+            return FleetHealthBand.Warning;
+        }
+
         return s.OverallMetricSeverity switch
         {
             HealthSeverity.Critical => FleetHealthBand.Critical,
@@ -410,6 +417,11 @@ public sealed class FleetRollup
         if (s.IsOnline == false)
         {
             return "Offline — no recent collection";
+        }
+
+        if (s.AwaitingFirstCollection)
+        {
+            return "Awaiting first collection";
         }
 
         var parts = new List<string>();

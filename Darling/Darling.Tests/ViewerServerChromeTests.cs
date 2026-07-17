@@ -68,14 +68,17 @@ public sealed class ViewerServerChromeTests
     }
 
     [Fact]
-    public void ApplyFreshness_NeverCollected_IsOffline()
+    public void ApplyFreshness_NeverCollected_IsUnknownDot_NotOffline()
     {
+        /* Never-collected = the service hasn't reached the server yet (bootstrap). The sidebar dot
+           goes grey Unknown, never the red Offline — a queued server is not a dead one (24-server
+           field incident, 2026-07-17). */
         var server = Server();
 
         server.ApplyFreshness(null, DateTime.UtcNow);
 
-        Assert.False(server.IsOnline);
-        Assert.Equal("Offline", server.DotStatus);
+        Assert.Null(server.IsOnline);
+        Assert.Equal("Unknown", server.DotStatus);
     }
 
     [Fact]

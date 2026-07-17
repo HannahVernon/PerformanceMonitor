@@ -141,6 +141,16 @@ public sealed class DarlingManagedPostgres
     public const string ConfMarkerV3 = "# Managed by PerformanceMonitor Darling (v3 memory sizing) -- do not remove this block";
 
     /// <summary>
+    /// Marker for the v4 write-throughput block (connection headroom + WAL ceiling). A FOURTH
+    /// independently versioned block, same heal discipline as v2/v3. Born from a 24-server field
+    /// incident: the PG defaults of <c>max_connections = 100</c> and <c>max_wal_size = 1GB</c> are
+    /// sized for a toy, and a fleet's first-bootstrap write burst (every collector's initial
+    /// snapshot landing at once) forced back-to-back spread checkpoints while backend spawn
+    /// failures (Windows error 487 under churn) surfaced as transient store write errors.
+    /// </summary>
+    public const string ConfMarkerV4 = "# Managed by PerformanceMonitor Darling (v4 write throughput) -- do not remove this block";
+
+    /// <summary>
     /// Markers delimiting the Darling-managed network access block in pg_hba.conf
     /// (darling-network-endpoints, D5). <see cref="ReconcilePgHba"/> replaces exactly the lines
     /// between them and preserves every non-marked line, so the opt-in <c>hostssl</c> rule is
@@ -285,6 +295,28 @@ public sealed class DarlingManagedPostgres
         builder.Append(ConfMarkerV2).Append('\n');
         builder.Append("timescaledb.max_background_workers = ").Append(maxBackgroundWorkers).Append('\n');
         builder.Append("max_worker_processes = ").Append(maxWorkerProcesses).Append('\n');
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The v4 write-throughput block. Two fixed settings, deliberately not derived:
+    /// <c>max_connections = 200</c> doubles the PG default — headroom for the service pool, the
+    /// co-located viewer's admin/viewer seats, MCP, and psql without approaching the ceiling
+    /// (idle PG connections cost a few MB each; the real concurrency is bounded by the service's
+    /// own pool). <c>max_wal_size = 4GB</c> quadruples the default 1GB, which a fleet's
+    /// first-bootstrap burst (every collector's initial snapshot at once) blows through in
+    /// seconds, forcing continuous spread checkpoints that stall every write behind them
+    /// (observed live: back-to-back 4-minute checkpoints on a 24-server bootstrap). WAL space is
+    /// a CEILING, not an allocation — a quiet store never uses it. Both are restart-only, healed
+    /// on the next service-owned start like v2/v3.
+    /// </summary>
+    public static string BuildWriteThroughputConfAppend()
+    {
+        var builder = new StringBuilder();
+        builder.Append('\n');
+        builder.Append(ConfMarkerV4).Append('\n');
+        builder.Append("max_connections = 200\n");
+        builder.Append("max_wal_size = 4GB\n");
         return builder.ToString();
     }
 
@@ -674,6 +706,15 @@ public sealed class DarlingManagedPostgres
             _logger.LogInformation(
                 "Appended v3 memory sizing to postgresql.conf (host RAM {RamMb} MB -> shared_buffers {SharedBuffers}MB, effective_cache_size {EffectiveCache}MB, maintenance_work_mem {Maintenance}MB, work_mem {WorkMem}MB; effective from the next PostgreSQL restart)",
                 ramBytes / (1024L * 1024L), derived.SharedBuffersMb, derived.EffectiveCacheSizeMb, derived.MaintenanceWorkMemMb, derived.WorkMemMb);
+        }
+
+        /* Checked independently of v1/v2/v3: an already-provisioned cluster heals by GAINING the
+           write-throughput block (connection headroom + WAL ceiling) on its next start. */
+        if (!conf.Contains(ConfMarkerV4, StringComparison.Ordinal))
+        {
+            File.AppendAllText(confPath, BuildWriteThroughputConfAppend());
+            _logger.LogInformation(
+                "Appended v4 write throughput to postgresql.conf (max_connections 200, max_wal_size 4GB; effective from the next PostgreSQL restart)");
         }
     }
 

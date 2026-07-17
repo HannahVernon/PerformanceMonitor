@@ -122,13 +122,14 @@ public sealed class DarlingServer : INotifyPropertyChanged
     /// <summary>
     /// Sets the dot from the same collection-freshness classification the Overview cards use
     /// (<see cref="ServerSummaryItem.ClassifyFreshness"/>): Fresh → Online, Stale → the amber Warning,
-    /// Offline (or never collected) → red. Both instants are UTC (the store is naive UTC; nowUtc is
-    /// <see cref="DateTime.UtcNow"/>).
+    /// Offline → red, NeverCollected → the grey Unknown dot (the service hasn't reached the server yet —
+    /// during a fleet bootstrap that is "queued", not "dead"). Both instants are UTC (the store is naive
+    /// UTC; nowUtc is <see cref="DateTime.UtcNow"/>).
     /// </summary>
     public void ApplyFreshness(DateTime? lastCollectionUtc, DateTime nowUtc)
     {
         var freshness = ServerSummaryItem.ClassifyFreshness(lastCollectionUtc, nowUtc);
-        IsOnline = freshness != ServerFreshness.Offline;
+        IsOnline = freshness == ServerFreshness.NeverCollected ? null : freshness != ServerFreshness.Offline;
         HasCollectorErrors = freshness == ServerFreshness.Stale;
     }
 

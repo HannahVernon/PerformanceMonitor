@@ -198,9 +198,11 @@ public sealed class ViewerServerSummaryDisplayTests
     private static readonly DateTime Now = new(2026, 7, 3, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
-    public void ClassifyFreshness_NoCollection_IsOffline()
+    public void ClassifyFreshness_NoCollection_IsNeverCollected()
     {
-        Assert.Equal(ServerFreshness.Offline, ServerSummaryItem.ClassifyFreshness(null, Now));
+        /* Never-collected is DISTINCT from Offline: during a slow fleet bootstrap a queued server
+           must not render the red "data stopped" overlay (24-server field incident, 2026-07-17). */
+        Assert.Equal(ServerFreshness.NeverCollected, ServerSummaryItem.ClassifyFreshness(null, Now));
     }
 
     [Theory]
@@ -249,10 +251,21 @@ public sealed class ViewerServerSummaryDisplayTests
         Assert.True(offlineByAge.IsOffline);
         Assert.Equal("Offline", offlineByAge.StatusDisplay);
 
-        var offlineByAbsence = new ServerSummaryItem { LastCollectionTime = null };
-        offlineByAbsence.ApplyFreshness(Now);
-        Assert.True(offlineByAbsence.IsOffline);
-        Assert.Equal("Offline", offlineByAbsence.StatusDisplay);
+        /* No collection EVER is not an outage — it renders as the amber awaiting state. */
+        var neverCollected = new ServerSummaryItem { LastCollectionTime = null };
+        neverCollected.ApplyFreshness(Now);
+        Assert.Null(neverCollected.IsOnline);
+        Assert.False(neverCollected.IsOffline);
+        Assert.True(neverCollected.AwaitingFirstCollection);
+        Assert.False(neverCollected.HasCollectorErrors);
+        Assert.Equal("Awaiting first collection", neverCollected.StatusDisplay);
+
+        /* And a later real collection clears the awaiting state through the same path. */
+        neverCollected.LastCollectionTime = Now.AddSeconds(-30);
+        neverCollected.ApplyFreshness(Now);
+        Assert.False(neverCollected.AwaitingFirstCollection);
+        Assert.True(neverCollected.IsOnline);
+        Assert.Equal("Online", neverCollected.StatusDisplay);
     }
 
     [Theory]

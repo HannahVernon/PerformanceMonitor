@@ -35,7 +35,7 @@ Nothing is installed on the monitored SQL Servers by either edition beyond two l
 ### Prerequisites
 
 - **Windows** for the service host (Windows-service lifetime, DPAPI password protection) and for the viewer (WPF). Monitored servers can be SQL Server 2016–2025, Azure SQL Managed Instance, AWS RDS for SQL Server, or Azure SQL Database.
-- **A PostgreSQL store — bundled or your own.** In managed mode (the shipped default, see [Managed Bundled PostgreSQL](#managed-bundled-postgresql)) the service runs its own bundled PostgreSQL 17 + TimescaleDB and no database provisioning is needed. To bring your own instead, PostgreSQL 16 or 17 is recommended (developed and validated against PostgreSQL 17) with a database and a login the service can create tables in.
+- **A PostgreSQL store — bundled or your own.** In managed mode (the shipped default, see [Managed Bundled PostgreSQL](#managed-bundled-postgresql)) the service runs its own bundled PostgreSQL 18 + TimescaleDB and no database provisioning is needed. To bring your own instead, PostgreSQL 16 or newer is recommended (developed and validated against PostgreSQL 18) with a database and a login the service can create tables in.
 - **TimescaleDB is optional and auto-adopted.** If the extension is installed (or pre-created by an administrator) in the store database, the service detects it at startup and automatically converts the collector tables to hypertables with compression; without it, the service runs in plain-PostgreSQL mode, which is fully supported. No configuration flag either way.
 - **.NET 10** to build and run.
 
@@ -123,6 +123,12 @@ sc create "PerformanceMonitor Darling" binPath= "C:\PerformanceMonitorDarling\Pe
 
 ```
 sc start "PerformanceMonitor Darling"
+```
+
+Also register the service's Windows event source once, from the same elevated shell — event-source registration requires elevation, and the virtual service account cannot do it itself (without this, Event Log diagnostics are silently dropped; the file log under `%ProgramData%\PerformanceMonitorDarling\logs` works regardless):
+
+```
+powershell -NoProfile -Command "New-EventLog -LogName Application -Source 'PerformanceMonitor Darling' -ErrorAction SilentlyContinue"
 ```
 
 The `obj=` clause runs the service under a **virtual service account** (`NT SERVICE\<service name>` — password-less, per-service SID, unprivileged; the same convention SQL Server itself uses). That is the right account for SQL-auth monitoring, and with `postgres.managed = true` it is more than a preference: PostgreSQL refuses to execute with administrative privileges, so don't run the service as LocalSystem — a least-privilege account keeps the bundled store's initdb/start path on ground PostgreSQL supports. For integrated auth to monitored servers, set a domain account (or gMSA) holding the SQL-side grants below instead, via **Services.msc → Log On** or `sc config ... obj=`. Note the space after `binPath=`, `start=`, and `obj=` — `sc` requires it.
@@ -389,7 +395,9 @@ On plain PostgreSQL the purge is DELETE-based. With TimescaleDB it switches to `
 
 ### Logs
 
-The service logs through standard .NET hosting: console output when run interactively; when installed as a Windows service, lifecycle and log events go to the **Windows Application event log** (standard `AddWindowsService` behavior). Collection outcomes are also queryable in the store itself — `collection_log` records every collector run per server with status and timings, and the viewer's Collection Health tab renders exactly that.
+The service's PRIMARY log is a **rolling file** under `%ProgramData%\PerformanceMonitorDarling\logs\darling-service_yyyyMMdd.log` — every collector run line, connect edge, reload notice, warning, and error lands there (buffered writes, one file per day, 14-day retention, and a logging failure can never crash the service). Console runs write the same file plus console output.
+
+Warnings and errors also go to the **Windows Application event log** (source `PerformanceMonitor Darling`) — but only if that event source exists. Registering an event source requires elevation, and the recommended `NT SERVICE` virtual account cannot do it, so run the `New-EventLog` line in the install steps above (or any elevated run of the exe) once; without it, Windows silently drops the events and the file log is your only surface. Collection outcomes are also queryable in the store itself — `collection_log` records every collector run per server with status and timings, and the viewer's Collection Health tab renders exactly that.
 
 ### The Viewer
 
@@ -486,7 +494,7 @@ Fixed cadences, hardcoded on purpose:
 
 ## Managed Bundled PostgreSQL
 
-With `postgres.managed = true` (the sample's default), the service runs its own bundled PostgreSQL 17 + TimescaleDB and a from-zero install needs no database provisioning at all. Windows only, like every DPAPI surface here.
+With `postgres.managed = true` (the sample's default), the service runs its own bundled PostgreSQL 18 + TimescaleDB and a from-zero install needs no database provisioning at all. Windows only, like every DPAPI surface here.
 
 ```json
 {
@@ -504,7 +512,7 @@ With `postgres.managed = true` (the sample's default), the service runs its own 
 
 **Lifecycle.** On shutdown the service stops the server (`pg_ctl stop -m fast`) **only when it started it**. A server that was already running — an operator's own `pg_ctl`, or a postmaster that survived a service crash — is adopted for connections but never stopped: you'll see `already running … will not stop it` in the log, and the service keeps collecting into it.
 
-**The runtime zip.** `pg-runtime.zip` ships beside the service binary in packaged releases. Building from source, produce it once with `Darling\tools\fetch-pg-runtime.ps1` — it downloads the pinned EDB PostgreSQL 17 binaries and TimescaleDB, verifies their SHA256, prunes what the service doesn't need, and writes the zip to `Darling\artifacts\`; copy it next to the built service exe.
+**The runtime zip.** `pg-runtime.zip` ships beside the service binary in packaged releases. Building from source, produce it once with `Darling\tools\fetch-pg-runtime.ps1` — it downloads the pinned EDB PostgreSQL 18 binaries and TimescaleDB, verifies their SHA256, prunes what the service doesn't need, and writes the zip to `Darling\artifacts\`; copy it next to the built service exe.
 
 **Server log.** The bundled server's own log is `pg.log` beside the data directory — that's where PostgreSQL explains a refused start; bootstrap errors in the service log quote its tail.
 
