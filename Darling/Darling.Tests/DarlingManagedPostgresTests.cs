@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -416,7 +417,10 @@ public sealed class DarlingManagedPostgresTests
                 Assert.True(await reader.ReadAsync(timeout.Token));
                 Assert.Equal("darling", reader.GetString(0));
                 Assert.Equal("darling", reader.GetString(1));
-                Assert.Equal("40", reader.GetString(2));
+                /* Derived, not hard-pinned (a "40" pin from the 27-hypertable era went stale when
+                   collectors were added): the same HypertableCount formula BuildWorkerSizingConfAppend
+                   writes into the conf, proven LIVE here. */
+                Assert.Equal((3 + (TimescaleSupport.HypertableCount + 2) + 8).ToString(CultureInfo.InvariantCulture), reader.GetString(2));
                 /* The v3 memory block is LIVE, not merely written: work_mem and shared_buffers hold our
                    derived values (>= the 16 MB work_mem floor / 25%-of-RAM shared_buffers on any real host),
                    never the stock 4 MB / 128 MB defaults. */
