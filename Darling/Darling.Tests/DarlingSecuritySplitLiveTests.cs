@@ -66,8 +66,13 @@ public sealed class DarlingSecuritySplitLiveTests
         Assert.Equal("config", await SchemaOfAsync(connection, "config_mute_rules", ct));
 
         /* The bare, unqualified name every SQL site uses resolves — proof the search_path works, so
-           no query file had to be re-qualified. A fresh connection inherits the database default. */
-        await using var fresh = new NpgsqlConnection(connectionString);
+           no query file had to be re-qualified. A fresh connection inherits the database default.
+           Pooling=false: under parallel xunit, the pool can hand back a physical connection opened
+           BEFORE this run's ALTER DATABASE ... SET search_path landed (its session default predates
+           it), which fails the bare SELECT with 42P01 — a pool artifact, not what this asserts. A
+           genuinely new connection is the thing the comment above claims to prove. */
+        var freshConnectionString = new NpgsqlConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString;
+        await using var fresh = new NpgsqlConnection(freshConnectionString);
         await fresh.OpenAsync(ct);
         using var bare = new NpgsqlCommand("SELECT count(*) FROM config_mute_rules", fresh);
         Assert.NotNull(await bare.ExecuteScalarAsync(ct));

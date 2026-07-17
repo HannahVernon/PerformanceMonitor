@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -392,7 +393,9 @@ public sealed class DarlingManagedPostgresTests
             var conf = File.ReadAllText(Path.Combine(dataDirectory, "postgresql.conf"));
             Assert.Contains("shared_preload_libraries = 'timescaledb'", conf, StringComparison.Ordinal);
             Assert.Contains("listen_addresses = '127.0.0.1'", conf, StringComparison.Ordinal);
-            Assert.Contains($"max_worker_processes = {3 + (TimescaleSupport.HypertableTables.Count + 2) + 8}", conf, StringComparison.Ordinal);
+            /* HypertableCount, not HypertableTables.Count: the product sizes workers from the TRUE
+               hypertable count (catalog + collection_log, the V23 non-catalog hypertable). */
+            Assert.Contains($"max_worker_processes = {3 + (TimescaleSupport.HypertableCount + 2) + 8}", conf, StringComparison.Ordinal);
 
             /* v3 memory sizing rode the SAME append path on first run, derived from THIS host's physical RAM
                (the exact MB depend on the runner, so pin the marker + that the settings are present). */
@@ -414,7 +417,10 @@ public sealed class DarlingManagedPostgresTests
                 Assert.True(await reader.ReadAsync(timeout.Token));
                 Assert.Equal("darling", reader.GetString(0));
                 Assert.Equal("darling", reader.GetString(1));
-                Assert.Equal("40", reader.GetString(2));
+                /* Derived, not hard-pinned (a "40" pin from the 27-hypertable era went stale when
+                   collectors were added): the same HypertableCount formula BuildWorkerSizingConfAppend
+                   writes into the conf, proven LIVE here. */
+                Assert.Equal((3 + (TimescaleSupport.HypertableCount + 2) + 8).ToString(CultureInfo.InvariantCulture), reader.GetString(2));
                 /* The v3 memory block is LIVE, not merely written: work_mem and shared_buffers hold our
                    derived values (>= the 16 MB work_mem floor / 25%-of-RAM shared_buffers on any real host),
                    never the stock 4 MB / 128 MB defaults. */

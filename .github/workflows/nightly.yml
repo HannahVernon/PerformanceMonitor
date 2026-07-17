@@ -191,9 +191,13 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Scheduled runs always test dev (schedules execute from the default branch, so ref_name
+      # would be main). A manual dispatch tests the DISPATCHED ref — the only way to validate a
+      # branch's gated-pg test changes before merge; the artifact-publishing build job stays
+      # pinned to dev either way, so a branch dispatch can never ship branch binaries.
       - uses: actions/checkout@v5
         with:
-          ref: dev
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || 'dev' }}
 
       - name: Setup .NET 10.0
         uses: actions/setup-dotnet@v5
@@ -250,14 +254,18 @@ jobs:
           $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
           $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
           $logFile = "$env:RUNNER_TEMP\darling-pg.log"
-          & "$bin\initdb.exe" -D $dataDir -U postgres -A trust --encoding=UTF8
+          # The bootstrap superuser is named "darling", not "postgres": the V8 schema-split
+          # migration runs CREATE SCHEMA ... AUTHORIZATION darling (PgSchemaGenerator.OwnerRole),
+          # so a cluster without that role fails every fresh-store migration. Matching managed
+          # mode's shape (DarlingManagedPostgres also initdbs its owner as "darling").
+          & "$bin\initdb.exe" -D $dataDir -U darling -A trust --encoding=UTF8
           if ($LASTEXITCODE -ne 0) { throw "initdb failed ($LASTEXITCODE)" }
           Add-Content -Path "$dataDir\postgresql.conf" -Value "shared_preload_libraries = 'timescaledb'"
           Add-Content -Path "$dataDir\postgresql.conf" -Value "port = 5541"
           Add-Content -Path "$dataDir\postgresql.conf" -Value "listen_addresses = '127.0.0.1'"
           & "$bin\pg_ctl.exe" -D $dataDir -l $logFile -w start
           if ($LASTEXITCODE -ne 0) { if (Test-Path $logFile) { Get-Content $logFile -Tail 50 }; throw "pg_ctl start failed ($LASTEXITCODE)" }
-          & "$bin\createdb.exe" -h 127.0.0.1 -p 5541 -U postgres darling
+          & "$bin\createdb.exe" -h 127.0.0.1 -p 5541 -U darling darling
           if ($LASTEXITCODE -ne 0) { throw "createdb failed ($LASTEXITCODE)" }
 
       # DARLING_TEST_PG lights up the [Collection("live-postgres")] classes; DARLING_TEST_PGRUNTIME
@@ -266,7 +274,7 @@ jobs:
       - name: Run Darling PG tests
         shell: pwsh
         env:
-          DARLING_TEST_PG: "Host=127.0.0.1;Port=5541;Username=postgres;Database=darling"
+          DARLING_TEST_PG: "Host=127.0.0.1;Port=5541;Username=darling;Database=darling"
           DARLING_TEST_PGRUNTIME: ${{ github.workspace }}\Darling\artifacts\pg-runtime
         run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal --logger "trx;LogFileName=darling-nightly.trx" --results-directory TestResults
 
