@@ -191,9 +191,13 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Scheduled runs always test dev (schedules execute from the default branch, so ref_name
+      # would be main). A manual dispatch tests the DISPATCHED ref — the only way to validate a
+      # branch's gated-pg test changes before merge; the artifact-publishing build job stays
+      # pinned to dev either way, so a branch dispatch can never ship branch binaries.
       - uses: actions/checkout@v5
         with:
-          ref: dev
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || 'dev' }}
 
       - name: Setup .NET 10.0
         uses: actions/setup-dotnet@v5
