@@ -49,6 +49,11 @@
 
   <ItemGroup>
     <None Include="darling.sample.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The install/uninstall scripts ride the publish output to the ZIP ROOT (beside the exe), so both
+         the release and nightly zips carry them with no packaging-workflow changes - same delivery
+         mechanism as darling.sample.json. -->
+    <None Include="..\tools\install-darling.ps1" Link="install-darling.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\uninstall-darling.ps1" Link="uninstall-darling.ps1" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
