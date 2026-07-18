@@ -263,7 +263,38 @@ export async function apiGet(path) {
   } catch (e) {
     return { kind: "error", message: "Network error: " + (e && e.message ? e.message : String(e)) };
   }
+  return classifyResponse(resp);
+}
 
+/**
+ * Send a MUTATING request (POST / PUT / DELETE) with an optional JSON body, classified exactly like apiGet
+ * (#1563 custom-view CRUD). A 204/empty body yields { kind: "data", data: null }; an { "error": ... } body on a
+ * non-2xx yields { kind: "error", message, status } — the status is preserved so a caller can branch on it
+ * (409 = a duplicate name or a stale optimistic-concurrency version, 403 = off-loopback edit refused, ...).
+ */
+export async function apiSend(method, path, body) {
+  const hasBody = body !== undefined && body !== null;
+  let resp;
+  try {
+    resp = await fetch(path, {
+      method,
+      headers: hasBody
+        ? { Accept: "application/json", "Content-Type": "application/json" }
+        : { Accept: "application/json" },
+      body: hasBody ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    return { kind: "error", message: "Network error: " + (e && e.message ? e.message : String(e)) };
+  }
+  return classifyResponse(resp);
+}
+
+/**
+ * Classify a completed Response into the same three-kind shape apiGet returns (shared by apiGet + apiSend):
+ * an { "error": ... } body / non-2xx -> "error"; the {status, message[, hints]} envelope -> "empty"; anything
+ * else (including a 204/empty body -> data:null) -> "data".
+ */
+async function classifyResponse(resp) {
   const raw = await resp.text();
   let body = null;
   if (raw) {
