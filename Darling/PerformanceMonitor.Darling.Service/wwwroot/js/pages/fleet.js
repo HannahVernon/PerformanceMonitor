@@ -192,9 +192,8 @@ function metricBands(c) {
   const blockingDetail = c.blocking_count > 0 && c.max_blocking_wait_ms > 0 ? "max wait " + fmtMs(c.max_blocking_wait_ms) : null;
   const deadlockDetail = c.deadlock_count > 0 && c.deadlock_last_seen ? "last " + relTime(c.deadlock_last_seen) : null;
 
-  const collectorsValue =
-    c.failed_collector_count > 0 ? fmtInt(c.failed_collector_count) + " failing" : fmtInt(c.healthy_collector_count) + " ok";
-  const collectorsDetail = fmtInt(c.healthy_collector_count) + " ok · " + fmtInt(c.failed_collector_count) + " failing";
+  const collectorsValue = c.failed_collector_count > 0 ? fmtInt(c.failed_collector_count) + " failing" : "OK";
+  const collectorsDetail = fmtInt(c.healthy_collector_count) + " healthy · " + fmtInt(c.failed_collector_count) + " failing";
 
   return el("div", { class: "metric-bands" }, [
     chip("CPU", cpuValue, c.cpu_severity, cpuDetail),

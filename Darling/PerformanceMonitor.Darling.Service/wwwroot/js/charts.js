@@ -23,7 +23,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 /* viewBox geometry — the SVG scales to its container width via CSS (width:100%, height:auto). */
 const W = 1000;
 const H = 320;
-const M = { l: 58, r: 16, t: 14, b: 30 };
+/* Top margin leaves headroom for the y-axis unit caption to sit fully clear of the top tick's label. */
+const M = { l: 58, r: 16, t: 26, b: 30 };
 const PLOT_W = W - M.l - M.r;
 const PLOT_H = H - M.t - M.b;
 const Y_TICKS = 4;
@@ -96,9 +97,11 @@ export function renderLineChart(spec) {
     axis.appendChild(label);
   }
 
-  /* Y-axis unit caption above the top tick. */
-  if (unit) {
-    const cap = svg("text", { class: "axis-unit", x: M.l - 8, y: M.t - 3, "text-anchor": "end" });
+  /* Y-axis unit caption. Skipped for "%" (the tick labels already carry the unit, and stacking a caption
+     on the top tick collided with its label — the design review's must-fix); for bare-number axes it sits
+     in the extra top headroom reserved above (well clear of the top tick's label). */
+  if (unit && unit !== "%") {
+    const cap = svg("text", { class: "axis-unit", x: M.l - 8, y: 11, "text-anchor": "end" });
     cap.textContent = unit;
     axis.appendChild(cap);
   }
