@@ -268,7 +268,7 @@ public sealed class DarlingWorker : BackgroundService
         public ServerRuntime? Runtime { get; set; }
 
         /* ConcurrentDictionary (#1553 D1): with the fire-and-track sweep the per-server body runs on a pool
-           thread, so a reload's RecomputeNextDue on the OUTER thread can touch this map concurrently with the
+           thread, so a reload's RecomputeNextDueAsync on the OUTER thread can touch this map concurrently with the
            body's RunDueCollectorsAsync read-and-advance. It is only ever INDEXED by the static collector-catalog
            keys (never enumerated), so a lock-free concurrent map is a drop-in and eliminates the one structure
            the old strict single-threaded invariant (INV-1) existed to protect from tearing. */
@@ -1107,7 +1107,7 @@ public sealed class DarlingWorker : BackgroundService
             ReconcileServers(servers, view.EnabledServers);
         }
 
-        RecomputeNextDue(servers);
+        await RecomputeNextDueAsync(servers, cancellationToken);
 
         /* Mirror the desired enable state onto the observed collect.servers registry so a disable_server
            flips its observed row FALSE even though the disabled server drops out of the loop (stops
@@ -1191,12 +1191,14 @@ public sealed class DarlingWorker : BackgroundService
 
     /// <summary>
     /// Recomputes each CONNECTED server's per-collector NextDue from the current schedule overrides after a
-    /// reload: a disabled or on-load-only (freq 0) collector is dropped from the schedule; a newly-enabled one
-    /// becomes due now; an existing entry is pulled in to at most now + the (possibly shortened) effective
-    /// interval so a frequency change takes effect promptly without over-firing. A server still connecting has
-    /// no NextDue yet — <see cref="TryConnectAsync"/> seeds it from the fresh overrides when it connects.
+    /// reload: a disabled or on-load-only (freq 0) collector is dropped from the schedule; a newly-enabled one is
+    /// seeded from its persisted watermark (the #1575 <see cref="ComputeSeededNextDue"/> policy, one lazily
+    /// batched read per server that gains a new entry); an existing entry is pulled in to at most now + the
+    /// (possibly shortened) effective interval so a frequency change takes effect promptly without over-firing. A
+    /// server still connecting has no NextDue yet — <see cref="TryConnectAsync"/> seeds it from the same watermark
+    /// policy when it connects.
     /// </summary>
-    private void RecomputeNextDue(List<ServerLoopState> servers)
+    private async Task RecomputeNextDueAsync(List<ServerLoopState> servers, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
         foreach (var server in servers)
@@ -1206,6 +1208,11 @@ public sealed class DarlingWorker : BackgroundService
             {
                 continue;
             }
+
+            /* #1575: the watermark map is read at most ONCE per server, and only if this reload actually
+               introduces a NEW collector entry (a just-enabled collector) — a reload that only tweaks existing
+               entries costs no extra store round-trip. Lazily populated on the first new entry below. */
+            Dictionary<string, DateTime>? watermarks = null;
 
             foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
@@ -1227,11 +1234,14 @@ public sealed class DarlingWorker : BackgroundService
                 }
                 else
                 {
-                    /* NEW entry — a collector this reload newly enables. Phase its FIRST due time by the
-                       deterministic per-server offset (#1553 jitter site 2) so enabling a collector fleet-wide
-                       does not fire it in lockstep across servers. Only initial stamps are jittered; the
-                       steady-state advance in RunDueCollectorsAsync stays on the exact interval. */
-                    server.NextDue[name] = now.Add(CadencePhaseOffset(runtime.ServerId, effective.FrequencyMinutes * 60));
+                    /* NEW entry — a collector this reload newly enables. Seed it from the persisted watermark
+                       (the same #1575 policy as the connect-seed) so a newly-enabled long-frequency collector
+                       resumes its real cadence instead of deferring up to a full interval; the small capped
+                       jitter still de-clusters an overdue / never-run fleet-wide enable. */
+                    watermarks ??= await ReadCollectorWatermarksAsync(_postgres!, runtime.ServerId, _logger, cancellationToken);
+                    var lastRun = watermarks.TryGetValue(name, out var w) ? w : (DateTime?)null;
+                    var jitter = SeedJitter(runtime.ServerId, effective.FrequencyMinutes * 60);
+                    server.NextDue[name] = ComputeSeededNextDue(lastRun, effective.FrequencyMinutes, now, jitter);
                 }
             }
         }
@@ -1267,10 +1277,11 @@ public sealed class DarlingWorker : BackgroundService
     /// FNV-1a hash (<see cref="ServerIdHelper.GetDeterministicHashCode"/>), so a plain modulo spreads it across
     /// <c>[0, period)</c> without any further mixing (an extra multiply was reviewed out as unnecessary — the
     /// input is already avalanched). Restart-stable because it is a pure function of the id — no <see cref="Random"/>.
-    /// A non-positive period yields no offset (guards the on-load / recompute call sites where a frequency could
-    /// in principle be zero, and keeps the result well-defined for tests). Applied ONLY at initial cadence stamps
-    /// (collector on-load, RecomputeNextDue new entries, the on-connect analysis stamp), never the steady-state
-    /// advance. Internal so a unit test can pin its shape.
+    /// A non-positive period yields no offset (guards the callers where a period could in principle be zero, and
+    /// keeps the result well-defined for tests). Applied ONLY at initial cadence stamps, never the steady-state
+    /// advance: directly for the on-connect analysis stamp, and — capped at min(interval, 150s) via
+    /// <see cref="SeedJitter"/> — as the small de-cluster jitter <see cref="ComputeSeededNextDue"/> adds to an
+    /// overdue or never-run collector seed (#1575). Internal so a unit test can pin its shape.
     /// </summary>
     internal static TimeSpan CadencePhaseOffset(int serverId, int periodSeconds)
     {
@@ -1282,6 +1293,93 @@ public sealed class DarlingWorker : BackgroundService
         /* Cast to uint first so a negative FNV hash still maps into [0, period): a signed modulo would yield a
            negative offset and pull the due time into the past. */
         return TimeSpan.FromSeconds((uint)serverId % periodSeconds);
+    }
+
+    /// <summary>
+    /// The small, bounded per-server seed jitter (#1575): the deterministic <see cref="CadencePhaseOffset"/>
+    /// phase, but CAPPED at <c>min(frequencySeconds, 150)</c> so it de-clusters the fleet's overdue / never-run
+    /// seeds WITHOUT ever deferring a run by up to a full interval — the coarse full-interval offset applied at
+    /// the seed sites was the #1575 starvation bug (a daily collector re-phased up to ~24h forward on every
+    /// restart). Mirrors the fixed 150s post-connect analysis-phase jitter. A recently-run collector needs no
+    /// jitter at all: its <c>lastRun + interval</c> stamps are already spread across the fleet by when each
+    /// server actually last ran. Internal so a unit test can pin the cap.
+    /// </summary>
+    internal static TimeSpan SeedJitter(int serverId, int frequencySeconds)
+        => CadencePhaseOffset(serverId, Math.Min(frequencySeconds, 150));
+
+    /// <summary>
+    /// The pure #1575 seed policy for one collector's first post-connect / newly-enabled due time, decided from
+    /// the persisted last-run watermark instead of a full-interval offset. The old seed stamped
+    /// <c>now + CadencePhaseOffset(serverId, frequencySeconds)</c> — up to a FULL interval — on EVERY connect,
+    /// discarding when the collector actually last ran, so each service restart re-phased every collector up to a
+    /// full interval forward and long-frequency collectors (the daily <c>index_object_stats</c>) were starved
+    /// across a restart-heavy window. From the collector's last run:
+    /// <list type="bullet">
+    /// <item>recently run (<c>lastRun + interval</c> still in the future) → wait out the REMAINING interval
+    /// (<c>lastRun + interval</c>), resuming the real cadence;</item>
+    /// <item>overdue (<c>lastRun + interval</c> already reached) → run promptly at <c>now + jitter</c>;</item>
+    /// <item>never run (no watermark) → run promptly at <c>now + jitter</c> (a fresh daily collector runs shortly
+    /// after first connect, then daily — not up to 24h later).</item>
+    /// </list>
+    /// The steady-state advance in <see cref="RunDueCollectorsAsync"/> (exact interval) is unchanged. Pure and
+    /// Kind-agnostic (compares by ticks; the caller passes matching UTC values) so the policy is unit-tested
+    /// without a live store or a connect. Internal so a unit test can pin the decision table.
+    /// </summary>
+    internal static DateTime ComputeSeededNextDue(DateTime? lastRunUtc, int frequencyMinutes, DateTime nowUtc, TimeSpan jitter)
+    {
+        if (lastRunUtc is DateTime lastRun)
+        {
+            var due = lastRun.AddMinutes(frequencyMinutes);
+            return due <= nowUtc ? nowUtc + jitter : due;
+        }
+
+        return nowUtc + jitter;
+    }
+
+    /// <summary>
+    /// One batched round-trip (#1575): the newest <c>collection_time</c> per collector for a server, keyed by
+    /// collector_name — the persisted last-run watermark <see cref="ComputeSeededNextDue"/> seeds the schedule
+    /// from on connect and on a newly-enabled collector, so a restart resumes the real cadence instead of
+    /// re-phasing it forward. ANY status counts (a failed attempt still wrote a row and still reset the cadence
+    /// clock, exactly as the steady-state advance retries every interval regardless of outcome). Bare
+    /// <c>collection_log</c> resolves through the store connection's collect/config search path, matching the
+    /// sibling readers (<c>DarlingSelfAlertEvaluator.ReadCollectionSignalsAsync</c>). The naive-UTC
+    /// <c>timestamp</c> value is relabeled Kind=Utc (a relabel, NOT a shift) so every NextDue entry stays
+    /// uniformly Kind=Utc. Failure-isolated: a store hiccup returns an EMPTY map so the caller seeds every
+    /// collector as never-run (a prompt, jittered run) rather than aborting the connect — an observability read
+    /// must never break the collection loop. Internal so a gated live test can seed a row and assert the read.
+    /// </summary>
+    internal static async Task<Dictionary<string, DateTime>> ReadCollectorWatermarksAsync(
+        NpgsqlDataSource postgres, int serverId, ILogger? logger, CancellationToken cancellationToken)
+    {
+        var watermarks = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
+            using var command = new NpgsqlCommand(
+                "SELECT collector_name, MAX(collection_time) FROM collection_log WHERE server_id = $1 GROUP BY collector_name", connection);
+            command.Parameters.AddWithValue(serverId);
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (reader.IsDBNull(1))
+                {
+                    continue;
+                }
+
+                watermarks[reader.GetString(0)] = DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            /* Failure-isolated: fall back to never-run (prompt, jittered) seeds — an observability read must
+               never break the connect / reload path. */
+            logger?.LogDebug(
+                "Observability: collector watermark read for server_id {ServerId} failed: {Message}", serverId, ex.Message);
+        }
+
+        return watermarks;
     }
 
     /// <summary>
@@ -1892,6 +1990,15 @@ LIMIT 1", connection);
                a non-null Runtime, so the two never overlap for one server. If TryConnect's timing ever changes
                so a connect can race a snapshot, gate this loop too. */
             var now = DateTime.UtcNow;
+            /* #1575: seed each scheduled collector's first post-connect due time from its persisted last-run
+               watermark so a restart RESUMES the real cadence instead of re-phasing it up to a full interval
+               forward (which starved long-frequency collectors like the daily index_object_stats across a
+               restart-heavy window). ONE batched round-trip reads every collector's MAX(collection_time) for this
+               server; ComputeSeededNextDue turns each into a due time — a recently-run collector waits out the
+               remaining interval, an overdue / never-run one runs promptly under a small per-server jitter that
+               de-clusters the fleet WITHOUT the old full-interval defer (#1553's anti-herd intent, capped). The
+               steady-state advance in RunDueCollectorsAsync stays on the exact interval. */
+            var watermarks = await ReadCollectorWatermarksAsync(_postgres!, serverId, _logger, cancellationToken);
             foreach (var name in CollectorScheduleDefaults.All.Keys)
             {
                 /* Captured serverId, not server.Runtime.ServerId: an earlier on-load RunOneAsync in this loop
@@ -1908,11 +2015,9 @@ LIMIT 1", connection);
                 }
                 else
                 {
-                    /* Phase this collector's FIRST due time by the deterministic per-server offset (#1553 jitter
-                       site 1) so the fleet does not fire it in lockstep at the first post-connect cadence
-                       boundary — the field incident re-herded every server at once. Only this initial stamp is
-                       jittered; the steady-state advance in RunDueCollectorsAsync stays on the exact interval. */
-                    server.NextDue[name] = now.Add(CadencePhaseOffset(serverId, effective.FrequencyMinutes * 60));
+                    var lastRun = watermarks.TryGetValue(name, out var w) ? w : (DateTime?)null;
+                    var jitter = SeedJitter(serverId, effective.FrequencyMinutes * 60);
+                    server.NextDue[name] = ComputeSeededNextDue(lastRun, effective.FrequencyMinutes, now, jitter);
                 }
             }
 
