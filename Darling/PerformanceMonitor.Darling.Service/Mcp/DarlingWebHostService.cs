@@ -382,6 +382,17 @@ public sealed class DarlingWebHostService : BackgroundService
 
                 _app.Use(async (context, next) =>
                 {
+                    /* DNS-rebinding guard: the loopback surface is tokenless, so a browser ON the host that
+                       loads attacker content could be rebound to 127.0.0.1:5153 and read the whole surface
+                       same-origin. Require the Host header to be an address we actually bind — a loopback name
+                       or the configured listen IP (:port optional) — before any auth decision. Rebinding to a
+                       foreign hostname is rejected here; a direct IP request (the real operator) passes. */
+                    if (!IsAllowedHost(context.Request.Host.Host, networkListenIp))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                        return;
+                    }
+
                     var remote = context.Connection.RemoteIpAddress;
                     var hasValidCookie = TryValidateSessionCookie(
                         context.Request.Cookies[SessionCookieName], signingKey, DateTimeOffset.UtcNow);
@@ -455,6 +466,43 @@ public sealed class DarlingWebHostService : BackgroundService
 
     /// <summary>The verdict for one network-mode request.</summary>
     internal enum WebAuthAction { Allow, Forbid, SetCookieAndRedirect, ShowLogin }
+
+    /// <summary>
+    /// PURE Host-header allowlist — the DNS-rebinding guard. A request is served only when its Host names an
+    /// address this host actually binds: a loopback name/IP (<c>localhost</c>, <c>127.0.0.1</c>, <c>::1</c>) or,
+    /// when LAN-exposed, the configured listen IP (<paramref name="networkListenIp"/>). Any port suffix is
+    /// ignored (already split into <see cref="HostString.Host"/>), and an empty Host is allowed (HTTP/1.0 / some
+    /// health probes). This rejects a rebound foreign hostname pointed at 127.0.0.1:5153 before the tokenless
+    /// loopback allow, while a direct IP request from the real operator passes.
+    /// </summary>
+    internal static bool IsAllowedHost(string? host, IPAddress? networkListenIp)
+    {
+        if (string.IsNullOrEmpty(host))
+        {
+            return true;
+        }
+
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (IPAddress.TryParse(host, out var hostIp))
+        {
+            var ip = hostIp.IsIPv4MappedToIPv6 ? hostIp.MapToIPv4() : hostIp;
+            if (IPAddress.IsLoopback(ip))
+            {
+                return true;
+            }
+
+            if (networkListenIp is not null && ip.Equals(networkListenIp))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// PURE route-auth decision (network mode). Loopback ALWAYS passes, tokenless, even while LAN-exposed
@@ -580,7 +628,29 @@ public sealed class DarlingWebHostService : BackgroundService
         }
 
         var location = request.PathBase.Add(request.Path).ToUriComponent() + query.ToUriComponent();
-        return string.IsNullOrEmpty(location) ? "/" : location;
+        return SanitizeRedirectPath(location);
+    }
+
+    /// <summary>
+    /// PURE open-redirect guard for the token-strip 302 target: forces a single-slash site-relative path. A
+    /// request path beginning <c>//</c> (or <c>/\</c>) is a protocol-relative URL the browser follows off-site,
+    /// so a crafted <c>//evil.com/?token=...</c> would 302 the operator away; any leading slash/backslash run is
+    /// collapsed to one <c>/</c>. Empty maps to <c>/</c>.
+    /// </summary>
+    internal static string SanitizeRedirectPath(string location)
+    {
+        if (string.IsNullOrEmpty(location))
+        {
+            return "/";
+        }
+
+        var i = 0;
+        while (i < location.Length && (location[i] == '/' || location[i] == '\\'))
+        {
+            i++;
+        }
+
+        return "/" + location.Substring(i);
     }
 
     private static Task WriteLoginPageAsync(HttpContext context)

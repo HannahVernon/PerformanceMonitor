@@ -49,6 +49,37 @@ public sealed class DarlingWebAuthTests
     public void DecideWebAuth_NullRemote_Forbids()
         => Assert.Equal("Forbid", DarlingWebHostService.DecideWebAuth(null, Cidr, hasValidCookie: true, hasValidToken: true).ToString());
 
+    /* ---- Host-header allowlist: the DNS-rebinding guard (security review M1) ---- */
+
+    [Theory]
+    [InlineData("localhost", "192.168.1.205", true)]      // loopback name
+    [InlineData("LOCALHOST", "192.168.1.205", true)]      // case-insensitive
+    [InlineData("127.0.0.1", "192.168.1.205", true)]      // loopback IP
+    [InlineData("::1", "192.168.1.205", true)]            // IPv6 loopback
+    [InlineData("192.168.1.205", "192.168.1.205", true)] // the configured listen IP (the real operator, direct)
+    [InlineData("", "192.168.1.205", true)]              // empty Host (HTTP/1.0 / probes) is allowed
+    [InlineData("evil.com", "192.168.1.205", false)]      // rebound foreign hostname -> rejected
+    [InlineData("192.168.1.205", null, false)]            // loopback-only mode: the listen IP is NOT an allowed host
+    [InlineData("attacker.internal", null, false)]        // rebound name in loopback-only mode -> rejected
+    public void IsAllowedHost_RejectsReboundForeignHosts(string host, string? listenIp, bool expected)
+    {
+        var ip = listenIp is null ? null : IPAddress.Parse(listenIp);
+        Assert.Equal(expected, DarlingWebHostService.IsAllowedHost(host, ip));
+    }
+
+    /* ---- Open-redirect guard on the token-strip 302 (security review M2) ---- */
+
+    [Theory]
+    [InlineData("/dashboard", "/dashboard")]            // ordinary path untouched
+    [InlineData("/", "/")]                              // root
+    [InlineData("", "/")]                               // empty -> root
+    [InlineData("//evil.com/", "/evil.com/")]           // protocol-relative -> collapsed single slash
+    [InlineData("/\\evil.com", "/evil.com")]            // slash-backslash trick -> collapsed
+    [InlineData("///a", "/a")]                          // longer leading run
+    [InlineData("/fleet?x=1", "/fleet?x=1")]            // preserved query on a safe path
+    public void SanitizeRedirectPath_ForcesSingleSlashSiteRelative(string input, string expected)
+        => Assert.Equal(expected, DarlingWebHostService.SanitizeRedirectPath(input));
+
     /* ---- SESSION COOKIE sign / verify / tamper / expiry ---- */
 
     [Fact]

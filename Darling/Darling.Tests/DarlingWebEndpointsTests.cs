@@ -145,4 +145,15 @@ public sealed class DarlingWebEndpointsTests
     [InlineData("bad", 0.0)]
     public void ParseDouble_DefaultsOnMissOrGarbage(string? raw, double expected) =>
         Assert.Equal(expected, DarlingWebEndpoints.ParseDouble(raw, 0.0));
+
+    /* ── row-count clamp: the abuse bound on ?limit= / ?top= (security review M3) ── */
+
+    [Theory]
+    [InlineData(20, 20)]        // ordinary request unchanged
+    [InlineData(1000, 1000)]    // exactly the ceiling
+    [InlineData(50000, 1000)]   // an unbounded ask is clamped to the ceiling
+    [InlineData(0, 1)]          // zero/negative floor to 1
+    [InlineData(-5, 1)]
+    public void ClampRows_BoundsCallerSuppliedRowCounts(int requested, int expected) =>
+        Assert.Equal(expected, DarlingWebEndpoints.ClampRows(requested));
 }
