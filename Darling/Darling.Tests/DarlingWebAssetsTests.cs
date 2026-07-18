@@ -30,4 +30,27 @@ public sealed class DarlingWebAssetsTests
             $"wwwroot/index.html was not copied to the build output ({indexPath}). Check the " +
             "<Content Include=\"wwwroot\\**\\*\"> item in PerformanceMonitor.Darling.Service.csproj.");
     }
+
+    /// <summary>
+    /// #1562: the frontend's CSS/JS entry files (Builder 3) must ALSO reach the build output — the recursive
+    /// <c>wwwroot\**\*</c> glob copies subdirectories, so a broken glob or a moved/renamed entry file (which the
+    /// SPA loads by exact path) would 404 in production only. This pins the module graph's roots.
+    /// </summary>
+    [Theory]
+    [InlineData("css/theme.css")]
+    [InlineData("css/app.css")]
+    [InlineData("js/app.js")]
+    [InlineData("js/util.js")]
+    [InlineData("js/panels.js")]
+    [InlineData("js/charts.js")]
+    [InlineData("js/pages/fleet.js")]
+    [InlineData("js/pages/server.js")]
+    [InlineData("js/pages/alerts.js")]
+    public void Wwwroot_EntryAsset_IsCopiedToTheBuildOutput(string relativePath)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "wwwroot", relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Assert.True(File.Exists(path),
+            $"wwwroot/{relativePath} was not copied to the build output ({path}). The SPA loads it by exact path; " +
+            "check the recursive <Content Include=\"wwwroot\\**\\*\"> glob in PerformanceMonitor.Darling.Service.csproj.");
+    }
 }

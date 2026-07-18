@@ -347,6 +347,8 @@ The embedded read-only **web dashboard** — a browser view of the monitoring st
 
 Once enabled, open `http://localhost:5153/` in a browser on the service host. Like the MCP server, `enabled`/`port` here are the file SEED; after first start they live in the control plane and the Viewer's Settings toggles them LIVE (the service starts/stops/rebinds the dashboard within seconds — no restart). If the port is already in use at startup, the web host logs an error and retries on a calm cadence; collection is unaffected.
 
+**What you see.** The dashboard opens on a **Fleet Overview**: a card per enabled server with a status dot, six per-metric health bands (CPU, threads, memory, blocking, deadlocks, collectors), and its last collection time — all banded server-side, so the browser only renders (a server that has never reported shows an amber "Awaiting first collection", never a red offline). Above the cards a worst-first "Needs attention" list surfaces the servers to look at, or an all-healthy line when there is nothing to chase. Click a card to **drill into one server**: an overview, wait stats with a trend for the heaviest wait, active queries, a CPU chart, memory and file-I/O trends, and collection health — the same collected data the viewer shows, over inline charts. A fleet-wide **Alert History** page (with a server filter box) rounds out phase 1. It is a read-only view — no settings, no write paths, no live-server queries — and refreshes every 60 seconds (pausing while the tab is hidden). The frontend ships fully self-contained (no CDN, no fonts, no remote anything), so it works on an air-gapped host with no internet access.
+
 ### No Schedule Knobs, by Design
 
 There are deliberately **no collection-schedule or retention settings** in `darling.json`. The service consumes the shared per-collector defaults (`CollectorScheduleDefaults`) — the same cadences and retention horizons a fresh Lite install uses, identity-pinned by tests so the two editions cannot drift. If a schedule knob is ever genuinely needed, it will be added then, not speculatively.
@@ -389,7 +391,8 @@ The service migrates the store itself at startup — plain versioned SQL scripts
 | **V26** — generic webhook channel | The generic-webhook columns on `config_notification` (`generic_url`, `generic_headers`, `generic_body_template`, `generic_proxy`) for POSTing alerts to any endpoint (#1506) |
 | **V27** — deadlocks database name | `deadlocks.database_name` (the Azure SQL DB per-database deadlock-capture watermark key, #1535) and a refreshed `v_deadlocks` |
 | **V28** — Query Store replica role | `query_store_stats.replica_role` (SQL Server 2022+ AG secondary-replica attribution, #1546) and a refreshed `v_query_store_stats` |
-| **V29** — web dashboard config | `config_service.web_enabled` + `web_port` — the read-only web dashboard's live enable/port toggle, the twin of `mcp_enabled`/`mcp_port` (#1562) |
+| **V29** — long-query completions collector | `collect.long_query_completions` + its index — the opt-in long-running-query completion trace's store table (#1496) |
+| **V30** — web dashboard config | `config_service.web_enabled` + `web_port` — the read-only web dashboard's live enable/port toggle, the twin of `mcp_enabled`/`mcp_port` (#1562) |
 
 All timestamps in the store are **naive-UTC** `timestamp` columns — the product-wide cross-store contract (Lite's DuckDB does the same).
 

@@ -1,0 +1,225 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+/*
+ * Shared leaf utilities for Darling Web (#1562): DOM builders, UTC->local time, value formatters, and the API
+ * fetch helper. This module imports nothing (it is the base of the module DAG: app/panels/charts/pages all
+ * import it, so there is no import cycle). Two rules are enforced HERE so every caller inherits them:
+ *   R4 (XSS): the el() builder assigns untrusted text ONLY through textContent / text nodes; it throws if a
+ *     caller ever tries to pass raw HTML, so no data path can reach innerHTML.
+ *   R5 (time): every timestamp from the API is naive UTC ISO-8601 (no zone suffix) — parseUtc() appends 'Z'
+ *     so the browser reads it as UTC, then formatting localizes it to the viewer's zone.
+ */
+
+/* ─────────────────────────── DOM builders (textContent-only) ─────────────────────────── */
+
+/**
+ * Build an element. `props` supports: class, text (safe textContent), onClick, dataset (object), and any
+ * other key set as an attribute. `children` may be nodes, strings (-> text nodes), arrays, or null/false
+ * (skipped). There is deliberately NO html/innerHTML affordance — untrusted data can only ever become text.
+ */
+export function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null) continue;
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v; // safe: text, never markup
+    else if (k === "html") throw new Error("el(): the 'html' prop is banned — render data as text (R4/XSS).");
+    else if (k === "onClick") node.addEventListener("click", v);
+    else if (k === "dataset") Object.assign(node.dataset, v);
+    else node.setAttribute(k, v);
+  }
+  appendChildren(node, children);
+  return node;
+}
+
+function appendChildren(node, children) {
+  if (children == null || children === false) return;
+  if (Array.isArray(children)) {
+    for (const c of children) appendChildren(node, c);
+    return;
+  }
+  if (children instanceof Node) {
+    node.appendChild(children);
+    return;
+  }
+  node.appendChild(document.createTextNode(String(children))); // safe: text node
+}
+
+/** Remove all children from a node. */
+export function clear(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+  return node;
+}
+
+/** Replace a container's contents with `content` (a node or array of nodes). */
+export function mount(container, content) {
+  clear(container);
+  appendChildren(container, content);
+  return container;
+}
+
+/* ─────────────────────────── state strips ─────────────────────────── */
+
+export function errorStrip(message) {
+  return el("div", { class: "strip error", role: "alert" }, [message]);
+}
+export function emptyStrip(message) {
+  return el("div", { class: "strip empty" }, [message]);
+}
+export function loadingStrip(label) {
+  return el("div", { class: "strip loading" }, [label || "Loading…"]);
+}
+
+/* ─────────────────────────── time (UTC -> local) ─────────────────────────── */
+
+/** Parse a naive-UTC ISO string (no zone) as UTC; pass through strings that already carry a zone. */
+export function parseUtc(s) {
+  if (!s || typeof s !== "string") return null;
+  const hasZone = /[zZ]$|[+\-]\d\d:?\d\d$/.test(s);
+  const d = new Date(hasZone ? s : s + "Z");
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Full localized date-time, or an em dash for null/unparseable. */
+export function localTime(s) {
+  const d = parseUtc(s);
+  return d ? d.toLocaleString() : "—";
+}
+
+/** Compact axis label for a Date: HH:MM, widening to include the date when the span crosses a day. */
+export function axisTime(date, spanMs) {
+  if (!date) return "";
+  if (spanMs != null && spanMs > 24 * 3600 * 1000) {
+    return date.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/* ─────────────────────────── value formatters ─────────────────────────── */
+
+export function fmtInt(v) {
+  return v == null ? "—" : Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+export function fmtNum(v, d = 1) {
+  return v == null ? "—" : Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+export function fmtPct(v) {
+  return v == null ? "—" : Math.round(Number(v)) + "%";
+}
+export function fmtMs(v) {
+  return v == null ? "—" : fmtInt(v) + " ms";
+}
+export function fmtMb(v) {
+  if (v == null) return "—";
+  const n = Number(v);
+  return n >= 1024 ? fmtNum(n / 1024, 1) + " GB" : fmtInt(n) + " MB";
+}
+export function fmtText(v) {
+  return v == null || v === "" ? "—" : String(v);
+}
+export function fmtBool(v) {
+  return v === true ? "yes" : v === false ? "no" : "—";
+}
+
+/** Named formatters a panel descriptor can reference (the #1563-friendly, string-keyed registry). */
+export const FORMATTERS = {
+  int: fmtInt,
+  num1: (v) => fmtNum(v, 1),
+  num2: (v) => fmtNum(v, 2),
+  pct: fmtPct,
+  ms: fmtMs,
+  mb: fmtMb,
+  time: localTime,
+  bool: fmtBool,
+  text: fmtText,
+};
+
+export function applyFormat(name, value) {
+  const f = (name && FORMATTERS[name]) || FORMATTERS.text;
+  return f(value);
+}
+
+/* ─────────────────────────── band / severity classes ─────────────────────────── */
+
+/** CSS class for a fleet band ("Healthy"/"Warning"/"Critical"/"Offline") — colors live in CSS. */
+export function bandClass(band) {
+  return "band-" + (band || "Unknown");
+}
+/** CSS class for a per-metric severity ("Unknown"/"Healthy"/"Warning"/"Critical"). */
+export function sevClass(sev) {
+  return "sev-" + (sev || "Unknown");
+}
+
+/* ─────────────────────────── object access ─────────────────────────── */
+
+/** Read a possibly-dotted path out of an object; undefined-safe. */
+export function getPath(obj, path) {
+  if (obj == null || !path) return undefined;
+  if (!path.includes(".")) return obj[path];
+  return path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+/* ─────────────────────────── API fetch ─────────────────────────── */
+
+/** Build a query string from a params object, skipping null/undefined/empty values. */
+export function buildQuery(params) {
+  if (!params) return "";
+  const parts = [];
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null || v === "") continue;
+    parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(v));
+  }
+  return parts.length ? "?" + parts.join("&") : "";
+}
+
+/**
+ * GET a same-origin API path and classify the response into one of three kinds, mirroring the service's
+ * three response shapes (DarlingWebEndpoints):
+ *   { kind: "data",  data }                 — a data object/array (HTTP 200 JSON passthrough)
+ *   { kind: "empty", status, message, ... } — the {status,message[,hints]} empty envelope (HTTP 200)
+ *   { kind: "error", message, status }      — { "error": ... } (HTTP 400/500) or a transport failure
+ * Auth is handled entirely server-side (loopback is tokenless; network mode sets the session cookie before
+ * the SPA loads), so requests carry it automatically — nothing to do here.
+ */
+export async function apiGet(path) {
+  let resp;
+  try {
+    resp = await fetch(path, { headers: { Accept: "application/json" } });
+  } catch (e) {
+    return { kind: "error", message: "Network error: " + (e && e.message ? e.message : String(e)) };
+  }
+
+  const raw = await resp.text();
+  let body = null;
+  if (raw) {
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = null;
+    }
+  }
+
+  if (!resp.ok) {
+    const msg = body && typeof body.error === "string" ? body.error : "Request failed (HTTP " + resp.status + ")";
+    return { kind: "error", message: msg, status: resp.status };
+  }
+
+  /* The empty envelope is exactly {status, message[, hints]}: a top-level string status AND string message.
+     Data payloads never carry a top-level message, so this never misfires on real data. */
+  if (body && !Array.isArray(body) && typeof body.status === "string" && typeof body.message === "string") {
+    return { kind: "empty", status: body.status, message: body.message, hints: body.hints || null, data: body };
+  }
+
+  return { kind: "data", data: body };
+}
+
+/** GET a read-only tool by its MCP name with query-string params. */
+export function readTool(tool, params) {
+  return apiGet("/api/read/" + tool + buildQuery(params));
+}

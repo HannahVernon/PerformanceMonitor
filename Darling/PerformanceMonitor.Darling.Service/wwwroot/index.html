@@ -1,28 +1,33 @@
 <!doctype html>
 <!--
-  SEAM STUB (#1562) — Builder 3 owns everything under wwwroot/.
-
-  This is a deliberately minimal placeholder so the web host has an index to serve and the
-  build-output copy test has a file to assert. Keep it FULLY SELF-CONTAINED: no external
-  <script>/<link>/font/image references (the frontend ships air-gapped; a CI scan will enforce
-  it). Builder 3 replaces this with the real dashboard shell (theme + panels + pages).
+  Darling Web (#1562) — the read-only browser dashboard served by the Darling service's web host on port 5153.
+  Fully self-contained / air-gapped: no CDN, no fonts, no remote anything (a CI scan enforces it). All markup,
+  style, and behavior ship from this wwwroot. The shell below is static; js/app.js routes the pages into #main.
 -->
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Darling Web</title>
-  <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #181b1f; color: #E4E6EB; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; }
-    .card { background: #22252b; padding: 2rem 2.5rem; border-radius: 6px; }
-    h1 { font-size: 1.2rem; margin: 0 0 0.5rem; color: #2eaef1; }
-    p { margin: 0; color: #A8AEBA; font-size: 0.9rem; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Darling Web</h1>
-    <p>Phase 1 assembling &mdash; the dashboard front end is on its way.</p>
-  </div>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Darling Web</title>
+    <link rel="stylesheet" href="css/theme.css" />
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <div class="brand">
+          <h1>Darling Web</h1>
+          <div class="sub">SQL Server fleet monitor</div>
+        </div>
+        <nav class="nav">
+          <a data-route="fleet" href="#/fleet">Fleet Overview</a>
+          <a data-route="alerts" href="#/alerts">Alert History</a>
+        </nav>
+        <div class="server-list-header">Servers</div>
+        <div id="server-list"></div>
+      </aside>
+      <main id="main"></main>
+    </div>
+    <script type="module" src="js/app.js"></script>
+  </body>
 </html>

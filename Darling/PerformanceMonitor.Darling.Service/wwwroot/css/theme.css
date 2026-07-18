@@ -1,0 +1,49 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+/*
+ * Darling Web theme tokens (#1562) — the CSS custom properties are the exact values lifted from the WPF
+ * viewer's Themes/DarkTheme.xaml, so the browser dashboard reads as the same product as the desktop viewer.
+ * Dark-only in phase 1 (the WPF viewer's light theme is deferred). Every color the app uses resolves to one
+ * of these tokens; the band/severity colors map onto ok/warn/err so the pre-banded API values render with
+ * one palette.
+ */
+:root {
+  /* ── raw palette (verbatim from DarkTheme.xaml) ── */
+  --accent: #2eaef1;
+  --bg: #181b1f;
+  --bg-dark: #111217;
+  --card: #22252b;
+  --lighter: #2a2d35;
+  --row-alt: #1c1f25;
+  --fg: #E4E6EB;
+  --dim: #C7CBD4;
+  --muted: #A8AEBA;
+  --ok: #81C784;
+  --warn: #FFD54F;
+  --err: #E57373;
+
+  /* ── derived tokens ── */
+  --border: #2a2d35;
+  --radius: 6px;
+  --radius-sm: 4px;
+
+  /* Band / severity semantic aliases — the API is pre-banded; these only map a band name to a color. */
+  --band-healthy: var(--ok);
+  --band-warning: var(--warn);
+  --band-critical: var(--err);
+  --band-offline: var(--muted);
+  --band-unknown: var(--muted);
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "Consolas", "Courier New", monospace;
+
+  --sidebar-width: 260px;
+
+  color-scheme: dark;
+}
