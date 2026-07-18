@@ -151,6 +151,15 @@ public sealed class DarlingManagedPostgres
     public const string ConfMarkerV4 = "# Managed by PerformanceMonitor Darling (v4 write throughput) -- do not remove this block";
 
     /// <summary>
+    /// Marker for the v5 co-located-sizing override (#1559). A FIFTH independently versioned block, same
+    /// heal discipline: clusters whose v3 block wrote the old min(25%, 8 GB) shared_buffers gain this
+    /// override on their next service-owned start — postgresql.conf takes the LAST occurrence of a
+    /// setting, so appending wins without rewriting the v3 block. Carries the capped derivation
+    /// (min(25% RAM, 1 GB)); on a box already at or under the cap it re-states the same figure, harmlessly.
+    /// </summary>
+    public const string ConfMarkerV5 = "# Managed by PerformanceMonitor Darling (v5 co-located sizing) -- do not remove this block";
+
+    /// <summary>
     /// Markers delimiting the Darling-managed network access block in pg_hba.conf
     /// (darling-network-endpoints, D5). <see cref="ReconcilePgHba"/> replaces exactly the lines
     /// between them and preserves every non-marked line, so the opt-in <c>hostssl</c> rule is
@@ -320,6 +329,23 @@ public sealed class DarlingManagedPostgres
         return builder.ToString();
     }
 
+    /// <summary>
+    /// The v5 co-located-sizing override block (#1559): re-states <c>shared_buffers</c> at the CAPPED
+    /// derivation (min(25% RAM, 1 GB) — see <see cref="DeriveMemorySettings"/> for the dedicated-server
+    /// and Windows-487 rationale) so an EXISTING cluster provisioned under the old min(25%, 8 GB) rule
+    /// heals down on its next service-owned start. postgresql.conf semantics: the LAST occurrence of a
+    /// setting wins, so this override never edits the v3 block in place.
+    /// </summary>
+    public static string BuildColocatedSizingConfAppend(long totalPhysicalMemoryBytes)
+    {
+        var settings = DeriveMemorySettings(totalPhysicalMemoryBytes);
+        var builder = new StringBuilder();
+        builder.Append('\n');
+        builder.Append(ConfMarkerV5).Append('\n');
+        builder.Append("shared_buffers = ").Append(settings.SharedBuffersMb).Append("MB\n");
+        return builder.ToString();
+    }
+
     /* ===================== v3 memory sizing (derived from host RAM) ===================== */
 
     /// <summary>4 GB — the conservative fallback used only when the runtime RAM query fails, so sizing
@@ -341,8 +367,15 @@ public sealed class DarlingManagedPostgres
     /// fine for a handful of monitored servers on an 8 GB box, but would bottleneck the "up to 500 servers"
     /// store. Formulas:
     /// <list type="bullet">
-    /// <item><b>shared_buffers</b> = min(25% RAM, 8 GB) — the standard PostgreSQL starting point, capped
-    ///   because past ~8 GB the OS page cache serves better than more double-buffered PG cache.
+    /// <item><b>shared_buffers</b> = min(25% RAM, 1 GB) — the docs' 25% starting point is explicitly
+    ///   conditioned on a DEDICATED database server, which the managed store is NOT: it is co-located
+    ///   with the service, the viewer, and often Lite, so the OS cache is shared and a large PG buffer
+    ///   pool double-caches against it. The 1 GB CAP is also the Windows 487 mitigation (#1559): every
+    ///   backend process must re-reserve the shared memory region at the postmaster's base address, and
+    ///   the pgsql-bugs history (BUG #14050 / #18954) documents larger shared_buffers exacerbating
+    ///   could-not-reserve-shared-memory (error code 487) spawn failures under ASLR/DLL address
+    ///   pressure — observed live on a 16 GB field box running the prior 4 GB segment. A smaller
+    ///   segment also shrinks every backend's reattach surface and the checkpointer's sweep.
     ///   RESTART-ONLY, like max_worker_processes; it applies on the next server start.</item>
     /// <item><b>effective_cache_size</b> = 75% RAM — a PLANNER HINT (no allocation) telling the planner how
     ///   much data is likely cached (PG + OS cache), biasing it toward index scans.</item>
@@ -364,7 +397,7 @@ public sealed class DarlingManagedPostgres
         const long oneMb = 1024L * 1024L;
         const long oneGb = 1024L * oneMb;
 
-        var sharedBuffers = Math.Min(ram / 4, 8 * oneGb);         /* 25% RAM, capped at 8 GB — restart-only */
+        var sharedBuffers = Math.Min(ram / 4, oneGb);              /* 25% RAM, capped at 1 GB (co-located store + Windows 487 mitigation, #1559) — restart-only */
         var effectiveCache = ram / 4 * 3;                          /* 75% RAM — planner hint, not an allocation */
         var maintenanceWorkMem = Math.Min(ram / 20, oneGb);        /* 5% RAM, capped at 1 GB */
         var workMem = Math.Clamp(ram / 512, 16 * oneMb, 64 * oneMb);
@@ -425,6 +458,12 @@ public sealed class DarlingManagedPostgres
             Password = password,
             Database = DatabaseName,
             SearchPath = SearchPath,
+            /* #1559: bound the service's backend count. Every pooled Npgsql connection is a live
+               postgres.exe PROCESS on Windows, and each spawn must re-reserve the shared memory
+               region (the 487 surface) — a field box showed 43 backends during a 24-server sweep.
+               24 comfortably covers the 4-wide sweep + command/beacon/alert/analysis seams; Npgsql's
+               default idle pruning shrinks the pool between bursts. */
+            MaxPoolSize = 24,
         };
         return builder.ConnectionString;
     }
@@ -715,6 +754,17 @@ public sealed class DarlingManagedPostgres
             File.AppendAllText(confPath, BuildWriteThroughputConfAppend());
             _logger.LogInformation(
                 "Appended v4 write throughput to postgresql.conf (max_connections 200, max_wal_size 4GB; effective from the next PostgreSQL restart)");
+        }
+
+        /* Checked independently of v1-v4: a cluster provisioned under the old min(25%, 8 GB)
+           shared_buffers rule heals DOWN to the co-located cap (last-occurrence-wins override). */
+        if (!conf.Contains(ConfMarkerV5, StringComparison.Ordinal))
+        {
+            var v5RamBytes = GetTotalPhysicalMemoryBytes();
+            File.AppendAllText(confPath, BuildColocatedSizingConfAppend(v5RamBytes));
+            _logger.LogInformation(
+                "Appended v5 co-located sizing to postgresql.conf (shared_buffers = {SharedBuffers}MB, capped at min(25% RAM, 1GB); effective from the next PostgreSQL restart)",
+                DeriveMemorySettings(v5RamBytes).SharedBuffersMb);
         }
     }
 
