@@ -474,6 +474,8 @@ A monitored server that is down is retried every 60 seconds forever; a collector
 
 **"TimescaleDB setup failed — continuing in plain-PostgreSQL mode"** (warning) — the extension exists but conversion hit a problem. Everything still works (DELETE-based retention, plain tables); conversion is retried on the next service start.
 
+**query_store bursts every ~15 minutes** — two or three near-empty cycles, then one large one, is Query Store's own behavior, not a collector bug: the engine buffers in memory and flushes to its persisted tables on `DATA_FLUSH_INTERVAL_SECONDS` (default 900s), so the collector genuinely sees nothing new between flushes. Narrowing the collection interval will not smooth it. The per-database log lines show which database drove a burst.
+
 **MCP client cannot connect** — MCP defaults to off. Enable it live from the Viewer's Settings (the checkbox writes the control plane; the service starts the endpoint within seconds, no restart), or set `mcp.enabled: true` in `darling.json` for a file-seeded install. If the log says `Port 5152 is already in use — MCP server not started`, change `mcp.port`. The MCP server binds to `localhost` only unless you opt into a LAN endpoint (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan)); a remote client that gets 401 is missing or mismatching the required bearer token, and one that is refused before any response is outside the configured `allowFrom` CIDR.
 
 **Recommendations tab says no findings** — analysis runs every 30 minutes per server but only once the store holds at least 24 hours of collected data for that server; a fresh install simply has not earned findings yet.

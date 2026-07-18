@@ -82,6 +82,10 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.NotNull(plan);
         Assert.Contains("sys.dm_hadr_database_replica_states", plan!.Text, StringComparison.Ordinal);
         Assert.Contains("drs.is_primary_replica = 1", plan.Text, StringComparison.Ordinal);
+        /* #1565: rdsadmin (AWS RDS's own management db) is default-excluded on the box/RDS path — no
+           customer workload; readonly_reason bit 8 also excludes its readable-secondary shape, but on
+           an RDS PRIMARY it would otherwise be enumerated. */
+        Assert.Contains("d.name <> N'rdsadmin'", plan.Text, StringComparison.Ordinal);
         /* IN (1, 2, 4) = READ_ONLY/READ_WRITE/READ_CAPTURE_SECONDARY, not "> 0": 3 = ERROR must not
            pass the "is QS usable" gate. */
         Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
@@ -218,7 +222,10 @@ public sealed class QueryStoreCollectorDefinitionTests
         /* Line-ending agnostic: pin the bracket escaping + the sp_executesql shape. */
         Assert.StartsWith("EXECUTE [we]]ird].sys.sp_executesql", plan.Text.TrimStart('\r', '\n'), StringComparison.Ordinal);
         Assert.Contains("WHERE qsrs.last_execution_time > @cutoff_time", plan.Text, StringComparison.Ordinal);
-        Assert.Contains("NOT LIKE N''%PerformanceMonitorLite%''", plan.Text, StringComparison.Ordinal);
+        /* #1565: the self-exclusion scans only the first 100 chars — the unbounded full-text LIKE was 75%
+           of the read's elapsed time in a field actual plan; every collector query carries the marker in
+           its first ~40 chars. */
+        Assert.Contains("LEFT(qst.query_sql_text, 100) NOT LIKE N''%PerformanceMonitorLite%''", plan.Text, StringComparison.Ordinal);
         Assert.Contains("OPTION(RECOMPILE, LOOP JOIN);", plan.Text, StringComparison.Ordinal);
         Assert.Contains("N'@cutoff_time datetime2(7)',", plan.Text, StringComparison.Ordinal);
 

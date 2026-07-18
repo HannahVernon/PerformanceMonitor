@@ -125,6 +125,7 @@ DECLARE db_check CURSOR LOCAL FAST_FORWARD FOR
     AND   d.database_id < 32761
     AND   d.state_desc = N'ONLINE'
     AND   d.name <> N'PerformanceMonitor'
+    AND   d.name <> N'rdsadmin' /*AWS RDS's own management db - present on every RDS instance, no customer workload (#1565). Org-specific utility dbs (e.g. a shared DBA tools db) belong in excludedDatabases.*/
     AND
     (
         drs.database_id IS NULL          /*not in any AG*/
@@ -422,7 +423,20 @@ ORDER BY
             ? "LEFT JOIN sys.query_store_replicas AS qsr\n       ON qsr.replica_group_id = qsrs.replica_group_id"
             : "";
 
-        /* Incremental: only fetch runtime_stats intervals newer than what we already have. */
+        /* Incremental: only fetch runtime_stats intervals newer than what we already have.
+
+           Two field-verified cost/behavior notes (#1565, actual-plan evidence from a 103k-row burst):
+           (1) The self-exclusion filter below scans LEFT(query_sql_text, 100), NOT the full text: the
+           unbounded form (query_sql_text NOT LIKE N'%marker%') was 75% of the query's total elapsed
+           time — a per-row substring scan over full nvarchar(max) query text (11.2s of a 14.9s read;
+           4.3x faster without it). Every collector query leads with the SELECT-adjacent
+           PerformanceMonitorLite marker comment (within the first ~40 chars), so a 100-char bounded
+           scan preserves the exclusion at ~zero cost; a USER query that merely mentions the marker deep in its text is now included,
+           which is harmless noise, not a correctness issue.
+           (2) Expect a bursty cadence: Query Store buffers in memory and flushes to its persisted
+           tables on DATA_FLUSH_INTERVAL_SECONDS (default 900s), so roughly every third 5-minute cycle
+           returns a burst and the others return ~nothing. That is the SOURCE's behavior, not a
+           watermark bug — do NOT "fix" it by narrowing the poll interval. */
         var cutoffTime = context.Watermark ?? context.CollectionTime.AddMinutes(-60);
 
         var escapedDbName = item.Replace("]", "]]", StringComparison.Ordinal);
@@ -494,7 +508,7 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
        ON qst.query_text_id = qsq.query_text_id
      {replicaJoin}
      WHERE qsrs.last_execution_time > @cutoff_time
-     AND   qst.query_sql_text NOT LIKE N''%PerformanceMonitorLite%''
+     AND   LEFT(qst.query_sql_text, 100) NOT LIKE N''%PerformanceMonitorLite%''
      ORDER BY qsrs.last_execution_time DESC
      OPTION(RECOMPILE, LOOP JOIN);',
     N'@cutoff_time datetime2(7)',
