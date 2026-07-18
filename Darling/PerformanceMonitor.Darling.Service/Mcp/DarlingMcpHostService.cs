@@ -426,6 +426,9 @@ public sealed class DarlingMcpHostService : BackgroundService
                    get_database_sizes — the same names Lite and the Dashboard expose, over Darling's Postgres
                    store (STORED reads, no live hit). Result shapes follow Lite where the two SKUs diverge. */
                 .WithGeminiCompatibleTools<DarlingMcpBlockingTools>()
+                /* #1496 get_long_query_completions — the opt-in long-query completion trace (rpc/batch over
+                   the duration threshold + attentions), over Darling's Postgres store (STORED read). */
+                .WithGeminiCompatibleTools<DarlingMcpLongQueryTools>()
                 .WithGeminiCompatibleTools<DarlingMcpSessionTools>()
                 .WithGeminiCompatibleTools<DarlingMcpConfigHistoryTools>()
                 .WithGeminiCompatibleTools<DarlingMcpObjectStatsTools>()

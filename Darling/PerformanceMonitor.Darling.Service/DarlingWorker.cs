@@ -314,6 +314,16 @@ public sealed class DarlingWorker : BackgroundService
            thread after the outer thread's write. A remove+re-add mints a FRESH ServerLoopState, so there is no
            reset and no ABA. */
         public volatile bool Retired;
+
+        /* Last-applied enabled state of the OPT-IN long-query completion XE session (#1496), so the
+           per-sweep reconcile only opens a connection to run CREATE/DROP DDL when the desired state
+           actually changes — null = not yet reconciled (next sweep applies it), true = ensured
+           (enabled), false = confirmed dropped (disabled). Reset to null on every (re)connect so a
+           stopped Azure database-scoped session is re-ensured; in steady state a default-off collector
+           is drop-confirmed once per connect and then skipped every sweep. Written by the per-server
+           sweep body and the connect path (both run on the pool thread, one at a time per server —
+           INV-2), like the DateTime schedule fields above. */
+        public bool? LongQueryTraceApplied { get; set; }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -919,6 +929,13 @@ public sealed class DarlingWorker : BackgroundService
                 return;
             }
 
+            /* Reconcile the opt-in long-query completion XE session (#1496) to its enabled flag before the
+               collector sweep. State-tracked (ServerLoopState.LongQueryTraceApplied), so it only opens a
+               connection when the desired state changes — enabling creates the session, disabling DROPS it.
+               Runs regardless of whether the collector is due or enabled, because a disabled collector is
+               never dispatched by RunDueCollectorsAsync and so the DROP-on-disable has nowhere else to run. */
+            await ReconcileLongQueryTraceAsync(server, runner, stoppingToken);
+
             await RunDueCollectorsAsync(server, runner, stoppingToken);
 
             /* After the server's collector sweep: evaluate alerts against the freshly collected store — on
@@ -959,6 +976,40 @@ public sealed class DarlingWorker : BackgroundService
         finally
         {
             gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Reconciles the OPT-IN long-query completion XE session (#1496) to its resolved enabled flag, once
+    /// the desired state differs from what was last applied to this server (tracked in
+    /// <see cref="ServerLoopState.LongQueryTraceApplied"/> so steady state — a default-off collector —
+    /// opens no connection at all). Enabling creates the server-side session; disabling drops it. A
+    /// failure leaves the applied state unchanged so the next sweep retries, and never breaks the sweep.
+    /// </summary>
+    private async Task ReconcileLongQueryTraceAsync(ServerLoopState server, DarlingCollectorRunner runner, CancellationToken cancellationToken)
+    {
+        if (server.Runtime is null)
+        {
+            return;
+        }
+
+        var serverId = ServerIdHelper.GetDeterministicHashCode(server.Config.StorageName);
+        var enabled = StoreConfigProvider.ResolveSchedule("long_query_completions", serverId, _scheduleOverrides).Enabled;
+
+        if (server.LongQueryTraceApplied == enabled)
+        {
+            return;
+        }
+
+        try
+        {
+            await DarlingXeSessions.ReconcileLongQueryCompletionsAsync(server.Runtime, runner, enabled, _logger, cancellationToken);
+            server.LongQueryTraceApplied = enabled;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning("[{Server}] Failed to reconcile the long-query completion XE session: {Message}",
+                server.Config.DisplayName, ex.Message);
         }
     }
 
@@ -1775,6 +1826,11 @@ LIMIT 1", connection);
         {
             var runtime = await DarlingServerConnector.ConnectAsync(server.Config, _logger, cancellationToken);
             server.Runtime = runtime;
+            /* Force the long-query trace (#1496) to re-reconcile on the next sweep after every (re)connect:
+               an Azure database-scoped session can stop on reconnect, so a still-"applied" flag would
+               otherwise skip restarting it. Cheap — the reconcile no-ops unless the desired state differs
+               from what actually exists (ensure is IF-NOT-running START; drop is IF EXISTS). */
+            server.LongQueryTraceApplied = null;
             /* Capture the id once, while the connection is freshly established and non-null: an on-load
                RunOneAsync below can drop server.Runtime on a mid-collection connection-level failure, so any
                later read of server.Runtime.ServerId (the schedule resolve, the connection edge) would NRE. */
@@ -2528,6 +2584,7 @@ LIMIT 1";
         ["query_store"] = (r, s, ct) => r.RunAsync(QueryStoreCollector.Instance, s, ct),
         ["deadlocks"] = (r, s, ct) => RunXeTolerantAsync(DeadlocksCollector.Instance, r, s, ct),
         ["blocked_process_report"] = (r, s, ct) => RunXeTolerantAsync(BlockedProcessReportCollector.Instance, r, s, ct),
+        ["long_query_completions"] = (r, s, ct) => RunXeTolerantAsync(LongQueryCompletionsCollector.Instance, r, s, ct),
         ["system_health_events"] = (r, s, ct) => r.RunAsync(SystemHealthEventsCollector.Instance, s, ct),
         ["default_trace_events"] = (r, s, ct) => r.RunAsync(DefaultTraceEventsCollector.Instance, s, ct),
         ["job_history"] = (r, s, ct) => r.RunAsync(JobHistoryCollector.Instance, s, ct),

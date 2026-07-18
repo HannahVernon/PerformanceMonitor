@@ -362,6 +362,12 @@ public partial class RemoteCollectorService
            Each server gets its own due-collector list from per-server schedules. */
         var serverTasks = onlineServers.Select(server => Task.Run(async () =>
         {
+            /* Reconcile the opt-in long-query completion XE session to its enabled flag BEFORE the
+               due-collector loop and regardless of whether it is due — a disabled collector is never
+               dispatched, so the DROP-on-disable (#1496) has nowhere else to run. Cheap when nothing
+               changed (state-tracked); creates on enable, drops on disable. */
+            await ReconcileLongQueryCompletionsXeSessionAsync(server, cancellationToken);
+
             var dueCollectors = _scheduleManager.GetDueCollectorsForServer(server.Id);
             foreach (var collector in dueCollectors)
             {
@@ -407,6 +413,11 @@ public partial class RemoteCollectorService
         await PersistServerMetadataAsync(server, serverStatus);
 
         AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)}, initial load)");
+
+        /* Reconcile the opt-in long-query completion XE session (#1496) on tab-open too, so enabling it
+           takes effect promptly rather than waiting for the next scheduled sweep. Unconditional — the
+           DROP-on-disable path must run even though a disabled collector is absent from enabledSchedules. */
+        await ReconcileLongQueryCompletionsXeSessionAsync(server, cancellationToken);
 
         foreach (var schedule in enabledSchedules)
         {
@@ -514,6 +525,7 @@ public partial class RemoteCollectorService
                 "waiting_tasks" => await CollectWaitingTasksAsync(server, cancellationToken),
                 "dmv_blocking_snapshot" => await CollectDmvBlockingSnapshotAsync(server, cancellationToken),
                 "blocked_process_report" => await CollectBlockedProcessReportsAsync(server, cancellationToken),
+                "long_query_completions" => await CollectLongQueryCompletionsAsync(server, cancellationToken),
                 "database_scoped_config" => await CollectDatabaseScopedConfigAsync(server, cancellationToken),
                 "trace_flags" => await CollectTraceFlagsAsync(server, cancellationToken),
                 "running_jobs" => await CollectRunningJobsAsync(server, cancellationToken),

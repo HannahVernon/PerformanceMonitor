@@ -31,6 +31,7 @@ public partial class ServerTab : UserControl
         _blockedProcessFilterMgr = new DataGridFilterManager<BlockedProcessReportRow>(BlockedProcessReportGrid);
         _deadlockFilterMgr = new DataGridFilterManager<DeadlockProcessDetail>(DeadlockGrid);
         _runningJobsFilterMgr = new DataGridFilterManager<RunningJobRow>(RunningJobsGrid);
+        _longQueryFilterMgr = new DataGridFilterManager<LongQueryCompletionRow>(LongQueryCompletionsGrid);
         _serverConfigFilterMgr = new DataGridFilterManager<ServerConfigRow>(ServerConfigGrid);
         _databaseConfigFilterMgr = new DataGridFilterManager<DatabaseConfigRow>(DatabaseConfigGrid);
         _dbScopedConfigFilterMgr = new DataGridFilterManager<DatabaseScopedConfigRow>(DatabaseScopedConfigGrid);
@@ -61,6 +62,7 @@ public partial class ServerTab : UserControl
         _filterManagers[BlockedProcessReportGrid] = _blockedProcessFilterMgr;
         _filterManagers[DeadlockGrid] = _deadlockFilterMgr;
         _filterManagers[RunningJobsGrid] = _runningJobsFilterMgr;
+        _filterManagers[LongQueryCompletionsGrid] = _longQueryFilterMgr;
         _filterManagers[ServerConfigGrid] = _serverConfigFilterMgr;
         _filterManagers[DatabaseConfigGrid] = _databaseConfigFilterMgr;
         _filterManagers[DatabaseScopedConfigGrid] = _dbScopedConfigFilterMgr;

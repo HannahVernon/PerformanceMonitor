@@ -78,6 +78,7 @@ public sealed class McpHostService : BackgroundService
                 .WithGeminiCompatibleTools<McpHealthTools>()
                 .WithGeminiCompatibleTools<McpWaitTools>()
                 .WithGeminiCompatibleTools<McpBlockingTools>()
+                .WithGeminiCompatibleTools<McpLongQueryTools>()
                 .WithGeminiCompatibleTools<McpQueryTools>()
                 .WithGeminiCompatibleTools<McpCpuTools>()
                 .WithGeminiCompatibleTools<McpMemoryTools>()

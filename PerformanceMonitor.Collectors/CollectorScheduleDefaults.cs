@@ -21,7 +21,16 @@ namespace PerformanceMonitor.Collectors;
 /// </summary>
 public static class CollectorScheduleDefaults
 {
-    public sealed record Entry(int FrequencyMinutes, int RetentionDays);
+    /// <summary>
+    /// Per-collector cadence + retention, plus the collector's default enabled state. Nearly every
+    /// collector ships ENABLED (<see cref="DefaultEnabled"/> = true); a collector that must ship OFF
+    /// and be opted into (long_query_completions — a completion trace is not free on a busy server,
+    /// #1496) sets it false. Both SKUs consult this: Lite's ScheduleManager seeds its per-install
+    /// enabled flag from it, and Darling's <c>StoreConfigProvider.ResolveSchedule</c> falls back to it
+    /// when no <c>config_collector_schedules</c> override row exists — so "reset to defaults" (which
+    /// deletes override rows) returns a default-off collector to OFF, not ON.
+    /// </summary>
+    public sealed record Entry(int FrequencyMinutes, int RetentionDays, bool DefaultEnabled = true);
 
     public static IReadOnlyDictionary<string, Entry> All { get; } = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase)
     {
@@ -48,6 +57,12 @@ public static class CollectorScheduleDefaults
         ["waiting_tasks"] = new(1, 7),
         ["dmv_blocking_snapshot"] = new(1, 30),
         ["blocked_process_report"] = new(1, 30),
+        /* #1496 long-running query completion trace: seeded DISABLED (DefaultEnabled: false). A
+           completion trace (rpc_completed/sql_batch_completed) fires per statement/batch even though
+           the duration predicate discards most of them, so it is opt-in per fleet; enabling it creates
+           the XE session on the monitored servers and disabling it DROPS the session there. Cadence +
+           retention mirror the sibling XE collectors. */
+        ["long_query_completions"] = new(1, 30, DefaultEnabled: false),
         ["database_scoped_config"] = new(0, 30),
         ["trace_flags"] = new(0, 30),
         ["running_jobs"] = new(5, 7),

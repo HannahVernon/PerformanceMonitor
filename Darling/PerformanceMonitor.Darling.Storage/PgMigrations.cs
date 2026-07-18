@@ -72,6 +72,7 @@ public static class PgMigrations
         new Migration(26, "generic-webhook-channel", V26Sql),
         new Migration(27, "deadlocks-database-name", V27Sql),
         new Migration(28, "query-store-replica-role", V28Sql),
+        new Migration(29, "long-query-completions-collector", V29Sql),
     };
 
     /// <summary>
@@ -301,6 +302,47 @@ CREATE OR REPLACE VIEW v_deadlocks AS SELECT * FROM deadlocks;";
     private const string V28Sql = @"
 ALTER TABLE query_store_stats ADD COLUMN IF NOT EXISTS replica_role text;
 CREATE OR REPLACE VIEW v_query_store_stats AS SELECT * FROM query_store_stats;";
+
+    /// <summary>
+    /// V29 — the <c>long_query_completions</c> collector table (#1496): long-running query completions
+    /// (rpc_completed / sql_batch_completed >= duration threshold, plus attention/cancels) from a
+    /// dedicated, OPT-IN XE ring-buffer session. Added additively exactly like V21/V24/V25 — a fresh
+    /// store already has it (V1's <see cref="PgSchemaGenerator.GenerateFullSchema"/> walks the collector
+    /// and V8 moved it to <c>collect</c>), so <c>CREATE TABLE IF NOT EXISTS</c> is a no-op on fresh and
+    /// the real create on upgrade. Column order/types are exactly <see cref="PgSchemaGenerator.CreateTable"/>'s
+    /// output for the <see cref="LongQueryCompletionsCollector"/> catalog entry (prefix NOT NULL, payload
+    /// nullable). No <c>v_*</c> passthrough view (a post-V14 collector); the viewer reads the base table
+    /// directly. Hypertable / compression / 30-day retention flow from the catalog at runtime.
+    /// </summary>
+    private const string V29Sql = @"
+CREATE TABLE IF NOT EXISTS collect.long_query_completions (
+    long_query_completion_id bigint NOT NULL,
+    collection_time timestamp NOT NULL,
+    server_id integer NOT NULL,
+    server_name text NOT NULL,
+    event_time timestamp,
+    event_type text,
+    database_id integer,
+    database_name text,
+    session_id integer,
+    client_app_name text,
+    client_pid integer,
+    nt_username text,
+    server_principal_name text,
+    query_hash text,
+    event_sequence bigint,
+    duration_microseconds bigint,
+    cpu_time_microseconds bigint,
+    physical_reads bigint,
+    logical_reads bigint,
+    writes bigint,
+    row_count bigint,
+    result text,
+    statement_text text,
+    object_name text
+);
+
+CREATE INDEX IF NOT EXISTS idx_long_query_completions_time ON collect.long_query_completions(server_id, collection_time);";
 
     /// <summary>
     /// V9 — the FinOps copy-parity fields that were user-input config or previously live-only:

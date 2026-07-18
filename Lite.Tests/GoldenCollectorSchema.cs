@@ -16,7 +16,8 @@ namespace PerformanceMonitorLite.Tests;
 
 internal static class GoldenCollectorSchema
 {
-    /// <summary>Pre-change CREATE TABLE DDL, keyed by collector target table (35 entries).</summary>
+    /// <summary>Pre-change CREATE TABLE DDL, keyed by collector target table (36 entries — the original
+    /// 35 pre-generation tables plus long_query_completions, #1496, added at its post-collapse migration).</summary>
     public static readonly IReadOnlyDictionary<string, string> Tables = new Dictionary<string, string>
     {
         ["wait_stats"] = @"CREATE TABLE IF NOT EXISTS wait_stats (
@@ -753,6 +754,32 @@ internal static class GoldenCollectorSchema
     blocked_query_plan_xml VARCHAR,
     blocking_query_plan_xml VARCHAR
 )",
+        ["long_query_completions"] = @"CREATE TABLE IF NOT EXISTS long_query_completions (
+    long_query_completion_id BIGINT PRIMARY KEY,
+    collection_time TIMESTAMP NOT NULL,
+    server_id INTEGER NOT NULL,
+    server_name VARCHAR NOT NULL,
+    event_time TIMESTAMP,
+    event_type VARCHAR,
+    database_id INTEGER,
+    database_name VARCHAR,
+    session_id INTEGER,
+    client_app_name VARCHAR,
+    client_pid INTEGER,
+    nt_username VARCHAR,
+    server_principal_name VARCHAR,
+    query_hash VARCHAR,
+    event_sequence BIGINT,
+    duration_microseconds BIGINT,
+    cpu_time_microseconds BIGINT,
+    physical_reads BIGINT,
+    logical_reads BIGINT,
+    writes BIGINT,
+    row_count BIGINT,
+    result VARCHAR,
+    statement_text VARCHAR,
+    object_name VARCHAR
+)",
         ["system_health_events"] = @"CREATE TABLE IF NOT EXISTS system_health_events (
     system_health_event_id BIGINT PRIMARY KEY,
     collection_time TIMESTAMP NOT NULL,
@@ -852,6 +879,7 @@ internal static class GoldenCollectorSchema
         ["query_store_stats"] = @"CREATE INDEX IF NOT EXISTS idx_query_store_time ON query_store_stats(server_id, collection_time)",
         ["deadlocks"] = @"CREATE INDEX IF NOT EXISTS idx_deadlocks_time ON deadlocks(server_id, collection_time)",
         ["blocked_process_reports"] = @"CREATE INDEX IF NOT EXISTS idx_blocked_process_reports_time ON blocked_process_reports(server_id, collection_time)",
+        ["long_query_completions"] = @"CREATE INDEX IF NOT EXISTS idx_long_query_completions_time ON long_query_completions(server_id, collection_time)",
         ["system_health_events"] = @"CREATE INDEX IF NOT EXISTS idx_system_health_events_time ON system_health_events(server_id, collection_time)",
         ["default_trace_events"] = @"CREATE INDEX IF NOT EXISTS idx_default_trace_events_time ON default_trace_events(server_id, collection_time)",
         ["job_history"] = @"CREATE INDEX IF NOT EXISTS idx_job_history_time ON job_history(server_id, collection_time)",

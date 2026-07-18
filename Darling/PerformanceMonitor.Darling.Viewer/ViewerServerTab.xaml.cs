@@ -65,6 +65,11 @@ public partial class ViewerServerTab : UserControl
     internal const int LatchSpinlockInnerTabIndex = 16;
     internal const int HealthInnerTabIndex = 17;
 
+    /* #1496 Long Queries — the opt-in completion trace surface, appended after the diagnostics tail so no
+       existing inner-tab index shifts (drill-down navigation keys on these constants). MUST remain the last
+       <TabItem> in ViewerServerTab.xaml's InnerTabs. */
+    internal const int LongQueriesInnerTabIndex = 18;
+
     private readonly ViewerDataService _dataService;
     private readonly DarlingServer _server;
     private readonly ViewerServerStore? _serverStore;
@@ -359,6 +364,9 @@ public partial class ViewerServerTab : UserControl
                     break;
                 case SystemEventsInnerTabIndex:
                     await LoadSystemEventsAsync();
+                    break;
+                case LongQueriesInnerTabIndex:
+                    await LoadLongQueriesAsync();
                     break;
                 case OverviewInnerTabIndex:
                 default:

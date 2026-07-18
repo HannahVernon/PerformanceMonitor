@@ -36,6 +36,7 @@ public partial class ViewerServerTab : UserControl
     private DataGridFilterManager<DatabaseScopedConfigRow>? _dbScopedConfigFilterMgr;
     private DataGridFilterManager<TraceFlagRow>? _traceFlagsFilterMgr;
     private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
+    private DataGridFilterManager<ViewerLongQueryRow>? _longQueryFilterMgr;
     private DataGridFilterManager<ViewerBlockedProcessRow>? _blockedProcessFilterMgr;
     private DataGridFilterManager<DeadlockProcessDetail>? _deadlockFilterMgr;
     private DataGridFilterManager<ViewerQuerySnapshotRow>? _querySnapshotsFilterMgr;
@@ -58,6 +59,7 @@ public partial class ViewerServerTab : UserControl
         _dbScopedConfigFilterMgr = new DataGridFilterManager<DatabaseScopedConfigRow>(DatabaseScopedConfigGrid);
         _traceFlagsFilterMgr = new DataGridFilterManager<TraceFlagRow>(TraceFlagsGrid);
         _runningJobsFilterMgr = new DataGridFilterManager<RunningJobRow>(RunningJobsGrid);
+        _longQueryFilterMgr = new DataGridFilterManager<ViewerLongQueryRow>(LongQueryCompletionsGrid);
         _blockedProcessFilterMgr = new DataGridFilterManager<ViewerBlockedProcessRow>(BlockedProcessReportGrid);
         _deadlockFilterMgr = new DataGridFilterManager<DeadlockProcessDetail>(DeadlockGrid);
         _querySnapshotsFilterMgr = new DataGridFilterManager<ViewerQuerySnapshotRow>(QuerySnapshotsGrid);
@@ -76,6 +78,7 @@ public partial class ViewerServerTab : UserControl
         _filterManagers[DatabaseScopedConfigGrid] = _dbScopedConfigFilterMgr;
         _filterManagers[TraceFlagsGrid] = _traceFlagsFilterMgr;
         _filterManagers[RunningJobsGrid] = _runningJobsFilterMgr;
+        _filterManagers[LongQueryCompletionsGrid] = _longQueryFilterMgr;
         _filterManagers[BlockedProcessReportGrid] = _blockedProcessFilterMgr;
         _filterManagers[DeadlockGrid] = _deadlockFilterMgr;
         _filterManagers[QuerySnapshotsGrid] = _querySnapshotsFilterMgr;

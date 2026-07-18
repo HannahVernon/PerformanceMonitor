@@ -52,6 +52,7 @@ public static class CollectorCatalog
         QueryStoreCollector.Instance,
         DeadlocksCollector.Instance,
         BlockedProcessReportCollector.Instance,
+        LongQueryCompletionsCollector.Instance,
         SystemHealthEventsCollector.Instance,
         DefaultTraceEventsCollector.Instance,
         JobHistoryCollector.Instance,
