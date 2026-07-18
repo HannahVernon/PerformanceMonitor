@@ -20,6 +20,12 @@
           "SkiaSharp.Views.WPF": "3.119.0"
         }
       },
+      "Velopack": {
+        "type": "Direct",
+        "requested": "[1.2.0, )",
+        "resolved": "1.2.0",
+        "contentHash": "Rz67gJL619fSBS6omaSINUxyDuwhIxkm5mmubf7uLd5Qgi6LLKaKCha+QFP6n+Bw/UjA0vutnH4JQfYzn6ANtw=="
+      },
       "CredentialManagement": {
         "type": "Transitive",
         "resolved": "1.0.2",

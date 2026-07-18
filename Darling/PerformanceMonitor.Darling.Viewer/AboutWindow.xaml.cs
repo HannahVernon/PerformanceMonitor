@@ -6,23 +6,33 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
+using System;
 using System.Diagnostics;
 using System.Reflection;
 using System.Windows;
+using PerformanceMonitor.Common;
+using Velopack;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
 /// <summary>
 /// The viewer's About dialog — app name, version (read from the viewer assembly), copyright, and
-/// links. Mirrors Lite's <see cref="T:PerformanceMonitorLite.Windows.AboutWindow"/> minus the "Check
-/// for Updates" affordance: the viewer ships inside the Darling service release rather than as an
-/// independently Velopack-managed app, so it has no self-update path.
+/// links. A faithful mirror of Lite's <see cref="T:PerformanceMonitorLite.Windows.AboutWindow"/>,
+/// including the "Check for Updates" affordance now that the remote-seat viewer ships as its own
+/// Velopack Setup.exe (#1555): it tries Velopack (check → download → apply-and-restart) first, and
+/// falls back to the shared GitHub-releases check (opens the releases page) — which is also what the
+/// co-located viewer inside the service zip gets, since Velopack no-ops on a non-Velopack install.
 /// </summary>
 public partial class AboutWindow : Window
 {
     private const string GitHubUrl = "https://github.com/erikdarlingdata/PerformanceMonitor";
     private const string IssuesUrl = "https://github.com/erikdarlingdata/PerformanceMonitor/issues";
     private const string DarlingDataUrl = "https://www.erikdarling.com";
+
+    private string? _updateReleaseUrl;
+    private UpdateManager? _velopackMgr;
+    private Velopack.UpdateInfo? _pendingUpdate;
+    private bool _updateDownloaded;
 
     public AboutWindow()
     {
@@ -37,6 +47,109 @@ public partial class AboutWindow : Window
     private void ReportIssueLink_Click(object sender, RoutedEventArgs e) => OpenUrl(IssuesUrl);
 
     private void DarlingDataLink_Click(object sender, RoutedEventArgs e) => OpenUrl(DarlingDataUrl);
+
+    private async void CheckUpdatesLink_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateStatusText.Text = "Checking for updates...";
+        UpdateStatusText.Visibility = Visibility.Visible;
+
+        // Try Velopack first (supports download + apply). The installed remote-seat viewer reads its
+        // own channel from the Velopack metadata, so a bare GithubSource resolves the right feed.
+        try
+        {
+            _velopackMgr = new UpdateManager(
+                new Velopack.Sources.GithubSource("https://github.com/erikdarlingdata/PerformanceMonitor", null, false));
+
+            var updateInfo = await _velopackMgr.CheckForUpdatesAsync();
+            if (updateInfo != null)
+            {
+                _pendingUpdate = updateInfo;
+                UpdateStatusText.Text = $"Update available: v{updateInfo.TargetFullRelease.Version} — click to install";
+                UpdateStatusText.Cursor = System.Windows.Input.Cursors.Hand;
+                UpdateStatusText.MouseLeftButtonUp -= UpdateStatusText_Click;
+                UpdateStatusText.MouseLeftButtonUp += VelopackDownload_Click;
+                UpdateStatusText.TextDecorations = System.Windows.TextDecorations.Underline;
+                UpdateStatusText.Foreground = TryFindResource("AccentBrush") as System.Windows.Media.Brush
+                    ?? System.Windows.Media.Brushes.DodgerBlue;
+                return;
+            }
+        }
+        catch
+        {
+            // Velopack packages may not exist yet, or this is the co-located (non-Velopack) viewer — fall through
+        }
+
+        // Fallback: GitHub Releases API check (opens browser)
+        var result = await UpdateCheckService.CheckForUpdateAsync(bypassCache: true);
+
+        if (result == null)
+        {
+            UpdateStatusText.Text = "Unable to check for updates. Please try again later.";
+        }
+        else if (result.IsUpdateAvailable)
+        {
+            _updateReleaseUrl = result.ReleaseUrl;
+            UpdateStatusText.Text = $"Update available: {result.LatestVersion} (you have {result.CurrentVersion}) — click to open releases";
+            UpdateStatusText.Cursor = System.Windows.Input.Cursors.Hand;
+            UpdateStatusText.MouseLeftButtonUp -= VelopackDownload_Click;
+            UpdateStatusText.MouseLeftButtonUp += UpdateStatusText_Click;
+            UpdateStatusText.TextDecorations = System.Windows.TextDecorations.Underline;
+            UpdateStatusText.Foreground = TryFindResource("AccentBrush") as System.Windows.Media.Brush
+                ?? System.Windows.Media.Brushes.DodgerBlue;
+        }
+        else
+        {
+            UpdateStatusText.Text = $"You're up to date ({result.CurrentVersion})";
+        }
+    }
+
+    private async void VelopackDownload_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_velopackMgr == null || _pendingUpdate == null) return;
+
+        // Step 3: restart with confirmation
+        if (_updateDownloaded)
+        {
+            var result = MessageBox.Show(this,
+                "The application will close and restart with the new version. Continue?",
+                "Update Ready",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.OK)
+            {
+                _velopackMgr.ApplyUpdatesAndRestart(_pendingUpdate.TargetFullRelease);
+            }
+            return;
+        }
+
+        // Step 2: download
+        try
+        {
+            UpdateStatusText.MouseLeftButtonUp -= VelopackDownload_Click;
+            UpdateStatusText.TextDecorations = null;
+            UpdateStatusText.Cursor = System.Windows.Input.Cursors.Arrow;
+            UpdateStatusText.Text = "Downloading update...";
+
+            await _velopackMgr.DownloadUpdatesAsync(_pendingUpdate);
+
+            _updateDownloaded = true;
+            UpdateStatusText.Text = "Update downloaded.";
+            UpdateStatusText.Cursor = System.Windows.Input.Cursors.Hand;
+            UpdateStatusText.TextDecorations = System.Windows.TextDecorations.Underline;
+            UpdateStatusText.MouseLeftButtonUp += VelopackDownload_Click;
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = $"Download failed: {ex.Message}";
+        }
+    }
+
+    private void UpdateStatusText_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(_updateReleaseUrl))
+            OpenUrl(_updateReleaseUrl);
+    }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 

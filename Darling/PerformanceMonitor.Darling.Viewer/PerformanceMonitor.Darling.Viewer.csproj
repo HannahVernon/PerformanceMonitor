@@ -7,6 +7,14 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>PerformanceMonitor.Darling.Viewer</RootNamespace>
     <AssemblyName>PerformanceMonitor.Darling.Viewer</AssemblyName>
+    <!-- Custom entry point (Program.Main) so VelopackApp.Build().Run() runs first, exactly as Lite
+         (StartupObject=PerformanceMonitorLite.Program) and Dashboard do. Setting StartupObject
+         suppresses the WPF-generated App.Main; App.xaml keeps its StartupUri (applied in
+         InitializeComponent), so MainWindow still opens as before. Required for the remote-seat
+         Velopack Setup.exe (#1555): without VelopackApp.Build().Run() the install/update/uninstall
+         hooks go unhandled. It is a harmless no-op for the co-located (non-Velopack) viewer that
+         ships inside the service zip. -->
+    <StartupObject>PerformanceMonitor.Darling.Viewer.Program</StartupObject>
     <Version>3.1.0</Version>
     <AssemblyVersion>3.1.0.0</AssemblyVersion>
     <FileVersion>3.1.0.0</FileVersion>
@@ -30,6 +38,9 @@
     <!-- System tray icon + balloon toasts (ported from Lite's SystemTrayService). Same package + version
          as Lite so both WPF front ends pin one Hardcodet.NotifyIcon.Wpf. -->
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+    <!-- Velopack: the remote-seat Setup.exe + in-app self-update (#1555). Same version as Lite and
+         Dashboard (keep in sync with the vpk pin in .github/workflows/build.yml + nightly.yml). -->
+    <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 
   <ItemGroup>

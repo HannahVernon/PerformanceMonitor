@@ -10,9 +10,10 @@
         Foreground="{DynamicResource ForegroundBrush}">
     <!-- Mirrors Lite's AboutWindow (Lite/Windows/AboutWindow.xaml), dark-styled via the shared
          ViewerDarkTheme resource dictionary like the viewer's other dialogs (Manage Mute Rules).
-         The viewer ships inside the Darling service release and is not independently Velopack-managed,
-         so this drops Lite's "Check for Updates" affordance; the version is read from the viewer
-         assembly (csproj 3.1.0). -->
+         Includes Lite's "Check for Updates" affordance: the remote-seat viewer ships as its own
+         Velopack Setup.exe (#1555) and self-updates from the releases feed; on the co-located viewer
+         inside the service zip the Velopack path no-ops and it falls back to opening the releases page.
+         The version is read from the viewer assembly (csproj 3.1.0). -->
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -68,6 +69,11 @@
                     Report an Issue
                 </Hyperlink>
             </TextBlock>
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,5">
+                <Button Content="Check for Updates" Click="CheckUpdatesLink_Click" Padding="10,4" FontSize="12"/>
+                <TextBlock x:Name="UpdateStatusText" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"
+                           Foreground="{DynamicResource ForegroundMutedBrush}" Visibility="Collapsed"/>
+            </StackPanel>
             <TextBlock FontSize="12">
                 <Hyperlink Click="DarlingDataLink_Click">
                     www.erikdarling.com

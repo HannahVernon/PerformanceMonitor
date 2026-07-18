@@ -130,8 +130,10 @@ jobs:
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
 
       # Darling (headless edition): the Windows-service collector and the WPF viewer, published
-      # framework-dependent exactly like Dashboard/Lite. No Velopack — a Windows service has a
-      # different update story, deliberately deferred for v1; Darling ships as a plain zip only.
+      # framework-dependent for the plain zip (both apps). The SERVICE stays zip-only — a Windows
+      # service has a different update story, deliberately deferred for v1. The VIEWER additionally
+      # ships as a remote-seat Velopack Setup.exe (#1555) via the self-contained publish below,
+      # exactly like Dashboard/Lite.
       - name: Publish Darling Service
         if: steps.filter.outputs.code != 'false'
         run: dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj -c Release -o publish/DarlingService
@@ -139,6 +141,10 @@ jobs:
       - name: Publish Darling Viewer
         if: steps.filter.outputs.code != 'false'
         run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
+
+      - name: Publish Darling Viewer (self-contained for Velopack)
+        if: github.event_name == 'release'
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -r win-x64 --self-contained -o publish/DarlingViewer-velopack
 
       # Darling bundles a PostgreSQL 18 + TimescaleDB runtime (pg-runtime.zip) that ships beside
       # the service exe; DarlingManagedPostgres extracts it on first run. The fetch script pulls
@@ -346,6 +352,14 @@ jobs:
           name: Lite-Velopack-unsigned
           path: publish/Lite-velopack/
 
+      - name: Upload Darling Viewer (Velopack) for signing
+        if: github.event_name == 'release'
+        id: upload-darlingviewer-velopack
+        uses: actions/upload-artifact@v6
+        with:
+          name: DarlingViewer-Velopack-unsigned
+          path: publish/DarlingViewer-velopack/
+
       - name: Sign Dashboard (Velopack)
         if: github.event_name == 'release'
         uses: signpath/github-action-submit-signing-request@v2
@@ -372,6 +386,24 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: 'signed/Lite-Velopack'
 
+      # The remote-seat viewer Setup.exe (#1555) is signed with its OWN 'DarlingViewer' artifact
+      # configuration — the co-located-zip 'Darling' slug signs a service+viewer\ tree layout, which
+      # does not match this self-contained viewer-at-root publish. Like the 'Darling' slug, the
+      # 'DarlingViewer' config (which files get signed) lives outside this repo on signpath.io; until
+      # Erik creates the slug this step fails the release — the standing #1340 SignPath prerequisite.
+      - name: Sign Darling Viewer (Velopack)
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'DarlingViewer'
+          github-artifact-id: '${{ steps.upload-darlingviewer-velopack.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/DarlingViewer-Velopack'
+
       - name: Create Velopack release (Dashboard)
         if: github.event_name == 'release'
         shell: pwsh
@@ -384,6 +416,7 @@ jobs:
           dotnet tool install -g vpk --version 1.2.0
           New-Item -ItemType Directory -Force -Path releases/velopack-dashboard
           New-Item -ItemType Directory -Force -Path releases/velopack-lite
+          New-Item -ItemType Directory -Force -Path releases/velopack-darlingviewer
 
           # Dashboard: download previous + pack (from the SIGNED velopack output, not the raw publish dir)
           vpk download github --repoUrl https://github.com/${{ github.repository }} --channel dashboard -o releases/velopack-dashboard --token $env:GH_TOKEN
@@ -392,6 +425,12 @@ jobs:
           # Lite: download previous + pack (from the SIGNED velopack output, not the raw publish dir)
           vpk download github --repoUrl https://github.com/${{ github.repository }} --channel lite -o releases/velopack-lite --token $env:GH_TOKEN
           vpk pack -u PerformanceMonitorLite -v $env:VERSION -p signed/Lite-Velopack -e PerformanceMonitorLite.exe -o releases/velopack-lite --channel lite
+
+          # Darling Viewer remote-seat installer (#1555): download previous + pack (from the SIGNED
+          # velopack output). Its own 'darlingviewer' channel/delta feed, separate from the co-located
+          # viewer inside PerformanceMonitorDarling-*.zip (which stays plain-zip only).
+          vpk download github --repoUrl https://github.com/${{ github.repository }} --channel darlingviewer -o releases/velopack-darlingviewer --token $env:GH_TOKEN
+          vpk pack -u PerformanceMonitorDarlingViewer -v $env:VERSION -p signed/DarlingViewer-Velopack -e PerformanceMonitor.Darling.Viewer.exe -o releases/velopack-darlingviewer --channel darlingviewer
 
       - name: Generate checksums
         if: github.event_name == 'release'
@@ -429,3 +468,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           vpk upload github --repoUrl https://github.com/${{ github.repository }} --channel lite -o releases/velopack-lite --releaseName "v$env:VERSION" --tag "v$env:VERSION" --merge --token $env:GH_TOKEN
+
+      - name: Upload Darling Viewer Velopack artifacts
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          vpk upload github --repoUrl https://github.com/${{ github.repository }} --channel darlingviewer -o releases/velopack-darlingviewer --releaseName "v$env:VERSION" --tag "v$env:VERSION" --merge --token $env:GH_TOKEN

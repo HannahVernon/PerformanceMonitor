@@ -757,6 +757,11 @@
         "resolved": "10.0.9",
         "contentHash": "VaYklIT689DthcRzbqt3S8z3GkymiD+US+RLzMFfoPxNIyUxMpXT116cO6rVrKHSuwgdvb35HRKN/PmDmbL+3g=="
       },
+      "Velopack": {
+        "type": "Transitive",
+        "resolved": "1.2.0",
+        "contentHash": "Rz67gJL619fSBS6omaSINUxyDuwhIxkm5mmubf7uLd5Qgi6LLKaKCha+QFP6n+Bw/UjA0vutnH4JQfYzn6ANtw=="
+      },
       "xunit.analyzers": {
         "type": "Transitive",
         "resolved": "1.27.0",
@@ -891,7 +896,8 @@
           "PerformanceMonitor.Notifications": "[1.0.0, )",
           "PerformanceMonitor.PlanAnalysis": "[1.0.0, )",
           "PerformanceMonitor.Ui": "[1.0.0, )",
-          "ScottPlot.WPF": "[5.1.58, )"
+          "ScottPlot.WPF": "[5.1.58, )",
+          "Velopack": "[1.2.0, )"
         }
       },
       "performancemonitor.notifications": {
