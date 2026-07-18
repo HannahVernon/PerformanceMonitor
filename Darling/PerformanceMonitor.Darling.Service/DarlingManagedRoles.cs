@@ -29,8 +29,11 @@ namespace PerformanceMonitor.Darling.Service;
 /// <item><b><c>admin</c></b> — SELECT on both schemas + INSERT/UPDATE/DELETE on <c>config</c> only.
 /// The Viewer's default identity: it owns the alert-dismiss, mute-rule, and analysis-mute writes but
 /// can never DROP, alter schema, touch <c>collect</c> data, or create objects.</item>
-/// <item><b><c>viewer</c></b> — SELECT on both schemas, no writes anywhere. A locked-down
-/// deployment points the Viewer at this ("look but don't touch").</item>
+/// <item><b><c>viewer</c></b> — SELECT on both schemas, and (the single write exception, #1563)
+/// INSERT/UPDATE/DELETE on ONLY <c>config.custom_views</c> (the web dashboard's user-authored view
+/// definitions — non-secret JSON; app-layer editing is loopback-gated server-side). No other writes
+/// anywhere. A locked-down deployment points the Viewer at this ("look but don't touch" — plus its own
+/// saved custom views).</item>
 /// <item><b><c>mcp</c></b> — the (optionally network-exposed) MCP host's store identity
 /// (darling-network-endpoints, D3-role): the SAME read surface as <c>viewer</c> (SELECT on
 /// <c>collect</c> + <c>config</c>-minus-the-secret-columns) PLUS exactly two narrow writes — INSERT
@@ -187,7 +190,7 @@ public static class DarlingManagedRoles
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         logger.LogInformation(
-            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted) — the Viewer and MCP host no longer connect as the superuser");
+            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted) — the Viewer and MCP host no longer connect as the superuser");
     }
 
     /// <summary>
@@ -391,6 +394,17 @@ GRANT INSERT ON {config}.analysis_muted TO {mcp};
 -- writes the analysis_state marker -- only the worker's RunAnalysisPassAsync wrapper does, as the owner
 -- (the Analysis project cannot reference the Service-project observability writer), so mcp needs no grant on it.
 GRANT CONNECT ON DATABASE {database} TO {mcp};
+
+-- 7. Custom views (#1563): the SINGLE exception to viewer-writes-nothing. The web dashboard connects as the
+--    least-privilege viewer role, and its custom-view composer INSERT/UPDATE/DELETEs rows in exactly this one
+--    config table (non-secret dashboard JSON -- no ViewerRestrictedConfigTables carve). App-layer editing is
+--    LOOPBACK-ONLY, enforced SERVER-SIDE in DarlingWebEndpoints (never trusted to a client flag); this DB grant
+--    is only the narrow floor beneath that gate. EXPLICIT single-table statement with NO ALTER DEFAULT
+--    PRIVILEGES, mirroring the mcp section above (ADP has no per-table form -> an ADP write would broaden viewer
+--    to ALL of config); provisioning re-runs every start, so a dropped/recreated table re-grants (self-heal).
+--    The target must already exist here, so provisioning runs AFTER migration (V31 created config.custom_views).
+--    id is GENERATED ALWAYS AS IDENTITY (like config_command), so the INSERT needs no sequence USAGE grant.
+GRANT INSERT, UPDATE, DELETE ON {config}.custom_views TO {viewer};
 ";
     }
 

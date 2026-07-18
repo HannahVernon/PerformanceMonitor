@@ -215,6 +215,49 @@ public sealed class DarlingSecuritySplitLiveTests
     }
 
     [Fact]
+    public async Task ViewerRole_CanCrudCustomViews_ButStillDeniedOtherConfigWrites()
+    {
+        var connectionString = RequireLivePostgres();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var owner = new NpgsqlConnection(connectionString);
+        await owner.OpenAsync(ct);
+        /* Applies V31 (creates config.custom_views) + V17 (config_mute_rules — the "other config table"). */
+        await PgMigrations.MigrateAsync(owner, ct);
+
+        await CreateTestRolesAndGrantsAsync(owner, ct);
+        /* Own-scoped: a GUID-suffixed hex name (safe to interpolate) so the shared store is never clobbered. */
+        var viewName = "cv_sec_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using var viewer = new NpgsqlConnection(RoleConnectionString(connectionString, ViewerRole));
+            await viewer.OpenAsync(ct);
+
+            /* #1563: the single viewer write — full CRUD on config.custom_views (IDENTITY id needs no sequence
+               grant; definition is jsonb). Each statement proves the INSERT/UPDATE/DELETE grant actually took. */
+            await ExecAsync(viewer,
+                $"INSERT INTO config.custom_views (name, definition) VALUES ('{viewName}', '{{\"panels\":[]}}'::jsonb)", ct);
+            await ExecAsync(viewer,
+                $"UPDATE config.custom_views SET description = 'edited', version = version + 1 WHERE name = '{viewName}'", ct);
+            await ExecAsync(viewer,
+                $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
+
+            /* But viewer is STILL denied a write to any OTHER config table — 42501 insufficient_privilege — so
+               the custom_views grant did not accidentally widen into a schema-wide config write. */
+            var denied = await Assert.ThrowsAsync<PostgresException>(async () =>
+                await ExecAsync(viewer,
+                    "INSERT INTO config_mute_rules (id, enabled, created_at_utc) VALUES ('cv-sec-viewer', true, now())", ct));
+            Assert.Equal("42501", denied.SqlState);
+        }
+        finally
+        {
+            /* Belt-and-suspenders cleanup (the DELETE above already removed it on the happy path). */
+            await ExecAsync(owner, $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
+            await DropTestRolesAsync(owner, ct);
+        }
+    }
+
+    [Fact]
     public async Task McpRole_DeniedSecretColumns_ButGrantedExactlyTheTwoNarrowInserts()
     {
         var connectionString = RequireLivePostgres();
@@ -380,6 +423,9 @@ GRANT SELECT ON ALL TABLES IN SCHEMA collect TO {AdminRole}, {ViewerRole};
 GRANT SELECT ON ALL TABLES IN SCHEMA config  TO {AdminRole}, {ViewerRole};
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO {AdminRole};
 {DarlingManagedRoles.BuildViewerColumnAclSql("config", ViewerRole)}
+-- The single viewer write (#1563): mirrors DarlingManagedRoles section 7. config.custom_views exists because
+-- MigrateAsync (V31) ran before this helper.
+GRANT INSERT, UPDATE, DELETE ON config.custom_views TO {ViewerRole};
 ALTER DEFAULT PRIVILEGES FOR ROLE {OwnerRoleOf(owner)} IN SCHEMA collect GRANT SELECT ON TABLES TO {AdminRole}, {ViewerRole};
 
 -- The mcp-role analog (darling-network-endpoints, D3-role): viewer's read surface + the same secret-column

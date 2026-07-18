@@ -9,6 +9,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
+using System.Net;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -109,7 +113,609 @@ public static class DarlingWebEndpoints
                 return ToHttpResult(result);
             });
         }
+
+        MapCustomViews(app, postgres);
     }
+
+    /* ─────────────────────────── #1563 custom views: session, catalog, CRUD ─────────────────────────── */
+
+    /// <summary>
+    /// Maps the custom-views surface: the session capability probe, the read catalog the composer builds its
+    /// picker from, and the CRUD routes. READS/render/export are open to every authenticated seat; the MUTATIONS
+    /// (POST/PUT/DELETE) are gated SERVER-SIDE on <see cref="IsLoopbackRemote"/> (Erik-ratified: editing is
+    /// loopback-only, never trusted to a client flag) and return 403 off-loopback. Definitions are validated by
+    /// <see cref="ValidateDefinition"/> (the authority) before any write; the store adds optimistic concurrency +
+    /// duplicate-name conflict detection. Error bodies are always <c>{"error": "..."}</c>, matching the read surface.
+    /// </summary>
+    private static void MapCustomViews(WebApplication app, NpgsqlDataSource postgres)
+    {
+        var store = new CustomViewStore(postgres);
+
+        /* Whether THIS request may edit — the frontend hides edit affordances when false, but the server still
+           enforces the same signal on every mutation (never trust the returned flag). */
+        app.MapGet("/api/session", (HttpContext context) =>
+            JsonNodeResult(new JsonObject { ["can_edit"] = IsLoopbackRemote(context.Connection.RemoteIpAddress) }));
+
+        /* The read catalog: input truth (read names + their WIRE query keys) the composer binds params from. */
+        app.MapGet("/api/catalog", () => JsonNodeResult(BuildCatalogNode()));
+
+        /* List — a bare array of summaries (no definition); [] when none. */
+        app.MapGet("/api/views", async (HttpContext context) =>
+        {
+            var views = await store.ListAsync(context.RequestAborted);
+            return JsonNodeResult(BuildSummariesNode(views));
+        });
+
+        /* Get one — full, including the definition; 404 when missing. */
+        app.MapGet("/api/views/{id:long}", async (HttpContext context, long id) =>
+        {
+            var result = await store.GetAsync(id, context.RequestAborted);
+            return result is CustomViewResult.Ok ok
+                ? JsonNodeResult(BuildFullViewNode(ok.View!))
+                : NotFoundResult();
+        });
+
+        /* Create — 201 + Location; 400 on a bad body/definition, 409 on a duplicate name. Loopback-gated. */
+        app.MapPost("/api/views", async (HttpContext context) =>
+        {
+            if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
+            {
+                return LoopbackForbiddenResult();
+            }
+
+            var (request, bodyError) = await ParseViewBodyAsync(context);
+            if (request is null)
+            {
+                return ErrorResult(bodyError!, StatusCodes.Status400BadRequest);
+            }
+
+            var validation = ValidateDefinition(request.DefinitionJson);
+            if (!validation.IsValid)
+            {
+                return ErrorResult(validation.Error!, StatusCodes.Status400BadRequest);
+            }
+
+            try
+            {
+                var result = await store.CreateAsync(
+                    request.Name, request.Description, request.DefinitionJson, WebEditorPrincipal, context.RequestAborted);
+                return result switch
+                {
+                    CustomViewResult.Ok ok => CreatedResult(context, $"/api/views/{ok.View!.Id}", BuildFullViewNode(ok.View)),
+                    CustomViewResult.Conflict conflict => ErrorResult(conflict.Message, StatusCodes.Status409Conflict),
+                    CustomViewResult.Invalid invalid => ErrorResult(invalid.Message, StatusCodes.Status400BadRequest),
+                    _ => ErrorResult("Could not create the view.", StatusCodes.Status500InternalServerError),
+                };
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return ErrorResult($"Error saving view: {ex.Message}", StatusCodes.Status500InternalServerError);
+            }
+        });
+
+        /* Update — 200 on success; 400 bad body/definition, 404 gone, 409 stale-version OR duplicate name.
+           Loopback-gated. The client sends the version it edited; a mismatch is a 409, not a silent clobber. */
+        app.MapPut("/api/views/{id:long}", async (HttpContext context, long id) =>
+        {
+            if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
+            {
+                return LoopbackForbiddenResult();
+            }
+
+            var (request, bodyError) = await ParseViewBodyAsync(context);
+            if (request is null)
+            {
+                return ErrorResult(bodyError!, StatusCodes.Status400BadRequest);
+            }
+
+            if (request.Version is not { } expectedVersion)
+            {
+                return ErrorResult("'version' is required for an update (optimistic concurrency).", StatusCodes.Status400BadRequest);
+            }
+
+            var validation = ValidateDefinition(request.DefinitionJson);
+            if (!validation.IsValid)
+            {
+                return ErrorResult(validation.Error!, StatusCodes.Status400BadRequest);
+            }
+
+            try
+            {
+                var result = await store.UpdateAsync(
+                    id, request.Name, request.Description, request.DefinitionJson, expectedVersion, WebEditorPrincipal, context.RequestAborted);
+                return result switch
+                {
+                    CustomViewResult.Ok ok => JsonNodeResult(BuildFullViewNode(ok.View!)),
+                    CustomViewResult.NotFound => NotFoundResult(),
+                    CustomViewResult.Conflict conflict => ErrorResult(conflict.Message, StatusCodes.Status409Conflict),
+                    CustomViewResult.Invalid invalid => ErrorResult(invalid.Message, StatusCodes.Status400BadRequest),
+                    _ => ErrorResult("Could not update the view.", StatusCodes.Status500InternalServerError),
+                };
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return ErrorResult($"Error saving view: {ex.Message}", StatusCodes.Status500InternalServerError);
+            }
+        });
+
+        /* Delete — 204 on success, 404 when missing. Loopback-gated. */
+        app.MapDelete("/api/views/{id:long}", async (HttpContext context, long id) =>
+        {
+            if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
+            {
+                return LoopbackForbiddenResult();
+            }
+
+            try
+            {
+                var result = await store.DeleteAsync(id, context.RequestAborted);
+                return result is CustomViewResult.Ok ? Results.NoContent() : NotFoundResult();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return ErrorResult($"Error deleting view: {ex.Message}", StatusCodes.Status500InternalServerError);
+            }
+        });
+    }
+
+    /// <summary>The <c>updated_by</c> stamp for a web edit. The web surface has no per-user identity (editing is
+    /// loopback-only, same-machine), so a constant is honest — it marks the row as web-authored.</summary>
+    internal const string WebEditorPrincipal = "web";
+
+    /* ── loopback gate (the mutation authority; reused verbatim by DarlingWebHostService.DecideWebAuth) ── */
+
+    /// <summary>
+    /// PURE: whether a request's remote address is loopback — the server-side gate for custom-view MUTATIONS
+    /// (Erik-ratified: editing is loopback-only). Unwraps an IPv4-mapped-IPv6 address (<c>::ffff:127.0.0.1</c>)
+    /// then defers to <see cref="IPAddress.IsLoopback"/>; a null/unverifiable remote is NOT loopback (fail-closed).
+    /// This is the EXACT determination <see cref="DarlingWebHostService.DecideWebAuth"/>'s loopback arm uses (it
+    /// calls this), so the network auth gate and the edit gate can never drift.
+    /// </summary>
+    internal static bool IsLoopbackRemote(IPAddress? remoteIp)
+    {
+        if (remoteIp is null)
+        {
+            return false;
+        }
+
+        var ip = remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp;
+        return IPAddress.IsLoopback(ip);
+    }
+
+    /* ── definition validation (the authority: a bad doc can never be stored) ── */
+
+    /// <summary>The visualization vocabulary — ONE C# source of truth. The catalog serves this exact set (so the
+    /// composer's viz picker matches), and <see cref="ValidateDefinition"/> rejects any panel viz outside it.</summary>
+    internal static readonly IReadOnlyList<string> KnownVizList = new[] { "table", "line", "stat", "bandlist" };
+
+    /// <summary>Set form of <see cref="KnownVizList"/> for O(1) validation membership.</summary>
+    internal static readonly IReadOnlySet<string> KnownViz = new HashSet<string>(KnownVizList, StringComparer.Ordinal);
+
+    /// <summary>The abuse bound on a stored definition's size (UTF-8 bytes) — generous for a real dashboard, bounded against abuse.</summary>
+    internal const int MaxDefinitionBytes = 128 * 1024;
+
+    /// <summary>The abuse bound on panel count — a dashboard far larger than any real one.</summary>
+    internal const int MaxPanelCount = 48;
+
+    /// <summary>The outcome of <see cref="ValidateDefinition"/>: valid, or invalid with a caller-facing reason.</summary>
+    internal readonly record struct DefinitionValidation(bool IsValid, string? Error)
+    {
+        internal static DefinitionValidation Valid => new(true, null);
+
+        internal static DefinitionValidation Fail(string error) => new(false, error);
+    }
+
+    /// <summary>
+    /// PURE structural validation of a stored view definition — the authority the POST/PUT routes run before any
+    /// write (400 on failure, naming the offending panel). Requires a JSON object with a non-empty <c>panels</c>
+    /// array (size- and count-capped); each panel must be an object with a <c>read</c> on the
+    /// <see cref="BuildReadDispatch"/> allowlist (the same dispatch the parity test pins — drift-proof), a
+    /// <c>viz</c> in <see cref="KnownViz"/>, and (if present) a <c>span</c> of 1 or 2. Raw <c>path</c>-mode is
+    /// REJECTED — a definition must stay on the read allowlist, never name an arbitrary endpoint path.
+    /// </summary>
+    internal static DefinitionValidation ValidateDefinition(string? definitionJson)
+    {
+        if (string.IsNullOrWhiteSpace(definitionJson))
+        {
+            return DefinitionValidation.Fail("definition is required.");
+        }
+
+        if (System.Text.Encoding.UTF8.GetByteCount(definitionJson) > MaxDefinitionBytes)
+        {
+            return DefinitionValidation.Fail($"definition exceeds the maximum size of {MaxDefinitionBytes} bytes.");
+        }
+
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(definitionJson);
+        }
+        catch (JsonException)
+        {
+            return DefinitionValidation.Fail("definition is not valid JSON.");
+        }
+
+        if (root is not JsonObject rootObject)
+        {
+            return DefinitionValidation.Fail("definition must be a JSON object.");
+        }
+
+        if (rootObject["panels"] is not JsonArray panels)
+        {
+            return DefinitionValidation.Fail("definition.panels must be an array.");
+        }
+
+        if (panels.Count == 0)
+        {
+            return DefinitionValidation.Fail("definition.panels must have at least one panel.");
+        }
+
+        if (panels.Count > MaxPanelCount)
+        {
+            return DefinitionValidation.Fail($"definition has {panels.Count} panels; the maximum is {MaxPanelCount}.");
+        }
+
+        var reads = BuildReadDispatch();
+        for (var i = 0; i < panels.Count; i++)
+        {
+            if (panels[i] is not JsonObject panel)
+            {
+                return DefinitionValidation.Fail($"panel {i} must be an object.");
+            }
+
+            /* Stay on the read allowlist: a raw endpoint path is never storable. */
+            if (panel["path"] is not null)
+            {
+                return DefinitionValidation.Fail($"panel {i} uses raw 'path' mode, which is not allowed; use 'read'.");
+            }
+
+            var read = TryGetString(panel, "read");
+            if (string.IsNullOrEmpty(read))
+            {
+                return DefinitionValidation.Fail($"panel {i} is missing 'read'.");
+            }
+
+            if (!reads.ContainsKey(read))
+            {
+                return DefinitionValidation.Fail($"panel {i} references unknown read '{read}'.");
+            }
+
+            var viz = TryGetString(panel, "viz");
+            if (string.IsNullOrEmpty(viz))
+            {
+                return DefinitionValidation.Fail($"panel {i} is missing 'viz'.");
+            }
+
+            if (!KnownViz.Contains(viz))
+            {
+                return DefinitionValidation.Fail($"panel {i} has unknown viz '{viz}'.");
+            }
+
+            if (panel["span"] is JsonValue spanValue)
+            {
+                if (!spanValue.TryGetValue<int>(out var span) || (span != 1 && span != 2))
+                {
+                    return DefinitionValidation.Fail($"panel {i} has an invalid span (must be 1 or 2).");
+                }
+            }
+        }
+
+        return DefinitionValidation.Valid;
+    }
+
+    private static string? TryGetString(JsonObject obj, string key) =>
+        obj[key] is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
+
+    /* ── the read catalog (input truth): read names from BuildReadDispatch, param metadata hand-authored ── */
+
+    /// <summary>One catalog parameter: its WIRE query-string key (NOT the C# method param name), its
+    /// <see cref="Type"/> (server/int/text/bool/double), whether it is <see cref="Required"/>, and its
+    /// <see cref="Default"/> (null for text/required).</summary>
+    internal sealed record CatalogParam(string Name, string Type, bool Required, object? Default);
+
+    /// <summary>One catalog read: its display <see cref="Category"/>, a short <see cref="Description"/>, and its
+    /// <see cref="Params"/> (the exact query keys its dispatch lambda binds).</summary>
+    internal sealed record CatalogRead(string Category, string Description, IReadOnlyList<CatalogParam> Params);
+
+    private const string TypeServer = "server";
+    private const string TypeInt = "int";
+    private const string TypeText = "text";
+    private const string TypeBool = "bool";
+    private const string TypeDouble = "double";
+
+    private const string CatAnalysis = "Analysis";
+    private const string CatSessions = "Sessions";
+    private const string CatAlerts = "Alerts";
+    private const string CatBlocking = "Blocking & Deadlocks";
+    private const string CatConfig = "Configuration";
+    private const string CatData = "Data";
+    private const string CatTrends = "Trends";
+    private const string CatOverview = "Overview";
+    private const string CatLatch = "Latch & Spinlock";
+    private const string CatMemoryGrants = "Memory Grants";
+    private const string CatObjects = "Objects & Indexes";
+    private const string CatPlanCache = "Plan Cache & Scheduler";
+    private const string CatJobs = "Jobs";
+    private const string CatPlans = "Plans";
+    private const string CatDefaultTrace = "Default Trace";
+    private const string CatSystemHealth = "System Health";
+
+    private static CatalogParam PServer() => new("server", TypeServer, false, null);
+    private static CatalogParam PHours(int def) => new("hours", TypeInt, false, def);
+    private static CatalogParam PLimit(int def) => new("limit", TypeInt, false, def);
+    private static CatalogParam PTop(int def) => new("top", TypeInt, false, def);
+    private static CatalogParam PText(string name) => new(name, TypeText, false, null);
+    private static CatalogParam PReqText(string name) => new(name, TypeText, true, null);
+    private static CatalogParam PInt(string name, int def) => new(name, TypeInt, false, def);
+    private static CatalogParam PBool(string name, bool def) => new(name, TypeBool, false, def);
+    private static CatalogParam PDouble(string name, double def) => new(name, TypeDouble, false, def);
+
+    private static CatalogRead R(string category, string description, params CatalogParam[] parameters) =>
+        new(category, description, parameters);
+
+    /// <summary>
+    /// The hand-authored per-read param + category metadata, keyed by read name. There is NO declarative param
+    /// source (the dispatch lambdas bind STRING-LITERAL query keys imperatively, and those keys ≠ the C# method
+    /// param names — e.g. <c>hours_back</c> ≠ <c>hoursBack</c> — so reflection would send params under the wrong
+    /// keys). Each entry's <see cref="CatalogParam.Name"/> is therefore the ACTUAL query-string key its
+    /// <see cref="BuildReadDispatch"/> lambda reads. A test pins <c>CatalogDescriptors.Keys ==
+    /// BuildReadDispatch().Keys</c>, so a new read forces a catalog entry (it cannot silently ship key-less).
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, CatalogRead> CatalogDescriptors =
+        new Dictionary<string, CatalogRead>(StringComparer.Ordinal)
+        {
+            /* ── analysis reads (AuditConfig/CompareAnalysis/GetAnalysisFacts/GetAnalysisFindings) ── */
+            ["audit_config"] = R(CatAnalysis, "Configuration-audit findings for a server.", PServer()),
+            ["compare_analysis"] = R(CatAnalysis, "Compare a window's analysis facts against an earlier baseline.", PServer(), PHours(4), PInt("baseline_hours_back", 28)),
+            ["get_analysis_facts"] = R(CatAnalysis, "Raw analysis facts for a window, filtered by source and minimum severity.", PServer(), PHours(4), PText("source"), PDouble("min_severity", 0)),
+            ["get_analysis_findings"] = R(CatAnalysis, "Persisted analysis findings for a server.", PServer(), PHours(24)),
+
+            /* ── sessions (DarlingMcpSessionTools) ── */
+            ["get_active_queries"] = R(CatSessions, "Currently-active queries, optionally blocking-only.", PServer(), PHours(1), PText("database_name"), PBool("blocking_only", false), PLimit(50)),
+            ["get_session_stats"] = R(CatSessions, "Session-level summary counters for a server.", PServer()),
+            ["get_waiting_tasks"] = R(CatSessions, "Tasks currently waiting, with wait type and duration.", PServer(), PHours(1), PLimit(30)),
+
+            /* ── alerts / mute rules (DarlingMcpAlertTools) ── */
+            ["get_alert_history"] = R(CatAlerts, "Recent fired-alert history for a server.", PServer(), PHours(24), PLimit(50)),
+            ["get_alert_settings"] = R(CatAlerts, "The current alert-settings configuration."),
+            ["get_mute_rules"] = R(CatAlerts, "The alert mute rules (enabled-only by default).", PBool("enabled_only", true)),
+
+            /* ── blocking / deadlocks (DarlingMcpBlockingTools) ── */
+            ["get_blocked_process_xml"] = R(CatBlocking, "Blocked-process-report XML captures.", PServer(), PHours(24), PLimit(5)),
+            ["get_blocking"] = R(CatBlocking, "Blocking chains observed in the window.", PServer(), PHours(24), PLimit(30)),
+            ["get_blocking_trend"] = R(CatBlocking, "Blocking-event counts over time.", PServer(), PHours(24)),
+            ["get_deadlock_detail"] = R(CatBlocking, "Deadlock graph detail for recent deadlocks.", PServer(), PHours(24), PLimit(5)),
+            ["get_deadlock_trend"] = R(CatBlocking, "Deadlock counts over time.", PServer(), PHours(24)),
+            ["get_deadlocks"] = R(CatBlocking, "Recent deadlocks with victim/resource summary.", PServer(), PHours(24), PLimit(20)),
+
+            /* ── config: current + history (DarlingMcpConfigTools / DarlingMcpConfigHistoryTools) ── */
+            ["get_database_config"] = R(CatConfig, "Database-level configuration for a server.", PServer(), PText("database_name")),
+            ["get_server_config"] = R(CatConfig, "Server-level configuration (sp_configure) for a server.", PServer()),
+            ["get_trace_flags"] = R(CatConfig, "Active trace flags for a server.", PServer()),
+            ["get_database_config_changes"] = R(CatConfig, "Database-configuration changes over time.", PServer(), PHours(168)),
+            ["get_database_scoped_config"] = R(CatConfig, "Database-scoped configuration for a database.", PServer(), PText("database_name")),
+            ["get_server_config_changes"] = R(CatConfig, "Server-configuration changes over time.", PServer(), PHours(168)),
+            ["get_trace_flag_changes"] = R(CatConfig, "Trace-flag changes over time.", PServer(), PHours(168)),
+
+            /* ── core data reads (DarlingMcpDataTools + long-query / fleet tools) ── */
+            ["get_collection_health"] = R(CatData, "Per-collector collection health for a server.", PServer()),
+            ["get_cpu_utilization"] = R(CatData, "CPU utilization over time.", PServer(), PHours(4)),
+            ["get_file_io_stats"] = R(CatData, "Per-file IO stall/throughput stats.", PServer()),
+            ["get_memory_clerks"] = R(CatData, "Top memory clerks by allocation.", PServer()),
+            ["get_memory_stats"] = R(CatData, "Server memory summary counters.", PServer()),
+            ["get_perfmon_stats"] = R(CatData, "Perfmon counter values, filtered by counter/instance.", PServer(), PText("counter_name"), PText("instance_name")),
+            ["get_query_store_top"] = R(CatData, "Top Query Store queries in the window.", PServer(), PHours(24), PTop(20), PText("database_name")),
+            ["get_long_query_completions"] = R(CatData, "Completed long-running queries captured by the XE trace.", PServer(), PHours(24), PLimit(30)),
+            ["get_server_properties"] = R(CatData, "Server properties/inventory for a server.", PServer()),
+            ["get_tempdb_trend"] = R(CatData, "tempdb space usage over time.", PServer(), PHours(24)),
+            ["get_top_procedures_by_cpu"] = R(CatData, "Top stored procedures by CPU.", PServer(), PHours(24), PTop(20), PText("database_name")),
+            ["get_top_queries_by_cpu"] = R(CatData, "Top queries by CPU, optionally parallel-only / min-DOP.", PServer(), PHours(24), PTop(20), PText("database_name"), PBool("parallel_only", false), PInt("min_dop", 0)),
+            ["get_wait_stats"] = R(CatData, "Top wait statistics in the window.", PServer(), PHours(24), PLimit(20)),
+            ["get_wait_trend"] = R(CatData, "One wait type's totals over time (requires wait_type).", PReqText("wait_type"), PServer(), PHours(24)),
+            ["get_wait_types"] = R(CatData, "The wait types observed in the window.", PServer(), PHours(24)),
+            ["list_servers"] = R(CatData, "The monitored servers known to the store."),
+
+            /* ── trends (DarlingMcpTrendTools) ── */
+            ["get_file_io_trend"] = R(CatTrends, "File-IO throughput over time.", PServer(), PHours(24)),
+            ["get_memory_trend"] = R(CatTrends, "Memory usage over time.", PServer(), PHours(24)),
+            ["get_perfmon_trend"] = R(CatTrends, "One perfmon counter over time (requires counter_name).", PReqText("counter_name"), PServer(), PHours(24)),
+            ["get_query_duration_trend"] = R(CatTrends, "Query-duration percentiles over time.", PServer(), PHours(24)),
+            ["get_query_trend"] = R(CatTrends, "One query's metrics over time (requires query_hash + database_name).", PReqText("query_hash"), PReqText("database_name"), PServer(), PHours(24)),
+
+            /* ── health / overview (DarlingMcpHealthTools / DarlingMcpFleetTools) ── */
+            ["get_server_summary"] = R(CatOverview, "A one-shot health summary for a server.", PServer()),
+            ["get_daily_summary"] = R(CatOverview, "The daily health summary (optionally for a specific date).", PServer(), PText("summary_date")),
+            ["get_fleet_overview"] = R(CatOverview, "The banded cross-server fleet roll-up.", PHours(DefaultFleetHours)),
+
+            /* ── latch / spinlock (DarlingMcpLatchSpinlockTools) ── */
+            ["get_latch_stats"] = R(CatLatch, "Top latch waits in the window.", PServer(), PHours(24), PTop(10)),
+            ["get_spinlock_stats"] = R(CatLatch, "Top spinlock activity in the window.", PServer(), PHours(24), PTop(10)),
+
+            /* ── memory grants (DarlingMcpMemoryGrantTools) ── */
+            ["get_memory_grants"] = R(CatMemoryGrants, "Active/recent memory grants.", PServer(), PHours(1)),
+            ["get_memory_pressure_events"] = R(CatMemoryGrants, "Memory-pressure events in the window.", PServer(), PHours(24)),
+            ["get_resource_semaphore"] = R(CatMemoryGrants, "Resource-semaphore state over time.", PServer(), PHours(24)),
+
+            /* ── object / index stats (DarlingMcpObjectStatsTools) ── */
+            ["get_database_sizes"] = R(CatObjects, "Per-database size breakdown.", PServer()),
+            ["get_index_usage"] = R(CatObjects, "Index usage (seeks/scans/updates) per index.", PServer()),
+            ["get_object_locking"] = R(CatObjects, "Per-object locking/contention stats.", PServer()),
+            ["get_table_index_sizes"] = R(CatObjects, "Per-table/index size breakdown.", PServer()),
+
+            /* ── plan cache / scheduler (DarlingMcpPlanCacheSchedulerTools) ── */
+            ["get_cpu_scheduler_pressure"] = R(CatPlanCache, "CPU scheduler pressure indicators.", PServer()),
+            ["get_plan_cache_bloat"] = R(CatPlanCache, "Plan-cache bloat / single-use plan indicators.", PServer(), PHours(24)),
+
+            /* ── jobs (DarlingMcpJobTools) ── */
+            ["get_running_jobs"] = R(CatJobs, "Currently-running SQL Agent jobs.", PServer()),
+
+            /* ── stored plan XML (DarlingMcpPlanTools; the analyze_*_plan compute family stays excluded) ── */
+            ["get_plan_xml"] = R(CatPlans, "The stored execution-plan XML for a query (requires query_hash).", PReqText("query_hash"), PServer(), PText("database_name")),
+
+            /* ── default trace (DarlingMcpDefaultTraceTools) ── */
+            ["get_default_trace_events"] = R(CatDefaultTrace, "Default-trace events (file growth, DDL, security).", PServer(), PHours(24), PLimit(100)),
+
+            /* ── system_health parse-on-read family (DarlingMcpHealthParserTools) ── */
+            ["get_health_parser_cpu_tasks"] = R(CatSystemHealth, "system_health: CPU-bound task snapshots.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_io_issues"] = R(CatSystemHealth, "system_health: IO-latency issues.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_memory_broker"] = R(CatSystemHealth, "system_health: memory-broker ring-buffer entries.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_memory_conditions"] = R(CatSystemHealth, "system_health: resource-monitor memory conditions.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_memory_node_oom"] = R(CatSystemHealth, "system_health: per-node out-of-memory events.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_scheduler_issues"] = R(CatSystemHealth, "system_health: non-yielding scheduler issues.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_severe_errors"] = R(CatSystemHealth, "system_health: severe (sev >= 17) errors.", PServer(), PHours(24), PLimit(50)),
+            ["get_health_parser_system_health"] = R(CatSystemHealth, "system_health: the raw parsed session records.", PServer(), PHours(24), PLimit(50)),
+        };
+
+    /// <summary>Builds the <c>/api/catalog</c> body: the reads (names taken from <see cref="BuildReadDispatch"/>,
+    /// each enriched with its <see cref="CatalogDescriptors"/> metadata) and the viz vocabulary. Iterating the
+    /// dispatch keys guarantees the catalog only advertises actually-dispatchable reads.</summary>
+    internal static JsonObject BuildCatalogNode()
+    {
+        var reads = new JsonArray();
+        foreach (var name in BuildReadDispatch().Keys)
+        {
+            var descriptor = CatalogDescriptors[name];
+            var parameters = new JsonArray();
+            foreach (var p in descriptor.Params)
+            {
+                parameters.Add(new JsonObject
+                {
+                    ["name"] = p.Name,
+                    ["type"] = p.Type,
+                    ["required"] = p.Required,
+                    ["default"] = ToJsonValue(p.Default),
+                });
+            }
+
+            reads.Add(new JsonObject
+            {
+                ["name"] = name,
+                ["category"] = descriptor.Category,
+                ["description"] = descriptor.Description,
+                ["params"] = parameters,
+            });
+        }
+
+        var viz = new JsonArray();
+        foreach (var v in KnownVizList)
+        {
+            viz.Add(v);
+        }
+
+        return new JsonObject { ["reads"] = reads, ["viz"] = viz };
+    }
+
+    private static JsonValue? ToJsonValue(object? value) => value switch
+    {
+        null => null,
+        int i => JsonValue.Create(i),
+        bool b => JsonValue.Create(b),
+        double d => JsonValue.Create(d),
+        _ => JsonValue.Create(value.ToString()),
+    };
+
+    /* ── request body parsing + response building ── */
+
+    /// <summary>A parsed create/update body: name (required, trimmed), description (optional), the definition as
+    /// raw JSON text (re-serialized from the parsed node), and version (present only on updates).</summary>
+    private sealed record ViewWriteRequest(string Name, string? Description, string DefinitionJson, int? Version);
+
+    /// <summary>Parses the request body into a <see cref="ViewWriteRequest"/>, or returns a caller-facing error
+    /// (the definition's STRUCTURE is validated separately by <see cref="ValidateDefinition"/>).</summary>
+    private static async Task<(ViewWriteRequest? Request, string? Error)> ParseViewBodyAsync(HttpContext context)
+    {
+        JsonNode? root;
+        try
+        {
+            root = await JsonNode.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
+        }
+        catch (JsonException)
+        {
+            return (null, "Request body is not valid JSON.");
+        }
+
+        if (root is not JsonObject obj)
+        {
+            return (null, "Request body must be a JSON object.");
+        }
+
+        var name = TryGetString(obj, "name");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return (null, "'name' is required.");
+        }
+
+        var description = TryGetString(obj, "description");
+
+        var definitionNode = obj["definition"];
+        if (definitionNode is null)
+        {
+            return (null, "'definition' is required.");
+        }
+
+        var definitionJson = definitionNode.ToJsonString();
+
+        int? version = null;
+        if (obj["version"] is JsonValue versionValue && versionValue.TryGetValue<int>(out var v))
+        {
+            version = v;
+        }
+
+        return (new ViewWriteRequest(name.Trim(), description, definitionJson, version), null);
+    }
+
+    /// <summary>The full single-view wire shape (definition embedded as JSON, NOT an escaped string).</summary>
+    private static JsonObject BuildFullViewNode(CustomView view) => new()
+    {
+        ["id"] = view.Id,
+        ["name"] = view.Name,
+        ["description"] = view.Description,
+        ["definition"] = JsonNode.Parse(view.DefinitionJson),
+        ["version"] = view.Version,
+        ["created_at"] = view.CreatedAt,
+        ["updated_at"] = view.UpdatedAt,
+        ["updated_by"] = view.UpdatedBy,
+    };
+
+    /// <summary>The bare-array list wire shape (no definition).</summary>
+    private static JsonArray BuildSummariesNode(IReadOnlyList<CustomViewSummary> views)
+    {
+        var array = new JsonArray();
+        foreach (var view in views)
+        {
+            array.Add(new JsonObject
+            {
+                ["id"] = view.Id,
+                ["name"] = view.Name,
+                ["description"] = view.Description,
+                ["version"] = view.Version,
+                ["updated_at"] = view.UpdatedAt,
+                ["updated_by"] = view.UpdatedBy,
+            });
+        }
+
+        return array;
+    }
+
+    /* ── result helpers (JSON body written verbatim, bypassing any serializer naming policy) ── */
+
+    private static IResult JsonNodeResult(JsonNode node, int statusCode = StatusCodes.Status200OK) =>
+        Results.Text(node.ToJsonString(), "application/json", statusCode: statusCode);
+
+    private static IResult CreatedResult(HttpContext context, string location, JsonNode node)
+    {
+        context.Response.Headers.Location = location;
+        return Results.Text(node.ToJsonString(), "application/json", statusCode: StatusCodes.Status201Created);
+    }
+
+    private static IResult ErrorResult(string message, int statusCode) =>
+        JsonNodeResult(new JsonObject { ["error"] = message }, statusCode);
+
+    private static IResult NotFoundResult() =>
+        ErrorResult("View not found.", StatusCodes.Status404NotFound);
+
+    private static IResult LoopbackForbiddenResult() =>
+        ErrorResult("Editing custom views is only allowed from a loopback (same-machine) connection.", StatusCodes.Status403Forbidden);
 
     /// <summary>The signature every read endpoint's handler shares: bind the query string, call the tool.</summary>
     internal delegate Task<string> ReadToolHandler(HttpContext context, NpgsqlDataSource postgres, DarlingAnalysisService analysis);

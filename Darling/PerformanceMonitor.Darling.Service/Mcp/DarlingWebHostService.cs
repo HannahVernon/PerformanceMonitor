@@ -513,8 +513,9 @@ public sealed class DarlingWebHostService : BackgroundService
     /// </summary>
     internal static WebAuthAction DecideWebAuth(IPAddress? remoteIp, IPNetwork allowedCidr, bool hasValidCookie, bool hasValidToken)
     {
-        var ip = remoteIp is not null && remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp;
-        if (ip is not null && IPAddress.IsLoopback(ip))
+        /* Loopback determination is shared with the custom-views edit gate (DarlingWebEndpoints.IsLoopbackRemote)
+           so the network auth gate and the mutation gate can never drift on how they unwrap IPv4-mapped-IPv6. */
+        if (DarlingWebEndpoints.IsLoopbackRemote(remoteIp))
         {
             return WebAuthAction.Allow;
         }
