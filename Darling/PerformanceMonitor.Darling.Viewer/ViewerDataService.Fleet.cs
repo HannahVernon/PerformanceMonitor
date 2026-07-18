@@ -13,6 +13,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using Npgsql;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -135,23 +136,6 @@ public sealed class FleetTotals
 }
 
 /// <summary>
-/// A server's fleet-health band — the SAME banding #1426's Overview cards compute, collapsed to one label
-/// per server. <see cref="FleetRollup.ClassifyBand"/> derives it from the card's
-/// <see cref="ServerSummaryItem.OverallMetricSeverity"/> + freshness, so it never invents a new band: it
-/// mirrors <see cref="ServerSummaryItem.CardBorderBrush"/> (offline / critical → red, warning / stale →
-/// amber, else calm).
-/// </summary>
-public enum FleetHealthBand
-{
-    Healthy,
-    Warning,
-    Critical,
-
-    /// <summary>The server's collection is long-dead / never happened (the card's red offline overlay).</summary>
-    Offline,
-}
-
-/// <summary>
 /// One entry in the fleet's worst-first "Needs attention" ranking — a problem server with its band, a
 /// short human reason (built from the card's own metric displays), and its composite score. Clicking the
 /// entry opens that server's tab (the caller maps <see cref="ServerId"/> back to the sidebar server and
@@ -175,13 +159,7 @@ public sealed class FleetRankedServer
     /// <summary>A short "why it needs attention" line, e.g. "CPU 97%, Blocking 6" or "Offline — no recent collection".</summary>
     public string Reason { get; init; } = "";
 
-    public string BandLabel => Band switch
-    {
-        FleetHealthBand.Critical => "Critical",
-        FleetHealthBand.Warning => "Warning",
-        FleetHealthBand.Offline => "Offline",
-        _ => "Healthy",
-    };
+    public string BandLabel => ServerHealthClassifier.BandLabel(Band);
 
     /// <summary>The band's dot / label brush — the card's severity palette (offline = the Unknown grey).</summary>
     public SolidColorBrush BandBrush => Band switch
@@ -342,70 +320,17 @@ public sealed class FleetRollup
     /// Warning → Warning, and a stale collection (<see cref="ServerSummaryItem.HasCollectorErrors"/>) is
     /// Warning too; otherwise Healthy. No new thresholds are introduced here.
     /// </summary>
-    public static FleetHealthBand ClassifyBand(ServerSummaryItem s)
-    {
-        if (s.IsOnline == false)
-        {
-            return FleetHealthBand.Offline;
-        }
-
-        /* Never-collected = the service hasn't reached the server yet (bootstrap). Attention-worthy
-           (it must not read Healthy) but truthfully amber, never the red Offline overlay. */
-        if (s.AwaitingFirstCollection)
-        {
-            return FleetHealthBand.Warning;
-        }
-
-        return s.OverallMetricSeverity switch
-        {
-            HealthSeverity.Critical => FleetHealthBand.Critical,
-            HealthSeverity.Warning => FleetHealthBand.Warning,
-            _ => s.HasCollectorErrors ? FleetHealthBand.Warning : FleetHealthBand.Healthy,
-        };
-    }
+    public static FleetHealthBand ClassifyBand(ServerSummaryItem s) =>
+        ServerHealthClassifier.ClassifyBand(s.IsOnline, s.AwaitingFirstCollection, s.HasCollectorErrors, s.OverallMetricSeverity);
 
     /// <summary>
-    /// The worst-first ordering score. Band rank dominates (Offline &gt; Critical &gt; Warning &gt;
-    /// Healthy) in steps of 1000; within a band, servers are ranked by how many of the six card metrics
-    /// are Critical (×100) or Warning (×10), with the blocking + deadlock counts (capped) as a final
-    /// tiebreak. The within-band terms are bounded well under 1000, so they never reorder bands. Reuses the
-    /// card's per-metric severities — no new signal.
+    /// The worst-first ordering score — the SHARED <see cref="ServerHealthClassifier.FleetHealthScore"/> over
+    /// the card's raw metrics: band rank dominates (Offline &gt; Critical &gt; Warning &gt; Healthy) in steps
+    /// of 1000; within a band, how many card metrics are Critical / Warning, then the blocking + deadlock
+    /// incident count as a tiebreak.
     /// </summary>
-    public static long FleetHealthScore(ServerSummaryItem s)
-    {
-        long bandRank = ClassifyBand(s) switch
-        {
-            FleetHealthBand.Offline => 4000,
-            FleetHealthBand.Critical => 3000,
-            FleetHealthBand.Warning => 2000,
-            _ => 0,
-        };
-
-        var criticals = 0;
-        var warnings = 0;
-        foreach (var sev in MetricSeverities(s))
-        {
-            if (sev == HealthSeverity.Critical) criticals++;
-            else if (sev == HealthSeverity.Warning) warnings++;
-        }
-
-        /* criticals + warnings <= 6, so magnitude <= 600; incidents <= 99 — the within-band total stays
-           under 1000 and can never cross a band boundary. */
-        long magnitude = (criticals * 100L) + (warnings * 10L);
-        long incidents = Math.Min(s.BlockingCount + s.DeadlockCount, 99);
-        return bandRank + magnitude + incidents;
-    }
-
-    /// <summary>The six per-metric card severities, in card row order — the reuse surface for scoring / reasons.</summary>
-    private static IEnumerable<HealthSeverity> MetricSeverities(ServerSummaryItem s)
-    {
-        yield return s.CpuSeverity;
-        yield return s.ThreadsSeverity;
-        yield return s.MemorySeverity;
-        yield return s.BlockingSeverity;
-        yield return s.DeadlockSeverity;
-        yield return s.CollectorSeverity;
-    }
+    public static long FleetHealthScore(ServerSummaryItem s) =>
+        ServerHealthClassifier.FleetHealthScore(ClassifyBand(s), s.ToHealthMetrics());
 
     /// <summary>
     /// A short human reason for the ranking, built from the card's OWN metric displays so it never drifts

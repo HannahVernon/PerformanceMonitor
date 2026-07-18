@@ -462,6 +462,10 @@ public sealed class DarlingMcpHostService : BackgroundService
                 .WithGeminiCompatibleTools<DarlingMcpAlertTools>()
                 .WithGeminiCompatibleTools<DarlingMcpConfigTools>()
                 .WithGeminiCompatibleTools<DarlingMcpHealthTools>()
+                /* The cross-server fleet overview — get_fleet_overview (#1562) — the roll-up only the central
+                   store can serve, over the SHARED DarlingFleetReader that also powers the web /api/fleet and the
+                   WPF viewer's Overview (one reader, one banding). ADDITIVE alongside get_server_summary. */
+                .WithGeminiCompatibleTools<DarlingMcpFleetTools>()
                 /* The system_health parse-on-read family — get_health_parser_cpu_tasks / _io_issues /
                    _memory_broker / _memory_conditions / _memory_node_oom / _scheduler_issues /
                    _severe_errors / _system_health — the same names the Dashboard exposes. Where the Dashboard
