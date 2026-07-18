@@ -208,4 +208,139 @@ public sealed class DarlingSweepSchedulingTests
     {
         Assert.Equal(0.80, DarlingWorker.MemoryGuardFraction);
     }
+
+    /* ---------------- #1575 watermark seed policy (ComputeSeededNextDue / SeedJitter) ---------------- */
+
+    /* A fixed reference "now" so the pure decision-table is deterministic (no wall-clock). Kind=Utc mirrors the
+       DateTime.UtcNow the connect/reload path passes; the policy compares by ticks so the label is not load-bearing. */
+    private static readonly DateTime Now = new(2026, 07, 18, 10, 30, 0, DateTimeKind.Utc);
+
+    /* index_object_stats' 1440-minute (daily) cadence — the collector #1575's starvation was observed on. */
+    private const int DailyMinutes = 1440;
+
+    /// <summary>
+    /// A daily collector that ran an hour ago waits out the REMAINING interval — nextDue ≈ lastRun + 24h (≈ 23h
+    /// out), NOT now. This is the core of the fix: a restart must not re-phase a recently-run daily collector up
+    /// to a full interval forward; it resumes the real cadence from the watermark.
+    /// </summary>
+    [Fact]
+    public void ComputeSeededNextDue_DailyRecentlyRun_WaitsRemainingInterval_NotNow()
+    {
+        var lastRun = Now.AddHours(-1);
+        var jitter = TimeSpan.FromSeconds(50);
+
+        var nextDue = DarlingWorker.ComputeSeededNextDue(lastRun, DailyMinutes, Now, jitter);
+
+        Assert.Equal(lastRun.AddMinutes(DailyMinutes), nextDue);        /* exactly lastRun + 24h */
+        Assert.Equal(Now.AddHours(23), nextDue);                        /* ≈ 23h from now */
+        Assert.NotEqual(Now + jitter, nextDue);                         /* NOT the prompt-run stamp */
+    }
+
+    /// <summary>
+    /// A daily collector overdue by 3h (last ran 27h ago) runs PROMPTLY — nextDue = now + a small jitter, NOT
+    /// another full 24h out. Without the watermark seed this collector was skipped for up to a day per restart.
+    /// </summary>
+    [Fact]
+    public void ComputeSeededNextDue_DailyOverdue_RunsPromptlyWithJitter()
+    {
+        var lastRun = Now.AddHours(-27);
+        var jitter = TimeSpan.FromSeconds(50);
+
+        var nextDue = DarlingWorker.ComputeSeededNextDue(lastRun, DailyMinutes, Now, jitter);
+
+        Assert.Equal(Now + jitter, nextDue);                            /* prompt (jittered), not lastRun + 24h */
+        Assert.True(nextDue <= Now.AddSeconds(150), "an overdue collector must run within the jitter window, not another interval out");
+    }
+
+    /// <summary>
+    /// A 1-minute collector that ran 30s ago keeps the unchanged feel — nextDue ≈ lastRun + 1min (≈ 30s out).
+    /// Minute collectors were never the bug (their old full-interval offset was &lt; 60s); this pins that the new
+    /// policy leaves them behaving identically.
+    /// </summary>
+    [Fact]
+    public void ComputeSeededNextDue_OneMinuteRecentlyRun_WaitsRemainder()
+    {
+        var lastRun = Now.AddSeconds(-30);
+        var jitter = TimeSpan.FromSeconds(10);
+
+        var nextDue = DarlingWorker.ComputeSeededNextDue(lastRun, 1, Now, jitter);
+
+        Assert.Equal(lastRun.AddMinutes(1), nextDue);                   /* lastRun + 1min == now + 30s */
+        Assert.Equal(Now.AddSeconds(30), nextDue);
+    }
+
+    /// <summary>
+    /// A never-run collector (null watermark) seeds at now + jitter — and for a DAILY collector the jitter is
+    /// bounded to ≤ 150s, so a fresh install runs it shortly after first connect (then daily), NOT up to 24h
+    /// later. Composes SeedJitter (the real caller's cap) with the policy across every realistic FNV id — the
+    /// end-to-end fresh-install fix.
+    /// </summary>
+    [Fact]
+    public void ComputeSeededNextDue_DailyNeverRun_SeedsWithinJitterWindow_NotAFullInterval()
+    {
+        foreach (var id in RealisticServerIds)
+        {
+            var jitter = DarlingWorker.SeedJitter(id, DailyMinutes * 60);
+            var nextDue = DarlingWorker.ComputeSeededNextDue(lastRunUtc: null, DailyMinutes, Now, jitter);
+
+            Assert.Equal(Now + jitter, nextDue);
+            Assert.True(nextDue >= Now, $"id {id}: a never-run seed must not land in the past");
+            Assert.True(nextDue < Now.AddSeconds(150), $"id {id}: a daily never-run collector must seed within ~150s, not up to a full interval");
+        }
+    }
+
+    /// <summary>
+    /// The overdue boundary is inclusive: when lastRun + interval == now EXACTLY, the collector is treated as
+    /// overdue and runs promptly (now + jitter), never scheduled for the instant that just passed.
+    /// </summary>
+    [Fact]
+    public void ComputeSeededNextDue_ExactlyDue_RunsPromptly()
+    {
+        var lastRun = Now.AddMinutes(-5);
+        var jitter = TimeSpan.FromSeconds(7);
+
+        var nextDue = DarlingWorker.ComputeSeededNextDue(lastRun, 5, Now, jitter);
+
+        Assert.Equal(Now + jitter, nextDue);
+    }
+
+    /// <summary>
+    /// The seed jitter is the deterministic phase CAPPED at min(intervalSeconds, 150) — so it de-clusters the
+    /// fleet's overdue / never-run seeds within a bounded window and can NEVER defer a run by up to a full
+    /// interval (the coarse full-interval offset was the #1575 bug). Pins the exact cap against every realistic
+    /// FNV id across minute, 5-minute, hourly, and daily cadences.
+    /// </summary>
+    [Fact]
+    public void SeedJitter_IsCappedAtMinIntervalAnd150Seconds()
+    {
+        int[] frequencyMinutes = { 1, 5, 60, DailyMinutes };
+        foreach (var id in RealisticServerIds)
+        {
+            foreach (var minutes in frequencyMinutes)
+            {
+                var frequencySeconds = minutes * 60;
+                var cap = Math.Min(frequencySeconds, 150);
+
+                var jitter = DarlingWorker.SeedJitter(id, frequencySeconds);
+
+                Assert.Equal(DarlingWorker.CadencePhaseOffset(id, cap), jitter);   /* exact formula */
+                Assert.True(jitter >= TimeSpan.Zero, $"id {id}, {minutes}m: jitter must be non-negative");
+                Assert.True(jitter < TimeSpan.FromSeconds(cap), $"id {id}, {minutes}m: jitter must be < min(interval, 150s)");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Deterministic and restart-stable per server id (a pure function of the FNV id, no Random) — a restart
+    /// re-derives the SAME seed jitter and does not re-herd the fleet.
+    /// </summary>
+    [Fact]
+    public void SeedJitter_IsDeterministic_ForSameInputs()
+    {
+        foreach (var id in RealisticServerIds)
+        {
+            Assert.Equal(DarlingWorker.SeedJitter(id, 60), DarlingWorker.SeedJitter(id, 60));
+            Assert.Equal(DarlingWorker.SeedJitter(id, DailyMinutes * 60), DarlingWorker.SeedJitter(id, DailyMinutes * 60));
+        }
+    }
 }

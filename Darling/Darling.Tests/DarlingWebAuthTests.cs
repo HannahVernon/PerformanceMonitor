@@ -113,7 +113,15 @@ public sealed class DarlingWebAuthTests
     {
         var now = DateTimeOffset.UtcNow;
         var cookie = DarlingWebHostService.BuildSessionCookieValue(Key, now.AddHours(12));
-        var tampered = cookie.Substring(0, cookie.Length - 1) + (cookie[^1] == 'A' ? 'B' : 'A');
+
+        /* Tamper the FIRST character of the base64url signature (the char right after the '.'), not the last.
+           The signature is base64url(HMAC-SHA256) = 43 chars for 32 bytes; the LAST char encodes only 4 data
+           bits + 2 padding bits, so flipping it (e.g. 'A'->'B') can leave the decoded bytes identical — a
+           no-op "tamper" that validation rightly accepts, which made the old last-char flip flaky ~1 run in 16.
+           The first signature char is fully data-bearing (6 bits), so any flip always changes the decoded MAC. */
+        var dot = cookie.IndexOf('.', StringComparison.Ordinal);
+        var sigStart = dot + 1;
+        var tampered = cookie[..sigStart] + (cookie[sigStart] == 'A' ? 'B' : 'A') + cookie[(sigStart + 1)..];
         Assert.False(DarlingWebHostService.TryValidateSessionCookie(tampered, Key, now));
     }
 
