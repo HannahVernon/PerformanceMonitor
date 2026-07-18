@@ -133,7 +133,7 @@ public sealed class DarlingManagedPostgresTests
         var block = DarlingManagedPostgres.BuildMemorySizingConfAppend(eightGb);
 
         Assert.Contains(DarlingManagedPostgres.ConfMarkerV3, block, StringComparison.Ordinal);
-        Assert.Contains("shared_buffers = 2048MB", block, StringComparison.Ordinal);        /* 25% of 8 GB */
+        Assert.Contains("shared_buffers = 1024MB", block, StringComparison.Ordinal);        /* 25% of 8 GB, capped at the 1 GB co-located ceiling (#1559) */
         Assert.Contains("effective_cache_size = 6144MB", block, StringComparison.Ordinal);  /* 75% of 8 GB */
         Assert.Contains("maintenance_work_mem = 409MB", block, StringComparison.Ordinal);   /* 5% of 8 GB */
         Assert.Contains("work_mem = 16MB", block, StringComparison.Ordinal);                /* RAM/512, at the 16 MB floor */
@@ -165,6 +165,30 @@ public sealed class DarlingManagedPostgresTests
     }
 
     /// <summary>
+    /// The v5 co-located-sizing override (#1559): re-states shared_buffers at the CAPPED derivation so an
+    /// existing cluster provisioned under the old min(25%, 8 GB) rule heals DOWN via conf
+    /// last-occurrence-wins. Pins the marker, the capped value at two RAM tiers, and that the block
+    /// restates NOTHING else (compose, don't compete).
+    /// </summary>
+    [Fact]
+    public void ColocatedSizingConfAppend_PinsV5Marker_AndCappedSharedBuffers()
+    {
+        const long sixteenGb = 16L * 1024 * 1024 * 1024;
+        var block = DarlingManagedPostgres.BuildColocatedSizingConfAppend(sixteenGb);
+        Assert.Contains(DarlingManagedPostgres.ConfMarkerV5, block, StringComparison.Ordinal);
+        Assert.Contains("shared_buffers = 1024MB", block, StringComparison.Ordinal); /* 25% of 16 GB, capped */
+
+        const long twoGb = 2L * 1024 * 1024 * 1024;
+        var small = DarlingManagedPostgres.BuildColocatedSizingConfAppend(twoGb);
+        Assert.Contains("shared_buffers = 512MB", small, StringComparison.Ordinal);  /* under the cap: restated as-is */
+
+        /* The blocks compose, they don't compete — v5 restates ONLY shared_buffers. */
+        Assert.DoesNotContain("max_connections", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("work_mem", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("effective_cache_size", block, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// On a big box every cap/ceiling engages: shared_buffers pins at 8 GB (not 25% = 16 GB),
     /// maintenance_work_mem at 1 GB (not 5% = 3.2 GB), work_mem at 64 MB (not RAM/512 = 128 MB);
     /// effective_cache_size stays the uncapped 75% planner hint.
@@ -175,7 +199,7 @@ public sealed class DarlingManagedPostgresTests
         const long sixtyFourGb = 64L * 1024 * 1024 * 1024;
         var block = DarlingManagedPostgres.BuildMemorySizingConfAppend(sixtyFourGb);
 
-        Assert.Contains("shared_buffers = 8192MB", block, StringComparison.Ordinal);          /* capped at 8 GB */
+        Assert.Contains("shared_buffers = 1024MB", block, StringComparison.Ordinal);          /* capped at the 1 GB co-located ceiling (#1559) */
         Assert.Contains("effective_cache_size = 49152MB", block, StringComparison.Ordinal);   /* 75% of 64 GB, uncapped */
         Assert.Contains("maintenance_work_mem = 1024MB", block, StringComparison.Ordinal);    /* capped at 1 GB */
         Assert.Contains("work_mem = 64MB", block, StringComparison.Ordinal);                  /* capped at 64 MB */
@@ -187,10 +211,11 @@ public sealed class DarlingManagedPostgresTests
     /// pathological max_connections × sorts × work_mem never grows past the ceiling on a bigger box.
     /// </summary>
     [Theory]
-    [InlineData(8, 2048, 6144, 409, 16)]     /* 8 GB: no caps; work_mem at the 16 MB floor */
-    [InlineData(16, 4096, 12288, 819, 32)]   /* 16 GB: work_mem RAM/512 = 32 MB */
-    [InlineData(32, 8192, 24576, 1024, 64)]  /* 32 GB: shared_buffers hits its 8 GB cap, maintenance hits 1 GB, work_mem hits the 64 MB ceiling */
-    [InlineData(64, 8192, 49152, 1024, 64)]  /* 64 GB: shared_buffers/maintenance/work_mem all capped; effective_cache_size keeps scaling */
+    [InlineData(2, 512, 1536, 102, 16)]      /* 2 GB: under every cap; work_mem at the 16 MB floor */
+    [InlineData(8, 1024, 6144, 409, 16)]     /* 8 GB: shared_buffers hits the 1 GB co-located cap (#1559); work_mem at the floor */
+    [InlineData(16, 1024, 12288, 819, 32)]   /* 16 GB: shared_buffers capped (the field box); work_mem RAM/512 = 32 MB */
+    [InlineData(32, 1024, 24576, 1024, 64)]  /* 32 GB: shared_buffers at the 1 GB cap, maintenance hits 1 GB, work_mem hits the 64 MB ceiling */
+    [InlineData(64, 1024, 49152, 1024, 64)]  /* 64 GB: everything but effective_cache_size capped; the planner hint keeps scaling */
     public void DeriveMemorySettings_PerTier(long ramGb, int sharedBuffersMb, int effectiveCacheMb, int maintenanceMb, int workMemMb)
     {
         var settings = DarlingManagedPostgres.DeriveMemorySettings(ramGb * 1024 * 1024 * 1024);
@@ -426,6 +451,10 @@ public sealed class DarlingManagedPostgresTests
 
             /* v4 write throughput rode the same first-run append: connection headroom + WAL ceiling. */
             Assert.Contains(DarlingManagedPostgres.ConfMarkerV4, conf, StringComparison.Ordinal);
+
+            /* v5 co-located sizing rode the same first-run append (its shared_buffers override equals the
+               v3 value on a fresh cluster, since both now derive through the same 1 GB cap). */
+            Assert.Contains(DarlingManagedPostgres.ConfMarkerV5, conf, StringComparison.Ordinal);
             Assert.Contains("max_connections = 200", conf, StringComparison.Ordinal);
             Assert.Contains("max_wal_size = 4GB", conf, StringComparison.Ordinal);
 
@@ -469,6 +498,7 @@ public sealed class DarlingManagedPostgresTests
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV2));
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV3));
             Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV4));
+            Assert.Equal(1, CountOccurrences(confAfterSecond, DarlingManagedPostgres.ConfMarkerV5));
 
             /* Both up/down probes below must bypass Npgsql's pool: OpenAsync on a pooled string
                can hand back an idle socket with no I/O at all, which "succeeds" against a stopped
