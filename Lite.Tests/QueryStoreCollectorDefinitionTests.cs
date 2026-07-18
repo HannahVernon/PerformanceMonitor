@@ -227,10 +227,12 @@ public sealed class QueryStoreCollectorDefinitionTests
         /* Line-ending agnostic: pin the bracket escaping + the sp_executesql shape. */
         Assert.StartsWith("EXECUTE [we]]ird].sys.sp_executesql", plan.Text.TrimStart('\r', '\n'), StringComparison.Ordinal);
         Assert.Contains("WHERE qsrs.last_execution_time > @cutoff_time", plan.Text, StringComparison.Ordinal);
-        /* #1565: the self-exclusion scans only the first 100 chars — the unbounded full-text LIKE was 75%
-           of the read's elapsed time in a field actual plan; every collector query carries the marker in
-           its first ~40 chars. */
-        Assert.Contains("LEFT(qst.query_sql_text, 100) NOT LIKE N''%PerformanceMonitorLite%''", plan.Text, StringComparison.Ordinal);
+        /* #1565: NO SQL-side self-exclusion — the old NOT LIKE was 75% of the read's elapsed time (full
+           nvarchar(max) scan per row on a column no index can serve; field A/B: 4.3x without it), and no
+           predicate shape fixes a residual text scan. The exclusion is client-side in ReadItemAsync,
+           where the text is already materialized (pinned below). The query still CONTAINS the marker —
+           in its own leading comment. */
+        Assert.DoesNotContain("NOT LIKE", plan.Text, StringComparison.Ordinal);
         Assert.Contains("OPTION(RECOMPILE, LOOP JOIN);", plan.Text, StringComparison.Ordinal);
         Assert.Contains("N'@cutoff_time datetime2(7)',", plan.Text, StringComparison.Ordinal);
 
@@ -338,6 +340,51 @@ public sealed class QueryStoreCollectorDefinitionTests
 
         Assert.False(context.PerItemTextBudgetExceeded);
         Assert.Single(rows);
+    }
+
+    [Fact]
+    public async Task ReadItemAsync_DropsSelfMarkerRows_ClientSide()
+    {
+        /* #1565: the self-exclusion moved OUT of the SQL (the NOT LIKE was 75% of the read's elapsed
+           time) and into ReadItemAsync, where the text is already materialized. A row whose query text
+           carries the marker never enters the batch — not stored, not counted against the byte budget. */
+        var context = MakeContext();
+
+        object[] MakeRow(long queryId, string sqlText)
+        {
+            var row = new object[53];
+            row[0] = queryId;
+            row[1] = 202L;
+            row[2] = "Regular";
+            row[3] = new DateTimeOffset(2026, 7, 2, 10, 0, 0, TimeSpan.Zero);
+            row[4] = new DateTimeOffset(2026, 7, 2, 11, 0, 0, TimeSpan.Zero);
+            row[5] = "dbo.Proc";
+            row[6] = sqlText;
+            row[7] = "0xQH";
+            row[8] = 33L;
+            for (int i = 9; i <= 43; i++) row[i] = (long)i;
+            row[44] = DBNull.Value;
+            row[45] = "MANUAL";
+            row[46] = true;
+            row[47] = 5L;
+            row[48] = "NONE";
+            row[49] = (short)160;
+            row[50] = DBNull.Value;
+            row[51] = "0xPH";
+            row[52] = DBNull.Value;
+            return row;
+        }
+
+        using var reader = new FakeCollectorDataReader(
+            MakeRow(1, "SELECT 1 FROM UserTable"),
+            MakeRow(2, "SELECT /* " + QueryStoreCollector.SelfQueryMarker + " */ TOP (50000) query_id = qsq.query_id"),
+            MakeRow(3, "UPDATE Another SET x = 1"));
+        var rows = new System.Collections.Generic.List<QueryStoreCollector.Row>();
+        await QueryStoreCollector.Instance.ReadItemAsync("SO", reader, rows, context, CancellationToken.None);
+
+        Assert.Equal(2, rows.Count);
+        Assert.DoesNotContain(rows, r => r.QueryText!.Contains(QueryStoreCollector.SelfQueryMarker, StringComparison.Ordinal));
+        Assert.Equal(new[] { 1L, 3L }, System.Linq.Enumerable.Select(rows, r => r.QueryId));
     }
 
     [Fact]

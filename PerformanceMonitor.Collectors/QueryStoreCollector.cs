@@ -300,6 +300,14 @@ ORDER BY
     /// </summary>
     public const int MaxTextBytesPerDatabase = 256 * 1024 * 1024;
 
+    /// <summary>
+    /// The self-identification marker every collector query carries in its leading comment. Self rows
+    /// are excluded CLIENT-SIDE in <see cref="ReadItemAsync"/> (#1565) — the old SQL-side
+    /// NOT LIKE predicate was 75% of the read's elapsed time (a full nvarchar(max) scan per row on a
+    /// column no index can serve), and the text is already materialized here anyway.
+    /// </summary>
+    public const string SelfQueryMarker = "PerformanceMonitorLite";
+
     public override string Name => "query_store";
 
     public override string TargetTable => "query_store_stats";
@@ -448,13 +456,15 @@ ORDER BY
         /* Incremental: only fetch runtime_stats intervals newer than what we already have.
 
            Two field-verified cost/behavior notes (#1565, actual-plan evidence from a 103k-row burst):
-           (1) The self-exclusion filter below scans LEFT(query_sql_text, 100), NOT the full text: the
-           unbounded form (query_sql_text NOT LIKE N'%marker%') was 75% of the query's total elapsed
-           time — a per-row substring scan over full nvarchar(max) query text (11.2s of a 14.9s read;
-           4.3x faster without it). Every collector query leads with the SELECT-adjacent
-           PerformanceMonitorLite marker comment (within the first ~40 chars), so a 100-char bounded
-           scan preserves the exclusion at ~zero cost; a USER query that merely mentions the marker deep in its text is now included,
-           which is harmless noise, not a correctness issue.
+           (1) There is deliberately NO self-exclusion predicate in this query. The old form
+           (query_sql_text NOT LIKE N'%marker%') was 75% of the query's total elapsed time — a per-row
+           substring scan over full nvarchar(max) text (11.2s of a 14.9s read; the field A/B measured
+           4.3x faster without it) — and no predicate shape fixes that server-side: the QS internal
+           text table has no index on the column, so every variant is a residual scan whose cost is
+           the bytes it reads. The exclusion instead happens in ReadItemAsync, where the query text is
+           ALREADY materialized for every row — a client-side Contains at zero SQL cost, identical
+           semantics. Self rows cross the wire (~2% of a busy database's rows) and are dropped before
+           they enter the batch (never stored, never counted against the byte budget).
            (2) Expect a bursty cadence: Query Store buffers in memory and flushes to its persisted
            tables on DATA_FLUSH_INTERVAL_SECONDS (default 900s), so roughly every third 5-minute cycle
            returns a burst and the others return ~nothing. That is the SOURCE's behavior, not a
@@ -530,7 +540,6 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
        ON qst.query_text_id = qsq.query_text_id
      {replicaJoin}
      WHERE qsrs.last_execution_time > @cutoff_time
-     AND   LEFT(qst.query_sql_text, 100) NOT LIKE N''%PerformanceMonitorLite%''
      ORDER BY qsrs.last_execution_time DESC
      OPTION(RECOMPILE, LOOP JOIN);',
     N'@cutoff_time datetime2(7)',
@@ -613,6 +622,16 @@ EXECUTE [{escapedDbName}].sys.sp_executesql
                 QueryPlanHash = reader.IsDBNull(51) ? null : reader.GetString(51),
                 ReplicaRole = reader.IsDBNull(52) ? null : reader.GetString(52),
             };
+
+            /* Client-side self-exclusion (#1565): our own collector queries carry the marker in their
+               leading comment. Skipped rows never enter the batch — not stored, not counted against the
+               byte budget. This replaced the SQL-side NOT LIKE predicate, which was 75% of the read's
+               elapsed time (full nvarchar(max) scan per row; the field A/B measured 4.3x without it). */
+            if (row.QueryText?.Contains(SelfQueryMarker, StringComparison.Ordinal) == true)
+            {
+                continue;
+            }
+
             rows.Add(row);
 
             /* char count × 2 for UTF-16. The plan XML is deduped server-side (NULL on all but the newest
