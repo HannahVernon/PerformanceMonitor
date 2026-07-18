@@ -382,6 +382,10 @@ BEGIN
                             1
                         FROM sys.database_query_store_options
                         WHERE actual_state IN (1, 2, 4)
+                        /*readonly_reason bit 8 = read-only BECAUSE readable secondary replica: its QS
+                          content is the primary's replicated tables, not local activity - skip (#1558).
+                          Catches RDS read replicas and geo-secondaries the AG check above misses.*/
+                        AND   readonly_reason & 8 = 0
                     );';
 
                 DECLARE @qs_exec_sp nvarchar(256) = QUOTENAME(@database_name) + N'.sys.sp_executesql';
