@@ -83,16 +83,57 @@
 }
 .view-card .vc-meta { font-size: 0.72rem; color: var(--muted); }
 
-/* ─────────────────────────── import panel ─────────────────────────── */
+/* enriched card: panel count + distinct viz-type chips (fetched per view — the list summary omits the definition) */
+.view-card .vc-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.45rem; }
+.view-card .vc-chips:empty { display: none; }
+.view-card .vc-chip {
+  font-size: 0.7rem;
+  color: var(--dim);
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+}
+.view-card .vc-chip.count { color: var(--fg); font-weight: 600; }
 
-.import-panel {
+/* ─────────────────────────── first-run hero (empty list) ─────────────────────────── */
+
+.views-hero {
+  max-width: 640px;
+  margin: 2rem auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+}
+.views-hero .hero-title { font-size: 1.4rem; font-weight: 700; color: var(--fg); }
+.views-hero .hero-pitch { font-size: 0.95rem; color: var(--dim); line-height: 1.55; }
+.views-hero .hero-cta { font-size: 0.95rem; padding: 0.55rem 1.4rem; }
+.views-hero .hero-suggest { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
+.views-hero .hero-suggest-label { font-size: 0.75rem; color: var(--muted); }
+.views-hero .hero-suggest-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; }
+.views-hero .hero-chip {
+  font-size: 0.78rem;
+  color: var(--dim);
   background: var(--card);
   border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+}
+.views-hero .import-panel { width: 100%; text-align: left; margin: 0.5rem 0 0; }
+
+/* ─────────────────────────── import panel ─────────────────────────── */
+
+/* Secondary to the primary "New view": a quiet dashed disclosure, not a filled card that competes for the eye. */
+.import-panel {
+  background: transparent;
+  border: 1px dashed var(--border);
   border-radius: var(--radius);
-  padding: 0.6rem 0.85rem;
+  padding: 0.5rem 0.85rem;
   margin-bottom: 1.25rem;
 }
-.import-panel > summary { cursor: pointer; font-weight: 600; font-size: 0.88rem; color: var(--dim); }
+.import-panel > summary { cursor: pointer; font-weight: 600; font-size: 0.82rem; color: var(--muted); }
 .import-panel > summary:hover { color: var(--fg); }
 .import-body { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; }
 .import-box {
@@ -146,24 +187,65 @@
 .panels-box { display: flex; flex-direction: column; gap: 1.1rem; margin-bottom: 1rem; }
 
 .panel-editor { padding: 0.9rem 1rem; }
-.panel-editor-head { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.75rem; }
+.panel-editor-head { display: flex; align-items: baseline; gap: 0.4rem; margin-bottom: 0.75rem; }
 .panel-editor-head .panel-editor-title { font-weight: 700; font-size: 0.9rem; color: var(--fg); }
+/* The header echo — "Panel N · Top Waits (SQL2025)" — reads as a lighter continuation of the panel number. */
+.panel-editor-head .panel-editor-sub { color: var(--muted); font-weight: 400; font-size: 0.85rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-editor-head .panel-editor-sub:empty { display: none; }
 .panel-editor-head .spacer { flex: 1; }
 
-.editor-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 0.85rem;
+/* Two-column panel editor (M2): config left, live preview right (sticky). Collapses to stacked under 900px. The
+   preview column only appears once a viz is chosen (progressive disclosure), so single-column is the default. */
+.panel-editor-body { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+.panel-editor-body.has-preview { grid-template-columns: minmax(0, 1fr) minmax(320px, 40%); }
+.panel-config { min-width: 0; }
+.panel-preview-col { position: sticky; top: 1rem; align-self: start; min-width: 0; }
+@media (min-width: 901px) {
+  /* in two-column mode the preview sits at the top of its own column — drop the section divider line there */
+  .panel-editor-body.has-preview .panel-preview-col { border-top: none; padding-top: 0; margin-top: 0; }
+}
+@media (max-width: 900px) {
+  .panel-editor-body.has-preview { grid-template-columns: 1fr; }
+  .panel-preview-col { position: static; }
 }
 
-.editor-block { margin-top: 0.85rem; }
+/* Identity row: Title is free text and deserves a wider track than the 2-option Width select (widest -> Title,
+   narrowest -> Width). Collapses to 2-up, then 1-up, as the (already narrowed) config column shrinks. */
+.editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 0.7fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+  align-items: end;
+}
+@media (max-width: 1200px) {
+  .editor-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 620px) {
+  .editor-grid { grid-template-columns: 1fr; }
+}
+
+/* Section blocks (Parameters / Fields / Preview) are a distinct HEAVIER tier than the identity-row field labels:
+   a bordered divider + a larger, non-uppercase, semibold, brighter label. Uppercase stays reserved for the
+   baseline's sidebar headers + table th; the identity-row .field-label keeps the lighter (small/uppercase) tier. */
+.editor-block { margin-top: 0.85rem; border-top: 1px solid var(--border); padding-top: 0.85rem; }
 .editor-block .block-label {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--muted);
-  margin-bottom: 0.4rem;
+  font-size: 0.8rem;
+  text-transform: none;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--dim);
+  margin-bottom: 0.5rem;
+}
+/* A one-line helper under a section label (e.g. the Fields "detected from a live sample" note). */
+.block-help { font-size: 0.75rem; color: var(--muted); margin: -0.15rem 0 0.55rem; }
+/* Progressive-disclosure hint shown before a read / viz is chosen (M5). */
+.panel-hint {
+  font-size: 0.85rem;
+  color: var(--dim);
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
 }
 
 /* params */

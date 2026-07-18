@@ -39,24 +39,52 @@ export async function renderViewList(main) {
   const views = Array.isArray(res.data) ? res.data : [];
   const nodes = [listHead(canEdit)];
 
-  if (canEdit) {
-    nodes.push(importPanel());
-  }
-
+  /* Empty list -> a real first-run hero that sells the feature (M4), not a bare strip. The hero carries its own
+     New view + Import affordances (can_edit only), so the standalone import panel is only shown once views exist. */
   if (!views.length) {
-    nodes.push(
-      emptyStrip(
-        canEdit
-          ? "No custom views yet. Click “New view” to compose one from the read catalog, or paste an exported view above."
-          : "No custom views yet. Views are composed on the machine running Darling (loopback)."
-      )
-    );
+    nodes.push(firstRunHero(canEdit));
     mount(main, nodes);
     return;
   }
 
+  if (canEdit) {
+    nodes.push(importPanel());
+  }
+
   nodes.push(el("div", { class: "view-cards" }, views.map((v) => viewCard(v))));
   mount(main, nodes);
+}
+
+/* First-run hero (M4): a centered pitch + a prominent New view + a few starting-point ideas + the (secondary)
+   import. A read-only network seat can't compose, so it gets an explanatory variant (no New view / import). */
+function firstRunHero(canEdit) {
+  if (!canEdit) {
+    return el("div", { class: "views-hero" }, [
+      el("div", { class: "hero-title", text: "No custom views yet" }),
+      el("div", {
+        class: "hero-pitch",
+        text:
+          "Custom views are composed on the machine running Darling (a loopback connection). Once created they " +
+          "appear here for every seat to open and export.",
+      }),
+    ]);
+  }
+  const suggestions = ["Top waits by server", "CPU & memory trends", "Blocking & deadlock snapshot"];
+  return el("div", { class: "views-hero" }, [
+    el("div", { class: "hero-title", text: "Compose your own dashboards" }),
+    el("div", {
+      class: "hero-pitch",
+      text:
+        "Pick from the read catalog, choose a visualization (table, line, stat, or bandlist), set its parameters, " +
+        "and save a named view every seat can open — no SQL and no query engine, just the reads Darling already collects.",
+    }),
+    el("a", { class: "btn primary hero-cta", href: "#/view/new", text: "New view" }),
+    el("div", { class: "hero-suggest" }, [
+      el("span", { class: "hero-suggest-label", text: "Popular starting points" }),
+      el("div", { class: "hero-suggest-chips" }, suggestions.map((s) => el("span", { class: "hero-chip", text: s }))),
+    ]),
+    importPanel(),
+  ]);
 }
 
 function listHead(canEdit) {
@@ -70,11 +98,36 @@ function listHead(canEdit) {
 function viewCard(v) {
   const meta =
     "v" + v.version + " · updated " + relTime(v.updated_at) + (v.updated_by ? " by " + v.updated_by : "");
-  return el("a", { class: "view-card card", href: "#/view/" + encodeURIComponent(v.id) }, [
+  const chips = el("div", { class: "vc-chips" });
+  const card = el("a", { class: "view-card card", href: "#/view/" + encodeURIComponent(v.id) }, [
     el("div", { class: "vc-name", text: v.name }),
     v.description ? el("div", { class: "vc-desc", text: v.description }) : null,
+    chips,
     el("div", { class: "vc-meta", text: meta }),
   ]);
+  enrichCard(v.id, chips);
+  return card;
+}
+
+/* The list summary omits the definition (kept lightweight server-side), so panel count + distinct viz-type chips
+   are fetched per card and filled in progressively — the card renders immediately and never blocks on this fetch,
+   and a failed/empty fetch just leaves the (display:none-when-empty) chip row absent. */
+async function enrichCard(id, chips) {
+  const res = await api.getView(id);
+  if (res.kind !== "data" || !res.data) return;
+  const def = res.data.definition || {};
+  const panels = Array.isArray(def.panels) ? def.panels : [];
+  if (!panels.length) return;
+  const vizTypes = [];
+  for (const p of panels) {
+    const viz = p && typeof p.viz === "string" ? p.viz : null;
+    if (viz && !vizTypes.includes(viz)) vizTypes.push(viz);
+  }
+  const nodes = [
+    el("span", { class: "vc-chip count", text: panels.length + (panels.length === 1 ? " panel" : " panels") }),
+  ];
+  for (const viz of vizTypes) nodes.push(el("span", { class: "vc-chip viz", text: viz }));
+  mount(chips, nodes);
 }
 
 /* Paste-to-import (can_edit only): parse -> client-validate against the catalog -> POST (backend re-validates).

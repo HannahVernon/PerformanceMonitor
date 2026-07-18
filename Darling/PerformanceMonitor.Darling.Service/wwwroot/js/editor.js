@@ -204,13 +204,22 @@ function buildEditor(main, ctx) {
   }
 
   async function onSave() {
-    const problem = saveBlocker(model, ctx.catalog);
+    saveBtn.disabled = true;
+
+    /* Auto-derive-on-save (B1): seed any field-less table/line/stat panel from a fresh live sample so the stored
+       definition never carries an undefined columns/series/stats array (which would crash the shared renderer for
+       EVERY seat). A panel with no live sample stays un-derived and is caught by the field-config backstop below. */
+    mount(saveStatus, el("span", { class: "muted", text: "Preparing…" }));
+    await ensureFieldConfigs(model, ctx.catalog);
+
+    const problem = saveBlocker(model, ctx.catalog) || fieldConfigProblem(model);
     if (problem) {
+      saveBtn.disabled = false;
+      rebuildPanels(); // surface any field-config the auto-derive DID populate
       mount(saveStatus, el("span", { class: "strip error", text: problem }));
       return;
     }
 
-    saveBtn.disabled = true;
     mount(saveStatus, el("span", { class: "muted", text: "Saving…" }));
 
     const body = {
@@ -263,7 +272,9 @@ function handleSaveError(res, saveStatus, ctx, main) {
   mount(saveStatus, el("div", { class: "strip error" }, parts));
 }
 
-/** The reason SAVE is blocked (name/panels/read/viz/required-params), or null when the view is savable. */
+/** The reason SAVE is blocked (name/panels/read/viz/required-params), or null when the view is savable. This is
+ *  the button-DISABLING gate; the field-config requirement is enforced separately in onSave (see
+ *  fieldConfigProblem) AFTER an auto-derive pass, so the Save click is never blocked from running that derive. */
 function saveBlocker(model, catalog) {
   if (!model.name || !model.name.trim()) return "Enter a view name.";
   if (!model.panels.length) return "Add at least one panel.";
@@ -278,6 +289,53 @@ function saveBlocker(model, catalog) {
   return null;
 }
 
+/** Which vizzes need a load-bearing field array: table -> columns, line -> series, stat -> stats (bandlist has none). */
+function needsFieldConfig(p) {
+  return p.viz === "table" || p.viz === "line" || p.viz === "stat";
+}
+
+/** The panel's load-bearing field array for its viz, or null for a viz that has none. */
+function fieldArray(p) {
+  const c = p.vizcfg || {};
+  if (p.viz === "table") return c.columns;
+  if (p.viz === "line") return c.series;
+  if (p.viz === "stat") return c.stats;
+  return null;
+}
+
+/** Whether a table/line/stat panel has at least one configured field. */
+function hasFieldConfig(p) {
+  const arr = fieldArray(p);
+  return Array.isArray(arr) && arr.length > 0;
+}
+
+/* Auto-derive-on-save feeder (B1): fetch a live sample for each field-less table/line/stat panel and seed its
+   vizcfg via derive.js, so the author rarely hits the fieldConfigProblem backstop. Skips a panel with no read / an
+   unfilled required param / no live sample — those the backstop reports. */
+async function ensureFieldConfigs(model, catalog) {
+  for (const p of model.panels) {
+    if (!needsFieldConfig(p) || hasFieldConfig(p)) continue;
+    if (!p.read || missingRequired(p, catalog).length) continue;
+    const res = await readTool(p.read, cleanParams(p.params));
+    if (res.kind === "data" && res.data) {
+      p.vizcfg = derive.deriveVizConfig(res.data, p.viz, SERIES_COLORS);
+    }
+  }
+}
+
+/** The reason SAVE's field-config backstop trips (a table/line/stat panel still without fields), or null. */
+function fieldConfigProblem(model) {
+  for (let i = 0; i < model.panels.length; i++) {
+    const p = model.panels[i];
+    if (needsFieldConfig(p) && !hasFieldConfig(p)) {
+      return (
+        "Panel " + (i + 1) + ": add at least one field (use Auto-detect fields) or adjust the read so a sample is available."
+      );
+    }
+  }
+  return null;
+}
+
 /* ─────────────────────────── one panel editor ─────────────────────────── */
 
 function buildPanelEditor(p, index, ctx) {
@@ -288,6 +346,8 @@ function buildPanelEditor(p, index, ctx) {
   const paramsBox = el("div", { class: "params-box" });
   const vizcfgBox = el("div", { class: "vizcfg-box" });
   const previewBox = el("div", { class: "panel-preview" });
+  const bodyBox = el("div", { class: "panel-editor-body" });
+  const headSub = el("span", { class: "panel-editor-sub" });
 
   const readSelect = buildReadSelect(catalog, p.read);
   readSelect.addEventListener("change", async () => {
@@ -295,8 +355,11 @@ function buildPanelEditor(p, index, ctx) {
     p.params = defaultParams(catalog, p.read);
     p.vizcfg = {};
     rebuildParams();
+    rebuildBody(); // reveal Parameters (or the "choose a read" hint) as prerequisites are met (M5)
+    refreshHead();
     ctx.refreshSaveState();
     await refreshSampleAndDerive({ resetViz: true });
+    rebuildBody(); // a viz may now be auto-suggested -> reveal Fields + Preview
     schedulePreview();
   });
 
@@ -305,6 +368,7 @@ function buildPanelEditor(p, index, ctx) {
     p.viz = vizSelect.value;
     if (lastSample) p.vizcfg = derive.deriveVizConfig(lastSample, p.viz, SERIES_COLORS);
     rebuildVizcfg();
+    rebuildBody(); // reveal Fields + Preview once a viz is chosen (M5)
     ctx.refreshSaveState();
     schedulePreview();
   });
@@ -323,13 +387,24 @@ function buildPanelEditor(p, index, ctx) {
   titleInput.value = p.title;
   titleInput.addEventListener("input", () => {
     p.title = titleInput.value;
+    refreshHead();
     schedulePreview();
   });
 
-  const autoBtn = el("button", { class: "btn small", type: "button", text: "Auto-detect fields" });
+  /* "Auto-detect fields" first, then "Re-detect from sample" once a config exists — its real job is re-inspect-
+     and-rebuild (it DISCARDS manual field edits), so the label distinguishes the first detect from a re-detect. */
+  const autoBtn = el("button", { class: "btn small", type: "button" });
+  function refreshAutoBtn() {
+    autoBtn.textContent = hasVizcfg(p) ? "Re-detect from sample" : "Auto-detect fields";
+  }
   autoBtn.addEventListener("click", async () => {
     await refreshSampleAndDerive({ resetViz: false, force: true });
+    rebuildBody();
     schedulePreview();
+  });
+  const fieldsHelp = el("div", {
+    class: "block-help",
+    text: "Detected from a live sample; edit below or re-detect.",
   });
 
   const upBtn = el("button", { class: "btn small icon", type: "button", text: "↑", title: "Move up", "aria-label": "Move panel up" });
@@ -351,10 +426,27 @@ function buildPanelEditor(p, index, ctx) {
     ctx.rebuildPanels();
   });
 
+  /* Stable section nodes composed by rebuildBody() — created once so their inputs keep focus/state across a
+     progressive-disclosure rebuild. */
+  const identityGrid = el("div", { class: "editor-grid" }, [
+    field("Read", readSelect),
+    field("Visualization", vizSelect),
+    field("Width", spanSelect),
+    field("Title", titleInput, "field-title"),
+  ]);
+  const paramsSection = labeledBlock("Parameters", paramsBox);
+  const fieldsSection = labeledBlock(
+    "Fields",
+    el("div", { class: "vizcfg-wrap" }, [fieldsHelp, el("div", { class: "vizcfg-actions" }, [autoBtn]), vizcfgBox])
+  );
+  const previewSection = labeledBlock("Preview", previewBox);
+  previewSection.classList.add("panel-preview-col");
+
   function rebuildParams() {
     mount(
       paramsBox,
       buildParamInputs(p, catalog, fleet, () => {
+        refreshHead(); // a `server` param feeds the panel-header echo
         ctx.refreshSaveState();
         schedulePreview();
         maybeDeriveOnParamChange();
@@ -364,6 +456,39 @@ function buildPanelEditor(p, index, ctx) {
 
   function rebuildVizcfg() {
     mount(vizcfgBox, buildVizcfgEditor(p, lastSample, schedulePreview));
+    refreshAutoBtn();
+  }
+
+  /* The panel-header echo: "Panel N · <title or read> (<server param>)" so a long list of panels is scannable. */
+  function refreshHead() {
+    const label = p.title || p.read || "";
+    const server = serverParamValue(p, catalog);
+    let text = "";
+    if (label) text += " · " + label;
+    if (server) text += " (" + server + ")";
+    headSub.textContent = text;
+  }
+
+  /* Progressive disclosure (M5) + two-column layout (M2): the identity row is always shown; Parameters appears
+     once a read is chosen and Fields + the live Preview once a viz is chosen. With a preview present the body is a
+     two-column grid (config left, sticky preview right) that collapses to stacked under ~900px. */
+  function rebuildBody() {
+    const config = [identityGrid];
+    if (!p.read) {
+      config.push(el("div", { class: "panel-hint", text: "Choose a read to begin." }));
+    } else {
+      config.push(paramsSection);
+      if (p.viz) {
+        config.push(fieldsSection);
+      } else {
+        config.push(el("div", { class: "panel-hint", text: "Choose a visualization to configure its fields and preview." }));
+      }
+    }
+    const hasPreview = !!(p.read && p.viz);
+    const kids = [el("div", { class: "panel-config" }, config)];
+    if (hasPreview) kids.push(previewSection);
+    bodyBox.className = "panel-editor-body" + (hasPreview ? " has-preview" : "");
+    mount(bodyBox, kids);
   }
 
   /* If the operator finishes a previously-missing required param and there is no vizcfg yet, derive one. */
@@ -371,6 +496,7 @@ function buildPanelEditor(p, index, ctx) {
     if (!p.read || hasVizcfg(p)) return;
     if (missingRequired(p, catalog).length) return;
     await refreshSampleAndDerive({ resetViz: !p.viz });
+    rebuildBody();
   }
 
   /* Fetch one live sample with the current params and (re)seed the vizcfg from it. Skips when a required param
@@ -425,26 +551,21 @@ function buildPanelEditor(p, index, ctx) {
 
   rebuildParams();
   rebuildVizcfg();
+  refreshHead();
+  rebuildBody();
   primeSample();
   schedulePreview();
 
   return el("div", { class: "panel-editor card" }, [
     el("div", { class: "panel-editor-head" }, [
       el("span", { class: "panel-editor-title", text: "Panel " + (index + 1) }),
+      headSub,
       el("div", { class: "spacer" }),
       upBtn,
       downBtn,
       removeBtn,
     ]),
-    el("div", { class: "editor-grid" }, [
-      field("Read", readSelect),
-      field("Visualization", vizSelect),
-      field("Width", spanSelect),
-      field("Title", titleInput),
-    ]),
-    labeledBlock("Parameters", paramsBox),
-    labeledBlock("Fields", el("div", { class: "vizcfg-wrap" }, [el("div", { class: "vizcfg-actions" }, [autoBtn]), vizcfgBox])),
-    labeledBlock("Preview", previewBox),
+    bodyBox,
   ]);
 }
 
@@ -825,8 +946,11 @@ function itemList(className, items, renderRow, onChange, addLabel, makeNew) {
   return box;
 }
 
-function field(label, control) {
-  return el("label", { class: "editor-field" }, [el("span", { class: "field-label", text: label }), control]);
+function field(label, control, extraClass) {
+  return el("label", { class: "editor-field" + (extraClass ? " " + extraClass : "") }, [
+    el("span", { class: "field-label", text: label }),
+    control,
+  ]);
 }
 
 function labeledBlock(label, node) {
@@ -871,6 +995,16 @@ function firstRow(sample, rowsKey) {
 
 function readByName(catalog, name) {
   return (catalog.reads || []).find((r) => r.name === name) || null;
+}
+
+/* The value of a read's `server`-typed param (if any) — feeds the panel-header echo "Panel N · Title (SERVER)". */
+function serverParamValue(p, catalog) {
+  const rd = readByName(catalog, p.read);
+  if (!rd) return "";
+  const sp = (rd.params || []).find((prm) => prm.type === "server");
+  if (!sp) return "";
+  const v = p.params ? p.params[sp.name] : null;
+  return v == null || v === "" ? "" : String(v);
 }
 
 function missingRequired(panel, catalog) {

@@ -88,11 +88,21 @@ export const VIZ = {
   bandlist: vizBandlist,
 };
 
+/**
+ * A descriptor whose load-bearing field array (table.columns / stat.stats / line.series) is missing or empty —
+ * a stored/imported/AI-drafted/older-JSON panel that never got a field-config. Rather than let `.map` throw a raw
+ * "Cannot read properties of undefined" at EVERY seat (including the read-only network viewer), each viz below
+ * guards its array and renders this instead. The shared renderer must tolerate any structurally-valid-but-
+ * incomplete descriptor.
+ */
+const NO_FIELDS_MSG = "No fields configured — edit this view and run Auto-detect fields.";
+
 /* table: desc = { rowsKey, columns:[{key,label,format,align,wrap,mono,sevKey,statusSev}] } */
 function vizTable(data, desc) {
+  const cols = Array.isArray(desc.columns) ? desc.columns : [];
+  if (!cols.length) return emptyStrip(NO_FIELDS_MSG);
   const rows = getPath(data, desc.rowsKey) || [];
   if (!rows.length) return emptyStrip(desc.emptyText || "No rows in this window.");
-  const cols = desc.columns;
 
   const head = el(
     "tr",
@@ -130,24 +140,32 @@ function cell(row, c) {
   return el("td", { class: cls.join(" ") || null, text });
 }
 
-/* stat: desc = { stats:[{key,label,format}] } over the tool's top-level object */
+/* stat: desc = { stats:[{key,label,format,small?,sev?}] } over the tool's top-level object. A stat descriptor may
+   carry a PRE-COMPUTED severity (`sev`/`severity`, e.g. "Critical") — colored here from that hint only (R1: the
+   browser never re-derives a band); absent the hint the value keeps the default color. */
 function vizStat(data, desc) {
+  const stats = Array.isArray(desc.stats) ? desc.stats : [];
+  if (!stats.length) return emptyStrip(NO_FIELDS_MSG);
   return el(
     "div",
     { class: "stats" },
-    desc.stats.map((s) =>
-      el("div", { class: "stat" }, [
-        el("div", { class: "value" + (s.small ? " small" : ""), text: applyFormat(s.format, getPath(data, s.key)) }),
+    stats.map((s) => {
+      const sev = s.sev || s.severity;
+      const valueClass = "value" + (s.small ? " small" : "") + (sev ? " " + sevClass(sev) : "");
+      return el("div", { class: "stat" }, [
+        el("div", { class: valueClass, text: applyFormat(s.format, getPath(data, s.key)) }),
         el("div", { class: "label", text: s.label }),
-      ])
-    )
+      ]);
+    })
   );
 }
 
 /* line: desc = { rowsKey, xKey, series:[{key,label,color?}], format? } */
 function vizLine(data, desc) {
+  const seriesCfg = Array.isArray(desc.series) ? desc.series : [];
+  if (!seriesCfg.length) return emptyStrip(NO_FIELDS_MSG);
   const points = getPath(data, desc.rowsKey) || [];
-  const series = desc.series.map((s, i) => ({
+  const series = seriesCfg.map((s, i) => ({
     key: s.key,
     label: s.label,
     color: s.color || SERIES_COLORS[i % SERIES_COLORS.length],
