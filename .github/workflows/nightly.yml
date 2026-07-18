@@ -85,6 +85,13 @@ jobs:
       - name: Publish Darling Viewer
         run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
 
+      # Self-contained viewer publish that feeds the remote-seat Velopack Setup.exe (#1555), the same
+      # publish shape build.yml uses for the Dashboard/Lite Velopack packs. This is IN ADDITION to the
+      # framework-dependent "Publish Darling Viewer" above, which still feeds the co-located viewer\
+      # folder inside PerformanceMonitorDarling-*.zip — that zip is unchanged.
+      - name: Publish Darling Viewer (self-contained for Velopack)
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -r win-x64 --self-contained -o publish/DarlingViewer-velopack
+
       # Same cache key as build.yml's release path: the fetch script's content hash (the SHA256
       # pins live inside it). The ~340MB EDB/TimescaleDB fetch runs at most once per pin-set per
       # branch; nightly and release runs share the assembled zip whenever the cache is visible.
@@ -136,10 +143,27 @@ jobs:
 
           Compress-Archive -Path 'publish/Darling/*' -DestinationPath "releases/PerformanceMonitorDarling-$version.zip" -Force
 
+      # Darling viewer remote-seat installer (#1555). Nightly ships it UNSIGNED like every other nightly
+      # artifact. Mirrors build.yml's release vpk pack (same pack id / exe / channel) but packs from the
+      # raw self-contained publish (no SignPath), and deliberately does NOT touch the Velopack update
+      # feed: the nightly GitHub release is deleted + recreated each night, so there is no persistent
+      # delta chain to `vpk download`/`vpk upload` from — we ship a standalone full Setup.exe as a plain
+      # release asset. Copied to a deterministic name so the checksum + upload steps below pick it up.
+      # Purely additive: the co-located viewer inside PerformanceMonitorDarling-*.zip is untouched.
+      - name: Create Darling Viewer Setup.exe (Velopack, unsigned)
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          dotnet tool install -g vpk --version 1.2.0
+          New-Item -ItemType Directory -Force -Path releases/velopack-darlingviewer
+          vpk pack -u PerformanceMonitorDarlingViewer -v $version -p publish/DarlingViewer-velopack -e PerformanceMonitor.Darling.Viewer.exe -o releases/velopack-darlingviewer --channel darlingviewer
+          $setup = Get-ChildItem releases/velopack-darlingviewer/*Setup.exe | Select-Object -First 1
+          Copy-Item $setup.FullName "releases/PerformanceMonitorDarlingViewer-$version-Setup.exe"
+
       - name: Generate checksums
         shell: pwsh
         run: |
-          $checksums = Get-ChildItem releases/*.zip | ForEach-Object {
+          $checksums = Get-ChildItem releases/*.zip, releases/*.exe | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"
           }
@@ -176,7 +200,7 @@ jobs:
             --title "Nightly Build ($version)" `
             --notes $body `
             --prerelease `
-            releases/*.zip releases/SHA256SUMS.txt
+            releases/*.zip releases/*.exe releases/SHA256SUMS.txt
 
   # Darling.Tests has live-PostgreSQL tests gated on env vars that the per-PR/push build never
   # sets, so regular CI runs only the ungated subset. This job stands up a throwaway PostgreSQL
