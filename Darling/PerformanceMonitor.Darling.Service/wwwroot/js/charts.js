@@ -133,7 +133,7 @@ export function renderLineChart(spec) {
       pts.push(scaleX(t.getTime()) + "," + plotY(v));
     }
     if (pts.length < 2) continue;
-    root.appendChild(svg("polyline", { class: "series-line", points: pts.join(" "), stroke: s.color }));
+    root.appendChild(svg("polyline", { class: "series-line", points: pts.join(" "), stroke: normalizeColor(s.color) }));
   }
 
   /* Hover overlay: a transparent rect over the plot capturing mousemove. */
@@ -174,7 +174,7 @@ export function renderLineChart(spec) {
     for (const s of series) {
       const v = r[s.key];
       if (v == null || isNaN(v)) continue;
-      hoverDots.appendChild(svg("circle", { class: "hover-dot", cx: px, cy: plotY(v), r: 3.5, fill: s.color }));
+      hoverDots.appendChild(svg("circle", { class: "hover-dot", cx: px, cy: plotY(v), r: 3.5, fill: normalizeColor(s.color) }));
     }
     hoverDots.style.display = "";
 
@@ -185,7 +185,7 @@ export function renderLineChart(spec) {
       const v = r[s.key];
       tooltip.appendChild(
         el("div", { class: "t-row" }, [
-          el("span", { class: "swatch", style: "background:" + s.color }),
+          el("span", { class: "swatch", style: "background:" + normalizeColor(s.color) }),
           el("span", { text: s.label }),
           el("span", { class: "t-val", text: v == null || isNaN(v) ? "—" : formatValue(v) }),
         ])
@@ -212,7 +212,7 @@ function buildLegend(series) {
     { class: "chart-legend" },
     series.map((s) =>
       el("span", { class: "item" }, [
-        el("span", { class: "swatch", style: "background:" + s.color }),
+        el("span", { class: "swatch", style: "background:" + normalizeColor(s.color) }),
         el("span", { text: s.label }),
       ])
     )
@@ -224,6 +224,17 @@ function buildLegend(series) {
  * lines never imply a health state (the alert/band palette stays severity-only). Distinct, colorblind-tolerant.
  */
 export const SERIES_COLORS = ["#2eaef1", "#4dd0e1", "#b39ddb", "#7f8fa6", "#e0e0e0"];
+
+/**
+ * Presentation guard (defense-in-depth behind the server-side ValidateDefinition authority): a series color
+ * reaches a style="background:<color>" sink in the tooltip/legend swatches, so a stored definition's color must
+ * be a #rrggbb hex literal (case-insensitive). Anything else — a named color, a short #abc, a CSS function that
+ * would fetch off-origin and defeat the air-gap, or a non-string — falls back to a safe palette default. Mirrors
+ * the composer's normalizeColor (editor.js imports this one) so the two can never drift.
+ */
+export function normalizeColor(c) {
+  return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : SERIES_COLORS[0];
+}
 
 /** Classic "nice number" rounding (Heckbert): the round-friendly value at or just past `range`. */
 function niceNum(range, round) {

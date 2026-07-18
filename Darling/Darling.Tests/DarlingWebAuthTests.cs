@@ -49,7 +49,9 @@ public sealed class DarlingWebAuthTests
     public void DecideWebAuth_NullRemote_Forbids()
         => Assert.Equal("Forbid", DarlingWebHostService.DecideWebAuth(null, Cidr, hasValidCookie: true, hasValidToken: true).ToString());
 
-    /* ---- Host-header allowlist: the DNS-rebinding guard (security review M1) ---- */
+    /* ---- Host-header allowlist: the DNS-rebinding guard (security review M1; #1576 extends it to BOTH modes) ----
+       The pure decision is unchanged; #1576 wires it into the loopback-only pipeline too (null listen IP), which
+       these null-listenIp rows pin: loopback Hosts pass, a rebound foreign Host fails. */
 
     [Theory]
     [InlineData("localhost", "192.168.1.205", true)]      // loopback name
@@ -61,6 +63,12 @@ public sealed class DarlingWebAuthTests
     [InlineData("evil.com", "192.168.1.205", false)]      // rebound foreign hostname -> rejected
     [InlineData("192.168.1.205", null, false)]            // loopback-only mode: the listen IP is NOT an allowed host
     [InlineData("attacker.internal", null, false)]        // rebound name in loopback-only mode -> rejected
+    /* #1576: loopback-only mode (null listen IP) — loopback Hosts pass, a rebound foreign Host is rejected. */
+    [InlineData("localhost", null, true)]                 // loopback name passes in loopback-only mode
+    [InlineData("127.0.0.1", null, true)]                 // loopback IP passes in loopback-only mode
+    [InlineData("::1", null, true)]                       // IPv6 loopback passes in loopback-only mode
+    [InlineData("", null, true)]                          // empty Host still allowed in loopback-only mode
+    [InlineData("evil.com", null, false)]                 // rebound foreign host in loopback-only mode -> rejected
     public void IsAllowedHost_RejectsReboundForeignHosts(string host, string? listenIp, bool expected)
     {
         var ip = listenIp is null ? null : IPAddress.Parse(listenIp);

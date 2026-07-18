@@ -74,6 +74,7 @@ public static class PgMigrations
         new Migration(28, "query-store-replica-role", V28Sql),
         new Migration(29, "long-query-completions-collector", V29Sql),
         new Migration(30, "web-dashboard-config", V30Sql),
+        new Migration(31, "custom-views-table", V31Sql),
     };
 
     /// <summary>
@@ -359,6 +360,48 @@ CREATE INDEX IF NOT EXISTS idx_long_query_completions_time ON collect.long_query
     private const string V30Sql = @"
 ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_enabled boolean NOT NULL DEFAULT FALSE;
 ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_port integer NOT NULL DEFAULT 5153;";
+
+    /// <summary>
+    /// V31 — the web dashboard's user-authored CUSTOM VIEWS store (#1563): the saved dashboard/notebook
+    /// definitions the web renderer composes from the existing read allowlist. One row per named view; the
+    /// <c>definition</c> is the view JSON (<c>{panels:[{read,params,viz,span,...}]}</c>) validated app-side
+    /// before storage. A NEW config-plane table (the web renderer reads it; the Viewer's composer writes it),
+    /// added additively exactly like V17's control-plane tables.
+    ///
+    /// <para><b>Schema — <c>config</c>, qualified.</b> V31 CREATEs directly in <c>config</c>, and the migrate
+    /// session runs under <c>search_path = collect, config, public</c> (<see cref="PgSchemaGenerator.SearchPath"/>),
+    /// so an UNQUALIFIED <c>CREATE TABLE custom_views</c> would resolve to <c>collect</c> (first in the path) —
+    /// the wrong schema and the wrong ACL (config is the admin-writable surface). Qualifying <c>config.</c> pins
+    /// it into the admin-writable schema, mirroring V17/V18/V30. <c>id</c> is <c>GENERATED ALWAYS AS IDENTITY</c>
+    /// (not <c>serial</c>) so INSERTs need no sequence USAGE grant — the same reasoning as V17's
+    /// <c>config_command</c>. <c>name</c> is UNIQUE (a duplicate insert/rename surfaces as a 409 to the caller);
+    /// <c>definition</c> is <c>jsonb NOT NULL</c> (the engine rejects malformed JSON as a second line of defense
+    /// behind the app-side validator). Timestamps store naive-UTC (<c>now() AT TIME ZONE 'UTC'</c>) to match the
+    /// store-wide convention (Npgsql rejects Kind=Utc against a bare <c>timestamp</c>).
+    ///
+    /// <para><b>Versioned = an IN-PLACE <c>version</c> column + optimistic concurrency</b> (the store's UPDATE
+    /// carries <c>WHERE id = $ AND version = $expected</c>; a 0-rowcount is a stale-write 409), NOT append-only
+    /// history rows — a <c>custom_view_history</c> audit trail is a clean later add if it is ever wanted.</para>
+    ///
+    /// <para><b>NO <c>config_bump_version</c> trigger</b> (deliberately, unlike V17's four desired-state tables):
+    /// custom_views feeds the WEB RENDERER, never the collector/service loop, so a write here has nothing for the
+    /// service to reload — bumping the <c>config_version</c> reload beacon would only trigger a needless service
+    /// reload on every view save. The write grant for the least-privilege viewer role (the web dashboard's
+    /// identity) is an EXPLICIT single-table grant in <see cref="!:DarlingManagedRoles.BuildProvisioningSql"/>
+    /// (and BYO <c>tools/provision-roles.sql</c>), NOT an <c>ALTER DEFAULT PRIVILEGES</c> widening — custom_views
+    /// has no secret columns, so it needs no <c>ViewerRestrictedConfigTables</c> carve.</para>
+    /// </summary>
+    private const string V31Sql = @"
+CREATE TABLE IF NOT EXISTS config.custom_views (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name text NOT NULL UNIQUE,
+    definition jsonb NOT NULL,
+    description text,
+    version integer NOT NULL DEFAULT 1,
+    created_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+    updated_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+    updated_by text
+);";
 
     /// <summary>
     /// V9 — the FinOps copy-parity fields that were user-input config or previously live-only:

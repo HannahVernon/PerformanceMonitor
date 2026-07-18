@@ -152,6 +152,17 @@ a:hover { text-decoration: underline; }
   padding: 1rem;
 }
 .panel { margin-bottom: 1.25rem; }
+
+/* Custom-views renderer grid (#1563): stored panels tile responsively; a span-2 panel spans both columns via
+   the existing .panel.span-2 { grid-column: 1 / -1 } rule below. The grid gap owns spacing, so the panel's
+   stacked-page bottom margin is reset inside the grid. */
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 1.25rem;
+}
+.panel-grid .panel { margin-bottom: 0; }
+
 .panel > h3 {
   margin: 0 0 0.6rem;
   font-size: 0.95rem;
@@ -263,7 +274,8 @@ a:hover { text-decoration: underline; }
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  /* auto-FIT (not auto-fill): 3 tiles stretch to fill the row instead of leaving an empty 4th track. */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 0.75rem;
 }
 .stat {
@@ -273,6 +285,10 @@ a:hover { text-decoration: underline; }
 }
 .stat .value { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .stat .value.small { font-size: 1rem; font-weight: 600; }
+/* A stat whose descriptor carries a pre-computed severity hint colors its value (coloring only, never a re-band). */
+.stat .value.sev-Healthy { color: var(--ok); }
+.stat .value.sev-Warning { color: var(--warn); }
+.stat .value.sev-Critical { color: var(--err); }
 .stat .label { font-size: 0.72rem; color: var(--muted); letter-spacing: 0.3px; margin-top: 2px; }
 
 /* ─────────────────────────── tables ─────────────────────────── */

@@ -76,6 +76,29 @@ public sealed class DarlingManagedRolesTests
     }
 
     [Fact]
+    public void BuildProvisioningSql_GrantsViewerTheNarrowCustomViewsWrite_WithoutWideningTheSchemaGrant()
+    {
+        var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");
+
+        /* #1563: the ONE viewer write — an EXPLICIT single-table grant on config.custom_views (the web
+           dashboard's user-authored view store; editing is loopback-gated server-side). */
+        Assert.Contains("GRANT INSERT, UPDATE, DELETE ON config.custom_views TO viewer;", sql, StringComparison.Ordinal);
+
+        /* It must NOT widen the schema-wide config write to viewer (that grant stays admin-only, pinned here). */
+        Assert.Contains("GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO admin;", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO admin, viewer", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO viewer", sql, StringComparison.Ordinal);
+
+        /* NO ALTER DEFAULT PRIVILEGES grants viewer a write — ADP has no per-table form, so an ADP write would
+           broaden viewer to ALL of config. The default-privileges write grant names admin only. */
+        Assert.DoesNotContain("GRANT INSERT, UPDATE, DELETE ON TABLES TO admin, viewer", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("GRANT INSERT, UPDATE, DELETE ON TABLES TO viewer", sql, StringComparison.Ordinal);
+
+        /* custom_views carries no secret columns, so it is NOT part of the viewer secret-column carve. */
+        Assert.DoesNotContain("REVOKE SELECT ON config.custom_views", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildProvisioningSql_DefaultPrivileges_AutoGrantNewTables()
     {
         var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");

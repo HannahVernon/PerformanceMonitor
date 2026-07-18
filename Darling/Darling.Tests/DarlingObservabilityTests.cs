@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_ThirtyVersions_V29LongQueryCompletions_V30WebDashboardConfig()
+    public void MigrationScripts_ThirtyOneVersions_V30WebDashboardConfig_V31CustomViews()
     {
-        Assert.Equal(30, PgMigrations.Scripts.Count);
+        Assert.Equal(31, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -65,7 +65,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(28, PgMigrations.Scripts[27].Version);
         Assert.Equal(29, PgMigrations.Scripts[28].Version);
         Assert.Equal(30, PgMigrations.Scripts[29].Version);
-        Assert.Equal(30, StorageVersion.SchemaVersion);
+        Assert.Equal(31, PgMigrations.Scripts[30].Version);
+        Assert.Equal(31, StorageVersion.SchemaVersion);
 
         /* V26 (#1506) adds the generic webhook channel's four columns to the V17 control-plane table.
            Schema-qualified config.* and IF NOT EXISTS, per the file's additive-ALTER idiom. */
@@ -102,6 +103,17 @@ public sealed class DarlingObservabilityTests
         var v30 = PgMigrations.Scripts[29].Sql;
         Assert.Contains("ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_enabled boolean NOT NULL DEFAULT FALSE;", v30, StringComparison.Ordinal);
         Assert.Contains("ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_port integer NOT NULL DEFAULT 5153;", v30, StringComparison.Ordinal);
+
+        /* V31 (#1563) creates the custom-views store. Schema-qualified config.* (a bare CREATE would resolve to
+           collect — wrong schema/ACL), a jsonb definition, an IDENTITY id (no sequence USAGE), and — deliberately
+           — NO config_bump_version trigger (views feed the web renderer, not the collector, so no reload beacon). */
+        var v31 = PgMigrations.Scripts[30].Sql;
+        Assert.Contains("CREATE TABLE IF NOT EXISTS config.custom_views (", v31, StringComparison.Ordinal);
+        Assert.Contains("id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY", v31, StringComparison.Ordinal);
+        Assert.Contains("name text NOT NULL UNIQUE", v31, StringComparison.Ordinal);
+        Assert.Contains("definition jsonb NOT NULL", v31, StringComparison.Ordinal);
+        Assert.DoesNotContain("config_bump_version", v31, StringComparison.Ordinal);
+        Assert.DoesNotContain("CREATE TRIGGER", v31, StringComparison.Ordinal);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so

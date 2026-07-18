@@ -1,0 +1,331 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+/*
+ * Custom Views (#1563) UI: the shared buttons, the sidebar + list-page view entries, the renderer chrome, and
+ * the composer form (panel editors, typed param inputs, the vizcfg sub-editors, and the live preview). Layered
+ * over the theme tokens (theme.css) like app.css; loaded globally from index.html.
+ */
+
+/* ─────────────────────────── buttons ─────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  line-height: 1.2;
+  text-decoration: none;
+}
+.btn:hover { background: var(--lighter); text-decoration: none; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg-dark); }
+.btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
+.btn.danger { color: var(--err); border-color: rgba(229, 115, 115, 0.4); }
+.btn.danger:hover { background: rgba(229, 115, 115, 0.14); }
+
+.btn.small { padding: 0.25rem 0.55rem; font-size: 0.78rem; font-weight: 600; }
+.btn.icon { padding: 0.25rem 0.5rem; min-width: 1.9rem; }
+
+/* ─────────────────────────── sidebar view list ─────────────────────────── */
+
+#view-list { padding-bottom: 0.5rem; }
+.view-item {
+  display: block;
+  padding: 0.4rem 1.25rem;
+  color: var(--dim);
+  font-size: 0.9rem;
+  border-left: 3px solid transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.view-item:hover { background: var(--lighter); text-decoration: none; }
+.view-item.active { background: var(--card); border-left-color: var(--accent); color: var(--fg); }
+.view-item.new-view { color: var(--accent); font-weight: 600; }
+.view-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ─────────────────────────── list page ─────────────────────────── */
+
+.view-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+.view-card { display: block; cursor: pointer; transition: border-color 0.1s ease, background 0.1s ease; }
+.view-card:hover { background: var(--lighter); text-decoration: none; }
+.view-card .vc-name { font-weight: 600; font-size: 1rem; color: var(--fg); margin-bottom: 0.2rem; }
+.view-card .vc-desc {
+  font-size: 0.82rem;
+  color: var(--dim);
+  margin-bottom: 0.4rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.view-card .vc-meta { font-size: 0.72rem; color: var(--muted); }
+
+/* enriched card: panel count + distinct viz-type chips (fetched per view — the list summary omits the definition) */
+.view-card .vc-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.45rem; }
+.view-card .vc-chips:empty { display: none; }
+.view-card .vc-chip {
+  font-size: 0.7rem;
+  color: var(--dim);
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+}
+.view-card .vc-chip.count { color: var(--fg); font-weight: 600; }
+
+/* ─────────────────────────── first-run hero (empty list) ─────────────────────────── */
+
+.views-hero {
+  max-width: 640px;
+  margin: 2rem auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+}
+.views-hero .hero-title { font-size: 1.4rem; font-weight: 700; color: var(--fg); }
+.views-hero .hero-pitch { font-size: 0.95rem; color: var(--dim); line-height: 1.55; }
+.views-hero .hero-cta { font-size: 0.95rem; padding: 0.55rem 1.4rem; }
+.views-hero .hero-suggest { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
+.views-hero .hero-suggest-label { font-size: 0.75rem; color: var(--muted); }
+.views-hero .hero-suggest-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; }
+.views-hero .hero-chip {
+  font-size: 0.78rem;
+  color: var(--dim);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+}
+.views-hero .import-panel { width: 100%; text-align: left; margin: 0.5rem 0 0; }
+
+/* ─────────────────────────── import panel ─────────────────────────── */
+
+/* Secondary to the primary "New view": a quiet dashed disclosure, not a filled card that competes for the eye. */
+.import-panel {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.85rem;
+  margin-bottom: 1.25rem;
+}
+.import-panel > summary { cursor: pointer; font-weight: 600; font-size: 0.82rem; color: var(--muted); }
+.import-panel > summary:hover { color: var(--fg); }
+.import-body { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.import-box {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-dark);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  resize: vertical;
+}
+.import-box:focus { outline: none; border-color: var(--accent); }
+.import-actions { display: flex; gap: 0.5rem; }
+
+/* ─────────────────────────── renderer chrome ─────────────────────────── */
+
+.page-head .btn { align-self: center; }
+.view-status:empty { display: none; }
+.view-status { margin-bottom: 0.85rem; }
+
+/* ─────────────────────────── composer ─────────────────────────── */
+
+.editor-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.editor-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.editor-field .field-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+
+.editor-input,
+.editor-select {
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-dark);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 0.85rem;
+  width: 100%;
+}
+.editor-input.mono { font-family: var(--mono); font-size: 0.8rem; }
+.editor-input:focus,
+.editor-select:focus { outline: none; border-color: var(--accent); }
+.editor-check { width: 16px; height: 16px; accent-color: var(--accent); }
+
+.panels-box { display: flex; flex-direction: column; gap: 1.1rem; margin-bottom: 1rem; }
+
+.panel-editor { padding: 0.9rem 1rem; }
+.panel-editor-head { display: flex; align-items: baseline; gap: 0.4rem; margin-bottom: 0.75rem; }
+.panel-editor-head .panel-editor-title { font-weight: 700; font-size: 0.9rem; color: var(--fg); }
+/* The header echo — "Panel N · Top Waits (SQL2025)" — reads as a lighter continuation of the panel number. */
+.panel-editor-head .panel-editor-sub { color: var(--muted); font-weight: 400; font-size: 0.85rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-editor-head .panel-editor-sub:empty { display: none; }
+.panel-editor-head .spacer { flex: 1; }
+
+/* Two-column panel editor (M2): config left, live preview right (sticky). Collapses to stacked under 900px. The
+   preview column only appears once a viz is chosen (progressive disclosure), so single-column is the default. */
+.panel-editor-body { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+.panel-editor-body.has-preview { grid-template-columns: minmax(0, 1fr) minmax(320px, 40%); }
+.panel-config { min-width: 0; }
+.panel-preview-col { position: sticky; top: 1rem; align-self: start; min-width: 0; }
+@media (min-width: 901px) {
+  /* in two-column mode the preview sits at the top of its own column — drop the section divider line there */
+  .panel-editor-body.has-preview .panel-preview-col { border-top: none; padding-top: 0; margin-top: 0; }
+}
+@media (max-width: 900px) {
+  .panel-editor-body.has-preview { grid-template-columns: 1fr; }
+  .panel-preview-col { position: static; }
+}
+
+/* Identity row: Title is free text and deserves a wider track than the 2-option Width select (widest -> Title,
+   narrowest -> Width). Collapses to 2-up, then 1-up, as the (already narrowed) config column shrinks. */
+.editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 0.7fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+  align-items: end;
+}
+@media (max-width: 1200px) {
+  .editor-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 620px) {
+  .editor-grid { grid-template-columns: 1fr; }
+}
+
+/* Section blocks (Parameters / Fields / Preview) are a distinct HEAVIER tier than the identity-row field labels:
+   a bordered divider + a larger, non-uppercase, semibold, brighter label. Uppercase stays reserved for the
+   baseline's sidebar headers + table th; the identity-row .field-label keeps the lighter (small/uppercase) tier. */
+.editor-block { margin-top: 0.85rem; border-top: 1px solid var(--border); padding-top: 0.85rem; }
+.editor-block .block-label {
+  font-size: 0.8rem;
+  text-transform: none;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--dim);
+  margin-bottom: 0.5rem;
+}
+/* A one-line helper under a section label (e.g. the Fields "detected from a live sample" note). */
+.block-help { font-size: 0.75rem; color: var(--muted); margin: -0.15rem 0 0.55rem; }
+/* Progressive-disclosure hint shown before a read / viz is chosen (M5). */
+.panel-hint {
+  font-size: 0.85rem;
+  color: var(--dim);
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+}
+
+/* params */
+.params-box {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.6rem;
+}
+.param-field { display: flex; flex-direction: column; gap: 0.2rem; }
+.param-field .param-name { font-size: 0.8rem; color: var(--dim); font-family: var(--mono); }
+.param-field.required .param-name { color: var(--fg); }
+.param-field .req { color: var(--warn); font-weight: 700; }
+.param-field .param-hint { font-size: 0.68rem; color: var(--muted); }
+.param-field .editor-check { align-self: flex-start; margin-top: 0.2rem; }
+
+/* vizcfg sub-editor */
+.vizcfg-wrap { display: flex; flex-direction: column; gap: 0.6rem; }
+.vizcfg-actions { display: flex; gap: 0.5rem; }
+.cfg { display: flex; flex-direction: column; gap: 0.65rem; }
+
+.item-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.item-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.5rem;
+}
+.item-row .editor-input,
+.item-row .editor-select { width: auto; flex: 1 1 120px; min-width: 90px; }
+.item-row .keyfield { flex: 1 1 140px; min-width: 100px; display: inline-flex; }
+.item-row .keyfield .editor-input { width: 100%; }
+.item-row .color-field { flex: 0 0 auto; }
+
+.keyfield { display: inline-flex; }
+
+/* series color: a constrained picker (#rrggbb) + palette shortcuts — never free text */
+.color-field { display: inline-flex; align-items: center; gap: 0.35rem; }
+.color-picker {
+  width: 34px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-dark);
+  cursor: pointer;
+}
+.palette { display: inline-flex; gap: 0.2rem; }
+.swatch-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  padding: 0;
+  cursor: pointer;
+}
+.swatch-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* preview */
+.panel-preview {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  background: var(--bg-dark);
+}
+.panel-preview .panel { margin-bottom: 0; }
+.panel-preview .panel.card { background: var(--card); }
+
+/* footer */
+.editor-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-top: 1rem;
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.save-status { font-size: 0.82rem; }
+.save-status .strip { padding: 0.35rem 0.6rem; }
+.save-status .strip.error { display: inline-flex; align-items: center; gap: 0.5rem; }

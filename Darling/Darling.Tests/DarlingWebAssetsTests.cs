@@ -39,13 +39,18 @@ public sealed class DarlingWebAssetsTests
     [Theory]
     [InlineData("css/theme.css")]
     [InlineData("css/app.css")]
+    [InlineData("css/editor.css")]
     [InlineData("js/app.js")]
     [InlineData("js/util.js")]
     [InlineData("js/panels.js")]
     [InlineData("js/charts.js")]
+    [InlineData("js/views-api.js")]
+    [InlineData("js/derive.js")]
+    [InlineData("js/editor.js")]
     [InlineData("js/pages/fleet.js")]
     [InlineData("js/pages/server.js")]
     [InlineData("js/pages/alerts.js")]
+    [InlineData("js/pages/views.js")]
     public void Wwwroot_EntryAsset_IsCopiedToTheBuildOutput(string relativePath)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "wwwroot", relativePath.Replace('/', Path.DirectorySeparatorChar));

@@ -11,8 +11,10 @@
 --   admin   -- reads both schemas + writes the operator-config tables (mute rules, alert
 --              dismissals, analysis mutes). The Viewer's default identity (darling.json
 --              postgres.connectAs = "admin").
---   viewer  -- reads both schemas, writes nothing. Point a locked-down Viewer at this with
---              postgres.connectAs = "viewer"; its write actions degrade gracefully.
+--   viewer  -- reads both schemas; the ONLY write it gets is INSERT/UPDATE/DELETE on config.custom_views
+--              (the web dashboard's user-authored view definitions, #1563 -- non-secret JSON, loopback-gated
+--              server-side). All other write actions degrade gracefully. Point a locked-down Viewer at this
+--              with postgres.connectAs = "viewer".
 --
 -- PREREQUISITE: the V8 migration (which the service applies on startup) must already have created
 -- the collect and config schemas and moved the tables into them. Run this AFTER the service has
@@ -20,7 +22,9 @@
 -- idempotent: the GRANT ... ON ALL TABLES statements below re-cover every table that now exists
 -- (including the V17 control-plane tables config_monitored_servers / config_alert_settings /
 -- config_notification / config_collector_schedules / config_service / config_command), and the
--- ALTER DEFAULT PRIVILEGES already auto-grant any config table the owner creates after this runs.
+-- ALTER DEFAULT PRIVILEGES already auto-grant any config table the owner creates after this runs. The one
+-- write that is NOT covered by re-running blindly is the V31 config.custom_views viewer grant in step 3b:
+-- that table only exists once the service has migrated your store to V31, so re-run this script after upgrading.
 --
 -- BEFORE RUNNING:
 --   1. Replace CHANGE_ME_ADMIN_PASSWORD and CHANGE_ME_VIEWER_PASSWORD with strong passwords.
@@ -94,6 +98,14 @@ GRANT SELECT (id, smtp_host, smtp_port, smtp_use_ssl, smtp_from_address, smtp_re
 
 -- 3. config writes -- admin only.
 GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO admin;
+
+-- 3b. Custom views (#1563): the SINGLE viewer write. The web dashboard connects as the least-privilege
+--     viewer role and its custom-view composer writes exactly this one config table (non-secret dashboard
+--     JSON). App-layer editing is loopback-only, enforced server-side; this narrow grant is only the floor
+--     beneath that gate. EXPLICIT single-table statement, NO ALTER DEFAULT PRIVILEGES (ADP has no per-table
+--     form -> it would broaden viewer to ALL of config). config.custom_views is created by the V31 migration,
+--     so re-run this script AFTER the service has migrated your store to V31 (else this line errors: no table).
+GRANT INSERT, UPDATE, DELETE ON config.custom_views TO viewer;
 
 -- 4. Default privileges so NEW tables/views (future collectors, created bare into collect via
 --    search_path) auto-inherit SELECT. FOR ROLE <owner> must name the role that creates them.
