@@ -317,10 +317,12 @@ public sealed class DarlingWorker : BackgroundService
 
         /* Last-applied enabled state of the OPT-IN long-query completion XE session (#1496), so the
            per-sweep reconcile only opens a connection to run CREATE/DROP DDL when the desired state
-           actually changes — null = not yet reconciled (first sweep applies it), true = ensured
-           (enabled), false = confirmed dropped (disabled). Written ONLY by the per-server sweep body
-           (one body per server, INV-2), like the DateTime schedule fields above; not reset on connect,
-           so a default-off collector is drop-confirmed once and then skipped every sweep. */
+           actually changes — null = not yet reconciled (next sweep applies it), true = ensured
+           (enabled), false = confirmed dropped (disabled). Reset to null on every (re)connect so a
+           stopped Azure database-scoped session is re-ensured; in steady state a default-off collector
+           is drop-confirmed once per connect and then skipped every sweep. Written by the per-server
+           sweep body and the connect path (both run on the pool thread, one at a time per server —
+           INV-2), like the DateTime schedule fields above. */
         public bool? LongQueryTraceApplied { get; set; }
     }
 
@@ -1824,6 +1826,11 @@ LIMIT 1", connection);
         {
             var runtime = await DarlingServerConnector.ConnectAsync(server.Config, _logger, cancellationToken);
             server.Runtime = runtime;
+            /* Force the long-query trace (#1496) to re-reconcile on the next sweep after every (re)connect:
+               an Azure database-scoped session can stop on reconnect, so a still-"applied" flag would
+               otherwise skip restarting it. Cheap — the reconcile no-ops unless the desired state differs
+               from what actually exists (ensure is IF-NOT-running START; drop is IF EXISTS). */
+            server.LongQueryTraceApplied = null;
             /* Capture the id once, while the connection is freshly established and non-null: an on-load
                RunOneAsync below can drop server.Runtime on a mid-collection connection-level failure, so any
                later read of server.Runtime.ServerId (the schedule resolve, the connection edge) would NRE. */
