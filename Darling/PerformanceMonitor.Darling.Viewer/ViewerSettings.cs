@@ -191,6 +191,11 @@ public sealed class ViewerSettings
             Password = password,
             Database = "darling",
             SearchPath = ManagedSearchPath,
+            /* #1566: bound the viewer seat's backend count (the service's pools were capped at 24 in
+               #1559, but this string was built independently and rode Npgsql's default of 100). Every
+               pooled connection is a live postgres.exe on Windows; a read-only UI seat polling on 30/60s
+               timers needs a handful, not a hundred. */
+            MaxPoolSize = 10,
         };
         return builder.ConnectionString;
     }
