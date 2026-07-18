@@ -75,13 +75,52 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 public sealed class DarlingMcpHostService : BackgroundService
 {
     private readonly ILogger<DarlingMcpHostService> _logger;
+    private readonly McpRuntimeState _state;
     private WebApplication? _app;
+    private NpgsqlDataSource? _appDataSource;
+    private int _runningPort;
+    private bool _runningNetworkMode;
 
-    public DarlingMcpHostService(ILogger<DarlingMcpHostService> logger)
+    /// <summary>How often the supervisor re-reads the live control-plane state (#1560).</summary>
+    internal static readonly TimeSpan SupervisorPollInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>Backoff after a FAILED start attempt (port in use, credential not ready) so a persistent
+    /// failure logs on a calm cadence instead of every poll tick.</summary>
+    internal static readonly TimeSpan FailedStartBackoff = TimeSpan.FromSeconds(30);
+
+    public DarlingMcpHostService(ILogger<DarlingMcpHostService> logger, McpRuntimeState state)
     {
         _logger = logger;
+        _state = state;
     }
 
+    /// <summary>The supervisor's per-tick verdict — pure over (running, runningPort, enabled, desiredPort)
+    /// so a unit test pins the whole decision table without a server (#1560).</summary>
+    public enum McpSupervisorAction { None, Start, Stop, Restart }
+
+    internal static McpSupervisorAction DecideMcpAction(bool running, int runningPort, bool enabled, int desiredPort)
+    {
+        if (!running)
+        {
+            return enabled ? McpSupervisorAction.Start : McpSupervisorAction.None;
+        }
+
+        if (!enabled)
+        {
+            return McpSupervisorAction.Stop;
+        }
+
+        return runningPort == desiredPort ? McpSupervisorAction.None : McpSupervisorAction.Restart;
+    }
+
+    /// <summary>
+    /// The supervisor loop (#1560): the viewer's Settings toggle writes config_service.mcp_enabled /
+    /// mcp_port, the worker's reload beacon publishes the live values to <see cref="McpRuntimeState"/>,
+    /// and this loop starts / stops / rebinds the inner web app to match — no service restart. Until the
+    /// worker's first publish the FILE values apply (byte-for-byte the old behavior, and the only signal
+    /// available when the store is unreachable). The mcp.network exposure block stays file-defined and
+    /// restart-only by design; the store toggle still stops an exposed server instantly (a kill switch).
+    /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         DarlingConfig config;
@@ -91,17 +130,118 @@ public sealed class DarlingMcpHostService : BackgroundService
         }
         catch (Exception ex)
         {
-            /* The worker logs the missing/broken config as critical; the MCP host just stands down. */
+            /* The worker logs the missing/broken config as critical; without a file config there is no
+               bind/network/store definition to serve with, so the MCP host stands down entirely. */
             _logger.LogDebug("MCP server not started (configuration unavailable): {Message}", ex.Message);
             return;
         }
 
-        if (!config.Mcp.Enabled)
+        var lastFailedStartUtc = DateTime.MinValue;
+        while (!stoppingToken.IsCancellationRequested)
         {
-            _logger.LogDebug("MCP server disabled (mcp.enabled = false)");
+            var published = _state.Read();
+            var enabled = published?.Enabled ?? config.Mcp.Enabled;
+            var desiredPort = published?.Port ?? config.Mcp.Port;
+
+            switch (DecideMcpAction(_app is not null, _runningPort, enabled, desiredPort))
+            {
+                case McpSupervisorAction.Start when DateTime.UtcNow - lastFailedStartUtc >= FailedStartBackoff:
+                    if (!await TryStartServerAsync(config, desiredPort, stoppingToken))
+                    {
+                        lastFailedStartUtc = DateTime.UtcNow;
+                    }
+                    break;
+
+                case McpSupervisorAction.Stop:
+                    _logger.LogInformation("MCP server disabled via the control plane — stopping (no restart needed)");
+                    await StopServerAsync(stoppingToken);
+                    break;
+
+                case McpSupervisorAction.Restart:
+                    _logger.LogInformation(
+                        "MCP port changed via the control plane ({Old} -> {New}) — rebinding", _runningPort, desiredPort);
+                    await StopServerAsync(stoppingToken);
+                    if (!await TryStartServerAsync(config, desiredPort, stoppingToken))
+                    {
+                        lastFailedStartUtc = DateTime.UtcNow;
+                    }
+                    break;
+            }
+
+            try
+            {
+                await Task.Delay(SupervisorPollInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    /// <summary>Stops and disposes the running app + its data source; in managed network mode also
+    /// reconciles the firewall rule off (symmetric with the start-side reconcile — disabling closes the
+    /// box). Safe to call when nothing is running.</summary>
+    private async Task StopServerAsync(CancellationToken cancellationToken)
+    {
+        if (_app is null)
+        {
             return;
         }
 
+        try
+        {
+            await _app.StopAsync(cancellationToken);
+            await _app.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("MCP server stop reported an error (continuing): {Message}", ex.Message);
+        }
+
+        _app = null;
+
+        if (_appDataSource is not null)
+        {
+            await _appDataSource.DisposeAsync();
+            _appDataSource = null;
+        }
+
+        if (_runningNetworkMode && OperatingSystem.IsWindows())
+        {
+            await ReconcileMcpFirewallAsync(_runningPort, enable: false, null, cancellationToken);
+        }
+
+        _runningNetworkMode = false;
+        _runningPort = 0;
+    }
+
+    /// <summary>Failed-start cleanup: a partially built app / data source must not leak between attempts.</summary>
+    private async Task DisposeFailedStartAsync()
+    {
+        if (_app is not null)
+        {
+            try { await _app.DisposeAsync(); } catch { /* best-effort */ }
+            _app = null;
+        }
+
+        if (_appDataSource is not null)
+        {
+            try { await _appDataSource.DisposeAsync(); } catch { /* best-effort */ }
+            _appDataSource = null;
+        }
+    }
+
+    /// <summary>
+    /// One start ATTEMPT of the inner MCP web app at <paramref name="effectivePort"/> (#1560): the whole
+    /// pre-supervisor startup body, with two changes — the port comes from the live control-plane value
+    /// rather than the file, and every bail path returns false so the supervisor can retry with backoff
+    /// instead of standing down for the process lifetime. The bind/network/token decisions still come from
+    /// the FILE-loaded config (network exposure is deliberately restart-only); returns true when the app
+    /// is started and listening.
+    /// </summary>
+    private async Task<bool> TryStartServerAsync(DarlingConfig config, int effectivePort, CancellationToken stoppingToken)
+    {
         /* Decide the effective bind PURELY, then map the reason -> severity here (Round-4 #7: the caller,
            not the pure fn, chooses LogCritical vs LogWarning; tests assert (Mode, Reason) without a logger). */
         var bind = ResolveMcpBind(config.Mcp, config.Postgres.Managed);
@@ -158,10 +298,10 @@ public sealed class DarlingMcpHostService : BackgroundService
             /* Port-in-use pre-check — Lite's StartMcpServerAsync guard, via the shared utility, against the
                REAL bind address (D3-e: not always IPAddress.Loopback). Done before the firewall reconcile so a
                bail here leaves the firewall untouched. */
-            if (await PortUtilityService.IsTcpPortListeningAsync(config.Mcp.Port, primaryBind, stoppingToken))
+            if (await PortUtilityService.IsTcpPortListeningAsync(effectivePort, primaryBind, stoppingToken))
             {
-                _logger.LogError("Port {Port} is already in use — MCP server not started", config.Mcp.Port);
-                return;
+                _logger.LogError("Port {Port} is already in use — MCP server not started this attempt; will retry", effectivePort);
+                return false;
             }
 
             /* Firewall reconcile (managed mode only; best-effort, never fatal). Symmetric like the store's D1
@@ -170,7 +310,7 @@ public sealed class DarlingMcpHostService : BackgroundService
             if (config.Postgres.Managed && OperatingSystem.IsWindows())
             {
                 await ReconcileMcpFirewallAsync(
-                    config.Mcp.Port, networkMode, networkMode ? allowedCidr.ToString() : null, stoppingToken);
+                    effectivePort, networkMode, networkMode ? allowedCidr.ToString() : null, stoppingToken);
             }
 
             /* Managed mode: the WORKER owns the bundled server's lifecycle; the MCP host only derives the
@@ -181,13 +321,13 @@ public sealed class DarlingMcpHostService : BackgroundService
                 if (!OperatingSystem.IsWindows())
                 {
                     _logger.LogError("MCP server not started: postgres.managed = true requires Windows");
-                    return;
+                    return false;
                 }
 
                 storeConnectionString = await WaitForManagedConnectionStringAsync(config.Postgres, stoppingToken);
                 if (storeConnectionString is null)
                 {
-                    return;
+                    return false;
                 }
             }
             else
@@ -195,7 +335,10 @@ public sealed class DarlingMcpHostService : BackgroundService
                 storeConnectionString = config.Postgres.ConnectionString;
             }
 
-            await using var postgres = NpgsqlDataSource.Create(storeConnectionString);
+            /* Lifetime tied to the running app (#1560): disposed by StopServerAsync, not this method's
+               scope — the supervisor may keep the app running across many poll ticks. */
+            var postgres = NpgsqlDataSource.Create(storeConnectionString);
+            _appDataSource = postgres;
 
             /* serverId → connection string from config (first entry wins on a duplicate storage
                name, mirroring the worker's FirstOrDefault over runtimes). Resolution is lazy so
@@ -221,17 +364,17 @@ public sealed class DarlingMcpHostService : BackgroundService
                     /* Bind the specific family (not ListenAnyIP), then ALSO both loopback families so a local
                        client resolving "localhost" -> ::1 still works — skipping the loopback Listen(s) when the
                        listen value is itself loopback or a wildcard (0.0.0.0/::), which would collide on the port. */
-                    options.Listen(primaryBind, config.Mcp.Port);
+                    options.Listen(primaryBind, effectivePort);
                     if (ShouldAddLoopbackListeners(primaryBind))
                     {
-                        options.Listen(IPAddress.Loopback, config.Mcp.Port);
-                        options.Listen(IPAddress.IPv6Loopback, config.Mcp.Port);
+                        options.Listen(IPAddress.Loopback, effectivePort);
+                        options.Listen(IPAddress.IPv6Loopback, effectivePort);
                     }
                 }
                 else
                 {
                     /* The default/degraded loopback-only server — byte-for-byte today's bind (both families). */
-                    options.ListenLocalhost(config.Mcp.Port);
+                    options.ListenLocalhost(effectivePort);
                 }
             });
 
@@ -376,22 +519,30 @@ public sealed class DarlingMcpHostService : BackgroundService
             {
                 _logger.LogInformation(
                     "Starting MCP server on http://{Listen}:{Port} (LAN-exposed to {Cidr} behind a bearer token + in-app CIDR; loopback also bound)",
-                    primaryBind, config.Mcp.Port, allowedCidr);
+                    primaryBind, effectivePort, allowedCidr);
             }
             else
             {
-                _logger.LogInformation("Starting MCP server on http://localhost:{Port} (loopback only)", config.Mcp.Port);
+                _logger.LogInformation("Starting MCP server on http://localhost:{Port} (loopback only)", effectivePort);
             }
 
-            await _app.RunAsync(stoppingToken);
+            /* StartAsync, not RunAsync (#1560): the supervisor loop owns the wait — the app keeps
+               serving until StopServerAsync (toggle-off, port change, or shutdown). */
+            await _app.StartAsync(stoppingToken);
+            _runningPort = effectivePort;
+            _runningNetworkMode = networkMode;
+            return true;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            /* Normal shutdown */
+            /* Normal shutdown mid-start. */
+            return false;
         }
         catch (Exception ex)
         {
-            _logger.LogError("MCP server failed: {Message}", ex.Message);
+            _logger.LogError("MCP server failed to start: {Message}", ex.Message);
+            await DisposeFailedStartAsync();
+            return false;
         }
     }
 
@@ -742,9 +893,7 @@ public sealed class DarlingMcpHostService : BackgroundService
         if (_app != null)
         {
             _logger.LogInformation("Stopping MCP server");
-            await _app.StopAsync(cancellationToken);
-            await _app.DisposeAsync();
-            _app = null;
+            await StopServerAsync(cancellationToken);
         }
 
         await base.StopAsync(cancellationToken);
