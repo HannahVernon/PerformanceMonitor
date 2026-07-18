@@ -63,24 +63,30 @@ public sealed class DarlingRetentionTests
     {
         var byName = CollectorCatalog.All.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
 
-        /* The Postgres twin of the Dashboard's DELETE TOP(10000): batched via ctid IN (SELECT ... LIMIT
-           10000), with the time predicate REPEATED in the outer delete so a TimescaleDB hypertable's
-           per-chunk ctid can never delete a fresh row in another chunk. $1 is bound once and referenced by
-           both positions. */
+        /* Batched by TIME SLICE, not by ctid row cap (#1564): reading ctid through TimescaleDB's
+           transparent decompression is unsupported ("transparent decompression only supports tableoid
+           system column"), so the old ctid IN (SELECT ... LIMIT 10000) shape ERRORED whenever any in-range
+           chunk was compressed and the table silently kept its expired rows. Each execution clears the
+           oldest one day of expired rows — one chunk's worth on a hypertable, one day's arrival volume on a
+           plain table — and a slice that deletes nothing terminates the drain. $1 is bound once and
+           referenced by all three positions. */
         Assert.Equal(
-            "DELETE FROM wait_stats WHERE collection_time < $1 AND ctid IN (SELECT ctid FROM wait_stats WHERE collection_time < $1 LIMIT 10000)",
+            "DELETE FROM wait_stats WHERE collection_time < $1 AND collection_time >= (SELECT min(collection_time) FROM wait_stats WHERE collection_time < $1) AND collection_time < (SELECT min(collection_time) FROM wait_stats WHERE collection_time < $1) + INTERVAL '1 days'",
             DarlingRetention.DeleteSqlFor(byName["wait_stats"]));
 
         /* The config snapshots batch on their capture_time, not collection_time. */
         Assert.Equal(
-            "DELETE FROM trace_flags WHERE capture_time < $1 AND ctid IN (SELECT ctid FROM trace_flags WHERE capture_time < $1 LIMIT 10000)",
+            "DELETE FROM trace_flags WHERE capture_time < $1 AND capture_time >= (SELECT min(capture_time) FROM trace_flags WHERE capture_time < $1) AND capture_time < (SELECT min(capture_time) FROM trace_flags WHERE capture_time < $1) + INTERVAL '1 days'",
             DarlingRetention.DeleteSqlFor(byName["trace_flags"]));
 
         /* collection_log's PLAIN-PostgreSQL / conversion-failed FALLBACK still runs through the same batched
            builder (since V23 it is a hypertable, so on Timescale it purges via drop_chunks — pinned below). */
         Assert.Equal(
-            "DELETE FROM collection_log WHERE collection_time < $1 AND ctid IN (SELECT ctid FROM collection_log WHERE collection_time < $1 LIMIT 10000)",
-            DarlingRetention.BatchedDeleteSql("collection_log", "collection_time"));
+            "DELETE FROM collection_log WHERE collection_time < $1 AND collection_time >= (SELECT min(collection_time) FROM collection_log WHERE collection_time < $1) AND collection_time < (SELECT min(collection_time) FROM collection_log WHERE collection_time < $1) + INTERVAL '1 days'",
+            DarlingRetention.TimeSlicedDeleteSql("collection_log", "collection_time"));
+
+        /* The slice width IS the hypertable chunk width — the fallback's unit of work stays one chunk. */
+        Assert.Equal(1, TimescaleSupport.ChunkIntervalDays);
     }
 
     [Fact]
@@ -106,8 +112,8 @@ public sealed class DarlingRetentionTests
            of truth). */
         Assert.Equal(90, DarlingRetention.AlertHistoryRetentionDays);
         Assert.Equal(
-            "DELETE FROM config_alert_log WHERE alert_time < $1 AND ctid IN (SELECT ctid FROM config_alert_log WHERE alert_time < $1 LIMIT 10000)",
-            DarlingRetention.BatchedDeleteSql("config_alert_log", "alert_time"));
+            "DELETE FROM config_alert_log WHERE alert_time < $1 AND alert_time >= (SELECT min(alert_time) FROM config_alert_log WHERE alert_time < $1) AND alert_time < (SELECT min(alert_time) FROM config_alert_log WHERE alert_time < $1) + INTERVAL '1 days'",
+            DarlingRetention.TimeSlicedDeleteSql("config_alert_log", "alert_time"));
     }
 
     /* ---------------- batched-drain loop (pure, injected executor) ---------------- */
@@ -319,20 +325,28 @@ public sealed class DarlingRetentionTests
 
             /* At least our three expired rows go (40-day wait_stats, 70-day collection_log, 100-day
                config_alert_log); a shared dev store may shed more. The extension-free DELETE path on purpose
-               (timescaleAvailable: false) — it must keep working even on a store whose tables ARE hypertables
-               (DELETE is hypertable-agnostic); the drop_chunks branch is TimescaleSupportTests' job. */
-            var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
-            Assert.True(summary.TotalPurged >= 3, $"expected the purge to delete at least the three expired test rows, got {summary.TotalPurged}");
+               (timescaleAvailable: false) — it must keep working even on a store whose tables ARE hypertables,
+               INCLUDING ones with compressed chunks (the shared fixture's compression policies run mid-suite;
+               #1564's time-sliced DELETE rides DML decompression); the drop_chunks branch is
+               TimescaleSupportTests' job. */
+            /* Deliberately NO assertion on the returned global activity count (#1564): the shared dev
+               store's contents at purge time depend on sibling-class order, making the global number
+               flaky ("expected 3, got 2" on one dispatch). The contract is the OWN-SCOPED evidence
+               below, keyed on TestServerId per table, plus the fleet-sentinel audit record. The capturing
+               logger folds any per-table purge warning into the failure text (a silent skip was #1564's
+               whole failure mode). */
+            var purgeLog = new CapturingTestLogger();
+            await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, purgeLog, ct);
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))
             {
                 read.Parameters.AddWithValue(TestServerId);
                 using var reader = await read.ExecuteReaderAsync(ct);
-                Assert.True(await reader.ReadAsync(ct), "the fresh wait_stats row did not survive the purge");
+                Assert.True(await reader.ReadAsync(ct), $"the fresh wait_stats row did not survive the purge; {purgeLog.Joined}");
                 var survivor = reader.GetDateTime(0);
-                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving row should be the 1-hour one, got {survivor:O}");
-                Assert.False(await reader.ReadAsync(ct), "the 40-day wait_stats row survived the purge");
+                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving row should be the 1-hour one, got {survivor:O}; {purgeLog.Joined}");
+                Assert.False(await reader.ReadAsync(ct), $"the 40-day wait_stats row survived the purge; {purgeLog.Joined}");
             }
 
             using (var read = new NpgsqlCommand(
@@ -340,11 +354,11 @@ public sealed class DarlingRetentionTests
             {
                 read.Parameters.AddWithValue(TestServerId);
                 using var reader = await read.ExecuteReaderAsync(ct);
-                Assert.True(await reader.ReadAsync(ct), "the 45-day collection_log row (inside the 60-day 2x horizon) did not survive the purge");
+                Assert.True(await reader.ReadAsync(ct), $"the 45-day collection_log row (inside the 60-day 2x horizon) did not survive the purge; {purgeLog.Joined}");
                 var survivor = reader.GetDateTime(0);
                 Assert.True(survivor < utcNow.AddDays(-44) && survivor > utcNow.AddDays(-46),
-                    $"the surviving log row should be the 45-day one, got {survivor:O}");
-                Assert.False(await reader.ReadAsync(ct), "the 70-day collection_log row survived past the 60-day horizon");
+                    $"the surviving log row should be the 45-day one, got {survivor:O}; {purgeLog.Joined}");
+                Assert.False(await reader.ReadAsync(ct), $"the 70-day collection_log row survived past the 60-day horizon; {purgeLog.Joined}");
             }
 
             using (var read = new NpgsqlCommand(
@@ -352,10 +366,10 @@ public sealed class DarlingRetentionTests
             {
                 read.Parameters.AddWithValue(TestServerId);
                 using var reader = await read.ExecuteReaderAsync(ct);
-                Assert.True(await reader.ReadAsync(ct), "the fresh config_alert_log row did not survive the purge");
+                Assert.True(await reader.ReadAsync(ct), $"the fresh config_alert_log row did not survive the purge; {purgeLog.Joined}");
                 var survivor = reader.GetDateTime(0);
-                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving alert-history row should be the 1-hour one, got {survivor:O}");
-                Assert.False(await reader.ReadAsync(ct), "the 100-day config_alert_log row survived past the 90-day horizon");
+                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving alert-history row should be the 1-hour one, got {survivor:O}; {purgeLog.Joined}");
+                Assert.False(await reader.ReadAsync(ct), $"the 100-day config_alert_log row survived past the 90-day horizon; {purgeLog.Joined}");
             }
 
             /* The purge writes ONE auditable run-record under the fleet sentinel server_id — SUCCESS here
@@ -364,13 +378,110 @@ public sealed class DarlingRetentionTests
                 "SELECT status FROM collection_log WHERE server_id = $1 AND collector_name = 'data_retention' ORDER BY collection_time DESC LIMIT 1", connection))
             {
                 read.Parameters.AddWithValue(DarlingObservability.FleetServerId);
-                Assert.Equal("SUCCESS", await read.ExecuteScalarAsync(ct));
+                var status = await read.ExecuteScalarAsync(ct) as string;
+                Assert.True(status == "SUCCESS", $"expected a SUCCESS run-record, got '{status}'; {purgeLog.Joined}");
             }
         }
         finally
         {
             await DeleteTestRowsAsync(connection);
         }
+    }
+
+    [Fact]
+    public async Task EndToEnd_DeletePathPurgesExpiredRows_InsideACompressedChunk_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live compressed-chunk purge test.");
+
+        var ct = TestContext.Current.CancellationToken;
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+
+        Assert.SkipUnless(await TimescaleSupport.DetectAsync(connection, ct),
+            "TimescaleDB is not installed in the DARLING_TEST_PG store — the compressed-chunk purge shape needs it.");
+
+        /* #1564's deterministic regression: the DELETE purge path must clear expired rows even when their
+           chunk is COMPRESSED. The old ctid-batched DELETE errored on any compressed in-range chunk
+           ("transparent decompression only supports tableoid system column"), silently skipped the table,
+           and the expired rows survived — in CI the compression E2E's leftover policies compressed chunks
+           mid-suite (policy jobs run immediately on creation), so this fired as an order/timing flake; in
+           production it broke the drop_chunks-failed fallback exactly when compressed chunks made it
+           matter. Here the compression is applied SYNCHRONOUSLY (no background-job race), so the shape is
+           exercised on every run. */
+        Assert.True(await TimescaleSupport.ConvertToHypertablesAsync(connection, null, ct) > 0);
+        await ExecAsync(connection, "ALTER TABLE wait_stats SET (timescaledb.compress, timescaledb.compress_segmentby = 'server_id')", ct);
+        await DeleteTestRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+        try
+        {
+            var utcNow = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+
+            using (var insert = new NpgsqlCommand(
+                "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name) VALUES ($1, $2, $3, $4)", connection))
+            {
+                insert.Parameters.AddWithValue(1L);
+                insert.Parameters.AddWithValue(utcNow.AddDays(-40));
+                insert.Parameters.AddWithValue(TestServerId);
+                insert.Parameters.AddWithValue("compressed-purge-e2e");
+                await insert.ExecuteNonQueryAsync(ct);
+            }
+
+            using (var insert = new NpgsqlCommand(
+                "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name) VALUES ($1, $2, $3, $4)", connection))
+            {
+                insert.Parameters.AddWithValue(2L);
+                insert.Parameters.AddWithValue(utcNow.AddHours(-1));
+                insert.Parameters.AddWithValue(TestServerId);
+                insert.Parameters.AddWithValue("compressed-purge-e2e");
+                await insert.ExecuteNonQueryAsync(ct);
+            }
+
+            /* Compress the -40d row's chunk (if_not_compressed tolerates the shared fixture's policy having
+               beaten us to it), then PROVE the fixture is exercising the compressed shape. */
+            await ExecAsync(connection,
+                "SELECT compress_chunk(c, if_not_compressed => true) FROM show_chunks('wait_stats', older_than => INTERVAL '35 days') c", ct);
+            using (var check = new NpgsqlCommand(@"
+SELECT COUNT(*)
+FROM timescaledb_information.chunks
+WHERE hypertable_name = 'wait_stats'
+  AND is_compressed
+  AND range_end < now() - INTERVAL '35 days'", connection))
+            {
+                Assert.True((long)(await check.ExecuteScalarAsync(ct))! >= 1,
+                    "expected the -40d wait_stats chunk to be compressed — the fixture is not exercising the compressed-chunk shape");
+            }
+
+            /* timescaleAvailable: false forces the DELETE path — the exact statement shape that used to
+               error — against the compressed chunk. */
+            var purgeLog = new CapturingTestLogger();
+            await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, purgeLog, ct);
+
+            using (var read = new NpgsqlCommand(
+                "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))
+            {
+                read.Parameters.AddWithValue(TestServerId);
+                using var reader = await read.ExecuteReaderAsync(ct);
+                Assert.True(await reader.ReadAsync(ct), $"the fresh wait_stats row did not survive the compressed-chunk purge; {purgeLog.Joined}");
+                var survivor = reader.GetDateTime(0);
+                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving row should be the 1-hour one, got {survivor:O}; {purgeLog.Joined}");
+                Assert.False(await reader.ReadAsync(ct), $"the 40-day row inside the compressed chunk survived the purge; {purgeLog.Joined}");
+            }
+        }
+        finally
+        {
+            await DeleteTestRowsAsync(connection);
+        }
+    }
+
+    private static async Task ExecAsync(NpgsqlConnection connection, string sql, CancellationToken ct)
+    {
+        using var command = new NpgsqlCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     [Fact]

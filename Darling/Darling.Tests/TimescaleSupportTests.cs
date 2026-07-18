@@ -233,28 +233,37 @@ public sealed class TimescaleSupportTests
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* The Timescale purge: the old wait_stats chunk AND the old collection_log chunk drop (the return
-               mixes rows + chunks — a coarse activity count, see PurgeAsync remarks). */
-            var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, null, ct);
-            Assert.True(summary.TotalPurged >= 2, $"expected the two old chunks (wait_stats + collection_log) to drop, got {summary.TotalPurged}");
+            /* The Timescale purge. Deliberately NO assertion on the returned global activity count
+               (#1564): chunk drops are per-table + time-window across the WHOLE shared store, so sibling
+               collection classes' rows make the global number order-dependent. The contract is the
+               OWN-SCOPED evidence below: this server's fresh row survives, its old rows are gone — plus
+               the is-hypertable assertions above proving the drop_chunks branch was in play. If
+               drop_chunks transiently fails (e.g. a lock clash with the shared fixture's compression
+               policy jobs, which run mid-suite), the time-sliced DELETE fallback now clears the rows even
+               inside a compressed chunk — the capturing logger surfaces any such fallback in the failure
+               text instead of silencing it (a silent skip was #1564's whole failure mode). */
+            var purgeLog = new CapturingTestLogger();
+            await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, purgeLog, ct);
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))
             {
                 read.Parameters.AddWithValue(TestServerId);
                 using var reader = await read.ExecuteReaderAsync(ct);
-                Assert.True(await reader.ReadAsync(ct), "the fresh wait_stats row did not survive the drop_chunks purge");
+                Assert.True(await reader.ReadAsync(ct), $"the fresh wait_stats row did not survive the drop_chunks purge; {purgeLog.Joined}");
                 var survivor = reader.GetDateTime(0);
-                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving row should be the 1-hour one, got {survivor:O}");
-                Assert.False(await reader.ReadAsync(ct), "the 40-day wait_stats row survived the drop_chunks purge");
+                Assert.True(survivor > utcNow.AddDays(-1), $"the surviving row should be the 1-hour one, got {survivor:O}; {purgeLog.Joined}");
+                Assert.False(await reader.ReadAsync(ct), $"the 40-day wait_stats row survived the drop_chunks purge; {purgeLog.Joined}");
             }
 
-            /* The 70-day collection_log row's chunk dropped via drop_chunks (past the 60-day horizon). */
+            /* The 70-day collection_log row went — via drop_chunks (past the 60-day horizon), or via the
+               DELETE fallback if drop_chunks transiently failed. */
             using (var read = new NpgsqlCommand(
                 "SELECT COUNT(*) FROM collection_log WHERE server_id = $1", connection))
             {
                 read.Parameters.AddWithValue(TestServerId);
-                Assert.Equal(0L, await read.ExecuteScalarAsync(ct));
+                var remaining = (long)(await read.ExecuteScalarAsync(ct))!;
+                Assert.True(remaining == 0L, $"the 70-day collection_log row survived the purge ({remaining} row(s)); {purgeLog.Joined}");
             }
         }
         finally

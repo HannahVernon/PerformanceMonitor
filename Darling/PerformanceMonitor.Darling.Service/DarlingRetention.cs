@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Darling.Storage;
 
 namespace PerformanceMonitor.Darling.Service;
 
@@ -36,9 +37,10 @@ namespace PerformanceMonitor.Darling.Service;
 /// <para>Every sweep writes one AUDITABLE run-record to collection_log under a fleet-sentinel server_id
 /// (<see cref="DarlingObservability.FleetServerId"/>, never a real server) — SUCCESS, WARNING (some
 /// tables failed their statement, already logged + isolated), or ERROR — so a stalled or partial purge is
-/// visible in the collection log, not just the service log. The plain-PG DELETE path drains each table in
-/// <see cref="DeleteBatchSize"/>-row batches (the Dashboard's DELETE TOP idiom); collection_log is kept 2x
-/// the base data-retention window so a run-record outlives the metric rows it explains.</para>
+/// visible in the collection log, not just the service log. The DELETE path drains each table in
+/// one-day time slices (<see cref="TimeSlicedDeleteSql"/> — the compressed-chunk-safe successor to the
+/// Dashboard's DELETE TOP idiom); collection_log is kept 2x the base data-retention window so a
+/// run-record outlives the metric rows it explains.</para>
 /// </summary>
 public static class DarlingRetention
 {
@@ -70,16 +72,10 @@ public static class DarlingRetention
     /// </summary>
     internal const int AlertHistoryRetentionDays = 90;
 
-    /* The per-DELETE batch cap — the Postgres twin of the Dashboard's DELETE TOP(10000) idiom
-       (config.data_retention). A large first purge is drained in 10k-row batches instead of one giant
-       DELETE, bounding lock duration, WAL generation, and dead-tuple bloat. Steady-state daily purges are
-       far smaller and usually clear in a single batch. */
-    private const int DeleteBatchSize = 10000;
-
-    /* Each 10k-row batch is small and fast; the generous 300s per-batch command timeout (well above
-       Npgsql's 30s default) is belt-and-suspenders for a slow disk. Batching is also what keeps a large
-       first purge from ever hitting a timeout at all — the pre-batch single DELETE could roll back on a long
-       backlog and never catch up (retried tomorrow with a day MORE to delete). */
+    /* Each one-day slice is bounded work (see TimeSlicedDeleteSql); the generous 300s per-slice command
+       timeout (well above Npgsql's 30s default) is belt-and-suspenders for a slow disk. Slicing is also what
+       keeps a large first purge from ever hitting a timeout at all — a single unbounded DELETE could roll
+       back on a long backlog and never catch up (retried tomorrow with a day MORE to delete). */
     private const int DeleteTimeoutSeconds = 300;
 
     /// <summary>
@@ -195,7 +191,7 @@ public static class DarlingRetention
             if (!logPurged)
             {
                 var logDeleted = await PurgeOneAsync(
-                    postgres, "collection_log", BatchedDeleteSql("collection_log", "collection_time"),
+                    postgres, "collection_log", TimeSlicedDeleteSql("collection_log", "collection_time"),
                     utcNow.AddDays(-CollectionLogRetentionDays), logger, cancellationToken);
                 if (logDeleted is not null)
                 {
@@ -214,7 +210,7 @@ public static class DarlingRetention
                other purge path, so without this it grows unbounded (the #1471 findings-cleanup class of bug).
                Failure-isolated like every sibling: a failed statement is warned + counted, the sweep goes on. */
             var alertLogDeleted = await PurgeOneAsync(
-                postgres, "config_alert_log", BatchedDeleteSql("config_alert_log", "alert_time"),
+                postgres, "config_alert_log", TimeSlicedDeleteSql("config_alert_log", "alert_time"),
                 utcNow.AddDays(-AlertHistoryRetentionDays), logger, cancellationToken);
             if (alertLogDeleted is not null)
             {
@@ -277,32 +273,41 @@ public static class DarlingRetention
     }
 
     /// <summary>
-    /// The batched purge statement for one collector table — DELETE up to <see cref="DeleteBatchSize"/> rows
-    /// older than the cutoff on the definition's own prefix time column ("collection_time" almost everywhere;
-    /// the config snapshots purge on "capture_time"), executed in a loop until the table is drained
-    /// (<see cref="PurgeOneAsync"/>). Table and column names come from the shared catalog constants, never
-    /// from user input, so interpolation is safe here — the same reasoning as the runner's watermark read
+    /// The batched purge statement for one collector table — deletes expired rows one time slice at a time
+    /// on the definition's own prefix time column ("collection_time" almost everywhere; the config snapshots
+    /// purge on "capture_time"), executed in a loop until the table is drained (<see cref="PurgeOneAsync"/>).
+    /// Table and column names come from the shared catalog constants, never from user input, so
+    /// interpolation is safe here — the same reasoning as the runner's watermark read
     /// (DarlingCollectorRunner.GetLastCollectedTimeAsync).
     /// </summary>
     internal static string DeleteSqlFor(ICollectorSchemaInfo schema)
-        => BatchedDeleteSql(schema.TargetTable, schema.PrefixTimeColumnName);
+        => TimeSlicedDeleteSql(schema.TargetTable, schema.PrefixTimeColumnName);
 
     /// <summary>
-    /// The Postgres twin of the Dashboard's <c>DELETE TOP(10000)</c> batched purge: delete up to
-    /// <see cref="DeleteBatchSize"/> expired rows per statement via a <c>ctid IN (SELECT … LIMIT N)</c>
-    /// subquery (Postgres has no <c>DELETE … LIMIT</c>). The time predicate is repeated in the OUTER delete —
-    /// <c>WHERE {col} &lt; $1 AND ctid IN (…)</c> — deliberately: on a plain table it is merely redundant, but
-    /// on a TimescaleDB hypertable a ctid is unique only WITHIN a chunk, so a bare <c>ctid IN (…)</c> could
-    /// match a same-ctid row in a DIFFERENT chunk; the outer <c>{col} &lt; $1</c> guarantees only
-    /// genuinely-expired rows are ever deleted, so a colliding fresh row is always safe. In production the
-    /// hypertables purge via <c>drop_chunks</c>, so this path runs on plain tables (a plain-PostgreSQL store) or
-    /// as the fallback when a hypertable's <c>drop_chunks</c> failed — including collection_log, a hypertable
-    /// since V23 whose plain-PG / conversion-failed fallback lands here, so the per-chunk-ctid guard is load-bearing.
-    /// <c>$1</c> is bound once and referenced by both positions. Table/column come from catalog constants (never
-    /// user input), so interpolation is safe.
+    /// The batched purge statement: delete the OLDEST one-day slice of expired rows per execution —
+    /// <c>WHERE {col} &lt; $1 AND {col} in [min expired, min expired + 1 day)</c> — repeated until a slice
+    /// deletes nothing. This replaced a <c>ctid IN (SELECT ctid … LIMIT 10000)</c> row-cap idiom (#1564):
+    /// reading the <c>ctid</c> system column through TimescaleDB's transparent decompression is unsupported
+    /// ("transparent decompression only supports tableoid system column" — reproduced on the pinned 2.28.1),
+    /// so the moment ANY in-range chunk was compressed the whole statement errored and the table silently
+    /// kept its expired rows. A plain time-range predicate instead rides TimescaleDB's DML decompression,
+    /// which IS supported on compressed chunks — and is a no-op cost on plain tables.
+    /// <para>The slice width doubles as the work bound: one day of arrival volume per statement — exactly
+    /// what a steady-state daily purge deletes in total, so a long backlog is drained in day-sized units the
+    /// store already sustains daily (the old 10k row cap served the same goal; a day is also precisely one
+    /// chunk on a hypertable, <see cref="TimescaleSupport.ChunkIntervalDays"/>). Both <c>min({col})</c>
+    /// subqueries evaluate against the same statement snapshot, so they are always equal; when no expired
+    /// rows remain, <c>min</c> is NULL, every comparison is unknown, zero rows delete, and the drain loop
+    /// stops. In production the hypertables purge via <c>drop_chunks</c>, so this path runs on plain tables
+    /// (a plain-PostgreSQL store, config_alert_log) or as the fallback when a hypertable's
+    /// <c>drop_chunks</c> failed — where compressed chunks are LIKELY, which is what makes the
+    /// compressed-safe shape load-bearing. <c>$1</c> is bound once and referenced by all three positions.
+    /// Table/column come from catalog constants (never user input), so interpolation is safe.</para>
     /// </summary>
-    internal static string BatchedDeleteSql(string table, string timeColumn)
-        => $"DELETE FROM {table} WHERE {timeColumn} < $1 AND ctid IN (SELECT ctid FROM {table} WHERE {timeColumn} < $1 LIMIT {DeleteBatchSize})";
+    internal static string TimeSlicedDeleteSql(string table, string timeColumn)
+        => $"DELETE FROM {table} WHERE {timeColumn} < $1"
+         + $" AND {timeColumn} >= (SELECT min({timeColumn}) FROM {table} WHERE {timeColumn} < $1)"
+         + $" AND {timeColumn} < (SELECT min({timeColumn}) FROM {table} WHERE {timeColumn} < $1) + INTERVAL '{TimescaleSupport.ChunkIntervalDays} days'";
 
     /// <summary>
     /// The Timescale purge statement for one collector table — <c>drop_chunks</c> detaches every
@@ -363,11 +368,11 @@ public static class DarlingRetention
     }
 
     /// <summary>
-    /// One table's batched DELETE: re-executes <paramref name="deleteSql"/> (a <see cref="BatchedDeleteSql"/>
-    /// statement capped at <see cref="DeleteBatchSize"/> rows) until a batch clears fewer rows than the cap —
-    /// i.e. the table is drained. Returns the total rows deleted across all batches, or null when it failed
-    /// (warned, sweep continues). Batching bounds lock/WAL/dead-tuple growth on a large first purge; a small
-    /// steady-state purge finishes in one batch. The connection and command (with its single bound cutoff
+    /// One table's batched DELETE: re-executes <paramref name="deleteSql"/> (a <see cref="TimeSlicedDeleteSql"/>
+    /// statement clearing the oldest one-day slice of expired rows) until a slice deletes nothing — i.e. the
+    /// table is drained. Returns the total rows deleted across all slices, or null when it failed (warned,
+    /// sweep continues). Slicing bounds lock/WAL/dead-tuple growth on a large first purge; a small
+    /// steady-state purge finishes in one slice. The connection and command (with its single bound cutoff
     /// parameter) are reused across the loop.
     /// </summary>
     private static async Task<int?> PurgeOneAsync(
@@ -381,10 +386,24 @@ public static class DarlingRetention
         try
         {
             await using var connection = await postgres.OpenConnectionAsync(cancellationToken);
+
+            /* Deleting a whole expired slice from a COMPRESSED chunk (the drop_chunks-failed fallback)
+               decompresses every affected segment, and TimescaleDB caps that at 100k tuples per DML
+               transaction by default — a rail against accidental bulk decompression, which a retention
+               purge deliberately is. Lift it for this connection only. On a store without the extension
+               the qualified name is accepted as a placeholder GUC, so this is safe everywhere. */
+            using (var lift = new NpgsqlCommand(
+                "SET timescaledb.max_tuples_decompressed_per_dml_transaction = 0", connection))
+            {
+                await lift.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             using var command = new NpgsqlCommand(deleteSql, connection) { CommandTimeout = DeleteTimeoutSeconds };
             command.Parameters.AddWithValue(cutoff);
 
-            return await DrainBatchesAsync(ct => command.ExecuteNonQueryAsync(ct), DeleteBatchSize, cancellationToken);
+            /* batchSize 1: the time-sliced statement has no row cap, so "fewer than the cap" degenerates
+               to "deleted zero rows" — a slice that clears anything means older slices may remain. */
+            return await DrainBatchesAsync(ct => command.ExecuteNonQueryAsync(ct), batchSize: 1, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
