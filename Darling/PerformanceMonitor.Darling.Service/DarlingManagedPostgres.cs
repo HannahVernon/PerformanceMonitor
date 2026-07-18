@@ -504,6 +504,25 @@ public sealed class DarlingManagedPostgres
     }
 
     /// <summary>
+    /// Derives the store connection string from the stored <c>viewer</c>-role credential WITHOUT touching the
+    /// server (#1562) — the least-privilege READ-ONLY pool the web dashboard host connects as (not the owner,
+    /// not <c>mcp</c>). Same <c>127.0.0.1</c> + port + <see cref="SearchPath"/> shape as the owner string, but
+    /// <c>Username = viewer</c>. Null until <see cref="DarlingManagedRoles.EnsureProvisionedAsync"/> has written
+    /// the credential (AFTER migration), so the web host's first-boot poll budget must tolerate the delay — the
+    /// twin of <see cref="TryBuildMcpConnectionStringFromStoredCredential"/>.
+    /// </summary>
+    public static string? TryBuildViewerConnectionStringFromStoredCredential(PostgresConfig config)
+    {
+        var credentialPath = ViewerCredentialPathFor(ResolveDataDirectory(config));
+        if (!File.Exists(credentialPath))
+        {
+            return null;
+        }
+
+        return BuildRoleConnectionString(config.Port, ViewerRoleName, DarlingSecrets.Unprotect(File.ReadAllText(credentialPath).Trim()));
+    }
+
+    /// <summary>
     /// The whole first-run story, idempotent: locate/unpack the runtime, initdb if the data
     /// directory has no cluster, self-heal the conf append, start the server if nothing is
     /// listening on the data directory, create the darling database if missing, and return the

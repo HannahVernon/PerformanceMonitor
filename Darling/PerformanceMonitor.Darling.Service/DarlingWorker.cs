@@ -247,11 +247,17 @@ public sealed class DarlingWorker : BackgroundService
        every control-plane reload, so the viewer's Settings toggle takes effect without a restart. */
     private readonly McpRuntimeState _mcpState;
 
-    public DarlingWorker(ILogger<DarlingWorker> logger, ILoggerFactory loggerFactory, McpRuntimeState mcpState)
+    /* #1562: the live WEB dashboard enable/port seam — the twin of _mcpState, published to the web host's
+       supervisor at startup and on every control-plane reload so the viewer's Settings toggle takes effect
+       without a restart. */
+    private readonly WebRuntimeState _webState;
+
+    public DarlingWorker(ILogger<DarlingWorker> logger, ILoggerFactory loggerFactory, McpRuntimeState mcpState, WebRuntimeState webState)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _mcpState = mcpState;
+        _webState = webState;
     }
 
     private sealed class ServerLoopState
@@ -534,10 +540,11 @@ public sealed class DarlingWorker : BackgroundService
             }
         }
 
-        /* #1560: publish the effective MCP enable/port (store-authoritative when the view loaded, else
-           the darling.json values) so the MCP host's supervisor starts from the same truth the worker
+        /* #1560/#1562: publish the effective MCP + web enable/port (store-authoritative when the view loaded,
+           else the darling.json values) so the two hosts' supervisors start from the same truth the worker
            holds — including on a store-unreachable boot. Re-published on every reload below. */
         _mcpState.Publish(config.Mcp.Enabled, config.Mcp.Port);
+        _webState.Publish(config.Web.Enabled, config.Web.Port);
 
         /* Capture-plans is read live (() => config.CapturePlans) so a store reload of
            config_service.capture_plans is honored on the next collector cycle without rebuilding.
@@ -1083,9 +1090,10 @@ public sealed class DarlingWorker : BackgroundService
         }
 
         StoreConfigProvider.ApplyToConfig(config, view);
-        /* #1560: the MCP host's supervisor picks this up within its poll interval — the viewer's
-           Settings toggle round-trips to a live start/stop/rebind with no service restart. */
+        /* #1560/#1562: the MCP + web host supervisors pick these up within their poll interval — the viewer's
+           Settings toggles round-trip to a live start/stop/rebind with no service restart. */
         _mcpState.Publish(config.Mcp.Enabled, config.Mcp.Port);
+        _webState.Publish(config.Web.Enabled, config.Web.Port);
         _scheduleOverrides = view.ScheduleOverrides;
         /* Stage 2: honor a pause/resume issued through the store (config_service.paused) — the collection
            loop reads this on its next tick. Single writer (this reload), so no interlock needed. */

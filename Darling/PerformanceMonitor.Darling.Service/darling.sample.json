@@ -211,5 +211,36 @@
     //   "allowFrom": "192.168.1.0/24",                 // in-app RemoteIpAddress check + firewall CIDR (loopback always allowed).
     //   "encryptedToken": "<output of --encrypt-password>"  // REQUIRED to expose; or a plaintext "token" (dev only, warned).
     // }
+  },
+
+  // Embedded WEB DASHBOARD (optional): a read-only, browser-based view of the monitoring store, served by
+  // the Darling service on its OWN port (default 5153, avoiding the MCP family: Dashboard 5150, Lite 5151,
+  // Darling MCP 5152). A SEPARATE surface from "mcp" above -- its own enable flag, port, token, and exposure
+  // block -- because the two gate different blast radii (the MCP token guards analyze_server's LIVE outbound
+  // connections to your monitored SQL Servers; the web dashboard is read-only over the collected store).
+  // Default OFF.
+  //
+  // OPT-IN NETWORK EXPOSURE for the dashboard (managed mode only) -- omit "network" for the secure default
+  // (loopback-only HTTP, today's behavior). When present with a non-loopback "listen", the web host binds the
+  // LAN interface behind an in-app CIDR check and a token gate: a browser presents the token ONCE via
+  // ?token=, which is exchanged for an HMAC-signed session cookie (then the token is stripped from the URL).
+  // LOOPBACK stays TOKENLESS even while exposed (the surface is read-only). Fail-closed: any missing
+  // precondition (token / valid allowFrom / managed mode) keeps it loopback-only. There is deliberately NO
+  // TLS (a browser over plain HTTP on a trusted LAN); the MITM control is a TLS REVERSE PROXY in front of the
+  // port, same as MCP -- so this is a trusted-LAN opt-in, NEVER internet-exposed.
+  // "enabled"/"port" here are the SEED; after first start they live in the control plane and the Viewer's
+  // Settings toggles them LIVE (the service starts/stops/rebinds the endpoint within seconds - no restart).
+  // The "network" exposure block below stays file-defined and restart-only; the Viewer toggle still stops an
+  // exposed dashboard instantly (a kill switch).
+  "web": {
+    "enabled": false,
+    "port": 5153,
+
+    // Uncomment to expose the dashboard on the LAN (a comma already follows "port" above):
+    // "network": {
+    //   "listen": "192.168.1.205",                     // specific bind IP preferred; "0.0.0.0" = all interfaces.
+    //   "allowFrom": "192.168.1.0/24",                 // in-app RemoteIpAddress check + firewall CIDR (loopback always allowed).
+    //   "encryptedToken": "<output of --encrypt-password>"  // REQUIRED to expose; or a plaintext "token" (dev only, warned).
+    // }
   }
 }

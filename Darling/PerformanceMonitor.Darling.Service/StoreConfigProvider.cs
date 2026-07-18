@@ -136,12 +136,14 @@ public sealed class StoreConfigProvider
         /* config_version starts at 0; the four desired-state seed writes below bump it via the trigger,
            so the worker's post-seed baseline read reflects the seeded state and triggers no spurious reload. */
         using var command = new NpgsqlCommand(@"
-INSERT INTO config_service (id, paused, capture_plans, mcp_enabled, mcp_port, config_version, updated_at, updated_by)
-VALUES (1, FALSE, $1, $2, $3, 0, $4, 'seed')
+INSERT INTO config_service (id, paused, capture_plans, mcp_enabled, mcp_port, web_enabled, web_port, config_version, updated_at, updated_by)
+VALUES (1, FALSE, $1, $2, $3, $4, $5, 0, $6, 'seed')
 ON CONFLICT (id) DO NOTHING", connection);
         command.Parameters.AddWithValue(config.CapturePlans);
         command.Parameters.AddWithValue(config.Mcp.Enabled);
         command.Parameters.AddWithValue(config.Mcp.Port);
+        command.Parameters.AddWithValue(config.Web.Enabled);
+        command.Parameters.AddWithValue(config.Web.Port);
         command.Parameters.AddWithValue(now);
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -288,7 +290,7 @@ ON CONFLICT (server_id) DO NOTHING", connection);
         {
             await using var connection = await _postgres.OpenConnectionAsync(cancellationToken);
 
-            var (paused, capturePlans, mcpEnabled, mcpPort, configVersion) = await ReadServiceRowAsync(connection, cancellationToken);
+            var (paused, capturePlans, mcpEnabled, mcpPort, webEnabled, webPort, configVersion) = await ReadServiceRowAsync(connection, cancellationToken);
             var (alerts, analysis) = await ReadAlertSettingsAsync(connection, cancellationToken);
             var (smtp, webhooks) = await ReadNotificationAsync(connection, cancellationToken);
             var servers = await ReadMonitoredServersAsync(connection, bootstrap, cancellationToken);
@@ -301,6 +303,8 @@ ON CONFLICT (server_id) DO NOTHING", connection);
                 CapturePlans = capturePlans,
                 McpEnabled = mcpEnabled,
                 McpPort = mcpPort,
+                WebEnabled = webEnabled,
+                WebPort = webPort,
                 Alerts = alerts,
                 Analysis = analysis,
                 Smtp = smtp,
@@ -316,19 +320,20 @@ ON CONFLICT (server_id) DO NOTHING", connection);
         }
     }
 
-    private static async Task<(bool Paused, bool CapturePlans, bool McpEnabled, int McpPort, long ConfigVersion)>
+    private static async Task<(bool Paused, bool CapturePlans, bool McpEnabled, int McpPort, bool WebEnabled, int WebPort, long ConfigVersion)>
         ReadServiceRowAsync(NpgsqlConnection connection, CancellationToken ct)
     {
         using var command = new NpgsqlCommand(
-            "SELECT paused, capture_plans, mcp_enabled, mcp_port, config_version FROM config_service WHERE id = 1", connection);
+            "SELECT paused, capture_plans, mcp_enabled, mcp_port, web_enabled, web_port, config_version FROM config_service WHERE id = 1", connection);
         using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct))
         {
             /* Row missing (unseeded) — treat as defaults; capture stays on (Darling's SKU default). */
-            return (false, true, false, 5152, 0);
+            return (false, true, false, 5152, false, 5153, 0);
         }
 
-        return (reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetInt32(3), reader.GetInt64(4));
+        return (reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetInt32(3),
+            reader.GetBoolean(4), reader.GetInt32(5), reader.GetInt64(6));
     }
 
     private static async Task<(AlertsConfig Alerts, AnalysisConfig Analysis)> ReadAlertSettingsAsync(NpgsqlConnection connection, CancellationToken ct)
@@ -526,7 +531,7 @@ ORDER BY name", connection);
     /* ---------------- apply (view -> held config, in place) ---------------- */
 
     /// <summary>
-    /// Swaps the held <see cref="DarlingConfig"/>'s <c>.Alerts/.Analysis/.Smtp/.Webhooks/.CapturePlans/.Mcp</c>
+    /// Swaps the held <see cref="DarlingConfig"/>'s <c>.Alerts/.Analysis/.Smtp/.Webhooks/.CapturePlans/.Mcp/.Web</c>
     /// to the store view IN PLACE — the by-reference <see cref="DarlingAlertSettings"/> seam and the runner's
     /// capture-plans provider read the new values on their next use, no reconstruction needed. Pure (no I/O),
     /// so it is unit-testable without a live store.
@@ -550,6 +555,8 @@ ORDER BY name", connection);
         config.CapturePlans = view.CapturePlans;
         config.Mcp.Enabled = view.McpEnabled;
         config.Mcp.Port = view.McpPort;
+        config.Web.Enabled = view.WebEnabled;
+        config.Web.Port = view.WebPort;
     }
 
     /* ---------------- schedule resolution (pure) ---------------- */
@@ -684,6 +691,8 @@ public sealed class StoreConfigView
     public bool CapturePlans { get; init; }
     public bool McpEnabled { get; init; }
     public int McpPort { get; init; }
+    public bool WebEnabled { get; init; }
+    public int WebPort { get; init; } = 5153;
     public AlertsConfig Alerts { get; init; } = new();
     public AnalysisConfig Analysis { get; init; } = new();
     public SmtpConfig Smtp { get; init; } = new();

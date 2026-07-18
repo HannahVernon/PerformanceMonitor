@@ -105,6 +105,8 @@ public partial class SettingsWindow : Window
         UpdateCollectionStatus();
         LoadMcpSettings();
         UpdateMcpStatus();
+        LoadWebSettings();
+        UpdateWebStatus();
         LoadConnectionTimeout();
         LoadNocRefreshInterval();
         LoadCsvSeparator();
@@ -160,6 +162,8 @@ public partial class SettingsWindow : Window
                 CapturePlansCheckBox.IsChecked = sections.Service.CapturePlans;
                 McpEnabledCheckBox.IsChecked = sections.Service.McpEnabled;
                 McpPortTextBox.Text = sections.Service.McpPort.ToString(CultureInfo.InvariantCulture);
+                WebEnabledCheckBox.IsChecked = sections.Service.WebEnabled;
+                WebPortTextBox.Text = sections.Service.WebPort.ToString(CultureInfo.InvariantCulture);
                 _paused = sections.Service.Paused;
             }
 
@@ -175,6 +179,7 @@ public partial class SettingsWindow : Window
         ApplyReadOnlyGating();
         UpdateCollectionStatus();
         UpdateMcpStatus();
+        UpdateWebStatus();
         UpdateAlertControlStates();
         UpdateSmtpControlStates();
         UpdateTeamsControlStates();
@@ -363,24 +368,54 @@ public partial class SettingsWindow : Window
             : "Status: Disabled";
     }
 
-    /// <summary>Validates the MCP port and the (always-valid) capture-plans + enabled flags for the
-    /// <c>config_service</c> write. Returns false only when an ENABLED MCP server has a bad port.</summary>
-    private bool TryReadServiceFlags(out bool capturePlans, out bool mcpEnabled, out int mcpPort)
+    // ── Web dashboard (config_service.web_enabled / web_port), #1562 — mirrors the MCP section above ──
+
+    private void LoadWebSettings()
+    {
+        /* Seed from the last-known viewer copy for an immediate, non-blank UI; the store read overwrites it. */
+        WebEnabledCheckBox.IsChecked = _appSettings.WebEnabled;
+        WebPortTextBox.Text = _appSettings.WebPort.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void UpdateWebStatus()
+    {
+        WebStatusText.Text = WebEnabledCheckBox.IsChecked == true
+            ? "The Darling service hosts the web dashboard; it applies on the service's next reload."
+            : "Status: Disabled";
+    }
+
+    /// <summary>Validates the MCP + web dashboard ports and the (always-valid) capture-plans + enabled flags for
+    /// the <c>config_service</c> write. Returns false when an ENABLED surface has a bad port (a disabled surface
+    /// with a bad port keeps its last-known value and does not block the save).</summary>
+    private bool TryReadServiceFlags(
+        out bool capturePlans, out bool mcpEnabled, out int mcpPort, out bool webEnabled, out int webPort)
     {
         capturePlans = CapturePlansCheckBox.IsChecked == true;
         mcpEnabled = McpEnabledCheckBox.IsChecked == true;
         mcpPort = _appSettings.McpPort;
+        webEnabled = WebEnabledCheckBox.IsChecked == true;
+        webPort = _appSettings.WebPort;
 
-        if (int.TryParse(McpPortTextBox.Text, out var port) && port is >= 1024 and <= 65535)
+        if (int.TryParse(McpPortTextBox.Text, out var parsedMcpPort) && parsedMcpPort is >= 1024 and <= 65535)
         {
-            mcpPort = port;
-            return true;
+            mcpPort = parsedMcpPort;
         }
-
-        if (mcpEnabled)
+        else if (mcpEnabled)
         {
             MessageBox.Show(
-                "MCP port must be between 1024 and 65535.\nPorts 0–1023 are well-known privileged ports reserved by the operating system.",
+                "MCP port must be between 1024 and 65535.\nPorts 0-1023 are well-known privileged ports reserved by the operating system.",
+                "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (int.TryParse(WebPortTextBox.Text, out var parsedWebPort) && parsedWebPort is >= 1024 and <= 65535)
+        {
+            webPort = parsedWebPort;
+        }
+        else if (webEnabled)
+        {
+            MessageBox.Show(
+                "Web dashboard port must be between 1024 and 65535.\nPorts 0-1023 are well-known privileged ports reserved by the operating system.",
                 "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
@@ -408,6 +443,27 @@ public partial class SettingsWindow : Window
             MessageBox.Show($"Could not find an available port: {ex.Message}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private void WebAutoPortButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            WebPortTextBox.Text = FindFreeTcpPort().ToString(CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not find an available port: {ex.Message}",
+                "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void CopyWebUrlButton_Click(object sender, RoutedEventArgs e)
+    {
+        var url = $"http://localhost:{WebPortTextBox.Text}/";
+        /* SetDataObject with copy=false avoids WPF's problematic Clipboard.Flush(). */
+        Clipboard.SetDataObject(url, false);
+        WebStatusText.Text = "Copied to clipboard!";
     }
 
     /// <summary>Asks the OS for a free loopback TCP port (bind to port 0, read the assignment, release).</summary>
@@ -1204,7 +1260,8 @@ public partial class SettingsWindow : Window
     private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
         var errors = new List<string>();
-        var mcpValid = TryReadServiceFlags(out var capturePlans, out var mcpEnabled, out var mcpPort);
+        var mcpValid = TryReadServiceFlags(
+            out var capturePlans, out var mcpEnabled, out var mcpPort, out var webEnabled, out var webPort);
         var alertRow = BuildAlertRowFromControls(errors);
         SaveViewerLocalAlertFields(errors);
         var notifyRow = BuildNotificationRowFromControls(errors);
@@ -1239,7 +1296,7 @@ public partial class SettingsWindow : Window
 
         if (!mcpValid)
         {
-            return; /* TryReadServiceFlags already warned about the bad MCP port. */
+            return; /* TryReadServiceFlags already warned about the bad MCP or web dashboard port. */
         }
 
         /* Guard against clobbering: if the current settings could not be READ (a transient store error left the
@@ -1263,7 +1320,7 @@ public partial class SettingsWindow : Window
             {
                 await _dataService.UpsertAlertSettingsAsync(alertRow);
                 await _dataService.UpsertNotificationAsync(notifyRow);
-                await _dataService.UpdateServiceFlagsAsync(capturePlans, mcpEnabled, mcpPort);
+                await _dataService.UpdateServiceFlagsAsync(capturePlans, mcpEnabled, mcpPort, webEnabled, webPort);
             }
             catch (ViewerReadOnlyException ex)
             {

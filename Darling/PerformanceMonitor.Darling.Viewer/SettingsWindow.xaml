@@ -43,6 +43,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Header -->
@@ -106,8 +107,35 @@
             </StackPanel>
         </Border>
 
-        <!-- Viewer Defaults -->
+        <!-- Web Dashboard Settings -->
         <Border Grid.Row="3" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="Web Dashboard (Browser Access)" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
+                <TextBlock Text="Serves a read-only monitoring dashboard over HTTP so a browser can view the fleet. Loopback-only by default; configure LAN exposure in darling.json. The dashboard is hosted by the Darling service."
+                           FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <CheckBox x:Name="WebEnabledCheckBox" Content="Enable web dashboard" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBlock Text="Port:" VerticalAlignment="Center" Margin="20,0,6,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="WebPortTextBox" Width="70" Text="5153" VerticalAlignment="Center"/>
+                    <Button Content="Auto" ToolTip="Find an available port"
+                            Margin="6,0,0,0" Padding="8,2"
+                            VerticalAlignment="Center"
+                            Click="WebAutoPortButton_Click"/>
+                </StackPanel>
+                <TextBlock x:Name="WebStatusText" FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,6,0,0"/>
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                    <Button x:Name="CopyWebUrlButton" Content="Copy URL" Click="CopyWebUrlButton_Click"/>
+                    <TextBlock Text="Open this URL in a browser on this machine (or across the LAN when exposed)."
+                               FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Viewer Defaults -->
+        <Border Grid.Row="4" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="Viewer Defaults" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
@@ -193,7 +221,7 @@
         </Border>
 
         <!-- Notifications -->
-        <Border Grid.Row="4" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+        <Border Grid.Row="5" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="Notifications" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center"/>
@@ -390,7 +418,7 @@
         </Border>
 
         <!-- Email Alerts (Optional) -->
-        <Border Grid.Row="5" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+        <Border Grid.Row="6" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="Email Alerts (Optional)" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
                 <TextBlock Text="Send email notifications alongside system tray alerts. Requires an SMTP server."
@@ -452,7 +480,7 @@
         </Border>
 
         <!-- Webhooks (Teams / Slack) -->
-        <Border Grid.Row="6" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+        <Border Grid.Row="7" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <!-- Microsoft Teams -->
                 <TextBlock Text="Microsoft Teams Notifications" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundBrush}"/>
@@ -623,7 +651,7 @@
         </Border>
 
         <!-- Collection Schedule (control-plane editor) -->
-        <Border Grid.Row="7" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
+        <Border Grid.Row="8" Background="{DynamicResource BackgroundLightBrush}" CornerRadius="4" Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="Collection Schedule" FontSize="14" FontWeight="SemiBold"
                            Foreground="{DynamicResource ForegroundBrush}"/>
@@ -635,7 +663,7 @@
         </Border>
 
         <!-- Buttons -->
-        <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <StackPanel Grid.Row="9" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Save" Click="SaveButton_Click" Style="{DynamicResource AccentButton}" Margin="0,0,8,0"/>
             <Button Content="Close" Click="CloseButton_Click"/>
         </StackPanel>

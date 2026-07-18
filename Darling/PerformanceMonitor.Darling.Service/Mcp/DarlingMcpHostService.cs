@@ -10,8 +10,6 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Runtime.Versioning;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
@@ -23,6 +21,7 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Analysis;
+using PerformanceMonitor.Darling.Service.Hosting;
 
 namespace PerformanceMonitor.Darling.Service.Mcp;
 
@@ -463,6 +462,10 @@ public sealed class DarlingMcpHostService : BackgroundService
                 .WithGeminiCompatibleTools<DarlingMcpAlertTools>()
                 .WithGeminiCompatibleTools<DarlingMcpConfigTools>()
                 .WithGeminiCompatibleTools<DarlingMcpHealthTools>()
+                /* The cross-server fleet overview — get_fleet_overview (#1562) — the roll-up only the central
+                   store can serve, over the SHARED DarlingFleetReader that also powers the web /api/fleet and the
+                   WPF viewer's Overview (one reader, one banding). ADDITIVE alongside get_server_summary. */
+                .WithGeminiCompatibleTools<DarlingMcpFleetTools>()
                 /* The system_health parse-on-read family — get_health_parser_cpu_tasks / _io_issues /
                    _memory_broker / _memory_conditions / _memory_node_oom / _scheduler_issues /
                    _severe_errors / _system_health — the same names the Dashboard exposes. Where the Dashboard
@@ -592,71 +595,26 @@ public sealed class DarlingMcpHostService : BackgroundService
     internal readonly record struct McpBindDecision(McpBindMode Mode, McpBindReason Reason);
 
     /// <summary>
-    /// PURE resolution of the effective MCP bind (D3-a). Returns <see cref="McpBindMode.NetworkAndLoopback"/>
-    /// ONLY when the listen value is a genuine network (non-loopback) address (via the Phase-1 classifier —
-    /// so <c>127.0.0.1</c> resolves to loopback, never a network bind/collision) that ALSO parses as an IP, AND
-    /// <paramref name="managed"/> is true, AND a bearer token is present (encryptedToken or token — presence
-    /// only; the host decrypts later), AND allowFrom is a valid CIDR of the SAME address family as the listen.
-    /// Otherwise loopback-only with the specific reason: BYO (<paramref name="managed"/> = false) with any
-    /// network.* set -&gt; <see cref="McpBindReason.ManagedModeRequired"/> (the network path never runs in BYO,
-    /// D-BYO); exposed + managed but a non-IP listen -&gt; <see cref="McpBindReason.ListenInvalid"/>; exposed +
-    /// managed + IP but no token -&gt; <see cref="McpBindReason.TokenMissing"/>; exposed + managed + token but an
-    /// invalid/family-mismatched allowFrom -&gt; <see cref="McpBindReason.AllowFromInvalid"/>; anything else (not
-    /// exposed) -&gt; <see cref="McpBindReason.LoopbackByDefault"/>. Never throws; never consults a logger.
+    /// The effective MCP bind — a thin adapter over the shared <see cref="DarlingHostBinding.ResolveBind"/>
+    /// ladder (darling-network-endpoints anti-drift): projects the MCP network block onto the surface-agnostic
+    /// inputs and maps the shared decision back to the nested (Mode, Reason) the MCP host + its tests use. The
+    /// LADDER itself (exposed classifier, managed gate, listen/token/allowFrom validation, family match) now
+    /// lives ONCE in <see cref="DarlingHostBinding"/>; this method's contract is byte-for-byte what it was.
     /// </summary>
     internal static McpBindDecision ResolveMcpBind(McpConfig mcp, bool managed)
     {
         var network = mcp.Network;
-        var exposed = network is not null && DarlingNetwork.IsExposedListenAddress(network.Listen);
+        var decision = DarlingHostBinding.ResolveBind(
+            network?.Listen,
+            network?.AllowFrom,
+            tokenPresent: network is not null
+                && (!string.IsNullOrWhiteSpace(network.EncryptedToken) || !string.IsNullOrWhiteSpace(network.Token)),
+            networkConfigured: network is { IsConfigured: true },
+            managed: managed);
 
-        if (!exposed)
-        {
-            /* Not exposed = the secure default. The one exception worth a word: a BYO store with a network
-               block set at all (even a loopback/partial one) is ignored -> the D-BYO warning. */
-            if (!managed && network is { IsConfigured: true })
-            {
-                return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ManagedModeRequired);
-            }
-
-            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.LoopbackByDefault);
-        }
-
-        /* Exposed. Managed-mode only: BYO never binds the network path (D3-a / D-BYO), and this dominates a
-           missing/invalid listen/token/allowFrom so the operator sees the actionable "managed only" notice first. */
-        if (!managed)
-        {
-            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ManagedModeRequired);
-        }
-
-        /* The listen must be a parseable IP. The classifier treats a non-IP value (localhost, a hostname, "*")
-           as "exposed" so it is never silently bound; here it degrades to loopback rather than throwing when the
-           host later does IPAddress.Parse (D-validate — the store degrades on the same input, the host must too). */
-        if (!IPAddress.TryParse(network!.Listen!.Trim(), out var listenIp))
-        {
-            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.ListenInvalid);
-        }
-
-        /* Token presence only (no decryption here — that is an effectful, Windows-only step the host does). */
-        if (string.IsNullOrWhiteSpace(network.EncryptedToken) && string.IsNullOrWhiteSpace(network.Token))
-        {
-            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.TokenMissing);
-        }
-
-        /* allowFrom must be a valid CIDR (host bits zeroed, the same IPNetwork rule the store side uses) whose
-           address family matches the listen (the store's D4 check): a mismatched family would bind one family
-           while the in-app CIDR check rejects the other, 403-ing every network client — fail-closed but silently
-           non-functional, so degrade with a clear reason instead. */
-        if (string.IsNullOrWhiteSpace(network.AllowFrom) || !IPNetwork.TryParse(network.AllowFrom.Trim(), out var cidr))
-        {
-            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.AllowFromInvalid);
-        }
-
-        if (cidr.BaseAddress.AddressFamily != listenIp.AddressFamily)
-        {
-            return new McpBindDecision(McpBindMode.LoopbackOnly, McpBindReason.AllowFromInvalid);
-        }
-
-        return new McpBindDecision(McpBindMode.NetworkAndLoopback, McpBindReason.NetworkExposed);
+        /* The nested McpBind* enums mirror DarlingHostBinding's BindMode/BindReason 1:1 (same member order,
+           pinned equal by DarlingHostBindingTests), so a numeric cast maps them without a per-value switch. */
+        return new McpBindDecision((McpBindMode)(int)decision.Mode, (McpBindReason)(int)decision.Reason);
     }
 
     /// <summary>
@@ -667,9 +625,7 @@ public sealed class DarlingMcpHostService : BackgroundService
     /// "localhost" still reaches the server (which, in network mode, now also requires the token).
     /// </summary>
     internal static bool ShouldAddLoopbackListeners(IPAddress listenIp)
-        => !(IPAddress.IsLoopback(listenIp)
-             || listenIp.Equals(IPAddress.Any)
-             || listenIp.Equals(IPAddress.IPv6Any));
+        => DarlingHostBinding.ShouldAddLoopbackListeners(listenIp);
 
     /// <summary>
     /// PURE in-app CIDR check (D3-c, Round-4 #2): is <paramref name="remoteIp"/> allowed? Loopback
@@ -678,15 +634,7 @@ public sealed class DarlingMcpHostService : BackgroundService
     /// else must fall inside the CIDR. A null remote (unverifiable origin) fails closed.
     /// </summary>
     internal static bool IsRemoteAddressAllowed(IPAddress? remoteIp, IPNetwork allowedCidr)
-    {
-        if (remoteIp is null)
-        {
-            return false;
-        }
-
-        var ip = remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp;
-        return IPAddress.IsLoopback(ip) || allowedCidr.Contains(ip);
-    }
+        => DarlingHostBinding.IsRemoteAddressAllowed(remoteIp, allowedCidr);
 
     /// <summary>
     /// PURE bearer-token check (D3-b): true only when <paramref name="authorizationHeaderValue"/> carries a
@@ -708,10 +656,9 @@ public sealed class DarlingMcpHostService : BackgroundService
             return false;
         }
 
-        /* Hash both to a fixed 32 bytes so FixedTimeEquals is constant-time regardless of token length. */
-        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expectedToken));
-        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
-        return CryptographicOperations.FixedTimeEquals(expectedHash, presentedHash);
+        /* The constant-time, length-hiding compare lives once in the shared host-binding helper (used by the
+           web host's ?token= check too); this method keeps the MCP-specific Bearer-header parsing above it. */
+        return DarlingHostBinding.FixedTimeTokenEquals(presented, expectedToken);
     }
 
     /// <summary>Extracts the token from a <c>Bearer &lt;token&gt;</c> Authorization header (scheme
@@ -743,14 +690,8 @@ public sealed class DarlingMcpHostService : BackgroundService
     /// are silent (null). <see cref="LogBindReason"/> drives its emit level off this, so the level and the
     /// message can never diverge.
     /// </summary>
-    internal static LogLevel? MapBindReasonSeverity(McpBindReason reason) => reason switch
-    {
-        McpBindReason.ListenInvalid => LogLevel.Critical,
-        McpBindReason.TokenMissing => LogLevel.Critical,
-        McpBindReason.AllowFromInvalid => LogLevel.Critical,
-        McpBindReason.ManagedModeRequired => LogLevel.Warning,
-        _ => null,
-    };
+    internal static LogLevel? MapBindReasonSeverity(McpBindReason reason)
+        => DarlingHostBinding.MapBindReasonSeverity((DarlingHostBinding.BindReason)(int)reason);
 
     /// <summary>Emits the <see cref="ResolveMcpBind"/> reason at its mapped severity (Round-4 #7). Silent for
     /// the non-degrade reasons (the network-exposed line is logged at start with the real bind).</summary>
@@ -809,49 +750,8 @@ public sealed class DarlingMcpHostService : BackgroundService
     private static string McpFirewallRuleName(int port) => $"PerformanceMonitor Darling MCP (port {port})";
 
     [SupportedOSPlatform("windows")]
-    private async Task ReconcileMcpFirewallAsync(int port, bool enable, string? cidr, CancellationToken cancellationToken)
-    {
-        var ruleName = McpFirewallRuleName(port);
-        var command = enable
-            ? DarlingManagedPostgres.BuildFirewallEnableCommand(ruleName, port, cidr!)
-            : DarlingManagedPostgres.BuildFirewallDisableCommand(ruleName);
-
-        try
-        {
-            var (exitCode, output) = await DarlingManagedPostgres.RunPowerShellAsync(command, cancellationToken);
-            if (exitCode == 0)
-            {
-                _logger.LogInformation("MCP firewall rule '{Rule}' {Verb}.", ruleName, enable ? "ensured" : "removed");
-            }
-            else if (enable)
-            {
-                _logger.LogWarning(
-                    "Could not configure the MCP firewall automatically (exit {ExitCode}: {Output}). Run this in an elevated PowerShell:\n{Command}",
-                    exitCode, output, command);
-            }
-            else
-            {
-                _logger.LogWarning("Could not remove the MCP firewall rule automatically (exit {ExitCode}: {Output}).", exitCode, output);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            if (enable)
-            {
-                _logger.LogWarning(
-                    "Could not configure the MCP firewall automatically ({Message}). Run this in an elevated PowerShell:\n{Command}",
-                    ex.Message, command);
-            }
-            else
-            {
-                _logger.LogWarning("Could not remove the MCP firewall rule automatically ({Message}).", ex.Message);
-            }
-        }
-    }
+    private Task ReconcileMcpFirewallAsync(int port, bool enable, string? cidr, CancellationToken cancellationToken)
+        => DarlingHostBinding.ReconcileFirewallAsync(McpFirewallRuleName(port), port, enable, cidr, _logger, cancellationToken);
 
     /// <summary>
     /// Managed mode's first-boot race, handled: the dedicated <c>mcp</c>-role credential appears only after

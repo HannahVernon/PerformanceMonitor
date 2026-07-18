@@ -13,6 +13,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using Npgsql;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitor.Darling.Viewer;
 
@@ -343,42 +344,6 @@ WHERE server_id = $1";
         instantUtc.HasValue ? Math.Max(0, (int)(nowUtc - instantUtc.Value).TotalMinutes) : null;
 }
 
-/// <summary>The collection-freshness bands the viewer derives a card's status from.</summary>
-public enum ServerFreshness
-{
-    /// <summary>The newest collection is within twice the fastest collector's cadence — Online (green).</summary>
-    Fresh,
-
-    /// <summary>Collection has lagged past twice the cadence but the server isn't long-dead — Warning (amber).</summary>
-    Stale,
-
-    /// <summary>The newest collection is long-dead — the Offline overlay (red).</summary>
-    Offline,
-
-    /// <summary>
-    /// No collection has EVER landed for this server (this run or any prior) — the service has not
-    /// reached it yet. Distinct from <see cref="Offline"/> (which means data STOPPED): during a slow
-    /// fleet bootstrap a red "Offline" on a server that was merely still queued sent a 24-server field
-    /// report chasing a phantom scheduler bug. Rendered as an amber "Awaiting first collection", never
-    /// the red overlay.
-    /// </summary>
-    NeverCollected,
-}
-
-/// <summary>
-/// Per-metric health bands for the Overview card's severity dots, a verbatim mirror of the Dashboard's
-/// <c>PerformanceMonitorDashboard.Models.HealthSeverity</c>. <see cref="Unknown"/> is a metric with no
-/// collected data (e.g. Threads on Azure SQL DB) — a grey dot, and it never escalates the card's overall
-/// band.
-/// </summary>
-public enum HealthSeverity
-{
-    Unknown,
-    Healthy,
-    Warning,
-    Critical,
-}
-
 /// <summary>
 /// One Overview server card's view-model — copied from Lite's <c>ServerSummaryItem</c>
 /// (Lite/Services/LocalDataService.Overview.cs) and enriched toward the Dashboard's
@@ -393,18 +358,8 @@ public enum HealthSeverity
 /// </summary>
 public sealed class ServerSummaryItem
 {
-    /// <summary>
-    /// The fastest scheduled collector's cadence (wait_stats / cpu_utilization / memory_stats etc. all
-    /// run every minute — see <c>CollectorScheduleDefaults</c>), so MAX(collection_time) tracks a
-    /// one-minute rhythm on a healthy server. Freshness bands are multiples of this.
-    /// </summary>
-    private static readonly TimeSpan s_collectorCadence = TimeSpan.FromMinutes(1);
-
-    /// <summary>Older than twice the cadence = the collection has visibly lagged (Warning).</summary>
-    public static readonly TimeSpan StaleThreshold = TimeSpan.FromTicks(s_collectorCadence.Ticks * 2);
-
-    /// <summary>Older than this (or no collection at all) = the server is treated as Offline.</summary>
-    public static readonly TimeSpan OfflineThreshold = TimeSpan.FromMinutes(15);
+    /* Freshness + per-metric severity thresholds live once in PerformanceMonitor.Common's
+       ServerHealthThresholds / ServerHealthClassifier (#1562); this card keeps only the brush mapping. */
 
     /* Per-severity dot / value brushes, frozen once (the viewer's dark-theme palette). */
     private static readonly SolidColorBrush s_criticalBrush = MakeBrush("#E57373");
@@ -618,94 +573,48 @@ public sealed class ServerSummaryItem
 
     public bool IsOffline => IsOnline == false;
 
-    // ── Per-metric severity bands (verbatim mirrors of ServerHealthStatus's CASE logic) ──────────────
+    // ── Per-metric severity bands (delegated to the SHARED ServerHealthClassifier — one place for the
+    //    thresholds; this card keeps only the brush mapping) ────────────────────────────────────────────
 
-    /// <summary>CPU band — total non-idle CPU: ≥95% Critical, ≥80% Warning (ServerHealthStatus.CpuSeverity).</summary>
-    public HealthSeverity CpuSeverity
-    {
-        get
-        {
-            var total = CpuPercentForAlert;
-            if (!total.HasValue) return HealthSeverity.Unknown;
-            if (total >= 95) return HealthSeverity.Critical;
-            if (total >= 80) return HealthSeverity.Warning;
-            return HealthSeverity.Healthy;
-        }
-    }
+    /// <summary>CPU band — total non-idle CPU: >= 95% Critical, >= 80% Warning.</summary>
+    public HealthSeverity CpuSeverity => ServerHealthClassifier.CpuSeverity(CpuPercentForAlert);
 
     /// <summary>True when the resource semaphore shows grant waiters, timeouts, or forced grants.</summary>
     public bool HasMemoryPressure => MemoryWaiterCount > 0 || MemoryTimeoutCount > 0 || MemoryForcedCount > 0;
 
-    /// <summary>
-    /// Memory band — Critical on resource-semaphore pressure, else Healthy. The Dashboard's
-    /// <c>MemorySeverity</c> flags Critical on <c>waiter_count &gt; 0</c>; the viewer additionally treats
-    /// recent grant timeouts / forced grants (collected as deltas) as the same workspace-memory pressure.
-    /// </summary>
-    public HealthSeverity MemorySeverity =>
-        HasMemoryPressure ? HealthSeverity.Critical : HealthSeverity.Healthy;
+    /// <summary>Memory band — Critical on any resource-semaphore pressure, else Healthy.</summary>
+    public HealthSeverity MemorySeverity => ServerHealthClassifier.MemorySeverity(HasMemoryPressure);
 
-    /// <summary>
-    /// Blocking band — mirrors <c>ServerHealthStatus.BlockingSeverity</c>: ≥60s max wait or ≥5 events
-    /// Critical; ≥10s max wait, ≥2 events, or any blocking at all Warning.
-    /// </summary>
-    public HealthSeverity BlockingSeverity
+    /// <summary>Blocking band — >= 60s max wait or >= 5 events Critical; >= 10s, >= 2 events, or any blocking Warning.</summary>
+    public HealthSeverity BlockingSeverity => ServerHealthClassifier.BlockingSeverity(BlockingCount, MaxBlockedSeconds);
+
+    /// <summary>Deadlock band — any deadlock in the window is Critical.</summary>
+    public HealthSeverity DeadlockSeverity => ServerHealthClassifier.DeadlockSeverity(DeadlockCount);
+
+    /// <summary>Threads band — work-queue starvation Critical; >= 20 runnable-waiting or under 10% available Warning; no snapshot Unknown.</summary>
+    public HealthSeverity ThreadsSeverity =>
+        ServerHealthClassifier.ThreadsSeverity(TotalThreads, AvailableThreads, ThreadsWaitingForCpu, RequestsWaitingForThreads);
+
+    /// <summary>Collectors band — any FAILING collector is Warning.</summary>
+    public HealthSeverity CollectorSeverity => ServerHealthClassifier.CollectorSeverity(FailedCollectorCount);
+
+    /// <summary>The card's worst metric band (offline handled separately by the border / overlay).</summary>
+    public HealthSeverity OverallMetricSeverity => ServerHealthClassifier.OverallMetricSeverity(ToHealthMetrics());
+
+    /// <summary>The card's raw per-metric inputs, for the shared classifier (banding + fleet score).</summary>
+    public ServerHealthMetrics ToHealthMetrics() => new()
     {
-        get
-        {
-            if (MaxBlockedSeconds >= 60) return HealthSeverity.Critical;
-            if (BlockingCount >= 5) return HealthSeverity.Critical;
-            if (MaxBlockedSeconds >= 10) return HealthSeverity.Warning;
-            if (BlockingCount >= 2) return HealthSeverity.Warning;
-            if (BlockingCount > 0) return HealthSeverity.Warning;
-            return HealthSeverity.Healthy;
-        }
-    }
-
-    /// <summary>
-    /// Deadlock band — any deadlock in the window is Critical. The Dashboard bands on a cumulative-counter
-    /// delta + minutes-since; the viewer has a windowed count (one-hour window), so a deadlock this window
-    /// is the viewer's Critical, matching Lite's red-when-&gt;0 emphasis.
-    /// </summary>
-    public HealthSeverity DeadlockSeverity =>
-        DeadlockCount > 0 ? HealthSeverity.Critical : HealthSeverity.Healthy;
-
-    /// <summary>
-    /// Threads band — mirrors <c>ServerHealthStatus.ThreadsSeverity</c>: work-queue starvation Critical;
-    /// ≥20 runnable-waiting or under 10% workers available Warning. Unknown when there is no snapshot.
-    /// </summary>
-    public HealthSeverity ThreadsSeverity
-    {
-        get
-        {
-            if (!TotalThreads.HasValue) return HealthSeverity.Unknown;
-            if (RequestsWaitingForThreads > 0) return HealthSeverity.Critical;
-            if (ThreadsWaitingForCpu >= 20) return HealthSeverity.Warning;
-            if (TotalThreads.Value > 0 && AvailableThreads < TotalThreads.Value * 0.10) return HealthSeverity.Warning;
-            return HealthSeverity.Healthy;
-        }
-    }
-
-    /// <summary>Collectors band — any FAILING collector is Warning (ServerHealthStatus.CollectorSeverity).</summary>
-    public HealthSeverity CollectorSeverity =>
-        FailedCollectorCount > 0 ? HealthSeverity.Warning : HealthSeverity.Healthy;
-
-    /// <summary>
-    /// The card's worst metric band (offline handled separately by the border / overlay). Unknown and
-    /// Healthy never escalate — matching <c>ServerHealthStatus.OverallSeverity</c>'s reduce.
-    /// </summary>
-    public HealthSeverity OverallMetricSeverity
-    {
-        get
-        {
-            var worst = HealthSeverity.Healthy;
-            foreach (var s in new[] { CpuSeverity, MemorySeverity, BlockingSeverity, ThreadsSeverity, DeadlockSeverity, CollectorSeverity })
-            {
-                if (s == HealthSeverity.Critical) return HealthSeverity.Critical;
-                if (s == HealthSeverity.Warning) worst = HealthSeverity.Warning;
-            }
-            return worst;
-        }
-    }
+        CpuPercentForAlert = CpuPercentForAlert,
+        HasMemoryPressure = HasMemoryPressure,
+        BlockingCount = BlockingCount,
+        MaxBlockedSeconds = MaxBlockedSeconds,
+        DeadlockCount = DeadlockCount,
+        TotalThreads = TotalThreads,
+        AvailableThreads = AvailableThreads,
+        ThreadsWaitingForCpu = ThreadsWaitingForCpu,
+        RequestsWaitingForThreads = RequestsWaitingForThreads,
+        FailedCollectorCount = FailedCollectorCount,
+    };
 
     // ── Per-metric dot / value brushes ───────────────────────────────────────────────────────────────
 
@@ -744,15 +653,8 @@ public sealed class ServerSummaryItem
     /// naive UTC; <paramref name="nowUtc"/> is <see cref="DateTime.UtcNow"/>), so the subtraction is a
     /// true elapsed-time regardless of Kind.
     /// </summary>
-    public static ServerFreshness ClassifyFreshness(DateTime? lastCollectionUtc, DateTime nowUtc)
-    {
-        if (!lastCollectionUtc.HasValue) return ServerFreshness.NeverCollected;
-
-        var age = nowUtc - lastCollectionUtc.Value;
-        if (age > OfflineThreshold) return ServerFreshness.Offline;
-        if (age > StaleThreshold) return ServerFreshness.Stale;
-        return ServerFreshness.Fresh;
-    }
+    public static ServerFreshness ClassifyFreshness(DateTime? lastCollectionUtc, DateTime nowUtc) =>
+        ServerHealthClassifier.ClassifyFreshness(lastCollectionUtc, nowUtc);
 
     /// <summary>
     /// Maps the freshness band onto Lite's card inputs, taking the live-ping's place: Fresh → Online,

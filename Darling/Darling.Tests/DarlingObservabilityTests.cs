@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyNineVersions_V28QueryStoreReplicaRole_V29LongQueryCompletions()
+    public void MigrationScripts_ThirtyVersions_V29LongQueryCompletions_V30WebDashboardConfig()
     {
-        Assert.Equal(29, PgMigrations.Scripts.Count);
+        Assert.Equal(30, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -64,7 +64,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(27, PgMigrations.Scripts[26].Version);
         Assert.Equal(28, PgMigrations.Scripts[27].Version);
         Assert.Equal(29, PgMigrations.Scripts[28].Version);
-        Assert.Equal(29, StorageVersion.SchemaVersion);
+        Assert.Equal(30, PgMigrations.Scripts[29].Version);
+        Assert.Equal(30, StorageVersion.SchemaVersion);
 
         /* V26 (#1506) adds the generic webhook channel's four columns to the V17 control-plane table.
            Schema-qualified config.* and IF NOT EXISTS, per the file's additive-ALTER idiom. */
@@ -95,6 +96,12 @@ public sealed class DarlingObservabilityTests
         Assert.Contains("CREATE TABLE IF NOT EXISTS collect.long_query_completions (", v29, StringComparison.Ordinal);
         Assert.Contains("duration_microseconds bigint", v29, StringComparison.Ordinal);
         Assert.Contains("CREATE INDEX IF NOT EXISTS idx_long_query_completions_time ON collect.long_query_completions(server_id, collection_time);", v29, StringComparison.Ordinal);
+
+        /* V30 (#1562) adds the web dashboard toggle/port to the V17 config_service control-plane table.
+           Schema-qualified config.* and IF NOT EXISTS, per the file's additive-ALTER idiom. */
+        var v30 = PgMigrations.Scripts[29].Sql;
+        Assert.Contains("ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_enabled boolean NOT NULL DEFAULT FALSE;", v30, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_port integer NOT NULL DEFAULT 5153;", v30, StringComparison.Ordinal);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so

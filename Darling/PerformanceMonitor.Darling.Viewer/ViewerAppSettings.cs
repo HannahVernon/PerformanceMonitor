@@ -61,6 +61,13 @@ public sealed class ViewerAppSettings
     /// <summary>MCP HTTP port. Darling's default (5152) avoids Lite (5151) and the Dashboard (5150).</summary>
     public int McpPort { get; set; } = 5152;
 
+    /// <summary>Whether the Darling service's read-only web dashboard should run. Persisted here (an immediate
+    /// non-blank seed for the Settings window); the control-plane store is authoritative and honored by the service.</summary>
+    public bool WebEnabled { get; set; }
+
+    /// <summary>Web dashboard HTTP port. Darling's default (5153) avoids the MCP family (5150-5152).</summary>
+    public int WebPort { get; set; } = 5153;
+
     /* ---------------- Viewer display preferences ---------------- */
 
     /// <summary>Connection timeout in seconds for the viewer's store reads (5-60).</summary>
@@ -190,6 +197,7 @@ public sealed class ViewerAppSettings
     internal ViewerAppSettings Normalize()
     {
         McpPort = Clamp(McpPort, 1024, 65535, 5152);
+        WebPort = Clamp(WebPort, 1024, 65535, 5153);
         ConnectionTimeoutSeconds = Clamp(ConnectionTimeoutSeconds, 5, 60, 5);
         NocRefreshIntervalSeconds = Clamp(NocRefreshIntervalSeconds, 10, 600, 30);
         CsvSeparator = (CsvSeparator == "," || CsvSeparator == ";" || CsvSeparator == "\t") ? CsvSeparator : DefaultCsvSeparator();
