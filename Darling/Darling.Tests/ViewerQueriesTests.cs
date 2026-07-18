@@ -97,6 +97,23 @@ public sealed class ViewerQueriesSqlTests
         Assert.DoesNotContain("$6", sql, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TopQueriesSql_StitchesModuleByHandle_DedupsToLatest_LeftJoinsForAdHocFallback()
+    {
+        /* #1568: read-time attribution. A dedicated CTE picks ONE procedure_stats identity per sql_handle
+           (latest collection_time, via ROW_NUMBER + WHERE rn = 1 — Postgres has no QUALIFY), then a LEFT
+           JOIN on the shared normalized handle surfaces db.schema.object; unmatched rows stay ad hoc. */
+        var sql = ViewerDataService.TopQueriesSql;
+        Assert.Contains("module AS (", sql, StringComparison.Ordinal);
+        Assert.Contains("FROM procedure_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY sql_handle ORDER BY collection_time DESC) AS rn", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE rn = 1", sql, StringComparison.Ordinal);
+        Assert.Contains("LEFT JOIN module AS m ON m.sql_handle = r.sql_handle", sql, StringComparison.Ordinal);
+        Assert.Contains("m.object_name AS module_object_name", sql, StringComparison.Ordinal);
+        Assert.Contains("m.schema_name AS module_schema_name", sql, StringComparison.Ordinal);
+        Assert.Contains("m.database_name AS module_database_name", sql, StringComparison.Ordinal);
+    }
+
     // ── Top Procedures ──
 
     [Fact]
@@ -270,6 +287,16 @@ public sealed class ViewerQueriesDisplayTests
     }
 
     [Fact]
+    public void QueryStatsRow_ModuleName_ComposesDbSchemaObject_OrAdHocWhenUnmatched()
+    {
+        /* #1568: attributed statement shows database.schema.object; an unmatched statement is ad hoc. */
+        var attributed = new ViewerQueryStatsRow { ModuleDatabaseName = "StackOverflow", ModuleSchemaName = "dbo", ModuleObjectName = "usp_Get" };
+        Assert.Equal("StackOverflow.dbo.usp_Get", attributed.ModuleName);
+        Assert.Equal("ad hoc", new ViewerQueryStatsRow().ModuleName);
+        Assert.Equal("ad hoc", new ViewerQueryStatsRow { ModuleDatabaseName = "StackOverflow", ModuleSchemaName = "dbo" }.ModuleName);
+    }
+
+    [Fact]
     public void QueryStoreRow_TotalsAreExecutionsTimesAverage()
     {
         var row = new ViewerQueryStoreRow { TotalExecutions = 10, AvgDurationMs = 3.5, AvgCpuTimeMs = 1.25 };
@@ -375,6 +402,7 @@ public sealed class ViewerQueriesLivePostgresTests
     private const int SlicerServerId = -970805;
     private const int ProcedureStatsPlanServerId = -970806;
     private const int RegressionsServerId = -970807;
+    private const int ModuleAttributionServerId = -970808;
 
     private static string? ConnectionString => Environment.GetEnvironmentVariable("DARLING_TEST_PG");
 
@@ -425,6 +453,52 @@ public sealed class ViewerQueriesLivePostgresTests
         finally
         {
             await DeleteRowsAsync(connection, "query_stats", QueryStatsServerId);
+        }
+    }
+
+    [Fact]
+    public async Task TopQueries_AttributesModuleByHandle_DedupsToLatest_AdHocWhenUnmatched_AgainstDevPostgres()
+    {
+        var cs = ConnectionString;
+        Assert.SkipWhen(string.IsNullOrEmpty(cs), "Set DARLING_TEST_PG to a Postgres connection string to run the live module attribution test.");
+
+        using var connection = new NpgsqlConnection(cs);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await PgMigrations.MigrateAsync(connection, TestContext.Current.CancellationToken);
+        await DeleteRowsAsync(connection, "query_stats", ModuleAttributionServerId);
+        await DeleteRowsAsync(connection, "procedure_stats", ModuleAttributionServerId);
+
+        await using var viewer = new ViewerDataService(cs!);
+        var end = TruncateToSeconds(DateTime.UtcNow);
+        var start = end.AddHours(-24);
+        var t1 = start.AddHours(1);
+
+        try
+        {
+            /* Attributed: query whose sql_handle matches a cached module; bigger elapsed → ranks first. */
+            await InsertQueryStatsAsync(connection, ModuleAttributionServerId, t1, "StackOverflow", "0xATTRIB",
+                deltaExec: 5, deltaWorker: 60_000, deltaElapsed: 300_000, deltaReads: 300, queryText: "SELECT attributed", sqlHandle: "0xMOD");
+            /* Same handle captured twice — the newer identity (usp_New) wins, and the query row must not fan
+               out across the two procedure_stats rows. */
+            await InsertProcedureStatsAsync(connection, ModuleAttributionServerId, t1, "StackOverflow", "dbo", "usp_Old", "PROCEDURE",
+                deltaExec: 1, deltaWorker: 10_000, deltaElapsed: 20_000, deltaReads: 100, sqlHandle: "0xMOD");
+            await InsertProcedureStatsAsync(connection, ModuleAttributionServerId, t1.AddMinutes(30), "StackOverflow", "dbo", "usp_New", "PROCEDURE",
+                deltaExec: 1, deltaWorker: 10_000, deltaElapsed: 20_000, deltaReads: 100, sqlHandle: "0xMOD");
+            /* Ad hoc: query whose sql_handle matches no cached module. */
+            await InsertQueryStatsAsync(connection, ModuleAttributionServerId, t1, "StackOverflow", "0xADHOC",
+                deltaExec: 3, deltaWorker: 20_000, deltaElapsed: 100_000, deltaReads: 100, queryText: "SELECT adhoc", sqlHandle: "0xLOOSE");
+
+            var rows = await viewer.GetTopQueriesByCpuAsync(ModuleAttributionServerId, start, end);
+
+            Assert.Equal(2, rows.Count);           /* the two module rows did not fan out the one query */
+            var attributed = rows.Single(r => r.QueryHash == "0xATTRIB");
+            Assert.Equal("StackOverflow.dbo.usp_New", attributed.ModuleName);   /* latest collection_time wins */
+            Assert.Equal("ad hoc", rows.Single(r => r.QueryHash == "0xADHOC").ModuleName);
+        }
+        finally
+        {
+            await DeleteRowsAsync(connection, "query_stats", ModuleAttributionServerId);
+            await DeleteRowsAsync(connection, "procedure_stats", ModuleAttributionServerId);
         }
     }
 
@@ -684,7 +758,7 @@ public sealed class ViewerQueriesLivePostgresTests
 
     private static async Task InsertQueryStatsAsync(
         NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc, string databaseName, string queryHash,
-        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string queryText)
+        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string queryText, string sqlHandle = "0xSQLHANDLE")
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO query_stats
@@ -702,7 +776,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         command.Parameters.AddWithValue(databaseName);
         command.Parameters.AddWithValue(queryHash);
         command.Parameters.AddWithValue("0xPLANHASH");
-        command.Parameters.AddWithValue("0xSQLHANDLE");
+        command.Parameters.AddWithValue(sqlHandle);
         command.Parameters.AddWithValue("0xPLANHANDLE");
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc.AddHours(-1), DateTimeKind.Unspecified));
@@ -724,7 +798,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
     private static async Task InsertProcedureStatsAsync(
         NpgsqlConnection connection, int serverId, DateTime collectionTimeUtc,
         string databaseName, string schemaName, string objectName, string objectType,
-        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string? planXml = null)
+        long deltaExec, long deltaWorker, long deltaElapsed, long deltaReads, string? planXml = null, string sqlHandle = "0xSQLHANDLE")
     {
         using var command = new NpgsqlCommand(@"
 INSERT INTO procedure_stats
@@ -744,7 +818,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
         command.Parameters.AddWithValue(objectType);
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc.AddHours(-1), DateTimeKind.Unspecified));
         command.Parameters.AddWithValue(DateTime.SpecifyKind(collectionTimeUtc, DateTimeKind.Unspecified));
-        command.Parameters.AddWithValue("0xSQLHANDLE");
+        command.Parameters.AddWithValue(sqlHandle);
         command.Parameters.AddWithValue("0xPLANHANDLE");
         command.Parameters.AddWithValue(deltaExec);
         command.Parameters.AddWithValue(deltaWorker);
