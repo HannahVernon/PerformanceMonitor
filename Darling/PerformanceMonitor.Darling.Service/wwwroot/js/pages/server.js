@@ -13,15 +13,19 @@
  * flat per-(time,database) trend pivoted into one read-latency series per database).
  */
 
-import { el, mount, readTool, loadingStrip, errorStrip, emptyStrip } from "../util.js";
+import { el, mount, readTool, apiGet, loadingStrip, errorStrip, emptyStrip, disclosure, bandClass } from "../util.js";
 import { renderPanel, VIZ } from "../panels.js";
 import { renderLineChart, SERIES_COLORS } from "../charts.js";
 
 export function renderServer(main, server) {
+  const dot = el("span", { class: "dot" });
+  const badgeSlot = el("span", { class: "server-band" });
   const head = el("div", { class: "page-head" }, [
     el("a", { href: "#/fleet", text: "← Fleet" }),
-    el("h2", { text: server }),
+    el("span", { class: "server-title" }, [dot, el("h2", { text: server })]),
+    badgeSlot,
   ]);
+  enrichServerHead(dot, badgeSlot, server);
 
   mount(main, [
     head,
@@ -71,6 +75,25 @@ export function renderServer(main, server) {
   ]);
 }
 
+/* The server header's status dot + band badge come from this server's pre-banded fleet card (one /api/fleet
+ * read); the header renders immediately and this fills the dot/badge in when the card arrives. */
+function enrichServerHead(dot, badgeSlot, server) {
+  (async () => {
+    const res = await apiGet("/api/fleet");
+    if (res.kind !== "data") return;
+    const card = (res.data.cards || []).find((c) => c.server_name === server || c.display_name === server);
+    if (!card) return;
+    dot.className = "dot " + bandClass(card.band);
+    mount(badgeSlot, el("span", { class: "badge " + bandClass(card.band), text: card.status || card.band }));
+  })();
+}
+
+/** Query-text cell: a truncated one-liner that expands to the full statement (mono) — the B2 disclosure. */
+function codeDisclosure(text) {
+  if (text == null || text === "") return document.createTextNode("—");
+  return disclosure(text, el("pre", { class: "code" }, [text]), { max: 100 });
+}
+
 /* ─────────────────────────── composites ─────────────────────────── */
 
 function panelShell(title, subtitle) {
@@ -103,10 +126,11 @@ function waitsPanel(server) {
             points: trend.data.trend || [],
             xKey: "time",
             series: [
-              { key: "wait_time_ms_per_second", label: "Wait ms/s", color: "var(--accent)" },
-              { key: "signal_wait_time_ms_per_second", label: "Signal ms/s", color: "var(--warn)" },
+              { key: "wait_time_ms_per_second", label: "Wait ms/s", color: SERIES_COLORS[0] },
+              { key: "signal_wait_time_ms_per_second", label: "Signal ms/s", color: SERIES_COLORS[1] },
             ],
             formatValue: (v) => Math.round(v).toLocaleString(),
+            unit: "ms/s",
           })
         );
       } else {
@@ -163,21 +187,22 @@ const OVERVIEW_STATS = [
   { key: "memory_mb", label: "Memory", format: "mb" },
   { key: "blocking_count", label: "Blocking (recent)", format: "int" },
   { key: "deadlock_count", label: "Deadlocks (recent)", format: "int" },
-  { key: "last_collection", label: "Last collection", format: "time" },
+  { key: "last_collection", label: "Last collection", format: "reltime", small: true },
 ];
 
+/* Neutral series colors assigned by the chart's ramp (B1) — no severity colors on chart lines. idle_cpu is
+   dropped (B3): it would force a 0-100 domain and crush the real SQL/other/total series. */
 const CPU_SERIES = [
-  { key: "sql_server_cpu", label: "SQL CPU %", color: "var(--accent)" },
-  { key: "other_process_cpu", label: "Other %", color: "var(--warn)" },
-  { key: "total_cpu", label: "Total %", color: "var(--err)" },
-  { key: "idle_cpu", label: "Idle %", color: "var(--muted)" },
+  { key: "sql_server_cpu", label: "SQL CPU %" },
+  { key: "other_process_cpu", label: "Other %" },
+  { key: "total_cpu", label: "Total %" },
 ];
 
 const MEMORY_SERIES = [
-  { key: "total_server_memory_mb", label: "Total Server", color: "var(--accent)" },
-  { key: "target_server_memory_mb", label: "Target", color: "var(--warn)" },
-  { key: "buffer_pool_mb", label: "Buffer Pool", color: "var(--ok)" },
-  { key: "plan_cache_mb", label: "Plan Cache", color: "var(--dim)" },
+  { key: "total_server_memory_mb", label: "Total Server" },
+  { key: "target_server_memory_mb", label: "Target" },
+  { key: "buffer_pool_mb", label: "Buffer Pool" },
+  { key: "plan_cache_mb", label: "Plan Cache" },
 ];
 
 const WAIT_COLUMNS = [
@@ -198,7 +223,7 @@ const ACTIVE_COLUMNS = [
   { key: "elapsed_time_formatted", label: "Elapsed" },
   { key: "wait_type", label: "Wait" },
   { key: "blocking_session_id", label: "Blocked by", format: "int" },
-  { key: "query_text", label: "Query", wrap: true, mono: true },
+  { key: "query_text", label: "Query", render: (r) => codeDisclosure(r.query_text) },
 ];
 
 const COLLECTOR_COLUMNS = [

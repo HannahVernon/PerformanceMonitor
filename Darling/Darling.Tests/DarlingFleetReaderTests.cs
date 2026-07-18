@@ -137,6 +137,7 @@ public sealed class DarlingFleetDtoJsonTests
             BlockingCount = 4,
             BlockingSeverity = HealthSeverity.Warning,
             DeadlockCount = 1,
+            DeadlockLastSeen = new DateTime(2026, 7, 18, 3, 15, 0, DateTimeKind.Unspecified),
             DeadlockSeverity = HealthSeverity.Critical,
             ThreadsSeverity = HealthSeverity.Unknown,
             FailedCollectorCount = 0,
@@ -151,7 +152,7 @@ public sealed class DarlingFleetDtoJsonTests
             "\"server_id\"", "\"display_name\"", "\"server_name\"", "\"band\"", "\"status\"",
             "\"is_online\"", "\"last_collection\"", "\"cpu_percent\"", "\"total_cpu_percent\"",
             "\"cpu_severity\"", "\"memory_severity\"", "\"blocking_count\"", "\"blocking_severity\"",
-            "\"deadlock_count\"", "\"deadlock_severity\"", "\"threads_severity\"",
+            "\"deadlock_count\"", "\"deadlock_last_seen\"", "\"deadlock_severity\"", "\"threads_severity\"",
             "\"failed_collector_count\"", "\"collector_severity\"", "\"overall_metric_severity\"",
         })
         {
@@ -162,8 +163,9 @@ public sealed class DarlingFleetDtoJsonTests
         Assert.Contains("\"band\": \"Critical\"", json, StringComparison.Ordinal);
         Assert.Contains("\"cpu_severity\": \"Critical\"", json, StringComparison.Ordinal);
         Assert.Contains("\"threads_severity\": \"Unknown\"", json, StringComparison.Ordinal);
-        /* naive-UTC instant carries no zone suffix (localized in the browser). */
+        /* naive-UTC instants carry no zone suffix (localized in the browser). */
         Assert.Contains("\"last_collection\": \"2026-07-18T03:30:00\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"deadlock_last_seen\": \"2026-07-18T03:15:00\"", json, StringComparison.Ordinal);
         Assert.DoesNotContain("\"cpu_severity\": 3", json, StringComparison.Ordinal);
     }
 

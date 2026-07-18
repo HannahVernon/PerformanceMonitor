@@ -15,7 +15,7 @@
  * work when document.hidden), refreshing once immediately when the tab becomes visible again.
  */
 
-import { el, mount, apiGet, bandClass } from "./util.js";
+import { el, mount, apiGet, bandClass, localTime } from "./util.js";
 import { navigateServer } from "./panels.js";
 import { renderFleet } from "./pages/fleet.js";
 import { renderServer } from "./pages/server.js";
@@ -25,6 +25,7 @@ const POLL_MS = 60000;
 
 const main = document.getElementById("main");
 const serverList = document.getElementById("server-list");
+const statusbar = document.getElementById("statusbar");
 
 /* ─────────────────────────── routing ─────────────────────────── */
 
@@ -61,6 +62,7 @@ async function refreshSidebar() {
   const res = await apiGet("/api/fleet");
   if (res.kind !== "data") {
     mount(serverList, el("div", { class: "muted", style: "padding:0.5rem 1.25rem", text: res.kind === "error" ? "Fleet unavailable" : "" }));
+    updateStatusBar(null);
     return;
   }
 
@@ -76,12 +78,40 @@ async function refreshSidebar() {
         {
           class: "server-item" + (active ? " active" : ""),
           dataset: { server: target, display: c.display_name },
-          onClick: () => navigateServer(target),
+          onActivate: () => navigateServer(target),
         },
         [el("span", { class: "dot " + bandClass(c.band) }), el("span", { class: "name", text: c.display_name })]
       );
     })
   );
+  updateStatusBar(res.data);
+}
+
+/* ─────────────────────────── status bar ─────────────────────────── */
+
+/* A fixed footer mirroring the WPF viewer's status bar: fleet server count, collectors healthy/failing across
+   the fleet, and the last refresh time. Built from the SAME /api/fleet response the sidebar just read (no extra
+   round-trip). Store size has no web endpoint, so it is deliberately omitted here. */
+function updateStatusBar(d) {
+  if (!statusbar) return;
+  if (!d) {
+    mount(statusbar, el("span", { class: "sb-item muted", text: "Fleet unavailable" }));
+    return;
+  }
+  let healthy = 0;
+  let failing = 0;
+  for (const c of d.cards || []) {
+    healthy += c.healthy_collector_count || 0;
+    failing += c.failed_collector_count || 0;
+  }
+  const servers = d.total_servers || 0;
+  mount(statusbar, [
+    el("span", { class: "sb-item", text: servers + (servers === 1 ? " server" : " servers") }),
+    el("span", { class: "sb-sep", text: "·" }),
+    el("span", { class: "sb-item", text: healthy + " collectors healthy · " + failing + " failing" }),
+    el("span", { class: "sb-sep", text: "·" }),
+    el("span", { class: "sb-item", text: "Updated " + localTime(d.generated_at) }),
+  ]);
 }
 
 /* ─────────────────────────── refresh loop ─────────────────────────── */

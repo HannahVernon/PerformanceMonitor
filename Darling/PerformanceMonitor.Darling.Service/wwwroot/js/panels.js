@@ -111,6 +111,14 @@ function isNumericCol(c) {
 }
 
 function cell(row, c) {
+  /* A column may supply a custom cell renderer (row) -> Node — used for the alert status/detail columns and the
+     query-text expander. It owns its own content; wrap/mono classes still apply if the column asks for them. */
+  if (typeof c.render === "function") {
+    const rcls = [];
+    if (c.wrap) rcls.push("wrap");
+    if (c.mono) rcls.push("mono");
+    return el("td", { class: rcls.join(" ") || null }, [c.render(row)]);
+  }
   const raw = getPath(row, c.key);
   const cls = [];
   if (isNumericCol(c)) cls.push("num");
@@ -129,7 +137,7 @@ function vizStat(data, desc) {
     { class: "stats" },
     desc.stats.map((s) =>
       el("div", { class: "stat" }, [
-        el("div", { class: "value", text: applyFormat(s.format, getPath(data, s.key)) }),
+        el("div", { class: "value" + (s.small ? " small" : ""), text: applyFormat(s.format, getPath(data, s.key)) }),
         el("div", { class: "label", text: s.label }),
       ])
     )
@@ -145,7 +153,9 @@ function vizLine(data, desc) {
     color: s.color || SERIES_COLORS[i % SERIES_COLORS.length],
   }));
   const formatValue = desc.format ? (v) => applyFormat(desc.format, v) : (v) => String(Math.round(v));
-  return renderLineChart({ points, xKey: desc.xKey, series, formatValue });
+  /* Percentage charts cap the y-domain at 100 so a 96% reading never rounds the axis up past 100% (B3). */
+  const clampMax = desc.clampMax ?? (desc.format === "pct" ? 100 : null);
+  return renderLineChart({ points, xKey: desc.xKey, series, formatValue, clampMax, unit: desc.unit ?? null });
 }
 
 /* bandlist: desc = { rowsKey, primaryKey, bandKey, bandLabelKey?, reasonKey?, navKey?, emptyText? } */
@@ -160,7 +170,7 @@ function vizBandlist(data, desc) {
       const props = { class: "row " + bandClass(band) };
       if (desc.navKey) {
         const target = getPath(r, desc.navKey);
-        if (target) props.onClick = () => navigateServer(target);
+        if (target) props.onActivate = () => navigateServer(target);
       }
       return el("div", props, [
         el("span", { class: "dot " + bandClass(band) }),

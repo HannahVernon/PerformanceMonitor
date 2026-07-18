@@ -139,9 +139,10 @@ FULL OUTER JOIN
     GROUP BY server_id
 ) AS dmv ON xe.server_id = dmv.server_id";
 
-    /// <summary>Deadlocks in the window per server. $1 window start, $2 window end (both naive UTC).</summary>
+    /// <summary>Deadlocks in the window per server — count and newest deadlock instant (for each card's
+    /// "last seen" detail). $1 window start, $2 window end (both naive UTC).</summary>
     public const string FleetDeadlockSql = @"
-SELECT server_id, COUNT(*) AS cnt
+SELECT server_id, COUNT(*) AS cnt, MAX(deadlock_time) AS last_seen
 FROM v_deadlocks
 WHERE deadlock_time >= $1
 AND   deadlock_time <= $2
@@ -211,11 +212,11 @@ GROUP BY server_id, collector_name";
             memoryPressure.TryGetValue(server.ServerId, out var mp);
             threads.TryGetValue(server.ServerId, out var t);
             blocking.TryGetValue(server.ServerId, out var b);
-            deadlocks.TryGetValue(server.ServerId, out var deadlockCount);
+            deadlocks.TryGetValue(server.ServerId, out var deadlock);
             lastCollection.TryGetValue(server.ServerId, out var lastColl);
             failingCollectors.TryGetValue(server.ServerId, out var collectors);
 
-            cards.Add(BuildCard(server, c, m, mp, t, b, deadlockCount, lastColl, collectors, now));
+            cards.Add(BuildCard(server, c, m, mp, t, b, deadlock, lastColl, collectors, now));
         }
 
         return BuildRollup(cards, now, windowStartUtc, windowEndUtc, worstCount);
@@ -230,11 +231,13 @@ GROUP BY server_id, collector_name";
         MemoryPressureRow pressure,
         ThreadsRow threads,
         BlockingRow blocking,
-        int deadlockCount,
+        DeadlockRow deadlock,
         DateTime? lastCollection,
         CollectorCounts collectors,
         DateTime now)
     {
+        var deadlockCount = deadlock.Count;
+
         /* Lite's XE-preferred / DMV-fallback, per server: XE when it has any row this window, else the DMV
            snapshot — both count and worst-wait come from whichever source wins. */
         var blockingCount = blocking.XeCount > 0 ? blocking.XeCount : blocking.DmvCount;
@@ -314,6 +317,7 @@ GROUP BY server_id, collector_name";
             MaxBlockingWaitMs = maxBlockingWaitMs,
             BlockingSeverity = ServerHealthClassifier.BlockingSeverity(blockingCount, maxBlockedSeconds),
             DeadlockCount = deadlockCount,
+            DeadlockLastSeen = deadlock.LastSeen,
             DeadlockSeverity = ServerHealthClassifier.DeadlockSeverity(deadlockCount),
             TotalThreads = threads.TotalThreads,
             CurrentWorkers = threads.CurrentWorkers,
@@ -569,17 +573,19 @@ GROUP BY server_id, collector_name";
         return map;
     }
 
-    private static async Task<Dictionary<int, int>> ReadDeadlocksAsync(
+    private static async Task<Dictionary<int, DeadlockRow>> ReadDeadlocksAsync(
         NpgsqlDataSource postgres, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
     {
-        var map = new Dictionary<int, int>();
+        var map = new Dictionary<int, DeadlockRow>();
         await using var command = postgres.CreateCommand(FleetDeadlockSql);
         AddTimestamp(command, startUtc);
         AddTimestamp(command, endUtc);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            map[reader.GetInt32(0)] = reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1));
+            map[reader.GetInt32(0)] = new DeadlockRow(
+                reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1)),
+                reader.IsDBNull(2) ? null : reader.GetDateTime(2));
         }
 
         return map;
@@ -644,6 +650,7 @@ GROUP BY server_id, collector_name";
     private readonly record struct MemoryPressureRow(long WaiterCount, long TimeoutCount, long ForcedCount, double? GrantedMemoryMb);
     private readonly record struct ThreadsRow(int? TotalThreads, int? CurrentWorkers, int RunnableTasks, long WorkQueue);
     private readonly record struct BlockingRow(int XeCount, long XeMaxWait, int DmvCount, long DmvMaxWait);
+    private readonly record struct DeadlockRow(int Count, DateTime? LastSeen);
     private readonly record struct CollectorCounts(int Healthy, int Failing);
 }
 
@@ -683,6 +690,7 @@ public sealed class FleetServerCard
     [JsonPropertyName("blocking_severity")] public HealthSeverity BlockingSeverity { get; init; }
 
     [JsonPropertyName("deadlock_count")] public int DeadlockCount { get; init; }
+    [JsonPropertyName("deadlock_last_seen")] public DateTime? DeadlockLastSeen { get; init; }
     [JsonPropertyName("deadlock_severity")] public HealthSeverity DeadlockSeverity { get; init; }
 
     [JsonPropertyName("total_threads")] public int? TotalThreads { get; init; }

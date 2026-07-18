@@ -592,7 +592,10 @@ public sealed class DarlingWebHostService : BackgroundService
 
     /* A minimal, fully self-contained login form (no external references) — a GET form whose only field is the
        access token, so submitting it re-requests the same URL with ?token=, which the middleware exchanges for
-       a session cookie. Single-quoted HTML attributes so the C# verbatim string needs no quote-doubling. */
+       a session cookie. It renders BEFORE auth, so it cannot link the gated /css/theme.css (the static files
+       sit behind this same auth gate); instead it INLINES the same custom-property token block as theme.css
+       (keep in sync) and carries the same wordmark/subtitle as index.html, plus an input focus style and the
+       host being accessed. Single-quoted HTML attributes so the C# verbatim string needs no quote-doubling. */
     private const string LoginPageHtml = @"<!doctype html>
 <html lang='en'>
 <head>
@@ -600,21 +603,39 @@ public sealed class DarlingWebHostService : BackgroundService
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>Darling Web</title>
 <style>
-  body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #181b1f; color: #E4E6EB; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-  form { background: #22252b; padding: 2rem; border-radius: 6px; display: flex; flex-direction: column; gap: 0.75rem; min-width: 280px; }
-  h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
-  label { font-size: 0.85rem; color: #A8AEBA; }
-  input { padding: 0.5rem; border-radius: 4px; border: 1px solid #2a2d35; background: #111217; color: #E4E6EB; }
-  button { padding: 0.5rem; border-radius: 4px; border: 0; background: #2eaef1; color: #111217; font-weight: 600; cursor: pointer; }
+  /* Mirror of css/theme.css tokens — this page renders before auth, so it cannot link the gated stylesheet. */
+  :root {
+    --accent: #2eaef1; --bg: #181b1f; --bg-dark: #111217; --card: #22252b;
+    --fg: #E4E6EB; --dim: #C7CBD4; --muted: #A8AEBA; --border: #2a2d35;
+    --radius: 6px; --radius-sm: 4px;
+    --font: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--fg); margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  form { background: var(--card); padding: 2rem; border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; gap: 0.75rem; min-width: 300px; }
+  .brand h1 { font-size: 1.15rem; margin: 0; color: var(--accent); letter-spacing: 0.2px; }
+  .brand .sub { font-size: 0.75rem; color: var(--muted); margin: 2px 0 0.5rem; }
+  label { font-size: 0.85rem; color: var(--dim); }
+  input { padding: 0.55rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-dark); color: var(--fg); font-size: 0.9rem; }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(46, 174, 241, 0.25); }
+  button { padding: 0.55rem; border-radius: var(--radius-sm); border: 0; background: var(--accent); color: var(--bg-dark); font-weight: 600; cursor: pointer; font-size: 0.9rem; }
+  button:hover { filter: brightness(1.08); }
+  .host { font-size: 0.72rem; color: var(--muted); text-align: center; margin-top: 0.25rem; }
 </style>
 </head>
 <body>
 <form method='get' action=''>
-  <h1>Darling Web</h1>
+  <div class='brand'>
+    <h1>Darling Web</h1>
+    <div class='sub'>SQL Server fleet monitor</div>
+  </div>
   <label for='token'>Access token</label>
   <input id='token' name='token' type='password' autocomplete='off' autofocus>
   <button type='submit'>Enter</button>
+  <div class='host' id='host'></div>
 </form>
+<script>document.getElementById('host').textContent = 'Accessing ' + location.host;</script>
 </body>
 </html>";
 

@@ -36,11 +36,13 @@ function svg(tag, attrs) {
 
 /**
  * Render a multi-series line chart into a returned `.chart` node.
- * spec: { points, xKey, series:[{key,label,color}], formatValue?:(v)=>string }
- *   points  — array of row objects; each row[xKey] is a naive-UTC ISO string, each row[series.key] a number.
+ * spec: { points, xKey, series:[{key,label,color}], formatValue?:(v)=>string, clampMax?:number, unit?:string }
+ *   points    — array of row objects; each row[xKey] is a naive-UTC ISO string, each row[series.key] a number.
+ *   clampMax  — cap the y-axis top at this value (percentage charts pass 100 so the domain never exceeds 100).
+ *   unit      — a short y-axis unit caption ("%", "ms", "ms/s", ...).
  */
 export function renderLineChart(spec) {
-  const { points, xKey, series, formatValue = (v) => String(v) } = spec;
+  const { points, xKey, series, formatValue = (v) => String(v), clampMax = null, unit = null } = spec;
 
   /* Parse + sort the x axis (naive UTC -> real Date via parseUtc). */
   const rows = (points || [])
@@ -57,30 +59,36 @@ export function renderLineChart(spec) {
   const spanMs = tMax - tMin;
 
   /* y domain across every series; 0-baselined for these non-negative metrics (honest scale). */
-  let yMax = -Infinity;
-  let yMin = Infinity;
+  let dataMax = -Infinity;
+  let dataMin = Infinity;
   for (const { r } of rows) {
     for (const s of series) {
       const v = r[s.key];
       if (v == null || isNaN(v)) continue;
-      if (v > yMax) yMax = v;
-      if (v < yMin) yMin = v;
+      if (v > dataMax) dataMax = v;
+      if (v < dataMin) dataMin = v;
     }
   }
-  if (yMax === -Infinity) return el("div", { class: "chart" }, [emptyStrip("No numeric values to chart.")]);
-  yMin = Math.min(0, yMin);
-  if (yMax === yMin) yMax = yMin + 1;
-  yMax += (yMax - yMin) * 0.05;
+  if (dataMax === -Infinity) return el("div", { class: "chart" }, [emptyStrip("No numeric values to chart.")]);
+  dataMin = Math.min(0, dataMin);
+  if (dataMax === dataMin) dataMax = dataMin + 1;
+
+  /* Nice-rounded domain so gridline labels land on round values; percentage charts (clampMax=100) cap the top
+     at 100 and never exceed it, so a 96% reading no longer rounds the axis up to a "120%" tick. */
+  const scale = niceScale(dataMin, dataMax, Y_TICKS, clampMax);
+  const yMin = scale.min;
+  const yMax = scale.max;
 
   const scaleX = (t) => M.l + ((t - tMin) / (spanMs || 1)) * PLOT_W;
   const scaleY = (v) => M.t + (1 - (v - yMin) / (yMax - yMin)) * PLOT_H;
+  /* Plotted points clamp into the plot box so a value above a clamped (pct) domain can't draw outside it. */
+  const plotY = (v) => Math.max(M.t, Math.min(M.t + PLOT_H, scaleY(v)));
 
   const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img" });
 
-  /* Horizontal gridlines + y labels. */
+  /* Horizontal gridlines + y labels (on the nice tick values). */
   const axis = svg("g", { class: "axis" });
-  for (let i = 0; i <= Y_TICKS; i++) {
-    const val = yMin + ((yMax - yMin) * i) / Y_TICKS;
+  for (const val of scale.ticks) {
     const y = scaleY(val);
     axis.appendChild(svg("line", { class: "grid-line", x1: M.l, y1: y, x2: W - M.r, y2: y }));
     const label = svg("text", { x: M.l - 8, y: y + 4, "text-anchor": "end" });
@@ -88,16 +96,27 @@ export function renderLineChart(spec) {
     axis.appendChild(label);
   }
 
-  /* X labels: start / middle / end. */
-  for (const frac of [0, 0.5, 1]) {
-    const t = tMin + spanMs * frac;
+  /* Y-axis unit caption above the top tick. */
+  if (unit) {
+    const cap = svg("text", { class: "axis-unit", x: M.l - 8, y: M.t - 3, "text-anchor": "end" });
+    cap.textContent = unit;
+    axis.appendChild(cap);
+  }
+
+  /* Vertical gridlines + x labels (6 ticks). The label widens to include the calendar date when the domain
+     spans more than one day, so a window crossing midnight is unambiguous even if it is under 24h wide. */
+  const crossesDay = rows[0].t.toDateString() !== rows[rows.length - 1].t.toDateString();
+  const X_TICKS = 5;
+  for (let i = 0; i <= X_TICKS; i++) {
+    const t = tMin + (spanMs * i) / X_TICKS;
     const x = scaleX(t);
+    axis.appendChild(svg("line", { class: "grid-line", x1: x, y1: M.t, x2: x, y2: M.t + PLOT_H }));
     const label = svg("text", {
       x: Math.min(Math.max(x, M.l + 2), W - M.r - 2),
       y: H - 8,
-      "text-anchor": frac === 0 ? "start" : frac === 1 ? "end" : "middle",
+      "text-anchor": i === 0 ? "start" : i === X_TICKS ? "end" : "middle",
     });
-    label.textContent = axisTime(new Date(t), spanMs);
+    label.textContent = axisTime(new Date(t), crossesDay);
     axis.appendChild(label);
   }
   root.appendChild(axis);
@@ -108,7 +127,7 @@ export function renderLineChart(spec) {
     for (const { t, r } of rows) {
       const v = r[s.key];
       if (v == null || isNaN(v)) continue;
-      pts.push(scaleX(t.getTime()) + "," + scaleY(v));
+      pts.push(scaleX(t.getTime()) + "," + plotY(v));
     }
     if (pts.length < 2) continue;
     root.appendChild(svg("polyline", { class: "series-line", points: pts.join(" "), stroke: s.color }));
@@ -152,7 +171,7 @@ export function renderLineChart(spec) {
     for (const s of series) {
       const v = r[s.key];
       if (v == null || isNaN(v)) continue;
-      hoverDots.appendChild(svg("circle", { class: "hover-dot", cx: px, cy: scaleY(v), r: 3.5, fill: s.color }));
+      hoverDots.appendChild(svg("circle", { class: "hover-dot", cx: px, cy: plotY(v), r: 3.5, fill: s.color }));
     }
     hoverDots.style.display = "";
 
@@ -197,14 +216,41 @@ function buildLegend(series) {
   );
 }
 
-/** The theme series-color ramp for charts (CSS vars from the dark palette). */
-export const SERIES_COLORS = [
-  "var(--accent)",
-  "var(--ok)",
-  "var(--warn)",
-  "var(--err)",
-  "var(--dim)",
-  "#b39ddb",
-  "#4dd0e1",
-  "#ffb74d",
-];
+/**
+ * A NEUTRAL categorical ramp for chart series — deliberately NOT the ok/warn/err severity colors, so a chart's
+ * lines never imply a health state (the alert/band palette stays severity-only). Distinct, colorblind-tolerant.
+ */
+export const SERIES_COLORS = ["#2eaef1", "#4dd0e1", "#b39ddb", "#7f8fa6", "#e0e0e0"];
+
+/** Classic "nice number" rounding (Heckbert): the round-friendly value at or just past `range`. */
+function niceNum(range, round) {
+  if (!(range > 0) || !isFinite(range)) return 1;
+  const exp = Math.floor(Math.log10(range));
+  const frac = range / Math.pow(10, exp);
+  let nf;
+  if (round) {
+    nf = frac < 1.5 ? 1 : frac < 3 ? 2 : frac < 7 ? 5 : 10;
+  } else {
+    nf = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+  }
+  return nf * Math.pow(10, exp);
+}
+
+/**
+ * A "nice" y-axis over [min, max]: rounded bounds and evenly-spaced tick values that land on round numbers.
+ * `clampMax` caps the top (percentage charts pass 100 so the axis never exceeds 100%).
+ */
+function niceScale(min, max, maxTicks, clampMax) {
+  const range = niceNum(max - min || 1, false);
+  const step = niceNum(range / Math.max(1, maxTicks), true) || 1;
+  const niceMin = Math.floor(min / step) * step;
+  let niceMax = Math.ceil(max / step) * step;
+  if (clampMax != null && niceMax > clampMax) niceMax = clampMax;
+  const n = Math.max(1, Math.round((niceMax - niceMin) / step));
+  const ticks = [];
+  for (let i = 0; i <= n; i++) {
+    const v = niceMin + i * step;
+    ticks.push(v > niceMax ? niceMax : v);
+  }
+  return { min: niceMin, max: niceMax, step, ticks };
+}

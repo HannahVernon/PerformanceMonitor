@@ -31,11 +31,29 @@ export function el(tag, props = {}, children = []) {
     else if (k === "text") node.textContent = v; // safe: text, never markup
     else if (k === "html") throw new Error("el(): the 'html' prop is banned — render data as text (R4/XSS).");
     else if (k === "onClick") node.addEventListener("click", v);
+    else if (k === "onActivate") makeActivatable(node, v);
     else if (k === "dataset") Object.assign(node.dataset, v);
     else node.setAttribute(k, v);
   }
   appendChildren(node, children);
   return node;
+}
+
+/**
+ * Make a non-button element behave like a button for keyboard users: role=button, focusable, and Enter/Space
+ * activate it exactly like a click. Used by the clickable-div affordances (fleet cards, band rows, sidebar
+ * servers) so they get a keyboard path + a :focus-visible ring without becoming real <button>s (a11y).
+ */
+function makeActivatable(node, handler) {
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.addEventListener("click", handler);
+  node.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handler(e);
+    }
+  });
 }
 
 function appendChildren(node, children) {
@@ -62,6 +80,24 @@ export function mount(container, content) {
   clear(container);
   appendChildren(container, content);
   return container;
+}
+
+/** Collapse whitespace/newlines to single spaces and truncate to `max` chars with an ellipsis. */
+export function truncate(s, max = 120) {
+  const flat = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}
+
+/**
+ * A native <details> disclosure: a one-line truncated `summaryText` that expands to reveal `detail`. Built on
+ * the platform <details>/<summary> so it is keyboard-accessible with no JS handlers; every piece of text goes
+ * through el()/textContent (R4 — never innerHTML). `detail` may be a node, an array of nodes, or a string.
+ */
+export function disclosure(summaryText, detail, opts = {}) {
+  const summary = el("summary", { class: "disc-summary", title: opts.title || null }, [
+    truncate(summaryText, opts.max || 120),
+  ]);
+  return el("details", { class: "disclosure" }, [summary, el("div", { class: "disc-body" }, detail)]);
 }
 
 /* ─────────────────────────── state strips ─────────────────────────── */
@@ -92,10 +128,35 @@ export function localTime(s) {
   return d ? d.toLocaleString() : "—";
 }
 
-/** Compact axis label for a Date: HH:MM, widening to include the date when the span crosses a day. */
-export function axisTime(date, spanMs) {
+/** Time-of-day only (HH:MM local), or an em dash — for compact "last collect" lines where the date is implied. */
+export function localClock(s) {
+  const d = parseUtc(s);
+  return d ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+}
+
+/** Relative time from now: "just now", "2m ago", "3h ago", "5d ago"; older than ~30d or a future instant falls
+ *  back to the full local time. Null/unparseable -> em dash. */
+export function relTime(s) {
+  const d = parseUtc(s);
+  if (!d) return "—";
+  const diffMs = Date.now() - d.getTime();
+  if (diffMs < 0) return d.toLocaleString();
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 45) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return min + "m ago";
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return hr + "h ago";
+  const day = Math.floor(hr / 24);
+  if (day < 30) return day + "d ago";
+  return d.toLocaleString();
+}
+
+/** Compact axis label for a Date: HH:MM, widening to include the calendar date when `withDate` is set (the
+ *  chart passes true whenever the domain's first and last samples fall on different calendar days). */
+export function axisTime(date, withDate) {
   if (!date) return "";
-  if (spanMs != null && spanMs > 24 * 3600 * 1000) {
+  if (withDate) {
     return date.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -113,7 +174,14 @@ export function fmtPct(v) {
   return v == null ? "—" : Math.round(Number(v)) + "%";
 }
 export function fmtMs(v) {
-  return v == null ? "—" : fmtInt(v) + " ms";
+  if (v == null) return "—";
+  const n = Number(v);
+  if (!isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs < 1000) return fmtInt(n) + " ms";
+  if (abs < 60000) return fmtNum(n / 1000, 1) + " s";
+  if (abs < 3600000) return fmtNum(n / 60000, 1) + " min";
+  return fmtNum(n / 3600000, 1) + " h";
 }
 export function fmtMb(v) {
   if (v == null) return "—";
@@ -136,6 +204,7 @@ export const FORMATTERS = {
   ms: fmtMs,
   mb: fmtMb,
   time: localTime,
+  reltime: relTime,
   bool: fmtBool,
   text: fmtText,
 };
