@@ -85,6 +85,10 @@ public sealed class QueryStoreCollectorDefinitionTests
         /* IN (1, 2, 4) = READ_ONLY/READ_WRITE/READ_CAPTURE_SECONDARY, not "> 0": 3 = ERROR must not
            pass the "is QS usable" gate. */
         Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
+        /* #1558: readable-secondary replicas (readonly_reason bit 8 — AG secondaries slip the HADR
+           join on RDS/geo mechanisms) are excluded: their QS is the primary's replicated content.
+           Bitmask form, so a combined reason still excludes. */
+        Assert.Contains("AND   readonly_reason & 8 = 0", plan.Text, StringComparison.Ordinal);
         Assert.Contains("AND d.name NOT IN (@excl_db_0)", plan.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("/*EXCLUSION_FILTER*/", plan.Text, StringComparison.Ordinal);
         Assert.Equal("SO", Assert.Single(plan.Parameters).Value);
@@ -98,6 +102,10 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.NotNull(plan);
         Assert.DoesNotContain("dm_hadr_database_replica_states", plan!.Text, StringComparison.Ordinal);
         Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
+        /* #1558: readable-secondary replicas (readonly_reason bit 8 — AG secondaries slip the HADR
+           join on RDS/geo mechanisms) are excluded: their QS is the primary's replicated content.
+           Bitmask form, so a combined reason still excludes. */
+        Assert.Contains("AND   readonly_reason & 8 = 0", plan.Text, StringComparison.Ordinal);
         Assert.Empty(plan.Parameters);
     }
 

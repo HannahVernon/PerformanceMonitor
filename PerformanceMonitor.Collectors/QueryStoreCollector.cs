@@ -142,6 +142,16 @@ INTO @db;
 WHILE @@FETCH_STATUS = 0
 BEGIN
     BEGIN TRY
+        /* actual_state IN (1,2,4) = READ_ONLY / READ_WRITE / READ_CAPTURE_SECONDARY (#1546: > 0 also
+           admitted 3 = ERROR). readonly_reason & 8 = 0 (#1558): bit 8 is the engine saying read-only
+           BECAUSE this database is a readable secondary replica — its Query Store content is the
+           PRIMARY's persisted QS tables arriving via replication, not local activity, so collecting it
+           is duplicate, lagged primary data (caught live: 24 RDS read replicas each re-reading the same
+           primary's QS — pathological volume for zero information). The HADR join in the cursor above
+           only catches Always On AG secondaries; reason bit 8 is the engine's mechanism-agnostic flag
+           (AG, RDS read replicas, geo-secondaries alike). An operator-set read-only QS on a PRIMARY has
+           reason <> 8 and still collects; a 2025 READ_CAPTURE_SECONDARY (state 4, reason 0) captures
+           REAL local secondary workload and still collects. */
         SET @sql = N'
             SELECT ' + QUOTENAME(@db, '''') + N'
             WHERE EXISTS
@@ -150,6 +160,7 @@ BEGIN
                     1
                 FROM sys.database_query_store_options
                 WHERE actual_state IN (1, 2, 4)
+                AND   readonly_reason & 8 = 0
             );';
 
         SET @exec_sp = QUOTENAME(@db) + N'.sys.sp_executesql';
@@ -206,6 +217,7 @@ INTO @db;
 WHILE @@FETCH_STATUS = 0
 BEGIN
     BEGIN TRY
+        /* Same eligibility gate as the on-prem cursor above — see the readonly_reason & 8 rationale there. */
         SET @sql = N'
             SELECT ' + QUOTENAME(@db, '''') + N'
             WHERE EXISTS
@@ -214,6 +226,7 @@ BEGIN
                     1
                 FROM sys.database_query_store_options
                 WHERE actual_state IN (1, 2, 4)
+                AND   readonly_reason & 8 = 0
             );';
 
         SET @exec_sp = QUOTENAME(@db) + N'.sys.sp_executesql';
