@@ -474,7 +474,7 @@ A monitored server that is down is retried every 60 seconds forever; a collector
 
 **"TimescaleDB setup failed — continuing in plain-PostgreSQL mode"** (warning) — the extension exists but conversion hit a problem. Everything still works (DELETE-based retention, plain tables); conversion is retried on the next service start.
 
-**MCP client cannot connect** — `mcp.enabled` defaults to `false`; set it to `true` and restart. If the log says `Port 5152 is already in use — MCP server not started`, change `mcp.port`. The MCP server binds to `localhost` only unless you opt into a LAN endpoint (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan)); a remote client that gets 401 is missing or mismatching the required bearer token, and one that is refused before any response is outside the configured `allowFrom` CIDR.
+**MCP client cannot connect** — MCP defaults to off. Enable it live from the Viewer's Settings (the checkbox writes the control plane; the service starts the endpoint within seconds, no restart), or set `mcp.enabled: true` in `darling.json` for a file-seeded install. If the log says `Port 5152 is already in use — MCP server not started`, change `mcp.port`. The MCP server binds to `localhost` only unless you opt into a LAN endpoint (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan)); a remote client that gets 401 is missing or mismatching the required bearer token, and one that is refused before any response is outside the configured `allowFrom` CIDR.
 
 **Recommendations tab says no findings** — analysis runs every 30 minutes per server but only once the store holds at least 24 hours of collected data for that server; a fresh install simply has not earned findings yet.
 

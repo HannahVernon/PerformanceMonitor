@@ -99,6 +99,10 @@ if (OperatingSystem.IsWindows())
     }
 }
 
+/* #1560: the live MCP enable/port seam — the worker publishes the control-plane values on every
+   reload; the MCP host's supervisor observes and starts/stops/rebinds without a service restart. */
+builder.Services.AddSingleton<McpRuntimeState>();
+
 builder.Services.AddHostedService<DarlingWorker>();
 
 /* AN4: the analysis MCP tools over Streamable HTTP — registered always, self-gating on

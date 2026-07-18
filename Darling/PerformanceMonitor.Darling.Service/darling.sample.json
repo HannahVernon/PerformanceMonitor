@@ -197,6 +197,10 @@
   // There is deliberately NO TLS on MCP (a self-signed cert breaks real MCP clients), so the token
   // travels cleartext on-segment: the MITM control is a TLS REVERSE PROXY in front of the endpoint
   // (the in-app CIDR only bounds WHO can route to it, not the wire).
+  // "enabled"/"port" here are the SEED; after first start they live in the control plane and the
+  // Viewer's Settings toggles them LIVE (the service starts/stops/rebinds the endpoint within
+  // seconds - no restart). The "network" exposure block below stays file-defined and restart-only
+  // on purpose; the Viewer toggle still stops an exposed endpoint instantly (a kill switch).
   "mcp": {
     "enabled": false,
     "port": 5152,
