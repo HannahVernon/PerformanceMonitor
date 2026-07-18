@@ -233,10 +233,14 @@ public sealed class TimescaleSupportTests
                 await insert.ExecuteNonQueryAsync(ct);
             }
 
-            /* The Timescale purge: the old wait_stats chunk AND the old collection_log chunk drop (the return
-               mixes rows + chunks — a coarse activity count, see PurgeAsync remarks). */
-            var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, null, ct);
-            Assert.True(summary.TotalPurged >= 2, $"expected the two old chunks (wait_stats + collection_log) to drop, got {summary.TotalPurged}");
+            /* The Timescale purge. Deliberately NO assertion on the returned global activity count
+               (#1564): chunks are per-table + time-window across the WHOLE shared store, so sibling
+               collection classes planting rows in the same weekly windows make the global number
+               order-dependent (field flake: "expected 2, got 1" on one dev dispatch, green the next).
+               The contract is the OWN-SCOPED evidence below: this server's fresh row survives, its old
+               rows' chunks are gone — plus the is-hypertable assertions above proving it exercised
+               drop_chunks, not the DELETE fallback. */
+            await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: true, null, ct);
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))

@@ -321,8 +321,11 @@ public sealed class DarlingRetentionTests
                config_alert_log); a shared dev store may shed more. The extension-free DELETE path on purpose
                (timescaleAvailable: false) — it must keep working even on a store whose tables ARE hypertables
                (DELETE is hypertable-agnostic); the drop_chunks branch is TimescaleSupportTests' job. */
-            var summary = await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
-            Assert.True(summary.TotalPurged >= 3, $"expected the purge to delete at least the three expired test rows, got {summary.TotalPurged}");
+            /* Deliberately NO assertion on the returned global activity count (#1564): the shared dev
+               store's contents at purge time depend on sibling-class order, making the global number
+               flaky ("expected 3, got 2" on one dispatch). The contract is the OWN-SCOPED evidence
+               below, keyed on TestServerId per table, plus the fleet-sentinel audit record. */
+            await DarlingRetention.PurgeAsync(postgres, timescaleAvailable: false, null, ct);
 
             using (var read = new NpgsqlCommand(
                 "SELECT collection_time FROM wait_stats WHERE server_id = $1", connection))
