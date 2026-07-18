@@ -150,11 +150,39 @@ WITH ranked AS (
     HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
     ORDER BY SUM(delta_elapsed_time) DESC
     LIMIT $4 + 5
+),
+module AS (
+    /* #1568 module attribution: one procedure_stats identity per sql_handle (latest collection_time
+       wins) so a statement whose sql_handle matches a cached procedure/function/trigger inherits its
+       db.schema.object and the query_stats row never fans out. Both stores persist the SAME normalized
+       CONVERT(varchar(130), ..., 1) handle text, so the join key lines up; unmatched -> ad hoc. */
+    SELECT
+        sql_handle,
+        object_name,
+        schema_name,
+        database_name
+    FROM
+    (
+        SELECT
+            sql_handle,
+            object_name,
+            schema_name,
+            database_name,
+            ROW_NUMBER() OVER (PARTITION BY sql_handle ORDER BY collection_time DESC) AS rn
+        FROM v_procedure_stats
+        WHERE server_id = $1
+        AND   sql_handle IS NOT NULL
+        AND   sql_handle <> ''
+    ) ranked_modules
+    WHERE rn = 1
 )
 SELECT
     r.*,
     t.query_text,
-    t.query_plan_xml AS query_plan
+    t.query_plan_xml AS query_plan,
+    m.object_name AS module_object_name,
+    m.schema_name AS module_schema_name,
+    m.database_name AS module_database_name
 FROM ranked r
 LEFT JOIN LATERAL (
     SELECT query_text, query_plan_xml
@@ -166,6 +194,7 @@ LEFT JOIN LATERAL (
     ORDER BY collection_time DESC
     LIMIT 1
 ) t ON TRUE
+LEFT JOIN module m ON m.sql_handle = r.sql_handle
 WHERE t.query_text IS NULL OR t.query_text NOT LIKE 'WAITFOR%'
 ORDER BY r.total_elapsed_us DESC
 LIMIT $4";
@@ -225,7 +254,10 @@ LIMIT $4";
                 PlanGenerationNum = reader.IsDBNull(38) ? 0 : reader.GetInt64(38),
                 WorkerTimePerSecond = reader.IsDBNull(39) ? 0 : ToDouble(reader.GetValue(39)),
                 QueryText = reader.IsDBNull(40) ? "" : reader.GetString(40),
-                QueryPlan = reader.IsDBNull(41) ? null : reader.GetString(41)
+                QueryPlan = reader.IsDBNull(41) ? null : reader.GetString(41),
+                ModuleObjectName = reader.IsDBNull(42) ? "" : reader.GetString(42),
+                ModuleSchemaName = reader.IsDBNull(43) ? "" : reader.GetString(43),
+                ModuleDatabaseName = reader.IsDBNull(44) ? "" : reader.GetString(44)
             });
         }
 
@@ -1389,6 +1421,20 @@ public class QueryStatsRow
     public string QueryText { get; set; } = "";
     public string? QueryPlan { get; set; }
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
+
+    /* #1568 module attribution (read-time stitch of query_stats.sql_handle -> procedure_stats): the
+       matched procedure/function/trigger's identity, or empty when this statement is ad hoc. */
+    public string ModuleObjectName { get; set; } = "";
+    public string ModuleSchemaName { get; set; } = "";
+    public string ModuleDatabaseName { get; set; } = "";
+
+    /// <summary>Grid "Module" column: <c>database.schema.object</c> when this statement's sql_handle matched a
+    /// cached module (procedure/function/trigger), else the literal <c>ad hoc</c> (#1568).</summary>
+    public string ModuleName =>
+        string.IsNullOrEmpty(ModuleObjectName)
+            ? "ad hoc"
+            : $"{ModuleDatabaseName}.{ModuleSchemaName}.{ModuleObjectName}";
+
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public double AvgCpuMs => TotalExecutions > 0 ? TotalCpuMs / TotalExecutions : 0;
