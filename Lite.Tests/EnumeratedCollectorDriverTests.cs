@@ -35,7 +35,7 @@ public sealed class EnumeratedCollectorDriverTests
             perItemWatermark: null,
             readItem: (item, ct) => Task.FromResult(new List<int> { item[0] }),
             writeBatch: (batch, ct) => { writtenBatches.Add(batch.ToList()); return Task.CompletedTask; },
-            onItemComplete: (item, count) => { },
+            onItemComplete: (item, count, sqlMs, storageMs) => { },
             onItemError: (item, ex) => { },
             CancellationToken.None);
 
@@ -59,7 +59,7 @@ public sealed class EnumeratedCollectorDriverTests
             perItemWatermark: null,
             readItem: (item, ct) => Task.FromResult(item == "b" ? new List<int>() : new List<int> { 1 }),
             writeBatch: (batch, ct) => { writeCount++; return Task.CompletedTask; },
-            onItemComplete: (item, count) => completed.Add((item, count)),
+            onItemComplete: (item, count, sqlMs, storageMs) => completed.Add((item, count)),
             onItemError: (item, ex) => { },
             CancellationToken.None);
 
@@ -85,7 +85,7 @@ public sealed class EnumeratedCollectorDriverTests
                 ? throw new InvalidOperationException("boom")
                 : Task.FromResult(new List<int> { 1 }),
             writeBatch: (batch, ct) => { writeCount++; return Task.CompletedTask; },
-            onItemComplete: (item, count) => completed.Add(item),
+            onItemComplete: (item, count, sqlMs, storageMs) => completed.Add(item),
             onItemError: (item, ex) => errors.Add(item),
             CancellationToken.None);
 
@@ -111,7 +111,7 @@ public sealed class EnumeratedCollectorDriverTests
                     ? throw new OutOfMemoryException()
                     : Task.FromResult(new List<int> { 1 }),
                 writeBatch: (batch, ct) => { writeCount++; return Task.CompletedTask; },
-                onItemComplete: (item, count) => { },
+                onItemComplete: (item, count, sqlMs, storageMs) => { },
                 onItemError: (item, ex) => errors.Add(item),
                 CancellationToken.None));
 
@@ -133,7 +133,7 @@ public sealed class EnumeratedCollectorDriverTests
                 perItemWatermark: null,
                 readItem: (item, ct) => throw new OperationCanceledException(),
                 writeBatch: (batch, ct) => Task.CompletedTask,
-                onItemComplete: (item, count) => { },
+                onItemComplete: (item, count, sqlMs, storageMs) => { },
                 onItemError: (item, ex) => errors.Add(item),
                 CancellationToken.None));
 
@@ -154,7 +154,7 @@ public sealed class EnumeratedCollectorDriverTests
                 perItemWatermark: null,
                 readItem: (item, ct) => { reads++; return Task.FromResult(new List<int> { 1 }); },
                 writeBatch: (batch, ct) => Task.CompletedTask,
-                onItemComplete: (item, count) => { },
+                onItemComplete: (item, count, sqlMs, storageMs) => { },
                 onItemError: (item, ex) => { },
                 cts.Token));
 
@@ -171,7 +171,7 @@ public sealed class EnumeratedCollectorDriverTests
             perItemWatermark: (item, ct) => { order.Add($"wm:{item}"); return Task.CompletedTask; },
             readItem: (item, ct) => { order.Add($"read:{item}"); return Task.FromResult(new List<int>()); },
             writeBatch: (batch, ct) => Task.CompletedTask,
-            onItemComplete: (item, count) => { },
+            onItemComplete: (item, count, sqlMs, storageMs) => { },
             onItemError: (item, ex) => { },
             CancellationToken.None);
 
@@ -191,7 +191,7 @@ public sealed class EnumeratedCollectorDriverTests
                 ? new List<int> { 1, 2, 3 }
                 : new List<int> { 9 }),
             writeBatch: (batch, ct) => Task.CompletedTask,
-            onItemComplete: (item, count) => completed.Add((item, count)),
+            onItemComplete: (item, count, sqlMs, storageMs) => completed.Add((item, count)),
             onItemError: (item, ex) => { },
             CancellationToken.None);
 

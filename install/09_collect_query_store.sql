@@ -350,6 +350,16 @@ BEGIN
             AND   d.database_id > 4
             AND   d.is_read_only = 0
             AND   d.name <> N'PerformanceMonitor'
+            /*Default screen (#1565), mirroring the shared collectors: vendor management dbs, SSRS/DW
+              artifacts, system-name belt, and the DBA-convention tooling names.*/
+            AND   d.name NOT IN
+                  (
+                      N'master', N'model', N'msdb', N'tempdb',
+                      N'rdsadmin', N'gcloud_cloudsqladmin',
+                      N'ReportServer', N'ReportServerTempDB',
+                      N'DWConfiguration', N'DWDiagnostics', N'DWQueue',
+                      N'DBAUtil', N'DBAUtils', N'Utility'
+                  )
             AND   d.database_id < 32761 /*exclude contained AG system databases*/
             AND
             (

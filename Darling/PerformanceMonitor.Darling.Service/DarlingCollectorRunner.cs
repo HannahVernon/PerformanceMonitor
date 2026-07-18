@@ -331,8 +331,18 @@ public sealed class DarlingCollectorRunner
                         return batch;
                     },
                     writeBatch: (batch, ct) => WriteBatchAsync(pgConnection, definition, batch, server, collectionTime, context, ct),
-                    onItemComplete: (item, batchCount) =>
+                    onItemComplete: (item, batchCount, itemSqlMs, itemStorageMs) =>
                     {
+                        /* Per-DATABASE line for non-empty batches (#1565): the per-server summary blends
+                           every database into one number, which hid a single busy database's 50s burst
+                           behind four quiet siblings. Quiet databases (0 rows — the 2-of-3 cycles between
+                           Query Store's 900s flushes) stay silent. */
+                        if (batchCount > 0)
+                        {
+                            _logger?.LogInformation("  [{Server}] {Collector} [{Database}] => {Rows} rows (sql:{SqlMs}ms, pg:{PgMs}ms)",
+                                server.Config.DisplayName, definition.Name, item, batchCount, itemSqlMs, itemStorageMs);
+                        }
+
                         var capHit = definition.PerItemRowCountWarnThreshold is int cap && batchCount >= cap;
                         if (capHit || context.PerItemTextBudgetExceeded)
                         {

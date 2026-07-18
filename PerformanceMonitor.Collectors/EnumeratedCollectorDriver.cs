@@ -55,14 +55,18 @@ public static class EnumeratedCollectorDriver
     /// time is summed into <see cref="EnumeratedRunResult.StorageMs"/>. A flush failure PROPAGATES —
     /// storage failure is systemic, and batches already flushed stay committed (commit-1..N-1 on abort).
     /// </param>
-    /// <param name="onItemComplete">Warn hook (item, batch count), invoked after a successful read.</param>
+    /// <param name="onItemComplete">Per-item completion hook (item, batch count, SQL ms, storage ms),
+    /// invoked after a successful read AND its flush (#1565: the hosts log a per-database line from this,
+    /// so a burst on one database is visible instead of blending into the per-server total; they also
+    /// surface the row-cap / byte-budget warning here — the context truncation signal persists until the
+    /// next item's read resets it, so reading it post-flush is equivalent).</param>
     /// <param name="onItemError">Per-item skip log, invoked when one item fails (offline DB, timeout, permissions).</param>
     public static async Task<EnumeratedRunResult> RunAsync<TRow>(
         IReadOnlyList<string> items,
         Func<string, CancellationToken, Task>? perItemWatermark,
         Func<string, CancellationToken, Task<List<TRow>>> readItem,
         Func<List<TRow>, CancellationToken, Task> writeBatch,
-        Action<string, int> onItemComplete,
+        Action<string, int, long, long> onItemComplete,
         Action<string, Exception> onItemError,
         CancellationToken cancellationToken)
     {
@@ -75,6 +79,7 @@ public static class EnumeratedCollectorDriver
             cancellationToken.ThrowIfCancellationRequested();
 
             List<TRow>? batch = null;
+            long itemSqlMs = 0;
             var sqlSlice = Stopwatch.StartNew();
             try
             {
@@ -105,7 +110,8 @@ public static class EnumeratedCollectorDriver
             }
             finally
             {
-                sqlMs += sqlSlice.ElapsedMilliseconds;
+                itemSqlMs = sqlSlice.ElapsedMilliseconds;
+                sqlMs += itemSqlMs;
             }
 
             /* A null batch means the read faulted and was skipped above; a successful read is a non-null
@@ -115,19 +121,20 @@ public static class EnumeratedCollectorDriver
                 continue;
             }
 
-            /* Warn BEFORE flushing: the row-cap / byte-budget signal is about the read that just
-               completed, and the caller's hook reads both the batch count and the context truncation
-               signal. */
-            onItemComplete(item, batch.Count);
-
             /* Empty batch: no COPY/appender opened (rows_collected = Σ non-empty batch counts). */
+            long itemStorageMs = 0;
             if (batch.Count > 0)
             {
                 var storageSlice = Stopwatch.StartNew();
                 await writeBatch(batch, cancellationToken);
-                storageMs += storageSlice.ElapsedMilliseconds;
+                itemStorageMs = storageSlice.ElapsedMilliseconds;
+                storageMs += itemStorageMs;
                 totalRows += batch.Count;
             }
+
+            /* Completion hook AFTER the flush so it carries both per-item slices (#1565). The context
+               truncation signal is still this item's — the next read resets it. */
+            onItemComplete(item, batch.Count, itemSqlMs, itemStorageMs);
         }
 
         return new EnumeratedRunResult(totalRows, sqlMs, storageMs);

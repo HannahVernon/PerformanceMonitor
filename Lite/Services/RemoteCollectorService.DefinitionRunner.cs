@@ -284,8 +284,17 @@ public partial class RemoteCollectorService
                         return batch;
                     },
                     writeBatch: (batch, ct) => Task.FromResult(WriteBatch(duckConnection, definition, batch, serverId, context.ServerName, collectionTime, context)),
-                    onItemComplete: (item, batchCount) =>
+                    onItemComplete: (item, batchCount, itemSqlMs, itemStorageMs) =>
                     {
+                        /* Per-DATABASE line for non-empty batches (#1565): the per-server summary blends
+                           every database into one number, hiding a single busy database's burst behind
+                           quiet siblings. Quiet databases (0 rows) stay silent. */
+                        if (batchCount > 0)
+                        {
+                            _logger?.LogInformation("  [{Server}] {Collector} [{Database}] => {Rows} rows (sql:{SqlMs}ms, duckdb:{DuckMs}ms)",
+                                server.DisplayName, definition.Name, item, batchCount, itemSqlMs, itemStorageMs);
+                        }
+
                         var capHit = definition.PerItemRowCountWarnThreshold is int cap && batchCount >= cap;
                         if (capHit || context.PerItemTextBudgetExceeded)
                         {
