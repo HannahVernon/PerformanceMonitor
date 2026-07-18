@@ -1,0 +1,109 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Globalization;
+using System.Net;
+using System.Security.Cryptography;
+using PerformanceMonitor.Darling.Service.Mcp;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// #1562 web dashboard browser auth (network mode). The route decision is a PURE function over the resolved
+/// facts (<see cref="DarlingWebHostService.DecideWebAuth"/>) so the whole matrix pins without a server, and the
+/// HMAC session cookie's sign/verify/tamper/expiry round-trip pins the token→cookie exchange. The verdict enum
+/// is internal, so the matrix compares its name (an internal type cannot appear in a public test signature).
+/// </summary>
+public sealed class DarlingWebAuthTests
+{
+    private static readonly byte[] Key = RandomNumberGenerator.GetBytes(32);
+    private static readonly byte[] OtherKey = RandomNumberGenerator.GetBytes(32);
+
+    private static IPNetwork Cidr => IPNetwork.Parse("192.168.1.0/24");
+
+    /* ---- ROUTE AUTH MATRIX ---- */
+
+    [Theory]
+    [InlineData("127.0.0.1", false, false, "Allow")]                  // loopback ALWAYS passes, tokenless (ratified)
+    [InlineData("::1", false, false, "Allow")]                        // IPv6 loopback
+    [InlineData("::ffff:127.0.0.1", false, false, "Allow")]           // IPv4-mapped loopback
+    [InlineData("192.168.1.50", false, true, "SetCookieAndRedirect")] // in-CIDR + valid token -> cookie + 302
+    [InlineData("192.168.1.50", true, false, "Allow")]                // in-CIDR + valid cookie
+    [InlineData("192.168.1.50", true, true, "Allow")]                 // cookie is checked before the token
+    [InlineData("10.0.0.5", true, true, "Forbid")]                    // out-of-CIDR, even WITH a cookie+token
+    [InlineData("192.168.1.50", false, false, "ShowLogin")]           // in-CIDR, no cookie/token (or expired/tampered cookie -> hasValidCookie=false)
+    public void DecideWebAuth_RouteMatrix(string remote, bool hasValidCookie, bool hasValidToken, string expected)
+    {
+        var action = DarlingWebHostService.DecideWebAuth(IPAddress.Parse(remote), Cidr, hasValidCookie, hasValidToken);
+        Assert.Equal(expected, action.ToString());
+    }
+
+    [Fact]
+    public void DecideWebAuth_NullRemote_Forbids()
+        => Assert.Equal("Forbid", DarlingWebHostService.DecideWebAuth(null, Cidr, hasValidCookie: true, hasValidToken: true).ToString());
+
+    /* ---- SESSION COOKIE sign / verify / tamper / expiry ---- */
+
+    [Fact]
+    public void SessionCookie_SignedThenVerified_RoundTrips()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var cookie = DarlingWebHostService.BuildSessionCookieValue(Key, now.AddHours(12));
+        Assert.True(DarlingWebHostService.TryValidateSessionCookie(cookie, Key, now));
+    }
+
+    [Fact]
+    public void SessionCookie_WrongKey_Fails()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var cookie = DarlingWebHostService.BuildSessionCookieValue(Key, now.AddHours(12));
+        /* A restart regenerates the signing key, which is exactly this case — old sessions no longer verify. */
+        Assert.False(DarlingWebHostService.TryValidateSessionCookie(cookie, OtherKey, now));
+    }
+
+    [Fact]
+    public void SessionCookie_Expired_Fails()
+    {
+        /* Signed 24h ago with a 12h life -> expired 12h before "now". */
+        var signedAt = DateTimeOffset.UtcNow.AddHours(-24);
+        var cookie = DarlingWebHostService.BuildSessionCookieValue(Key, signedAt.AddHours(12));
+        Assert.False(DarlingWebHostService.TryValidateSessionCookie(cookie, Key, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void SessionCookie_TamperedSignature_Fails()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var cookie = DarlingWebHostService.BuildSessionCookieValue(Key, now.AddHours(12));
+        var tampered = cookie.Substring(0, cookie.Length - 1) + (cookie[^1] == 'A' ? 'B' : 'A');
+        Assert.False(DarlingWebHostService.TryValidateSessionCookie(tampered, Key, now));
+    }
+
+    [Fact]
+    public void SessionCookie_TamperedExpiry_Fails()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var cookie = DarlingWebHostService.BuildSessionCookieValue(Key, now.AddHours(1));
+        var signatureWithDot = cookie.Substring(cookie.IndexOf('.'));
+        /* Extend the expiry 10 years out but keep the OLD signature — the HMAC is over the expiry, so it fails. */
+        var forgedExpiry = now.AddYears(10).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+        Assert.False(DarlingWebHostService.TryValidateSessionCookie(forgedExpiry + signatureWithDot, Key, now));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("no-dot")]
+    [InlineData(".onlysignature")]
+    [InlineData("12345.")]                 // empty signature part
+    [InlineData("notanumber.YWJjZA")]      // non-numeric expiry
+    public void SessionCookie_Malformed_Fails(string? value)
+        => Assert.False(DarlingWebHostService.TryValidateSessionCookie(value, Key, DateTimeOffset.UtcNow));
+}

@@ -73,6 +73,7 @@ public static class PgMigrations
         new Migration(27, "deadlocks-database-name", V27Sql),
         new Migration(28, "query-store-replica-role", V28Sql),
         new Migration(29, "long-query-completions-collector", V29Sql),
+        new Migration(30, "web-dashboard-config", V30Sql),
     };
 
     /// <summary>
@@ -343,6 +344,21 @@ CREATE TABLE IF NOT EXISTS collect.long_query_completions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_long_query_completions_time ON collect.long_query_completions(server_id, collection_time);";
+
+    /// <summary>
+    /// V30 — the web dashboard's live toggle (#1562): config_service gains web_enabled + web_port, the twins of
+    /// mcp_enabled/mcp_port, so the viewer's Settings toggle drives the second Kestrel host through the same
+    /// config_version reload beacon (the BEFORE-UPDATE self-bump trigger already covers the new columns). Additive
+    /// ALTERs, schema-qualified config.* exactly like V18 (the migrate session's search_path resolves a bare name
+    /// to collect — the wrong schema/ACL); IF NOT EXISTS matches the file's ALTER idiom so a re-run is a no-op. Both
+    /// columns are NOT NULL with the shipped defaults (off / 5153) so the single seeded row comes up honoring them.
+    /// config_service has no v_* passthrough view, so nothing to refresh. Role grants are table-wide SELECT for
+    /// viewer/mcp and table-wide writes for admin (config_service is NOT column-carved in DarlingManagedRoles), so
+    /// the new columns inherit the grants automatically — no grant change needed.
+    /// </summary>
+    private const string V30Sql = @"
+ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_enabled boolean NOT NULL DEFAULT FALSE;
+ALTER TABLE config.config_service ADD COLUMN IF NOT EXISTS web_port integer NOT NULL DEFAULT 5153;";
 
     /// <summary>
     /// V9 — the FinOps copy-parity fields that were user-input config or previously live-only:

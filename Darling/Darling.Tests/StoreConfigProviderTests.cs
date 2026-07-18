@@ -48,6 +48,8 @@ public sealed class StoreConfigProviderTests
             CapturePlans = false,
             McpEnabled = true,
             McpPort = 6000,
+            WebEnabled = true,
+            WebPort = 6001,
             Alerts = new AlertsConfig { CpuThresholdPercent = 42, ExcludedDatabases = { "tempdb" } },
             Analysis = new AnalysisConfig { Enabled = false, IntervalMinutes = 90, NotificationsEnabled = false, NotifySeverity = 0.75 },
             Smtp = new SmtpConfig { Host = "smtp.example.com", From = "a@b.com", To = "c@d.com" },
@@ -61,6 +63,8 @@ public sealed class StoreConfigProviderTests
         Assert.Equal(42, config.Alerts.CpuThresholdPercent);
         Assert.True(config.Mcp.Enabled);
         Assert.Equal(6000, config.Mcp.Port);
+        Assert.True(config.Web.Enabled);
+        Assert.Equal(6001, config.Web.Port);
         Assert.Equal(90, config.Analysis.IntervalMinutes);
         Assert.False(config.Analysis.Enabled);
 

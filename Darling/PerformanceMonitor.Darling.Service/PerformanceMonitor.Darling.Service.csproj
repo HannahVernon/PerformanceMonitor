@@ -49,6 +49,9 @@
 
   <ItemGroup>
     <None Include="darling.sample.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- #1562: the web dashboard's static assets (Builder 3 owns wwwroot/). Copied beside the binary so the
+         web host's content/web root (pinned to AppContext.BaseDirectory) finds them under a Windows service. -->
+    <Content Include="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
     <!-- The install/uninstall scripts ride the publish output to the ZIP ROOT (beside the exe), so both
          the release and nightly zips carry them with no packaging-workflow changes - same delivery
          mechanism as darling.sample.json. -->

@@ -114,11 +114,15 @@ public sealed class ViewerControlPlaneMigration
                 imported++;
             }
 
-            /* MCP toggle/port (config_service, UPDATE-only; preserve the store's current capture_plans). */
+            /* MCP toggle/port (config_service, UPDATE-only; preserve the store's current capture_plans). The web
+               dashboard columns (#1562) are carried through from the viewer's local settings — they default to
+               the store defaults (off / 5153) for a pre-web viewer, so this is a no-op unless the operator set them. */
             var storeService = await dataService.GetServiceConfigAsync(cancellationToken);
             if (storeService is not null && ShouldImportMcp(storeService, _appSettings))
             {
-                await dataService.UpdateServiceFlagsAsync(storeService.CapturePlans, _appSettings.McpEnabled, _appSettings.McpPort, cancellationToken);
+                await dataService.UpdateServiceFlagsAsync(
+                    storeService.CapturePlans, _appSettings.McpEnabled, _appSettings.McpPort,
+                    _appSettings.WebEnabled, _appSettings.WebPort, cancellationToken);
                 imported++;
             }
         }

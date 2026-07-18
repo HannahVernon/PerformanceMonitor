@@ -112,6 +112,18 @@ public sealed class DarlingConfig
     [JsonPropertyName("mcp")]
     public McpConfig Mcp { get; set; } = new();
 
+    /// <summary>
+    /// The embedded web dashboard (#1562): a second, independent Kestrel host serving a read-only,
+    /// browser-based view of the monitoring store over HTTP — a SEPARATE port + kill switch + exposure block
+    /// from the MCP server (they gate different blast radii). Default OFF: a headless service should not open a
+    /// port unless the operator asks. Loopback-only by default; an opt-in <see cref="WebConfig.Network"/> block
+    /// exposes it on the LAN behind a required token (once) → an HMAC session cookie + an in-app CIDR check
+    /// (managed-mode only). Loopback stays tokenless even while LAN-exposed (the web surface is read-only).
+    /// Optional — omit the section entirely.
+    /// </summary>
+    [JsonPropertyName("web")]
+    public WebConfig Web { get; set; } = new();
+
     public static string ResolveConfigPath(string? explicitPath = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitPath))
@@ -624,6 +636,119 @@ public sealed class McpNetworkConfig
             {
                 throw new PlatformNotSupportedException(
                     "mcp.network.encryptedToken requires Windows (DPAPI); use the plaintext \"token\" on other platforms.");
+            }
+
+            return DarlingSecrets.Unprotect(EncryptedToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Token))
+        {
+            usedPlaintext = true;
+            return Token;
+        }
+
+        return null;
+    }
+}
+
+/// <summary>
+/// The embedded web dashboard's config (#1562). Port 5153 keeps the product's local port family
+/// non-colliding on one machine (Dashboard MCP 5150, Lite MCP 5151, Darling MCP 5152, Darling Web 5153).
+/// Loopback-only by default; the optional <see cref="Network"/> block opts into LAN exposure behind a
+/// required token → HMAC session cookie + an in-app CIDR check (darling-network-endpoints, managed-mode only).
+/// A SEPARATE surface from <see cref="McpConfig"/> — its own enable flag, port, token, and exposure block —
+/// because the two gate different blast radii (MCP's token guards analyze_server's live outbound SQL
+/// connections; the web dashboard is read-only over the store).
+/// </summary>
+public sealed class WebConfig
+{
+    /// <summary>Default OFF — a headless service should not open the dashboard port unless asked.</summary>
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("port")]
+    public int Port { get; set; } = 5153;
+
+    /// <summary>
+    /// Opt-in network exposure for the web dashboard (darling-network-endpoints). Omit for the secure
+    /// default = loopback-only HTTP. Managed-mode only; ignored in BYO with a caller warning. Any missing
+    /// precondition (token / valid allowFrom / managed) keeps the dashboard loopback-only + LogCritical —
+    /// enforced in the web host, NEVER in the all-fatal <see cref="DarlingConfig.Validate"/> (D-validate).
+    /// See <see cref="WebNetworkConfig"/>.
+    /// </summary>
+    [JsonPropertyName("network")]
+    public WebNetworkConfig? Network { get; set; }
+}
+
+/// <summary>
+/// Opt-in NETWORK exposure for the embedded web dashboard (#1562), the twin of <see cref="McpNetworkConfig"/>.
+/// Omit the whole <c>network</c> object for the secure default = loopback-only HTTP. When present with a
+/// non-loopback <see cref="Listen"/> AND managed mode AND a token AND a valid <see cref="AllowFrom"/>, the web
+/// host binds the network interface behind an in-app CIDR check and a token gate: a browser presents the token
+/// once via <c>?token=</c>, which is exchanged for an HMAC-signed session cookie. Loopback requests stay
+/// TOKENLESS even while exposed (the dashboard is read-only). Any missing precondition keeps the dashboard
+/// loopback-only + LogCritical (fail-closed, enforced in the web host). No TLS on the dashboard (the same
+/// reverse-proxy story as MCP); the token/cookie travels cleartext on-segment.
+/// </summary>
+public sealed class WebNetworkConfig
+{
+    /// <summary>
+    /// Bind IP for the web network listener (a specific IP preferred; <c>0.0.0.0</c> = all interfaces).
+    /// Absent or an IPv4 loopback = the default loopback-only dashboard.
+    /// </summary>
+    [JsonPropertyName("listen")]
+    public string? Listen { get; set; }
+
+    /// <summary>
+    /// The CIDR the in-app <c>RemoteIpAddress</c> check and the firewall rule allow (e.g.
+    /// <c>192.168.1.0/24</c>); loopback is always allowed regardless. Required when exposed.
+    /// </summary>
+    [JsonPropertyName("allowFrom")]
+    public string? AllowFrom { get; set; }
+
+    /// <summary>
+    /// DPAPI-LocalMachine-protected access token, base64 — produced by <c>--encrypt-password</c>
+    /// (preferred over the plaintext <see cref="Token"/>). Read via <see cref="ResolveToken"/>.
+    /// </summary>
+    [JsonPropertyName("encryptedToken")]
+    public string? EncryptedToken { get; set; }
+
+    /// <summary>
+    /// Plaintext access token — dev convenience only; the caller warns when it is used. Prefer
+    /// <see cref="EncryptedToken"/>.
+    /// </summary>
+    [JsonPropertyName("token")]
+    public string? Token { get; set; }
+
+    /// <summary>
+    /// True when any field is set — used only for the BYO "network.* is ignored" caller warning (D-BYO);
+    /// NOT the same as "exposed".
+    /// </summary>
+    [JsonIgnore]
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(Listen)
+        || !string.IsNullOrWhiteSpace(AllowFrom)
+        || !string.IsNullOrWhiteSpace(EncryptedToken)
+        || !string.IsNullOrWhiteSpace(Token);
+
+    /// <summary>
+    /// The access token, preferring <see cref="EncryptedToken"/> (DPAPI-decrypted; Windows-only) over the
+    /// plaintext <see cref="Token"/>. <paramref name="usedPlaintext"/> is true when the plaintext fallback is
+    /// used, so the caller can warn — the same shape as <see cref="McpNetworkConfig.ResolveToken"/>. Returns
+    /// null when neither is set.
+    /// </summary>
+    public string? ResolveToken(out bool usedPlaintext)
+    {
+        usedPlaintext = false;
+
+        if (!string.IsNullOrWhiteSpace(EncryptedToken))
+        {
+            /* DarlingSecrets.Unprotect is DPAPI (Windows-only). The network path is managed-mode-only, which is
+               itself Windows-gated, so this only runs on Windows; the guard keeps the analyzer (CA1416) honest. */
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException(
+                    "web.network.encryptedToken requires Windows (DPAPI); use the plaintext \"token\" on other platforms.");
             }
 
             return DarlingSecrets.Unprotect(EncryptedToken);

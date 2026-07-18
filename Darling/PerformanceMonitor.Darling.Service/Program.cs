@@ -117,15 +117,20 @@ if (OperatingSystem.IsWindows())
     }
 }
 
-/* #1560: the live MCP enable/port seam — the worker publishes the control-plane values on every
-   reload; the MCP host's supervisor observes and starts/stops/rebinds without a service restart. */
+/* #1560/#1562: the live MCP + web enable/port seams — the worker publishes the control-plane values on
+   every reload; each host's supervisor observes and starts/stops/rebinds without a service restart. */
 builder.Services.AddSingleton<McpRuntimeState>();
+builder.Services.AddSingleton<WebRuntimeState>();
 
 builder.Services.AddHostedService<DarlingWorker>();
 
 /* AN4: the analysis MCP tools over Streamable HTTP — registered always, self-gating on
    darling.json's mcp.enabled (default OFF), so Program.cs stays config-free like the worker. */
 builder.Services.AddHostedService<DarlingMcpHostService>();
+
+/* #1562: the read-only web dashboard on its own port — registered always, self-gating on
+   darling.json's web.enabled (default OFF), same config-free posture as the worker and MCP host. */
+builder.Services.AddHostedService<DarlingWebHostService>();
 
 builder.Build().Run();
 return 0;

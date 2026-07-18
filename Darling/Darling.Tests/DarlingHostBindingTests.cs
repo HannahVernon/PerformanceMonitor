@@ -1,0 +1,198 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System.Net;
+using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Darling.Service.Hosting;
+using PerformanceMonitor.Darling.Service.Mcp;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// The SHARED host-binding helpers (#1562, darling-network-endpoints) both Kestrel hosts now delegate to:
+/// the LAN-exposure ladder <see cref="DarlingHostBinding.ResolveBind"/>, the loopback-listener collision
+/// guard, the in-app CIDR check (loopback-exempt), the constant-time token compare, and the reason→severity
+/// map. These pins hold the ladder ONCE for both surfaces; the MCP host's own
+/// <c>DarlingMcpHostTests</c> stay unmodified and prove the refactor kept its adapter byte-for-byte (the
+/// nested-enum parity pin at the bottom guards the numeric cast that adapter relies on).
+/// </summary>
+public sealed class DarlingHostBindingTests
+{
+    /* ---- ResolveBind: NetworkAndLoopback only when exposed + managed + token + valid, family-matched allowFrom ---- */
+
+    [Theory]
+    [InlineData("192.168.1.205", "192.168.1.0/24")]  // a specific LAN IPv4
+    [InlineData("0.0.0.0", "192.168.1.0/24")]         // IPv4 wildcard
+    [InlineData("::", "2001:db8::/32")]               // IPv6 wildcard
+    [InlineData("2001:db8::5", "2001:db8::/32")]      // a specific IPv6
+    public void ResolveBind_Exposed_Managed_TokenAndAllowFrom_IsNetworkAndLoopback(string listen, string allowFrom)
+    {
+        var decision = DarlingHostBinding.ResolveBind(listen, allowFrom, tokenPresent: true, networkConfigured: true, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.NetworkAndLoopback, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.NetworkExposed, decision.Reason);
+    }
+
+    [Fact]
+    public void ResolveBind_Exposed_Managed_NoToken_IsLoopbackOnly_TokenMissing()
+    {
+        var decision = DarlingHostBinding.ResolveBind("192.168.1.205", "192.168.1.0/24", tokenPresent: false, networkConfigured: true, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.TokenMissing, decision.Reason);
+    }
+
+    [Theory]
+    [InlineData(null)]              // allowFrom missing
+    [InlineData("")]
+    [InlineData("not-a-cidr")]      // not a CIDR at all
+    [InlineData("192.168.1.0/33")]  // impossible IPv4 prefix length
+    [InlineData("192.168.1.0")]     // an address with no prefix
+    public void ResolveBind_Exposed_Managed_Token_BadAllowFrom_IsLoopbackOnly_AllowFromInvalid(string? allowFrom)
+    {
+        var decision = DarlingHostBinding.ResolveBind("192.168.1.205", allowFrom, tokenPresent: true, networkConfigured: true, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.AllowFromInvalid, decision.Reason);
+    }
+
+    [Theory]
+    [InlineData("localhost")]  // a name, not an IP
+    [InlineData("myhost")]
+    [InlineData("*")]          // the postgres listen wildcard, not a Kestrel-bindable IP
+    public void ResolveBind_Exposed_Managed_NonIpListen_IsLoopbackOnly_ListenInvalid(string listen)
+    {
+        var decision = DarlingHostBinding.ResolveBind(listen, "192.168.1.0/24", tokenPresent: true, networkConfigured: true, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.ListenInvalid, decision.Reason);
+    }
+
+    [Theory]
+    [InlineData("192.168.1.205", "2001:db8::/32")]  // IPv4 listen, IPv6 CIDR
+    [InlineData("2001:db8::5", "192.168.1.0/24")]   // IPv6 listen, IPv4 CIDR
+    public void ResolveBind_Exposed_Managed_AllowFromFamilyMismatch_IsLoopbackOnly_AllowFromInvalid(string listen, string allowFrom)
+    {
+        var decision = DarlingHostBinding.ResolveBind(listen, allowFrom, tokenPresent: true, networkConfigured: true, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.AllowFromInvalid, decision.Reason);
+    }
+
+    [Fact]
+    public void ResolveBind_Exposed_Byo_IsLoopbackOnly_ManagedModeRequired()
+    {
+        var decision = DarlingHostBinding.ResolveBind("192.168.1.205", "192.168.1.0/24", tokenPresent: true, networkConfigured: true, managed: false);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.ManagedModeRequired, decision.Reason);
+    }
+
+    [Fact]
+    public void ResolveBind_Byo_ConfiguredButNotExposed_IsManagedModeRequired()
+    {
+        /* A loopback/partial network block in BYO is ignored -> the warning fires even when not exposed. */
+        var decision = DarlingHostBinding.ResolveBind(listen: null, allowFrom: "192.168.1.0/24", tokenPresent: false, networkConfigured: true, managed: false);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.ManagedModeRequired, decision.Reason);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1")]  // loopback resolves to the single-bind path, never a network bind
+    [InlineData("127.0.0.5")]  // anywhere in 127.0.0.0/8
+    public void ResolveBind_LoopbackListen_IsLoopbackByDefault(string listen)
+    {
+        var decision = DarlingHostBinding.ResolveBind(listen, "192.168.1.0/24", tokenPresent: true, networkConfigured: true, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.LoopbackByDefault, decision.Reason);
+    }
+
+    [Fact]
+    public void ResolveBind_NoNetworkBlock_IsLoopbackByDefault()
+    {
+        var decision = DarlingHostBinding.ResolveBind(listen: null, allowFrom: null, tokenPresent: false, networkConfigured: false, managed: true);
+
+        Assert.Equal(DarlingHostBinding.BindMode.LoopbackOnly, decision.Mode);
+        Assert.Equal(DarlingHostBinding.BindReason.LoopbackByDefault, decision.Reason);
+    }
+
+    /* ---- ShouldAddLoopbackListeners: skip the loopback binds for loopback/wildcard listens (collision) ---- */
+
+    [Theory]
+    [InlineData("192.168.1.205", true)]
+    [InlineData("2001:db8::5", true)]
+    [InlineData("127.0.0.1", false)]
+    [InlineData("::1", false)]
+    [InlineData("0.0.0.0", false)]
+    [InlineData("::", false)]
+    public void ShouldAddLoopbackListeners_SkipsLoopbackAndWildcards(string listen, bool expected)
+        => Assert.Equal(expected, DarlingHostBinding.ShouldAddLoopbackListeners(IPAddress.Parse(listen)));
+
+    /* ---- IsRemoteAddressAllowed: inside the CIDR OR loopback (always) ---- */
+
+    [Theory]
+    [InlineData("192.168.1.50", true)]
+    [InlineData("192.168.2.1", false)]
+    [InlineData("127.0.0.1", true)]                // loopback always allowed
+    [InlineData("::1", true)]                      // IPv6 loopback always allowed
+    [InlineData("::ffff:127.0.0.1", true)]         // IPv4-mapped loopback
+    [InlineData("::ffff:192.168.1.50", true)]      // IPv4-mapped, inside the CIDR
+    [InlineData("::ffff:10.0.0.5", false)]         // IPv4-mapped, outside the CIDR
+    public void IsRemoteAddressAllowed_Ipv4Cidr(string remote, bool expected)
+        => Assert.Equal(expected, DarlingHostBinding.IsRemoteAddressAllowed(IPAddress.Parse(remote), IPNetwork.Parse("192.168.1.0/24")));
+
+    [Fact]
+    public void IsRemoteAddressAllowed_NullRemote_FailsClosed()
+        => Assert.False(DarlingHostBinding.IsRemoteAddressAllowed(null, IPNetwork.Parse("192.168.1.0/24")));
+
+    /* ---- FixedTimeTokenEquals: only an exact match; empty/null never authorizes ---- */
+
+    [Theory]
+    [InlineData("s3cr3t", "s3cr3t", true)]
+    [InlineData("wrong", "s3cr3t", false)]
+    [InlineData("", "s3cr3t", false)]
+    [InlineData("s3cr3t", "", false)]
+    [InlineData(null, "s3cr3t", false)]
+    [InlineData("s3cr3t", null, false)]
+    [InlineData("s3cr3", "s3cr3t", false)]   // prefix, not equal
+    public void FixedTimeTokenEquals_MatchesOnlyExact(string? presented, string? expected, bool result)
+        => Assert.Equal(result, DarlingHostBinding.FixedTimeTokenEquals(presented, expected));
+
+    /* ---- MapBindReasonSeverity: degrades are Critical, BYO is Warning, non-degrade is silent ---- */
+
+    [Fact]
+    public void MapBindReasonSeverity_DegradesAreCritical_ByoIsWarning_NonDegradeIsSilent()
+    {
+        Assert.Equal(LogLevel.Critical, DarlingHostBinding.MapBindReasonSeverity(DarlingHostBinding.BindReason.ListenInvalid));
+        Assert.Equal(LogLevel.Critical, DarlingHostBinding.MapBindReasonSeverity(DarlingHostBinding.BindReason.TokenMissing));
+        Assert.Equal(LogLevel.Critical, DarlingHostBinding.MapBindReasonSeverity(DarlingHostBinding.BindReason.AllowFromInvalid));
+        Assert.Equal(LogLevel.Warning, DarlingHostBinding.MapBindReasonSeverity(DarlingHostBinding.BindReason.ManagedModeRequired));
+        Assert.Null(DarlingHostBinding.MapBindReasonSeverity(DarlingHostBinding.BindReason.NetworkExposed));
+        Assert.Null(DarlingHostBinding.MapBindReasonSeverity(DarlingHostBinding.BindReason.LoopbackByDefault));
+    }
+
+    /* ---- Refactor proof: the MCP host's nested enums mirror the shared ones 1:1 (same member order), so its
+           ResolveMcpBind adapter's numeric cast (McpBindMode)(int)decision.Mode maps correctly. ---- */
+
+    [Fact]
+    public void NestedMcpEnums_MirrorSharedBindEnums_1To1_ForTheAdapterCast()
+    {
+        Assert.Equal((int)DarlingHostBinding.BindMode.LoopbackOnly, (int)DarlingMcpHostService.McpBindMode.LoopbackOnly);
+        Assert.Equal((int)DarlingHostBinding.BindMode.NetworkAndLoopback, (int)DarlingMcpHostService.McpBindMode.NetworkAndLoopback);
+
+        Assert.Equal((int)DarlingHostBinding.BindReason.LoopbackByDefault, (int)DarlingMcpHostService.McpBindReason.LoopbackByDefault);
+        Assert.Equal((int)DarlingHostBinding.BindReason.NetworkExposed, (int)DarlingMcpHostService.McpBindReason.NetworkExposed);
+        Assert.Equal((int)DarlingHostBinding.BindReason.ManagedModeRequired, (int)DarlingMcpHostService.McpBindReason.ManagedModeRequired);
+        Assert.Equal((int)DarlingHostBinding.BindReason.ListenInvalid, (int)DarlingMcpHostService.McpBindReason.ListenInvalid);
+        Assert.Equal((int)DarlingHostBinding.BindReason.TokenMissing, (int)DarlingMcpHostService.McpBindReason.TokenMissing);
+        Assert.Equal((int)DarlingHostBinding.BindReason.AllowFromInvalid, (int)DarlingMcpHostService.McpBindReason.AllowFromInvalid);
+    }
+}

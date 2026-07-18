@@ -195,15 +195,18 @@ public sealed class ViewerServiceConfigSqlTests
         Assert.Contains("capture_plans = $1", sql, StringComparison.Ordinal);
         Assert.Contains("mcp_enabled = $2", sql, StringComparison.Ordinal);
         Assert.Contains("mcp_port = $3", sql, StringComparison.Ordinal);
+        /* #1562: the web dashboard toggle/port ride the same viewer-owned flag update. */
+        Assert.Contains("web_enabled = $4", sql, StringComparison.Ordinal);
+        Assert.Contains("web_port = $5", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE id = 1", sql, StringComparison.Ordinal);
         /* paused is a command, not a settings write — the flag update must never touch it. */
         Assert.DoesNotContain("paused", sql, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void SelectSql_ReadsPausedAndTheThreeFlags()
+    public void SelectSql_ReadsPausedAndTheViewerOwnedFlags()
     {
-        Assert.Contains("SELECT paused, capture_plans, mcp_enabled, mcp_port FROM config_service WHERE id = 1",
+        Assert.Contains("SELECT paused, capture_plans, mcp_enabled, mcp_port, web_enabled, web_port FROM config_service WHERE id = 1",
             ViewerDataService.ServiceConfigSelectSql, StringComparison.Ordinal);
     }
 

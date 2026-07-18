@@ -336,6 +336,17 @@ claude mcp add --transport http --scope user sql-monitor-darling http://localhos
 
 If the port is already in use at startup, the MCP server logs an error and does not start; collection is unaffected.
 
+### web
+
+The embedded read-only **web dashboard** — a browser view of the monitoring store, served over HTTP on its OWN port (default **5153**), separate from the MCP server. It is a distinct surface from [`### mcp`](#mcp): its own enable flag, port, token, and exposure block, because the two gate different blast radii (the MCP token guards `analyze_server`'s **live outbound** connections to your monitored SQL Servers; the web dashboard is **read-only over the collected store**). It connects to the store as the least-privilege `viewer` role. Loopback-only by default; see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan) to reach it from the LAN.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | **Off by default** — a headless service does not open a local port unless you ask |
+| `port` | `5153` | Chosen so all four local surfaces coexist on one machine (Dashboard 5150, Lite 5151, Darling MCP 5152) |
+
+Once enabled, open `http://localhost:5153/` in a browser on the service host. Like the MCP server, `enabled`/`port` here are the file SEED; after first start they live in the control plane and the Viewer's Settings toggles them LIVE (the service starts/stops/rebinds the dashboard within seconds — no restart). If the port is already in use at startup, the web host logs an error and retries on a calm cadence; collection is unaffected.
+
 ### No Schedule Knobs, by Design
 
 There are deliberately **no collection-schedule or retention settings** in `darling.json`. The service consumes the shared per-collector defaults (`CollectorScheduleDefaults`) — the same cadences and retention horizons a fresh Lite install uses, identity-pinned by tests so the two editions cannot drift. If a schedule knob is ever genuinely needed, it will be added then, not speculatively.
@@ -346,7 +357,7 @@ There are deliberately **no collection-schedule or retention settings** in `darl
 
 ### The Store
 
-The service migrates the store itself at startup — plain versioned SQL scripts, each applied once inside its own transaction, tracked in `darling_schema_version`, safe under concurrent starters (advisory-locked). Current schema is **v20**:
+The service migrates the store itself at startup — plain versioned SQL scripts, each applied once inside its own transaction, tracked in `darling_schema_version`, safe under concurrent starters (advisory-locked). Current schema is **v29**:
 
 | Version | Contents |
 |---|---|
@@ -370,6 +381,15 @@ The service migrates the store itself at startup — plain versioned SQL scripts
 | **V18** — alert delivery mode | Global `delivery_mode` (Summary / PerEvent) + `per_event_max` on `config_alert_settings`, plus a nullable per-server `alert_delivery_mode_override` on `config_monitored_servers` (null = inherit the global), resolved through the shared `AlertDeliveryModeResolver` (#1236 / #1141) |
 | **V19** — analysis state marker | `collect.analysis_state` — the service-produced per-server "insufficient data" marker (with message + time) the viewer reads, so a not-enough-history analysis pass surfaces a reason instead of a blank |
 | **V20** — alert tuning knobs | The previously-hardcoded alert tuning the viewer now customizes on `config_alert_settings`: the long-running-query read shape (`long_running_query_max_results` + five noise-filter opt-outs the shared `AlertEngine` forwards) and `notify_connection_changes` (the Server-Unreachable / Restored connect-edge gate) |
+| **V21** — default trace events collector | `default_trace_events` table + its `v_*` view — the significant Default Trace events (file growth, ErrorLog, security audit, optional Object DDL) the viewer's System Events tab reads |
+| **V22** — index-object latest index | The engine-agnostic `idx_index_object_stats_latest` partial index backing the latest-capture-per-index reads |
+| **V23** — collection-log hypertable | Converts `collection_log` to a TimescaleDB hypertable (an object-invisible no-op on plain PostgreSQL) |
+| **V24** — job history collector | `job_history` table + its `v_*` view — the SQL Agent Job History surface (#1433) |
+| **V25** — agent status collector | `agent_status` table + its `v_*` view — SQL Agent up/down status (#1433) |
+| **V26** — generic webhook channel | The generic-webhook columns on `config_notification` (`generic_url`, `generic_headers`, `generic_body_template`, `generic_proxy`) for POSTing alerts to any endpoint (#1506) |
+| **V27** — deadlocks database name | `deadlocks.database_name` (the Azure SQL DB per-database deadlock-capture watermark key, #1535) and a refreshed `v_deadlocks` |
+| **V28** — Query Store replica role | `query_store_stats.replica_role` (SQL Server 2022+ AG secondary-replica attribution, #1546) and a refreshed `v_query_store_stats` |
+| **V29** — web dashboard config | `config_service.web_enabled` + `web_port` — the read-only web dashboard's live enable/port toggle, the twin of `mcp_enabled`/`mcp_port` (#1562) |
 
 All timestamps in the store are **naive-UTC** `timestamp` columns — the product-wide cross-store contract (Lite's DuckDB does the same).
 
@@ -650,3 +670,29 @@ New-NetFirewallRule -DisplayName "Darling MCP" -Direction Inbound -Action Allow 
 **Blast radius, stated honestly.** The token gates the entire ~72-tool read surface *and* `analyze_server`, which opens **live outbound connections to your monitored SQL Servers** (the plan-fetcher). Treat the token as a high-value secret. The store-side identity is the least-privilege `mcp` role (read + only the two analysis-table INSERTs), so a token-holder can never reach the config pivot or the secret columns — but they can read everything collected and trigger analysis.
 
 **MCP has no TLS — the MITM control is a TLS reverse proxy.** A self-signed cert breaks real MCP clients, so the MCP endpoint is plain HTTP and the bearer token travels **cleartext on the segment**; an active on-path attacker (ARP spoof, rogue DHCP, compromised switch) could capture and replay it. The in-app CIDR bounds *who can route to* the port; it does **not** protect the wire. If your segment is not fully trusted, put a **TLS-terminating reverse proxy** in front of the MCP port and point clients at that — the named MITM control for this endpoint. (The store endpoint needs no such proxy: it has verify-full TLS built in.)
+
+### Web endpoint (browser over the LAN)
+
+Add a `network` block to `web` (managed mode; `web.enabled` must be `true`):
+
+```json
+"web": {
+  "enabled": true,
+  "port": 5153,
+  "network": {
+    "listen": "192.168.1.205",
+    "allowFrom": "192.168.1.0/24",
+    "encryptedToken": "<output of --encrypt-password>"
+  }
+}
+```
+
+When `listen` is a network address **and** a token is present **and** `allowFrom` is a valid CIDR, the web host binds that interface behind two gates: an **in-app CIDR check** on the remote address and an **access token**. A browser presents the token ONCE via `?token=` (open `http://192.168.1.205:5153/`, then paste it into the minimal login form, or append `?token=...` directly); the host validates it constant-time, sets an **HMAC-signed, HttpOnly, SameSite=Strict session cookie**, and 302-redirects to strip the token from the URL so it never lingers in history or a Referer header. Subsequent requests ride the cookie. **Loopback is always allowed tokenless, even while exposed** — unlike MCP, the read-only dashboard has no loopback-token requirement. An out-of-CIDR request is refused with **403**. The cookie signing key is per-process, so a service restart invalidates open sessions (just re-present the token). Prefer `encryptedToken` (a DPAPI blob from `--encrypt-password`); a plaintext `token` works for dev but is warned. Set the same scoped firewall rule for the web port:
+
+```
+New-NetFirewallRule -DisplayName "Darling Web" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5153 -RemoteAddress 192.168.1.0/24
+```
+
+**Blast radius.** The web dashboard is **read-only over the collected store** — it connects as the least-privilege `viewer` role and hosts no write paths and no live-server queries (no `analyze_server`, no plan re-execution), so a token-holder can view everything collected but change nothing and reach no monitored server. That smaller blast radius is why loopback stays tokenless here while MCP's does not.
+
+**Web has no TLS either — same reverse-proxy control as MCP.** The token/cookie travels cleartext on the segment, so the in-app CIDR bounds *who can route to* the port but does not protect the wire. On an untrusted segment, put a TLS-terminating reverse proxy in front of the web port.
