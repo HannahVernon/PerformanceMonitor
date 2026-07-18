@@ -69,6 +69,26 @@ public sealed class DarlingCustomViewsTests
     }
 
     [Theory]
+    [InlineData("#1a2b3c")]   // lower-case hex
+    [InlineData("#ABCDEF")]   // upper-case hex (case-insensitive)
+    [InlineData("#000000")]
+    public void ValidateDefinition_AcceptsAValidSeriesColor(string color)
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"read\":\"get_cpu_utilization\",\"viz\":\"line\",\"series\":[{\"key\":\"x\",\"label\":\"X\",\"color\":\"" + color + "\"}]}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsAnAbsentSeriesColor()
+    {
+        /* A series with no color is fine — the renderer falls back to the palette (normalizeColor). */
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"read\":\"get_cpu_utilization\",\"viz\":\"line\",\"series\":[{\"key\":\"x\",\"label\":\"X\"}]}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Theory]
     [InlineData(null, "definition is required")]
     [InlineData("", "definition is required")]
     [InlineData("   ", "definition is required")]
@@ -84,6 +104,11 @@ public sealed class DarlingCustomViewsTests
     [InlineData("{\"panels\":[{\"read\":\"get_wait_stats\",\"viz\":\"pie\"}]}", "unknown viz")]
     [InlineData("{\"panels\":[{\"read\":\"get_wait_stats\",\"viz\":\"table\",\"span\":3}]}", "invalid span")]
     [InlineData("{\"panels\":[{\"path\":\"/api/read/get_wait_stats\",\"viz\":\"table\"}]}", "raw 'path' mode")]
+    /* series color is a presentation field ValidateDefinition now pins (stored CSS-injection / air-gap break). */
+    [InlineData("{\"panels\":[{\"read\":\"get_cpu_utilization\",\"viz\":\"line\",\"series\":[{\"key\":\"x\",\"color\":\"url(//evil.com/beacon)\"}]}]}", "invalid color")]
+    [InlineData("{\"panels\":[{\"read\":\"get_cpu_utilization\",\"viz\":\"line\",\"series\":[{\"key\":\"x\",\"color\":\"red\"}]}]}", "invalid color")]
+    [InlineData("{\"panels\":[{\"read\":\"get_cpu_utilization\",\"viz\":\"line\",\"series\":[{\"key\":\"x\",\"color\":\"#abc\"}]}]}", "invalid color")]
+    [InlineData("{\"panels\":[{\"read\":\"get_cpu_utilization\",\"viz\":\"line\",\"series\":[{\"key\":\"x\",\"color\":123}]}]}", "invalid color")]
     public void ValidateDefinition_RejectsBadDefinitions_NamingTheReason(string? definition, string expectedFragment)
     {
         var result = DarlingWebEndpoints.ValidateDefinition(definition);
@@ -109,6 +134,22 @@ public sealed class DarlingCustomViewsTests
         Assert.False(result.IsValid);
         Assert.Contains("maximum is", result.Error!, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Theory]
+    [InlineData("#1a2b3c", true)]
+    [InlineData("#ABCDEF", true)]           // case-insensitive
+    [InlineData("#000000", true)]
+    [InlineData("#abc", false)]             // short hex
+    [InlineData("#1a2b3", false)]           // 5 digits
+    [InlineData("#1a2b3cd", false)]         // 7 digits
+    [InlineData("1a2b3c", false)]           // no leading '#'
+    [InlineData("#12345g", false)]          // non-hex digit
+    [InlineData("red", false)]              // named color
+    [InlineData("url(//evil.com/beacon)", false)] // CSS function (the air-gap-break payload)
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsHexColor_AcceptsOnlySixDigitHex(string? color, bool expected) =>
+        Assert.Equal(expected, DarlingWebEndpoints.IsHexColor(color));
 
     /* ── catalog: input truth, key-parity with the dispatch ── */
 
@@ -192,6 +233,24 @@ public sealed class DarlingCustomViewsTests
     [Fact]
     public void IsLoopbackRemote_NullRemote_IsNotLoopback() =>
         Assert.False(DarlingWebEndpoints.IsLoopbackRemote(null));
+
+    /* ── mutation Content-Type gate (the CSRF defense: POST/PUT/DELETE demand application/json -> 415 else) ── */
+
+    [Theory]
+    [InlineData("application/json", true)]
+    [InlineData("application/json; charset=utf-8", true)]  // a charset parameter is ignored
+    [InlineData("application/json;charset=utf-8", true)]
+    [InlineData("APPLICATION/JSON", true)]                 // case-insensitive
+    [InlineData("  application/json  ", true)]             // surrounding whitespace tolerated
+    [InlineData("text/plain", false)]                      // the simple-request CSRF content type
+    [InlineData("text/plain;charset=UTF-8", false)]
+    [InlineData("application/x-www-form-urlencoded", false)]
+    [InlineData("multipart/form-data; boundary=x", false)]
+    [InlineData("application/jsonx", false)]               // not exactly application/json
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsJsonContentType_RequiresApplicationJson(string? contentType, bool expected) =>
+        Assert.Equal(expected, DarlingWebEndpoints.IsJsonContentType(contentType));
 
     /* ── store: pure argument + optimistic-concurrency contract ── */
 

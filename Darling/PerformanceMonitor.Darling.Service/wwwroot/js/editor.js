@@ -27,7 +27,7 @@
 
 import { el, mount, apiGet, readTool } from "./util.js";
 import { renderPanel, VIZ } from "./panels.js";
-import { SERIES_COLORS } from "./charts.js";
+import { SERIES_COLORS, normalizeColor } from "./charts.js";
 import * as api from "./views-api.js";
 import * as derive from "./derive.js";
 
@@ -795,10 +795,6 @@ function colorField(current, onChange) {
     )
   );
   return el("span", { class: "color-field" }, [picker, palette]);
-}
-
-function normalizeColor(c) {
-  return typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c) ? c : SERIES_COLORS[0];
 }
 
 /* A remove-able, add-able list of config rows (columns / series / stats). renderRow returns the row's field

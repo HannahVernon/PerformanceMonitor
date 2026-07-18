@@ -368,10 +368,31 @@ public sealed class DarlingWebHostService : BackgroundService
 
             _app = builder.Build();
 
-            /* Pipeline order (network mode): auth middleware FIRST (protects the API + the static files) ->
-               DarlingWebEndpoints.MapAll -> UseDefaultFiles -> UseStaticFiles. WebApplication auto-inserts
-               UseRouting at the head and UseEndpoints at the tail, so the static-file middleware sits between
-               the auth gate and the endpoint execution and serves the SPA for non-API paths. */
+            /* Pipeline order: the Host-allowlist middleware runs FIRST on EVERY request (both modes) as the
+               DNS-rebinding guard, then (network mode only) the auth middleware, then DarlingWebEndpoints.MapAll
+               -> UseDefaultFiles -> UseStaticFiles. WebApplication auto-inserts UseRouting at the head and
+               UseEndpoints at the tail, so the static-file middleware sits behind these gates and serves the SPA
+               for non-API paths. */
+
+            /* DNS-rebinding guard — runs in BOTH modes (the #1576 fix: it previously guarded network mode only,
+               leaving the tokenless loopback write path reachable cross-origin via a DNS rebind). The loopback
+               surface is tokenless, so a browser ON the host that loads attacker content could be rebound to
+               127.0.0.1:5153 and read/write the whole surface same-origin. Require the Host header to name an
+               address we actually bind — a loopback name/IP (localhost / 127.0.0.1 / [::1]) or, in network mode,
+               the configured listen IP. networkListenIp is null in loopback mode, so ONLY loopback Hosts pass
+               there; a rebound foreign hostname pointed at 127.0.0.1:5153 is rejected 400 before any auth
+               decision, route handler, or static file. */
+            _app.Use(async (context, next) =>
+            {
+                if (!IsAllowedHost(context.Request.Host.Host, networkListenIp))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+
+                await next(context);
+            });
+
             if (networkMode)
             {
                 var cidr = allowedCidr;
@@ -382,17 +403,8 @@ public sealed class DarlingWebHostService : BackgroundService
 
                 _app.Use(async (context, next) =>
                 {
-                    /* DNS-rebinding guard: the loopback surface is tokenless, so a browser ON the host that
-                       loads attacker content could be rebound to 127.0.0.1:5153 and read the whole surface
-                       same-origin. Require the Host header to be an address we actually bind — a loopback name
-                       or the configured listen IP (:port optional) — before any auth decision. Rebinding to a
-                       foreign hostname is rejected here; a direct IP request (the real operator) passes. */
-                    if (!IsAllowedHost(context.Request.Host.Host, networkListenIp))
-                    {
-                        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                        return;
-                    }
-
+                    /* The Host-allowlist / DNS-rebinding guard already ran above (both modes); this gate owns
+                       only the network auth decision (session cookie / ?token= / in-CIDR). */
                     var remote = context.Connection.RemoteIpAddress;
                     var hasValidCookie = TryValidateSessionCookie(
                         context.Request.Cookies[SessionCookieName], signingKey, DateTimeOffset.UtcNow);

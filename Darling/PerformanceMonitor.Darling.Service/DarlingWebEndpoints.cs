@@ -163,6 +163,11 @@ public static class DarlingWebEndpoints
                 return LoopbackForbiddenResult();
             }
 
+            if (!IsJsonContentType(context.Request.ContentType))
+            {
+                return UnsupportedMediaTypeResult();
+            }
+
             var (request, bodyError) = await ParseViewBodyAsync(context);
             if (request is null)
             {
@@ -200,6 +205,11 @@ public static class DarlingWebEndpoints
             if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
             {
                 return LoopbackForbiddenResult();
+            }
+
+            if (!IsJsonContentType(context.Request.ContentType))
+            {
+                return UnsupportedMediaTypeResult();
             }
 
             var (request, bodyError) = await ParseViewBodyAsync(context);
@@ -246,6 +256,11 @@ public static class DarlingWebEndpoints
                 return LoopbackForbiddenResult();
             }
 
+            if (!IsJsonContentType(context.Request.ContentType))
+            {
+                return UnsupportedMediaTypeResult();
+            }
+
             try
             {
                 var result = await store.DeleteAsync(id, context.RequestAborted);
@@ -280,6 +295,28 @@ public static class DarlingWebEndpoints
 
         var ip = remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp;
         return IPAddress.IsLoopback(ip);
+    }
+
+    /* ── Content-Type gate (the CSRF defense on the mutation routes) ── */
+
+    /// <summary>
+    /// PURE: whether a mutation request's Content-Type is <c>application/json</c> (a trailing <c>; charset=…</c>
+    /// parameter is ignored; the match is case-insensitive). The POST/PUT/DELETE routes require this and return
+    /// 415 otherwise. Requiring a non-simple Content-Type forces the browser to CORS-preflight ANY cross-origin
+    /// write, and the dashboard answers no preflight — so a simple-request CSRF (which can only send
+    /// <c>text/plain</c> / <c>application/x-www-form-urlencoded</c> / <c>multipart/form-data</c>) can never reach
+    /// a write. A null/empty or non-json Content-Type is rejected.
+    /// </summary>
+    internal static bool IsJsonContentType(string? contentType)
+    {
+        if (string.IsNullOrEmpty(contentType))
+        {
+            return false;
+        }
+
+        var semicolon = contentType.IndexOf(';');
+        var mediaType = semicolon >= 0 ? contentType.AsSpan(0, semicolon) : contentType.AsSpan();
+        return mediaType.Trim().Equals("application/json", StringComparison.OrdinalIgnoreCase);
     }
 
     /* ── definition validation (the authority: a bad doc can never be stored) ── */
@@ -398,9 +435,56 @@ public static class DarlingWebEndpoints
                     return DefinitionValidation.Fail($"panel {i} has an invalid span (must be 1 or 2).");
                 }
             }
+
+            /* Presentation guard (stored CSS-injection / air-gap break): a line panel's series colors flow into a
+               style="background:<color>" write in the renderer (charts.js), so any color that IS present must be a
+               #rrggbb hex literal. A color is optional (the renderer falls back to the palette), but a free-form
+               value — a CSS function that fetches off-origin, a named color, a short #abc, or a non-string — is
+               made unstorable here, closing both the Import seed path and the loopback-write path. The series
+               array is walked wherever it appears (only line viz emits one). */
+            if (panel["series"] is JsonArray seriesArray)
+            {
+                for (var j = 0; j < seriesArray.Count; j++)
+                {
+                    if (seriesArray[j] is JsonObject seriesObject && seriesObject["color"] is JsonValue colorValue)
+                    {
+                        var color = colorValue.TryGetValue<string>(out var colorText) ? colorText : null;
+                        if (!IsHexColor(color))
+                        {
+                            return DefinitionValidation.Fail(
+                                $"panel {i} series {j} has an invalid color; a series color must be a '#rrggbb' hex value.");
+                        }
+                    }
+                }
+            }
         }
 
         return DefinitionValidation.Valid;
+    }
+
+    /// <summary>PURE: whether a series color is a <c>#rrggbb</c> hex literal (case-insensitive) — the ONLY form a
+    /// stored color may take (mirrors the renderer's <c>normalizeColor</c> and the composer's <c>&lt;input
+    /// type=color&gt;</c>). A named color, a short <c>#abc</c>, a CSS <c>url(...)</c> function, or a non-string
+    /// value are all rejected; a color that is ABSENT (or JSON null) is never passed here — the caller leaves it
+    /// as-is (the renderer falls back to the palette).</summary>
+    internal static bool IsHexColor(string? color)
+    {
+        if (color is null || color.Length != 7 || color[0] != '#')
+        {
+            return false;
+        }
+
+        for (var i = 1; i < color.Length; i++)
+        {
+            var c = color[i];
+            var isHexDigit = c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F');
+            if (!isHexDigit)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string? TryGetString(JsonObject obj, string key) =>
@@ -716,6 +800,9 @@ public static class DarlingWebEndpoints
 
     private static IResult LoopbackForbiddenResult() =>
         ErrorResult("Editing custom views is only allowed from a loopback (same-machine) connection.", StatusCodes.Status403Forbidden);
+
+    private static IResult UnsupportedMediaTypeResult() =>
+        ErrorResult("Content-Type must be application/json.", StatusCodes.Status415UnsupportedMediaType);
 
     /// <summary>The signature every read endpoint's handler shares: bind the query string, call the tool.</summary>
     internal delegate Task<string> ReadToolHandler(HttpContext context, NpgsqlDataSource postgres, DarlingAnalysisService analysis);

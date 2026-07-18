@@ -271,6 +271,9 @@ export async function apiGet(path) {
  * (#1563 custom-view CRUD). A 204/empty body yields { kind: "data", data: null }; an { "error": ... } body on a
  * non-2xx yields { kind: "error", message, status } — the status is preserved so a caller can branch on it
  * (409 = a duplicate name or a stale optimistic-concurrency version, 403 = off-loopback edit refused, ...).
+ * Every mutation ALWAYS declares Content-Type: application/json — the server rejects a mutation without it (415),
+ * which is what forces a CORS preflight on any cross-origin write and thereby kills the simple-request CSRF
+ * vector; a bodyless DELETE carries the header too (it sends no body, but must still satisfy that gate).
  */
 export async function apiSend(method, path, body) {
   const hasBody = body !== undefined && body !== null;
@@ -278,9 +281,7 @@ export async function apiSend(method, path, body) {
   try {
     resp = await fetch(path, {
       method,
-      headers: hasBody
-        ? { Accept: "application/json", "Content-Type": "application/json" }
-        : { Accept: "application/json" },
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: hasBody ? JSON.stringify(body) : undefined,
     });
   } catch (e) {
