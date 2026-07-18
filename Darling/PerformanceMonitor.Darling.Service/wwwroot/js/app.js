@@ -14,8 +14,8 @@
  *   #/alerts            — fleet-wide Alert History
  *   #/views             — Custom Views list (#1563)
  *   #/view/{id}         — a saved custom view, rendered (#1563)
- *   #/view/{id}/edit    — the composer editing a saved view (#1563; loopback-only)
- *   #/view/new          — the composer creating a new view (#1563; loopback-only)
+ *   #/view/{id}/edit    — the composer editing a saved view (#1563)
+ *   #/view/new          — the composer creating a new view (#1563)
  * The refresh loop re-renders the active page every 60s and PAUSES while the tab is hidden (the interval skips
  * work when document.hidden), refreshing once immediately when the tab becomes visible again. The 60s refresh
  * DELIBERATELY does NOT re-render the composer route (the editor-route poll guard) — a background rebuild there
@@ -126,7 +126,7 @@ async function refreshSidebar() {
 /* ─────────────────────────── sidebar view list (#1563) ─────────────────────────── */
 
 /* Populated like refreshSidebar: the saved custom views + a "New view" affordance shown ONLY when the session
-   reports can_edit (editing is loopback-only). Kept fresh on the 60s poll even while the composer is open. */
+   reports can_edit. Kept fresh on the 60s poll even while the composer is open. */
 async function refreshViewList() {
   if (!viewList) return;
   const [session, res] = await Promise.all([getSession(), listViews()]);

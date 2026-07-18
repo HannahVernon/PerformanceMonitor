@@ -525,7 +525,7 @@ public sealed class DarlingWebHostService : BackgroundService
     /// </summary>
     internal static WebAuthAction DecideWebAuth(IPAddress? remoteIp, IPNetwork allowedCidr, bool hasValidCookie, bool hasValidToken)
     {
-        /* Loopback determination is shared with the custom-views edit gate (DarlingWebEndpoints.IsLoopbackRemote)
+        /* Loopback determination (the tokenless-access arm) lives in DarlingWebEndpoints.IsLoopbackRemote
            so the network auth gate and the mutation gate can never drift on how they unwrap IPv4-mapped-IPv6. */
         if (DarlingWebEndpoints.IsLoopbackRemote(remoteIp))
         {

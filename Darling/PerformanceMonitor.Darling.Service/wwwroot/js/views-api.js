@@ -11,8 +11,8 @@
  * read catalog, and the view CRUD, plus a PURE client-side definition validator that mirrors the server's
  * ValidateDefinition (so a bad import/compose is caught before the round-trip — the backend re-validates as the
  * authority). The session ({can_edit}) and catalog are immutable per page-load, so they are fetched ONCE and
- * cached as promises; every caller shares the one in-flight request. Editing is loopback-only server-side, so
- * can_edit == "this request came from the same machine"; a network seat gets false and the UI hides every edit
+ * cached as promises; every caller shares the one in-flight request. Editing is available to any authenticated seat, so
+ * can_edit is true for any request past the host auth gate; it only goes false if the session probe itself failed (fail-closed), and the UI hides every edit
  * affordance (render + export stay open to all).
  */
 

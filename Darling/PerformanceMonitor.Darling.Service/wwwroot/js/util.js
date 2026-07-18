@@ -270,7 +270,7 @@ export async function apiGet(path) {
  * Send a MUTATING request (POST / PUT / DELETE) with an optional JSON body, classified exactly like apiGet
  * (#1563 custom-view CRUD). A 204/empty body yields { kind: "data", data: null }; an { "error": ... } body on a
  * non-2xx yields { kind: "error", message, status } — the status is preserved so a caller can branch on it
- * (409 = a duplicate name or a stale optimistic-concurrency version, 403 = off-loopback edit refused, ...).
+ * (409 = a duplicate name or a stale optimistic-concurrency version, 415 = a non-JSON write was refused, ...).
  * Every mutation ALWAYS declares Content-Type: application/json — the server rejects a mutation without it (415),
  * which is what forces a CORS preflight on any cross-origin write and thereby kills the simple-request CSRF
  * vector; a bodyless DELETE carries the header too (it sends no body, but must still satisfy that gate).

@@ -14,8 +14,8 @@
  * renderPanel, each panel's read is checked against the cached catalog and its viz against the VIZ registry, so a
  * stale/unknown read renders a clean "unknown read" strip instead of an opaque 404 inside the panel.
  *
- * Edit affordances (New / Edit / Delete / Import) are shown ONLY when the session reports can_edit (editing is
- * loopback-only, enforced server-side); RENDER and EXPORT are available to every seat. All user text (names,
+ * Edit affordances (New / Edit / Delete / Import) are shown when the session reports can_edit (the server is the
+ * authority for every write); RENDER and EXPORT are available to every seat. All user text (names,
  * descriptions) reaches the DOM through el()/textContent (R4 — never innerHTML).
  */
 

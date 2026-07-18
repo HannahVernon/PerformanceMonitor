@@ -121,9 +121,12 @@ public static class DarlingWebEndpoints
 
     /// <summary>
     /// Maps the custom-views surface: the session capability probe, the read catalog the composer builds its
-    /// picker from, and the CRUD routes. READS/render/export are open to every authenticated seat; the MUTATIONS
-    /// (POST/PUT/DELETE) are gated SERVER-SIDE on <see cref="IsLoopbackRemote"/> (Erik-ratified: editing is
-    /// loopback-only, never trusted to a client flag) and return 403 off-loopback. Definitions are validated by
+    /// picker from, and the CRUD routes. Editing is available to any AUTHENTICATED seat — the same reach as the
+    /// rest of the web surface: over the network a caller has already passed the token→cookie + CIDR gate (the
+    /// auth middleware runs before these routes), and on loopback the operator is on the host. The mutations are
+    /// NOT restricted to loopback (network operation is the normal mode). Cross-site forgery is blocked by the
+    /// always-on Host-header allowlist (anti-rebind), the SameSite=Strict session cookie, and the
+    /// <c>application/json</c> content-type requirement below. Definitions are validated by
     /// <see cref="ValidateDefinition"/> (the authority) before any write; the store adds optimistic concurrency +
     /// duplicate-name conflict detection. Error bodies are always <c>{"error": "..."}</c>, matching the read surface.
     /// </summary>
@@ -131,10 +134,11 @@ public static class DarlingWebEndpoints
     {
         var store = new CustomViewStore(postgres);
 
-        /* Whether THIS request may edit — the frontend hides edit affordances when false, but the server still
-           enforces the same signal on every mutation (never trust the returned flag). */
-        app.MapGet("/api/session", (HttpContext context) =>
-            JsonNodeResult(new JsonObject { ["can_edit"] = IsLoopbackRemote(context.Connection.RemoteIpAddress) }));
+        /* A request that reaches this endpoint has already cleared the host's auth gate (network: token→cookie +
+           CIDR; loopback: on the host), so it is a trusted operator that may edit. The frontend reads this to
+           show/hide affordances; a failed probe fails closed to read-only in the UI. */
+        app.MapGet("/api/session", () =>
+            JsonNodeResult(new JsonObject { ["can_edit"] = true }));
 
         /* The read catalog: input truth (read names + their WIRE query keys) the composer binds params from. */
         app.MapGet("/api/catalog", () => JsonNodeResult(BuildCatalogNode()));
@@ -155,14 +159,10 @@ public static class DarlingWebEndpoints
                 : NotFoundResult();
         });
 
-        /* Create — 201 + Location; 400 on a bad body/definition, 409 on a duplicate name. Loopback-gated. */
+        /* Create — 201 + Location; 400 on a bad body/definition, 409 on a duplicate name. Any authenticated seat
+           (the auth middleware already gated the request); application/json required (CSRF defense). */
         app.MapPost("/api/views", async (HttpContext context) =>
         {
-            if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
-            {
-                return LoopbackForbiddenResult();
-            }
-
             if (!IsJsonContentType(context.Request.ContentType))
             {
                 return UnsupportedMediaTypeResult();
@@ -199,14 +199,10 @@ public static class DarlingWebEndpoints
         });
 
         /* Update — 200 on success; 400 bad body/definition, 404 gone, 409 stale-version OR duplicate name.
-           Loopback-gated. The client sends the version it edited; a mismatch is a 409, not a silent clobber. */
+           Any authenticated seat; application/json required. The client sends the version it edited; a mismatch
+           is a 409, not a silent clobber. */
         app.MapPut("/api/views/{id:long}", async (HttpContext context, long id) =>
         {
-            if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
-            {
-                return LoopbackForbiddenResult();
-            }
-
             if (!IsJsonContentType(context.Request.ContentType))
             {
                 return UnsupportedMediaTypeResult();
@@ -248,14 +244,9 @@ public static class DarlingWebEndpoints
             }
         });
 
-        /* Delete — 204 on success, 404 when missing. Loopback-gated. */
+        /* Delete — 204 on success, 404 when missing. Any authenticated seat; application/json required. */
         app.MapDelete("/api/views/{id:long}", async (HttpContext context, long id) =>
         {
-            if (!IsLoopbackRemote(context.Connection.RemoteIpAddress))
-            {
-                return LoopbackForbiddenResult();
-            }
-
             if (!IsJsonContentType(context.Request.ContentType))
             {
                 return UnsupportedMediaTypeResult();
@@ -273,18 +264,17 @@ public static class DarlingWebEndpoints
         });
     }
 
-    /// <summary>The <c>updated_by</c> stamp for a web edit. The web surface has no per-user identity (editing is
-    /// loopback-only, same-machine), so a constant is honest — it marks the row as web-authored.</summary>
+    /// <summary>The <c>updated_by</c> stamp for a web edit. The web surface has no per-user identity, so a
+    /// constant is honest — it marks the row as web-authored.</summary>
     internal const string WebEditorPrincipal = "web";
 
-    /* ── loopback gate (the mutation authority; reused verbatim by DarlingWebHostService.DecideWebAuth) ── */
+    /* ── loopback determination (the web host's tokenless-loopback auth arm) ── */
 
     /// <summary>
-    /// PURE: whether a request's remote address is loopback — the server-side gate for custom-view MUTATIONS
-    /// (Erik-ratified: editing is loopback-only). Unwraps an IPv4-mapped-IPv6 address (<c>::ffff:127.0.0.1</c>)
-    /// then defers to <see cref="IPAddress.IsLoopback"/>; a null/unverifiable remote is NOT loopback (fail-closed).
-    /// This is the EXACT determination <see cref="DarlingWebHostService.DecideWebAuth"/>'s loopback arm uses (it
-    /// calls this), so the network auth gate and the edit gate can never drift.
+    /// PURE: whether a request's remote address is loopback — the tokenless-access arm of the web host's auth
+    /// gate (<see cref="DarlingWebHostService.DecideWebAuth"/> calls this: a loopback request needs no token).
+    /// Unwraps an IPv4-mapped-IPv6 address (<c>::ffff:127.0.0.1</c>) then defers to
+    /// <see cref="IPAddress.IsLoopback"/>; a null/unverifiable remote is NOT loopback (fail-closed).
     /// </summary>
     internal static bool IsLoopbackRemote(IPAddress? remoteIp)
     {
@@ -797,9 +787,6 @@ public static class DarlingWebEndpoints
 
     private static IResult NotFoundResult() =>
         ErrorResult("View not found.", StatusCodes.Status404NotFound);
-
-    private static IResult LoopbackForbiddenResult() =>
-        ErrorResult("Editing custom views is only allowed from a loopback (same-machine) connection.", StatusCodes.Status403Forbidden);
 
     private static IResult UnsupportedMediaTypeResult() =>
         ErrorResult("Content-Type must be application/json.", StatusCodes.Status415UnsupportedMediaType);
