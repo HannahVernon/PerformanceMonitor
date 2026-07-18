@@ -82,10 +82,13 @@ public sealed class QueryStoreCollectorDefinitionTests
         Assert.NotNull(plan);
         Assert.Contains("sys.dm_hadr_database_replica_states", plan!.Text, StringComparison.Ordinal);
         Assert.Contains("drs.is_primary_replica = 1", plan.Text, StringComparison.Ordinal);
-        /* #1565: rdsadmin (AWS RDS's own management db) is default-excluded on the box/RDS path — no
-           customer workload; readonly_reason bit 8 also excludes its readable-secondary shape, but on
-           an RDS PRIMARY it would otherwise be enumerated. */
-        Assert.Contains("d.name <> N'rdsadmin'", plan.Text, StringComparison.Ordinal);
+        /* #1565: the canonical default screen — vendor management dbs (rdsadmin, gcloud_cloudsqladmin),
+           SSRS/DW artifacts, the system four as a name belt, and the operator-chosen DBA-convention
+           names. Spot-pin one from each group; the full list lives in the query. */
+        Assert.Contains("N'rdsadmin'", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("N'gcloud_cloudsqladmin'", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("N'ReportServerTempDB'", plan.Text, StringComparison.Ordinal);
+        Assert.Contains("N'DBAUtils'", plan.Text, StringComparison.Ordinal);
         /* IN (1, 2, 4) = READ_ONLY/READ_WRITE/READ_CAPTURE_SECONDARY, not "> 0": 3 = ERROR must not
            pass the "is QS usable" gate. */
         Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
@@ -105,6 +108,8 @@ public sealed class QueryStoreCollectorDefinitionTests
 
         Assert.NotNull(plan);
         Assert.DoesNotContain("dm_hadr_database_replica_states", plan!.Text, StringComparison.Ordinal);
+        /* The same canonical default screen as the box path (#1565) — one shared list, two paths. */
+        Assert.Contains("N'gcloud_cloudsqladmin'", plan.Text, StringComparison.Ordinal);
         Assert.Contains("WHERE actual_state IN (1, 2, 4)", plan.Text, StringComparison.Ordinal);
         /* #1558: readable-secondary replicas (readonly_reason bit 8 — AG secondaries slip the HADR
            join on RDS/geo mechanisms) are excluded: their QS is the primary's replicated content.

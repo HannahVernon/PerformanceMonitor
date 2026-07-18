@@ -125,7 +125,19 @@ DECLARE db_check CURSOR LOCAL FAST_FORWARD FOR
     AND   d.database_id < 32761
     AND   d.state_desc = N'ONLINE'
     AND   d.name <> N'PerformanceMonitor'
-    AND   d.name <> N'rdsadmin' /*AWS RDS's own management db - present on every RDS instance, no customer workload (#1565). Org-specific utility dbs (e.g. a shared DBA tools db) belong in excludedDatabases.*/
+    /* Default screen (#1565): vendor/system-adjacent databases with no customer workload. First group =
+       vendor-controlled names (cannot collide with real customer data): cloud-provider management dbs,
+       SSRS catalogs, PolyBase/DW artifacts, plus the id>4 system four as a name-based belt for clarity.
+       Second group = common DBA-convention tooling names, screened by operator decision; the inverse
+       case (exclude a real workload db) is what excludedDatabases handles. */
+    AND   d.name NOT IN
+          (
+              N'master', N'model', N'msdb', N'tempdb',
+              N'rdsadmin', N'gcloud_cloudsqladmin',
+              N'ReportServer', N'ReportServerTempDB',
+              N'DWConfiguration', N'DWDiagnostics', N'DWQueue',
+              N'DBAUtil', N'DBAUtils', N'Utility'
+          )
     AND
     (
         drs.database_id IS NULL          /*not in any AG*/
@@ -206,6 +218,16 @@ DECLARE db_check CURSOR LOCAL FAST_FORWARD FOR
     AND   d.database_id < 32761
     AND   d.state_desc = N'ONLINE'
     AND   d.name <> N'PerformanceMonitor'
+    /* Same default screen as the box/RDS enumeration (#1565) — most vendor names can't exist on Azure
+       SQL DB, but one shared list keeps the two paths identical and covers the DBA-convention names. */
+    AND   d.name NOT IN
+          (
+              N'master', N'model', N'msdb', N'tempdb',
+              N'rdsadmin', N'gcloud_cloudsqladmin',
+              N'ReportServer', N'ReportServerTempDB',
+              N'DWConfiguration', N'DWDiagnostics', N'DWQueue',
+              N'DBAUtil', N'DBAUtils', N'Utility'
+          )
     /*EXCLUSION_FILTER*/
     OPTION(RECOMPILE);
 
