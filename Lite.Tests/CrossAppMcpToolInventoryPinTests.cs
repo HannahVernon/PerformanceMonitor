@@ -50,11 +50,17 @@ public sealed class CrossAppMcpToolInventoryPinTests
     };
 
     // Lite-missing MCP tools -- parity board Tier 2; the ratchet only shrinks. All 18 formerly-Darling-only
-    // tools have been ported to Lite (latch/spinlock, plan-cache bloat + cpu-scheduler pressure, resource
+    // tools were ported to Lite (latch/spinlock, plan-cache bloat + cpu-scheduler pressure, resource
     // semaphore, default-trace events, daily summary, the three config-change tools, and the eight
-    // system_health parser tools), so this list is now empty. A NEW Darling-only tool must be either ported
-    // to Lite or added back here.
-    private static readonly HashSet<string> KnownLiteMissingMcpTools = new(StringComparer.Ordinal);
+    // system_health parser tools). A NEW Darling-only tool must be either ported to Lite or added here.
+    private static readonly HashSet<string> KnownLiteMissingMcpTools = new(StringComparer.Ordinal)
+    {
+        /* #1562: the pre-banded fleet-overview read born from the web dashboard's DarlingFleetReader.
+           Lite twin = a DuckDB fleet reader over the SAME shared ServerHealthClassifier (Common) — tracked
+           in #1573 alongside unifying Lite's own card banding onto that classifier; port it, then remove
+           this entry (the ratchet only shrinks). */
+        "get_fleet_overview",
+    };
 
     [Fact]
     public void DarlingMcpTools_AreASupersetOfLite_ExceptKnownNamingDrift()
