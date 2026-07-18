@@ -40,6 +40,7 @@ export function renderServer(main, server) {
       xKey: "sample_time",
       series: CPU_SERIES,
       format: "pct",
+      unit: "%",
     }),
     waitsPanel(server),
     renderPanel({
