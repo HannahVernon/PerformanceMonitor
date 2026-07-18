@@ -12,6 +12,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 using NpgsqlTypes;
+using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitor.Darling.Service.Mcp;
 
@@ -967,24 +969,16 @@ internal static class DarlingDataReader
 /// <summary>
 /// One collector's 7-day health roll-up with its health band — a faithful service-side port of the
 /// viewer's <c>CollectorHealthRow</c> (itself Lite's), carrying just the fields the MCP
-/// get_collection_health tool surfaces plus the computed <see cref="HealthStatus"/> / failure rate. The
-/// on-load-collector staleness exemption and the NEVER_RUN / NO_PERMISSIONS / FAILING / STALE / WARNING /
-/// HEALTHY banding match Lite exactly. <see cref="DateTime.UtcNow"/> arithmetic is correct against the
-/// store's naive-UTC timestamps because both are UTC instants (tick subtraction ignores Kind).
+/// get_collection_health tool surfaces plus the computed <see cref="HealthStatus"/> / failure rate.
+/// <see cref="HealthStatus"/> delegates to the shared <see cref="CollectorHealthClassifier"/> in
+/// PerformanceMonitor.Common (#1573), so this service, Lite, and the viewer band identically and cannot
+/// drift; it resolves the collector's cadence from the shared <see cref="CollectorScheduleDefaults"/> so a
+/// healthy DAILY collector is no longer flagged stale/failing on the frequent-collector thresholds.
+/// <see cref="DateTime.UtcNow"/> arithmetic is correct against the store's naive-UTC timestamps because
+/// both are UTC instants (tick subtraction ignores Kind).
 /// </summary>
 internal sealed class CollectorHealth
 {
-    /// <summary>On-load collectors run once per tab open / on connect, not on the scheduled loop, so the
-    /// staleness thresholds do not apply to them (mirrors Lite / the viewer).</summary>
-    private static readonly HashSet<string> OnLoadCollectors = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "server_config",
-        "database_config",
-        "database_scoped_config",
-        "trace_flags",
-        "server_properties",
-    };
-
     public string CollectorName { get; set; } = "";
     public long TotalRuns { get; set; }
     public long SuccessCount { get; set; }
@@ -1002,20 +996,13 @@ internal sealed class CollectorHealth
         ? (DateTime.UtcNow - LastSuccessTime.Value).TotalHours
         : 999;
 
-    public string HealthStatus
-    {
-        get
-        {
-            if (TotalRuns == 0) return "NEVER_RUN";
-            if (PermissionDeniedCount > 0 && ErrorCount == 0 && SuccessCount == 0) return "NO_PERMISSIONS";
-            if (OnLoadCollectors.Contains(CollectorName))
-            {
-                return FailureRatePercent > 20 ? "WARNING" : "HEALTHY";
-            }
-            if (HoursSinceLastSuccess > 24) return "FAILING";
-            if (HoursSinceLastSuccess > 4) return "STALE";
-            if (FailureRatePercent > 20) return "WARNING";
-            return "HEALTHY";
-        }
-    }
+    /// <summary>The collector's default cadence from the shared <see cref="CollectorScheduleDefaults"/>
+    /// (0 for an on-load or unknown collector — both fall to the floor thresholds). The banding uses the
+    /// shipped default, not the resolved per-server override, so all three surfaces stay in parity.</summary>
+    private int FrequencyMinutes =>
+        CollectorScheduleDefaults.All.TryGetValue(CollectorName, out var schedule) ? schedule.FrequencyMinutes : 0;
+
+    public string HealthStatus => CollectorHealthClassifier.Classify(
+        TotalRuns, SuccessCount, ErrorCount, PermissionDeniedCount,
+        HoursSinceLastSuccess, FrequencyMinutes, CollectorHealthClassifier.IsOnLoadCollector(CollectorName));
 }

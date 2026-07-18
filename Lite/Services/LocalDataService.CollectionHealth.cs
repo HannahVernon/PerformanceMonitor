@@ -10,6 +10,8 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -198,21 +200,15 @@ public class CollectionLogRow
     public string DuckDbDurationFormatted => DuckDbDurationMs.HasValue ? $"{DuckDbDurationMs.Value} ms" : "";
 }
 
+/// <summary>
+/// One Collection Health grid row — a collector's 7-day roll-up with its health band.
+/// <see cref="HealthStatus"/> delegates to the shared <see cref="CollectorHealthClassifier"/> in
+/// PerformanceMonitor.Common (#1573), so Lite, the Darling viewer, and the service band identically and
+/// cannot drift; it resolves the collector's cadence from the shared <see cref="CollectorScheduleDefaults"/>
+/// so a healthy DAILY collector is no longer flagged stale/failing on the frequent-collector thresholds.
+/// </summary>
 public class CollectorHealthRow
 {
-    /// <summary>
-    /// On-load collectors run once per tab open, not on the scheduled loop.
-    /// Staleness thresholds don't apply to them.
-    /// </summary>
-    private static readonly HashSet<string> OnLoadCollectors = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "server_config",
-        "database_config",
-        "database_scoped_config",
-        "trace_flags",
-        "server_properties"
-    };
-
     public string CollectorName { get; set; } = "";
     public long TotalRuns { get; set; }
     public long SuccessCount { get; set; }
@@ -229,23 +225,15 @@ public class CollectorHealthRow
         ? (DateTime.UtcNow - LastSuccessTime.Value).TotalHours
         : 999;
 
-    public string HealthStatus
-    {
-        get
-        {
-            if (TotalRuns == 0) return "NEVER_RUN";
-            if (PermissionDeniedCount > 0 && ErrorCount == 0 && SuccessCount == 0) return "NO_PERMISSIONS";
-            if (OnLoadCollectors.Contains(CollectorName))
-            {
-                if (FailureRatePercent > 20) return "WARNING";
-                return "HEALTHY";
-            }
-            if (HoursSinceLastSuccess > 24) return "FAILING";
-            if (HoursSinceLastSuccess > 4) return "STALE";
-            if (FailureRatePercent > 20) return "WARNING";
-            return "HEALTHY";
-        }
-    }
+    /// <summary>The collector's default cadence from the shared <see cref="CollectorScheduleDefaults"/>
+    /// (0 for an on-load or unknown collector — both fall to the floor thresholds). The banding uses the
+    /// shipped default, not the per-install ScheduleManager override, so all three surfaces stay in parity.</summary>
+    private int FrequencyMinutes =>
+        CollectorScheduleDefaults.All.TryGetValue(CollectorName, out var schedule) ? schedule.FrequencyMinutes : 0;
+
+    public string HealthStatus => CollectorHealthClassifier.Classify(
+        TotalRuns, SuccessCount, ErrorCount, PermissionDeniedCount,
+        HoursSinceLastSuccess, FrequencyMinutes, CollectorHealthClassifier.IsOnLoadCollector(CollectorName));
 
     public string AvgDurationFormatted => AvgDurationMs < 1000
         ? $"{AvgDurationMs:F0} ms"
