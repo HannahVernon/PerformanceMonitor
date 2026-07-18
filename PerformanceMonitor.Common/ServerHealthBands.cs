@@ -356,4 +356,136 @@ namespace PerformanceMonitor.Common
             _ => "Healthy",
         };
     }
+
+    /// <summary>
+    /// The one, app-agnostic source of truth for the collector-health ROW banding — the per-collector
+    /// NEVER_RUN / NO_PERMISSIONS / FAILING / STALE / WARNING / HEALTHY status shown on every Collection
+    /// Health surface (Lite's grid, the Darling WPF viewer's grid + Overview "collectors failing" count,
+    /// and the service's <c>get_collection_health</c> MCP tool + web fleet failing-count reader). It was
+    /// three byte-identical copies (Lite / viewer / service) with FLAT 4h-STALE / 24h-FAILING thresholds;
+    /// nothing pinned them together, so they could drift (#1573), and the flat numbers assumed a frequent
+    /// (~1-min) collector — a healthy DAILY collector that succeeds every run still read as STALE past 4h
+    /// and FAILING past 24h (index_object_stats at a 1440-min cadence, a real field false-positive).
+    /// <para>
+    /// The fix makes the staleness thresholds RELATIVE to each collector's own cadence, with floors set to
+    /// the original flat values so every FREQUENT collector bands byte-for-byte identically — only a slow
+    /// collector (cadence past ~2.7h for STALE / 12h for FAILING) relaxes. Pure + static so all three
+    /// surfaces band identically and the whole decision table is unit-testable without a store. Each host
+    /// keeps its own SQL, row model, and brush/display mapping; only the band DECISION lives here.
+    /// </para>
+    /// </summary>
+    public static class CollectorHealthClassifier
+    {
+        /* The band strings every surface's brush / display mapping already switches on — unchanged values. */
+        public const string NeverRun = "NEVER_RUN";
+        public const string NoPermissions = "NO_PERMISSIONS";
+        public const string Failing = "FAILING";
+        public const string Stale = "STALE";
+        public const string Warning = "WARNING";
+        public const string Healthy = "HEALTHY";
+
+        /// <summary>A collector with runs whose error rate exceeds this percent bands WARNING (when not STALE/FAILING).</summary>
+        public const double WarningFailureRatePercent = 20.0;
+
+        /* Staleness cutoffs are max(floor, multiplier x the collector's own cadence in hours). The floors are
+           the original flat thresholds, so a collector with a cadence at/under the floor is unchanged; only a
+           slow collector relaxes. Chosen defaults (#1573): FAILING = max(24, 2 x freqHours) — a 1-min
+           collector still fails at 24h, a daily (1440-min) collector fails at 48h; STALE = max(4, 1.5 x
+           freqHours) — a 1-min collector still goes stale at 4h, a daily collector goes stale at 36h. So
+           index_object_stats (1440-min) at 27h since last success reads HEALTHY, not FAILING — the bug. */
+
+        /// <summary>Hours-since-last-success floor for FAILING — the original flat threshold.</summary>
+        public const double FailingFloorHours = 24.0;
+
+        /// <summary>FAILING when hours-since-success exceeds this multiple of the collector's cadence (or the floor, whichever is larger).</summary>
+        public const double FailingCadenceMultiplier = 2.0;
+
+        /// <summary>Hours-since-last-success floor for STALE — the original flat threshold.</summary>
+        public const double StaleFloorHours = 4.0;
+
+        /// <summary>STALE when hours-since-success exceeds this multiple of the collector's cadence (or the floor, whichever is larger).</summary>
+        public const double StaleCadenceMultiplier = 1.5;
+
+        /// <summary>
+        /// On-load collectors run once per server connect / tab open, NOT on the scheduled loop, so the
+        /// staleness thresholds never apply to them — they are banded by failure rate only (a 100-hour-old
+        /// last success is fine). Centralized here so the three surfaces cannot disagree on the set. These
+        /// are exactly the <c>FrequencyMinutes == 0</c> entries in <c>CollectorScheduleDefaults</c>, kept as
+        /// an explicit name set so this classifier stays free of a dependency on the collector catalog.
+        /// </summary>
+        private static readonly HashSet<string> OnLoadCollectorNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "server_config",
+            "database_config",
+            "database_scoped_config",
+            "trace_flags",
+            "server_properties",
+        };
+
+        /// <summary>True for a collector that runs on connect rather than on the scheduled loop (staleness-exempt).</summary>
+        public static bool IsOnLoadCollector(string? collectorName) =>
+            collectorName is not null && OnLoadCollectorNames.Contains(collectorName);
+
+        /// <summary>The FAILING cutoff (hours since last success) for a collector of the given cadence.</summary>
+        public static double FailingThresholdHours(int frequencyMinutes) =>
+            Math.Max(FailingFloorHours, FailingCadenceMultiplier * (frequencyMinutes / 60.0));
+
+        /// <summary>The STALE cutoff (hours since last success) for a collector of the given cadence.</summary>
+        public static double StaleThresholdHours(int frequencyMinutes) =>
+            Math.Max(StaleFloorHours, StaleCadenceMultiplier * (frequencyMinutes / 60.0));
+
+        /// <summary>
+        /// Band one collector's trailing-window roll-up. Order is fixed: NEVER_RUN (no runs at all) ->
+        /// NO_PERMISSIONS (only permission denials) -> on-load (failure-rate only, never STALE/FAILING) ->
+        /// FAILING -> STALE -> WARNING (failure rate over the threshold) -> HEALTHY.
+        /// <paramref name="hoursSinceLastSuccess"/> is the caller's elapsed-hours value — its 999 sentinel
+        /// for "ran but never a success" flows straight through to FAILING, exactly as before.
+        /// <paramref name="frequencyMinutes"/> is the collector's cadence (callers resolve it from
+        /// <c>CollectorScheduleDefaults</c>; 0 for on-load or an unknown collector, which yields the floor
+        /// thresholds = the old flat behavior). <paramref name="isOnLoad"/> is <see cref="IsOnLoadCollector"/>.
+        /// </summary>
+        public static string Classify(
+            long totalRuns,
+            long successCount,
+            long errorCount,
+            long permissionDeniedCount,
+            double hoursSinceLastSuccess,
+            int frequencyMinutes,
+            bool isOnLoad)
+        {
+            if (totalRuns == 0)
+            {
+                return NeverRun;
+            }
+
+            if (permissionDeniedCount > 0 && errorCount == 0 && successCount == 0)
+            {
+                return NoPermissions;
+            }
+
+            var failureRatePercent = totalRuns > 0 ? (double)errorCount / totalRuns * 100 : 0;
+
+            if (isOnLoad)
+            {
+                return failureRatePercent > WarningFailureRatePercent ? Warning : Healthy;
+            }
+
+            if (hoursSinceLastSuccess > FailingThresholdHours(frequencyMinutes))
+            {
+                return Failing;
+            }
+
+            if (hoursSinceLastSuccess > StaleThresholdHours(frequencyMinutes))
+            {
+                return Stale;
+            }
+
+            if (failureRatePercent > WarningFailureRatePercent)
+            {
+                return Warning;
+            }
+
+            return Healthy;
+        }
+    }
 }
