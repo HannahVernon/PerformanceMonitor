@@ -103,6 +103,7 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<BlockedProcessReportRow>? _blockedProcessFilterMgr;
     private DataGridFilterManager<DeadlockProcessDetail>? _deadlockFilterMgr;
     private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
+    private DataGridFilterManager<LongQueryCompletionRow>? _longQueryFilterMgr;
     private DataGridFilterManager<ServerConfigRow>? _serverConfigFilterMgr;
     private DataGridFilterManager<DatabaseConfigRow>? _databaseConfigFilterMgr;
     private DataGridFilterManager<DatabaseScopedConfigRow>? _dbScopedConfigFilterMgr;
@@ -130,6 +131,10 @@ public partial class ServerTab : UserControl
     public int UtcOffsetMinutes { get; }
     private readonly bool _hasMsdbAccess;
     private readonly bool _isAzureSqlDatabase;
+    /* Live probe of the opt-in long-query completion collector's enabled flag (#1496), so the Long
+       Queries tab shows an explicit "trace is OFF" empty-state banner when it is disabled — read fresh
+       each refresh so toggling it in the schedule editor updates the banner without reopening the tab. */
+    private readonly Func<bool> _isLongQueryTraceEnabled;
 
     /// <summary>
     /// Raised after each data refresh with alert counts for tab badge display.
@@ -139,12 +144,15 @@ public partial class ServerTab : UserControl
     public event Func<Task>? ManualRefreshRequested;
     public event Action<ServerConnection>? PersistServerRequested; /* #1319: persist ViewFilterDatabases via ServerManager */
 
-    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
+    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false, Func<bool>? isLongQueryTraceEnabled = null)
     {
         InitializeComponent();
         SetupBarCellMaxes();
 
         _server = server;
+        /* Default to "enabled" when no probe is supplied so the empty-state banner never falsely claims
+           the trace is off; MainWindow always wires the live schedule probe. */
+        _isLongQueryTraceEnabled = isLongQueryTraceEnabled ?? (() => true);
         foreach (var db in _server.ViewFilterDatabases)
             _selectedDatabases.Add(db);
         _dataService = new LocalDataService(duckDb);

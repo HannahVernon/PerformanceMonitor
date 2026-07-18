@@ -521,6 +521,175 @@ ALTER EVENT SESSION [{BlockedProcessReportCollector.XeSessionName}] ON DATABASE 
     }
 
     /// <summary>
+    /// Reconciles the OPT-IN long-query completion XE session (#1496) to the collector's enabled flag —
+    /// Erik's dedicated switch, default OFF. ENABLED: create/start the session (server-scoped on
+    /// on-prem/MI/RDS; database-scoped in every monitored database on Azure SQL DB, #1535). DISABLED:
+    /// DROP the session on the monitored server(s) — the server-side session is the actual busy-server
+    /// cost, so merely skipping collection is not enough. Unlike <see cref="EnsureAllAsync"/> (which is
+    /// unconditional create-only, run once per connect), this is called from the per-server sweep and
+    /// its lifecycle FOLLOWS the flag both ways; the DarlingWorker state-tracks the last-applied value so
+    /// this only opens a connection when the desired state actually changes. Failures propagate to the
+    /// caller (the worker logs + leaves the applied state unchanged so the next sweep retries).
+    /// </summary>
+    public static async Task ReconcileLongQueryCompletionsAsync(ServerRuntime server, DarlingCollectorRunner runner, bool enabled, ILogger? logger, CancellationToken cancellationToken)
+    {
+        if (server.Target.IsAzureSqlDb)
+        {
+            await ReconcileLongQueryCompletionsAzureAsync(server, runner, enabled, logger, cancellationToken);
+            return;
+        }
+
+        using var connection = new SqlConnection(server.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        if (enabled)
+        {
+            await EnsureLongQueryCompletionsOnPremAsync(connection, server, logger, cancellationToken);
+        }
+        else
+        {
+            await DropLongQueryCompletionsAsync(connection, databaseScoped: false, cancellationToken);
+            logger?.LogInformation("[{Server}] Long-query completion XE session reconciled OFF (collector disabled)", server.Config.DisplayName);
+        }
+    }
+
+    private static async Task EnsureLongQueryCompletionsOnPremAsync(SqlConnection connection, ServerRuntime server, ILogger? logger, CancellationToken cancellationToken)
+    {
+        using (var cmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT /* PerformanceMonitorDarling */
+    is_running = CASE WHEN dxs.name IS NOT NULL THEN 1 ELSE 0 END
+FROM sys.server_event_sessions AS ses
+LEFT JOIN sys.dm_xe_sessions AS dxs
+  ON dxs.name = ses.name
+WHERE ses.name = @session_name;", connection))
+        {
+            cmd.CommandTimeout = 60;
+            cmd.Parameters.Add(new SqlParameter("@session_name", SqlDbType.NVarChar, 128) { Value = LongQueryCompletionsCollector.XeSessionName });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+
+            if (result != null)
+            {
+                if (result is int isRunning && isRunning == 0)
+                {
+                    using var startCmd = new SqlCommand(LongQueryCompletionsCollector.BuildStartSessionSql(databaseScoped: false), connection);
+                    startCmd.CommandTimeout = 60;
+                    await startCmd.ExecuteNonQueryAsync(cancellationToken);
+                    logger?.LogInformation("[{Server}] Started long-query completion XE session", server.Config.DisplayName);
+                }
+                return;
+            }
+        }
+
+        using var createCmd = new SqlCommand(
+            LongQueryCompletionsCollector.BuildCreateSessionSql(databaseScoped: false, LongQueryCompletionsCollector.DefaultDurationThresholdMicroseconds)
+            + "\n\n" + LongQueryCompletionsCollector.BuildStartSessionSql(databaseScoped: false), connection);
+        createCmd.CommandTimeout = 60;
+        await createCmd.ExecuteNonQueryAsync(cancellationToken);
+        logger?.LogInformation("[{Server}] Created and started long-query completion XE session", server.Config.DisplayName);
+    }
+
+    private static async Task ReconcileLongQueryCompletionsAzureAsync(ServerRuntime server, DarlingCollectorRunner runner, bool enabled, ILogger? logger, CancellationToken cancellationToken)
+    {
+        List<string> databases;
+        try
+        {
+            databases = await runner.GetAzureDatabaseListAsync(server, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning("[{Server}] Failed to enumerate databases for the long-query completion XE session: {Message}", server.Config.DisplayName, ex.Message);
+            return;
+        }
+
+        foreach (var databaseName in databases)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            /* Logical master can't host database-scoped event sessions. */
+            if (string.Equals(databaseName, "master", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var connection = await runner.OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
+
+                if (enabled)
+                {
+                    try
+                    {
+                        await EnsureLongQueryCompletionsAzureAsync(connection, server, databaseName, logger, cancellationToken);
+                    }
+                    catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+                    {
+                        /* Already present per the engine — the reader tolerates it (#1251). */
+                    }
+                }
+                else
+                {
+                    await DropLongQueryCompletionsAsync(connection, databaseScoped: true, cancellationToken);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogWarning("[{Server}] [{Database}] Failed to reconcile the long-query completion XE session: {Message}",
+                    server.Config.DisplayName, databaseName, ex.Message);
+            }
+        }
+    }
+
+    private static async Task EnsureLongQueryCompletionsAzureAsync(SqlConnection connection, ServerRuntime server, string databaseName, ILogger? logger, CancellationToken cancellationToken)
+    {
+        using (var cmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT /* PerformanceMonitorDarling */
+    session_state = des.name
+FROM sys.database_event_sessions AS des
+WHERE des.name = @session_name;", connection))
+        {
+            cmd.CommandTimeout = 60;
+            cmd.Parameters.Add(new SqlParameter("@session_name", SqlDbType.NVarChar, 128) { Value = LongQueryCompletionsCollector.XeSessionName });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+
+            if (result != null)
+            {
+                using var startCmd = new SqlCommand($@"
+IF NOT EXISTS
+(
+    SELECT
+        1/0
+    FROM sys.dm_xe_database_sessions AS xes
+    WHERE xes.name = N'{LongQueryCompletionsCollector.XeSessionName}'
+)
+BEGIN
+    ALTER EVENT SESSION [{LongQueryCompletionsCollector.XeSessionName}] ON DATABASE STATE = START;
+END;", connection);
+                startCmd.CommandTimeout = 60;
+                await startCmd.ExecuteNonQueryAsync(cancellationToken);
+                return;
+            }
+        }
+
+        using var createCmd = new SqlCommand(
+            LongQueryCompletionsCollector.BuildCreateSessionSql(databaseScoped: true, LongQueryCompletionsCollector.DefaultDurationThresholdMicroseconds)
+            + "\n\n" + LongQueryCompletionsCollector.BuildStartSessionSql(databaseScoped: true), connection);
+        createCmd.CommandTimeout = 60;
+        await createCmd.ExecuteNonQueryAsync(cancellationToken);
+        logger?.LogInformation("[{Server}] [{Database}] Created and started long-query completion XE session (database-scoped)", server.Config.DisplayName, databaseName);
+    }
+
+    private static async Task DropLongQueryCompletionsAsync(SqlConnection connection, bool databaseScoped, CancellationToken cancellationToken)
+    {
+        using var cmd = new SqlCommand(LongQueryCompletionsCollector.BuildDropSessionSql(databaseScoped), connection);
+        cmd.CommandTimeout = 60;
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// True when every error is a benign "the session is already there" extended-events error:
     /// 25631 (already exists) or 25705 (already started) — on Azure SQL DB the XE existence
     /// catalogs are visibility-scoped per principal, so CREATE/START can report these even when

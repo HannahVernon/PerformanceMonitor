@@ -32,9 +32,9 @@ public sealed class DarlingObservabilityTests
     private const int TestServerId = -424242;
 
     [Fact]
-    public void MigrationScripts_TwentyEightVersions_V27DeadlocksDatabaseName_V28QueryStoreReplicaRole()
+    public void MigrationScripts_TwentyNineVersions_V28QueryStoreReplicaRole_V29LongQueryCompletions()
     {
-        Assert.Equal(28, PgMigrations.Scripts.Count);
+        Assert.Equal(29, PgMigrations.Scripts.Count);
         Assert.Equal(1, PgMigrations.Scripts[0].Version);
         Assert.Equal(2, PgMigrations.Scripts[1].Version);
         Assert.Equal(3, PgMigrations.Scripts[2].Version);
@@ -63,7 +63,8 @@ public sealed class DarlingObservabilityTests
         Assert.Equal(26, PgMigrations.Scripts[25].Version);
         Assert.Equal(27, PgMigrations.Scripts[26].Version);
         Assert.Equal(28, PgMigrations.Scripts[27].Version);
-        Assert.Equal(28, StorageVersion.SchemaVersion);
+        Assert.Equal(29, PgMigrations.Scripts[28].Version);
+        Assert.Equal(29, StorageVersion.SchemaVersion);
 
         /* V26 (#1506) adds the generic webhook channel's four columns to the V17 control-plane table.
            Schema-qualified config.* and IF NOT EXISTS, per the file's additive-ALTER idiom. */
@@ -86,6 +87,14 @@ public sealed class DarlingObservabilityTests
         var v28 = PgMigrations.Scripts[27].Sql;
         Assert.Contains("ALTER TABLE query_store_stats ADD COLUMN IF NOT EXISTS replica_role text;", v28, StringComparison.Ordinal);
         Assert.Contains("CREATE OR REPLACE VIEW v_query_store_stats AS SELECT * FROM query_store_stats;", v28, StringComparison.Ordinal);
+
+        /* V29 (#1496) creates the long_query_completions collector table on an upgraded store (a fresh
+           store gets it from V1's catalog walk). CREATE TABLE IF NOT EXISTS in the collect schema, plus its
+           retrieval index; no v_* view (a post-V14 collector — the viewer reads the base table). */
+        var v29 = PgMigrations.Scripts[28].Sql;
+        Assert.Contains("CREATE TABLE IF NOT EXISTS collect.long_query_completions (", v29, StringComparison.Ordinal);
+        Assert.Contains("duration_microseconds bigint", v29, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_long_query_completions_time ON collect.long_query_completions(server_id, collection_time);", v29, StringComparison.Ordinal);
 
         /* V5 completes the v_* twin of Lite's DuckDB view layer -- the copy-parity tail tabs
            (Running Jobs, Configuration, Daily Summary, Collection Health) read these five, so

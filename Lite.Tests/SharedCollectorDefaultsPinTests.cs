@@ -67,6 +67,9 @@ public sealed class SharedCollectorDefaultsPinTests
                 $"shared defaults missing collector '{schedule.Name}'");
             Assert.Equal(schedule.FrequencyMinutes, shared!.FrequencyMinutes);
             Assert.Equal(schedule.RetentionDays, shared.RetentionDays);
+            /* The seeded enabled state must match the shared DefaultEnabled — so an opt-in collector
+               (long_query_completions, #1496) can't ship enabled in one SKU and disabled in the other. */
+            Assert.Equal(schedule.Enabled, shared.DefaultEnabled);
         }
     }
 

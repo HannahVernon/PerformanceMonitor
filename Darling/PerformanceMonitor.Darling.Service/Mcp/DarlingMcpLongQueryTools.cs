@@ -1,0 +1,90 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.ComponentModel;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
+using ModelContextProtocol.Server;
+using Npgsql;
+using PerformanceMonitor.Common;
+
+#pragma warning disable CA1707 // MCP tools use snake_case naming convention
+
+namespace PerformanceMonitor.Darling.Service.Mcp;
+
+/// <summary>
+/// The long-query completion MCP tool — get_long_query_completions — served over Darling's Postgres store
+/// (#1496). Returns the longest completed queries (rpc/batch over the trace's duration threshold) plus
+/// attentions (cancels/timeouts) captured by the opt-in PerformanceMonitor_LongQueryCompletions XE session,
+/// ordered by duration DESC. Mirrors Lite's <c>McpLongQueryTools</c> field-for-field; reads flow through
+/// <see cref="DarlingLongQueryReader"/> — a STORED read (no live monitored-server hit).
+/// </summary>
+[McpServerToolType]
+public sealed class DarlingMcpLongQueryTools
+{
+    [McpServerTool(Name = "get_long_query_completions"), Description("Gets long-running query completions captured by the opt-in long-query trace: rpc/batch completions whose duration exceeded the trace threshold, plus attentions (client cancels / query timeouts). Shows duration, CPU, reads/writes, row count, result (OK/Error/Abort — Abort means the long query was cancelled), the statement text, and the calling session/app/login. The collector is OFF by default; if it returns empty, enable the 'long_query_completions' collector in the schedule.")]
+    public static async Task<string> GetLongQueryCompletions(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history. Default 24.")] int hours_back = 24,
+        [Description("Maximum rows. Default 30.")] int limit = 30)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+        validation = McpHelpers.ValidateTop(limit);
+        if (validation != null) return validation;
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            var rows = await DarlingLongQueryReader.GetRecentLongQueryCompletionsAsync(
+                postgres, resolved.Value.ServerId, now.AddHours(-hours_back), now);
+            if (rows.Count == 0)
+                return McpHelpers.Status("empty", "No long-running query completions found in the specified time range. The long_query_completions collector is opt-in (default OFF) — enable it in the collector schedule to capture data.");
+
+            var result = rows.Take(limit).Select(r => new
+            {
+                event_time = r.EventTime?.ToString("o"),
+                event_type = r.EventType,
+                duration_ms = r.DurationMicroseconds.HasValue ? r.DurationMicroseconds.Value / 1000.0 : (double?)null,
+                cpu_ms = r.CpuTimeMicroseconds.HasValue ? r.CpuTimeMicroseconds.Value / 1000.0 : (double?)null,
+                logical_reads = r.LogicalReads,
+                physical_reads = r.PhysicalReads,
+                writes = r.Writes,
+                row_count = r.RowCount,
+                result = r.Result,
+                database_name = r.DatabaseName,
+                object_name = r.ObjectName,
+                statement = McpHelpers.Truncate(r.StatementText, 2000),
+                session_id = r.SessionId,
+                client_app_name = r.ClientAppName,
+                client_pid = r.ClientPid,
+                nt_username = r.NtUserName,
+                server_principal_name = r.ServerPrincipalName,
+                query_hash = r.QueryHash
+            });
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                total_completions = rows.Count,
+                completions = result
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_long_query_completions", ex);
+        }
+    }
+}

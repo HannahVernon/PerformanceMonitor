@@ -591,7 +591,11 @@ ORDER BY name", connection);
            V17 CHECK constraints and the DarlingRetention sink clamp. */
         var frequency = ValidFrequency(perServer?.FrequencyMinutes) ?? ValidFrequency(fleet?.FrequencyMinutes) ?? def.FrequencyMinutes;
         var retention = ValidRetention(perServer?.RetentionDays) ?? ValidRetention(fleet?.RetentionDays) ?? def.RetentionDays;
-        var enabled = perServer?.Enabled ?? fleet?.Enabled ?? true;
+        /* No override row falls back to the collector's shared default enabled state — true for nearly
+           every collector, but false for an opt-in one like long_query_completions (#1496). Falling back
+           to def.DefaultEnabled (not a bare true) is what makes "reset to defaults" — which DELETES the
+           override rows — return a default-off collector to OFF instead of silently re-enabling it. */
+        var enabled = perServer?.Enabled ?? fleet?.Enabled ?? def.DefaultEnabled;
         return new EffectiveSchedule(frequency, retention, enabled);
     }
 
