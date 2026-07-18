@@ -7,12 +7,17 @@
  */
 
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
+using PerformanceMonitor.Darling.Service.Mcp;
 
 namespace PerformanceMonitor.Darling.Service;
 
@@ -34,6 +39,10 @@ public static class DarlingCliCommands
     /// <summary>The verb <see cref="PrintViewerConnectionAsync"/> handles (darling-network-endpoints D8).</summary>
     public static bool IsPrintViewerConnectionVerb(string arg) =>
         string.Equals(arg, "--print-viewer-connection", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The verb <see cref="ConfigureNetworkAsync"/> handles — the interactive exposure wizard (#1561).</summary>
+    public static bool IsConfigureNetworkVerb(string arg) =>
+        string.Equals(arg, "--configure-network", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Loads + validates darling.json, then probes every server. Prints one PASS/FAIL line per server and a
@@ -287,4 +296,721 @@ public static class DarlingCliCommands
         string host, int port, string role, string password, string rootCertificatePath) =>
         $"Host={host};Port={port};Username={role};Password={password};Database=darling;" +
         $"Search Path=collect,config,public;SSL Mode=VerifyFull;Root Certificate={rootCertificatePath}";
+
+    /* ================================================================================================
+       --configure-network: the interactive opt-in exposure wizard (#1561).
+
+       Design invariants (the whole reason this is safe):
+         - Validation is DELEGATED. Every candidate value is checked by building the SAME config object
+           the service reads and running the SAME resolver it fail-closes on (the store's
+           DarlingManagedPostgres.ResolveNetworkExposure, the MCP host's DarlingMcpHostService.ResolveMcpBind).
+           The wizard never re-implements CIDR / family / role / token rules — it re-prompts with the
+           resolver's own degrade reason, so the wizard can never write what the service would reject.
+         - The edit is comment-preserving TEXT SURGERY (DarlingNetworkConfigEditor) — the sample's
+           heavily-commented documentation survives verbatim.
+         - Nothing is written until the new text passes DarlingConfig.Parse AND the resolver re-check on
+           the REPARSED result, and only then behind a timestamped backup. An edit never leaves an
+           unparseable or fail-closed darling.json.
+         - The MCP bearer token is generated + DPAPI-protected; the plaintext is printed to STDOUT exactly
+           once with the save-this warning on STDERR (the --print-viewer-connection secret-split posture).
+         - mcp.enabled / mcp.port are control-plane after the first run (the Viewer's Settings toggle owns
+           them live), so the wizard WARNS and points at Settings — it never edits them. The network block
+           it writes is deliberately file-defined + restart-only.
+       ================================================================================================ */
+
+    private const string ServiceName = "PerformanceMonitor Darling";
+
+    /// <summary>
+    /// Interactive wizard that guides the operator through the opt-in store / MCP LAN exposure and writes
+    /// a comment-preserving, resolver-validated edit to darling.json behind a timestamped backup. Managed
+    /// mode only (BYO exposure is governed by the operator's own PostgreSQL). Windows-only (it generates a
+    /// DPAPI-protected token and controls the Windows service). <paramref name="input"/> is the scripted-
+    /// input testability lever — the tests drive the whole flow with a <see cref="StringReader"/>. Returns
+    /// 0 on a completed run (including a clean quit) and 1 on a load/parse/write error or a BYO refusal.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static async Task<int> ConfigureNetworkAsync(
+        string? configPath, TextReader input, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        var resolvedPath = DarlingConfig.ResolveConfigPath(configPath);
+
+        DarlingConfig config;
+        try
+        {
+            config = DarlingConfig.Load(configPath);
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Could not load configuration: {ex.Message}");
+            return 1;
+        }
+
+        var postgres = config.Postgres;
+        if (postgres is null)
+        {
+            error.WriteLine("postgres section is required.");
+            return 1;
+        }
+
+        string originalText;
+        try
+        {
+            originalText = await File.ReadAllTextAsync(resolvedPath, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Could not read {resolvedPath}: {ex.Message}");
+            return 1;
+        }
+
+        output.WriteLine();
+        output.WriteLine("PerformanceMonitor Darling — opt-in network exposure wizard (--configure-network)");
+        output.WriteLine($"Config: {resolvedPath}");
+        output.WriteLine();
+
+        /* Current verdicts, straight from the resolvers the running service uses — so the operator sees the
+           service's own truth (including any fail-closed degrade), not the wizard's guess. */
+        var (storeCertPath, storeKeyPath) = ResolveStoreCertPaths(postgres);
+        var storeNow = DarlingManagedPostgres.ResolveNetworkExposure(postgres.Network, storeCertPath, storeKeyPath);
+        var mcpNow = DarlingMcpHostService.ResolveMcpBind(config.Mcp, postgres.Managed);
+        var mcpNowExposed = mcpNow.Mode == DarlingMcpHostService.McpBindMode.NetworkAndLoopback;
+        var mcpNowDegrade =
+            mcpNow.Reason is DarlingMcpHostService.McpBindReason.NetworkExposed or DarlingMcpHostService.McpBindReason.LoopbackByDefault
+                ? null
+                : McpDegradeText(mcpNow.Reason, config.Mcp);
+
+        output.WriteLine("Current exposure:");
+        output.WriteLine(DarlingNetworkConfigEditor.FormatExposureState(
+            "Store", storeNow.Exposed, storeNow.ListenIp, storeNow.Cidr, storeNow.Role, storeNow.DegradeReason));
+        output.WriteLine(DarlingNetworkConfigEditor.FormatExposureState(
+            "MCP  ", mcpNowExposed, config.Mcp.Network?.Listen, config.Mcp.Network?.AllowFrom, null, mcpNowDegrade));
+        output.WriteLine($"  Service: {await DescribeServiceStateAsync(cancellationToken)}");
+        output.WriteLine();
+
+        /* BYO guard — exposure is managed-mode only (same refusal shape as PrintViewerConnectionAsync). */
+        if (!postgres.Managed)
+        {
+            output.WriteLine("Network exposure is MANAGED-MODE ONLY.");
+            output.WriteLine("This darling.json uses bring-your-own PostgreSQL (postgres.connectionString), so your own");
+            output.WriteLine("PostgreSQL / reverse proxy governs network exposure — the wizard cannot open the endpoints here.");
+
+            var hasBlocks = (postgres.Network?.IsConfigured ?? false) || (config.Mcp.Network?.IsConfigured ?? false);
+            if (hasBlocks && AskYesNo(input, output, "A network block is present but IGNORED in this mode. Remove it from darling.json?", defaultYes: false))
+            {
+                return await DisableExposureAsync(resolvedPath, originalText, input, output, error, cancellationToken);
+            }
+
+            return 1;
+        }
+
+        /* Surface selection. */
+        output.WriteLine("What would you like to configure?");
+        output.WriteLine("  [1] Store   — a remote Viewer over TLS (verify-full)");
+        output.WriteLine("  [2] MCP     — a LAN assistant/client behind a bearer token");
+        output.WriteLine("  [3] Both");
+        output.WriteLine("  [4] Disable — remove all exposure (back to loopback-only)");
+        output.WriteLine("  [q] Quit without changes");
+        var choice = Prompt(input, output, "Choice", "q");
+        if (choice is null || choice.Length == 0 || string.Equals(choice, "q", StringComparison.OrdinalIgnoreCase))
+        {
+            output.WriteLine("No changes made.");
+            return 0;
+        }
+
+        if (choice == "4")
+        {
+            return await DisableExposureAsync(resolvedPath, originalText, input, output, error, cancellationToken);
+        }
+
+        var doStore = choice is "1" or "3";
+        var doMcp = choice is "2" or "3";
+        if (!doStore && !doMcp)
+        {
+            output.WriteLine("Unrecognized choice; no changes made.");
+            return 0;
+        }
+
+        /* Gather all inputs (delegated validation) BEFORE writing anything, so a cancel leaves the file
+           untouched and a "both" run is all-or-nothing. */
+        (string Listen, string AllowFrom, string Role)? store = null;
+        if (doStore)
+        {
+            output.WriteLine();
+            output.WriteLine("== Store exposure ==");
+            store = GatherStoreInputs(input, output, error, storeCertPath, storeKeyPath);
+            if (store is null)
+            {
+                return 1;
+            }
+        }
+
+        (string Listen, string AllowFrom, string? EncryptedToken, string? PlainToken, string? GeneratedPlain)? mcp = null;
+        if (doMcp)
+        {
+            output.WriteLine();
+            output.WriteLine("== MCP exposure ==");
+            if (!config.Mcp.Enabled)
+            {
+                output.WriteLine("NOTE: mcp.enabled is currently false. The wizard writes the network block, but the endpoint");
+                output.WriteLine("      stays down until you enable MCP in the Viewer's Settings (enabled/port are control-plane");
+                output.WriteLine("      after first run; the wizard never edits them).");
+            }
+
+            mcp = GatherMcpInputs(input, output, error, config.Mcp);
+            if (mcp is null)
+            {
+                return 1;
+            }
+        }
+
+        /* Build the edit through the comment-preserving surgeon. */
+        var newText = originalText;
+        if (store is not null)
+        {
+            newText = DarlingNetworkConfigEditor.UpsertNetworkBlock(
+                newText, "postgres",
+                DarlingNetworkConfigEditor.BuildStoreNetworkBlock(store.Value.Listen, store.Value.AllowFrom, store.Value.Role));
+        }
+
+        if (mcp is not null)
+        {
+            newText = DarlingNetworkConfigEditor.UpsertNetworkBlock(
+                newText, "mcp",
+                DarlingNetworkConfigEditor.BuildMcpNetworkBlock(mcp.Value.Listen, mcp.Value.AllowFrom, mcp.Value.EncryptedToken, mcp.Value.PlainToken));
+        }
+
+        /* Guard 1: the edited text must PARSE (comments/trailing-commas tolerated). */
+        DarlingConfig reparsed;
+        try
+        {
+            reparsed = DarlingConfig.Parse(newText);
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Internal error: the edited darling.json did not parse ({ex.Message}). No changes were written.");
+            return 1;
+        }
+
+        /* Guard 2: the resolvers must ACCEPT the reparsed result — never write a file the service would
+           fail-close on. This is the same delegation the input loop used, re-run on the FINAL text. */
+        if (store is not null)
+        {
+            var check = DarlingManagedPostgres.ResolveNetworkExposure(reparsed.Postgres.Network, storeCertPath, storeKeyPath);
+            if (!check.Exposed)
+            {
+                error.WriteLine($"Internal error: the store block would fail-close ({check.DegradeReason}). No changes were written.");
+                return 1;
+            }
+        }
+
+        if (mcp is not null)
+        {
+            var check = DarlingMcpHostService.ResolveMcpBind(reparsed.Mcp, reparsed.Postgres.Managed);
+            if (check.Mode != DarlingMcpHostService.McpBindMode.NetworkAndLoopback)
+            {
+                error.WriteLine($"Internal error: the MCP block would fail-close ({McpDegradeText(check.Reason, reparsed.Mcp)}). No changes were written.");
+                return 1;
+            }
+        }
+
+        /* Only now: timestamped backup + write. */
+        if (!await WriteWithBackupAsync(resolvedPath, newText, output, error, cancellationToken))
+        {
+            return 1;
+        }
+
+        /* The generated MCP token plaintext — STDOUT exactly once; the save-this warning on STDERR so a
+           STDOUT redirect keeps the token without swallowing the warning. */
+        if (mcp is not null && mcp.Value.GeneratedPlain is not null)
+        {
+            error.WriteLine();
+            error.WriteLine("SAVE THIS NOW — your new MCP bearer token is shown ONCE (darling.json stores only its DPAPI blob).");
+            error.WriteLine("Remote MCP clients send it as the header:  Authorization: Bearer <token>");
+            output.WriteLine(mcp.Value.GeneratedPlain);
+        }
+
+        PrintNextSteps(
+            output,
+            store is not null, postgres.Port, store?.AllowFrom,
+            mcp is not null, config.Mcp.Port, mcp?.AllowFrom, config.Mcp.Enabled);
+
+        await OfferRestartAsync(input, output, error, cancellationToken);
+        return 0;
+    }
+
+    /// <summary>
+    /// The store's generated TLS cert/key paths (beside the data directory), passed to
+    /// <c>ResolveNetworkExposure</c> so the whitespace-in-path degrade (a spaced path the pg_ctl -o
+    /// override cannot pass to postgres) is caught pre-write, exactly as the service would. Mirrors the
+    /// path idiom in <see cref="PrintViewerConnectionAsync"/>.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static (string CertPath, string KeyPath) ResolveStoreCertPaths(PostgresConfig postgres)
+    {
+        var dataDirectory = DarlingManagedPostgres.ResolveDataDirectory(postgres);
+        var credentialDirectory = Path.GetDirectoryName(DarlingManagedPostgres.ViewerCredentialPathFor(dataDirectory))!;
+        return (
+            Path.Combine(credentialDirectory, DarlingManagedPostgres.ServerCertFileName),
+            Path.Combine(credentialDirectory, DarlingManagedPostgres.ServerKeyFileName));
+    }
+
+    /// <summary>Best-effort Windows-service status line via Get-Service; never throws (falls back to a plain note).</summary>
+    [SupportedOSPlatform("windows")]
+    private static async Task<string> DescribeServiceStateAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (exitCode, psOutput) = await DarlingManagedPostgres.RunPowerShellAsync(
+                $"(Get-Service -Name '{ServiceName}' -ErrorAction SilentlyContinue).Status", cancellationToken);
+            var status = psOutput.Trim();
+            return exitCode == 0 && status.Length > 0 ? status : "not installed (or status unavailable)";
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return "status unavailable";
+        }
+    }
+
+    /// <summary>The machine's non-loopback IPv4 unicast addresses (interface name + address). Impure (queries the OS); the pure menu formatter takes its output.</summary>
+    private static IReadOnlyList<(string Name, string Address)> EnumerateLocalIPv4()
+    {
+        var addresses = new List<(string Name, string Address)>();
+        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+            {
+                continue;
+            }
+
+            foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
+            {
+                if (unicast.Address.AddressFamily != AddressFamily.InterNetwork)
+                {
+                    continue;
+                }
+
+                var ip = unicast.Address.ToString();
+                if (!ip.StartsWith("127.", StringComparison.Ordinal))
+                {
+                    addresses.Add((nic.Name, ip));
+                }
+            }
+        }
+
+        return addresses;
+    }
+
+    /// <summary>Prompts for the bind IP: pick a listed adapter, choose 0.0.0.0, or type any IP (the resolver validates it). Returns null on EOF/cancel.</summary>
+    private static string? SelectListenAddress(TextReader input, TextWriter output, string surface)
+    {
+        var adapters = EnumerateLocalIPv4();
+        output.WriteLine($"Select the {surface} bind IP (the address remote clients connect to):");
+        output.WriteLine(DarlingNetworkConfigEditor.FormatAdapterMenu(adapters));
+        var allInterfacesChoice = adapters.Count + 1;
+        output.WriteLine($"  [{allInterfacesChoice}] 0.0.0.0  (all interfaces — connect by a cert SAN name)");
+        output.WriteLine("  [c] type a custom IP");
+
+        while (true)
+        {
+            var pick = Prompt(input, output, "Bind IP");
+            if (pick is null)
+            {
+                return null;
+            }
+
+            if (pick.Length == 0)
+            {
+                output.WriteLine("  A bind IP is required.");
+                continue;
+            }
+
+            if (int.TryParse(pick, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+            {
+                if (n >= 1 && n <= adapters.Count)
+                {
+                    return adapters[n - 1].Address;
+                }
+
+                if (n == allInterfacesChoice)
+                {
+                    return "0.0.0.0";
+                }
+
+                output.WriteLine("  Not a listed number — enter a menu number or an IP.");
+                continue;
+            }
+
+            if (string.Equals(pick, "c", StringComparison.OrdinalIgnoreCase))
+            {
+                var custom = Prompt(input, output, "Enter the bind IP");
+                if (custom is null)
+                {
+                    return null;
+                }
+
+                if (custom.Length == 0)
+                {
+                    output.WriteLine("  A bind IP is required.");
+                    continue;
+                }
+
+                return custom;
+            }
+
+            /* Anything else is treated as a directly-typed IP; the resolver is the arbiter of validity. */
+            return pick;
+        }
+    }
+
+    /// <summary>
+    /// Gathers listen / allowFrom / role for the store, RE-PROMPTING with the store resolver's own degrade
+    /// reason until it accepts them (or the operator cancels). The whitespace-in-path degrade is a config
+    /// problem the loop cannot fix, so it is reported and the surface is abandoned. Returns null on cancel.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static (string Listen, string AllowFrom, string Role)? GatherStoreInputs(
+        TextReader input, TextWriter output, TextWriter error, string certPath, string keyPath)
+    {
+        while (true)
+        {
+            var listen = SelectListenAddress(input, output, "store");
+            if (listen is null)
+            {
+                output.WriteLine("Cancelled — no changes made.");
+                return null;
+            }
+
+            var allowFrom = Prompt(input, output, "Allowed remote CIDR (e.g. 192.168.1.0/24)");
+            if (allowFrom is null)
+            {
+                output.WriteLine("Cancelled — no changes made.");
+                return null;
+            }
+
+            output.WriteLine("Remote pg_hba role: 'viewer' (read-only, the secure default) or 'admin' (remote WRITES).");
+            var role = Prompt(input, output, "Role", "viewer");
+            if (role is null)
+            {
+                output.WriteLine("Cancelled — no changes made.");
+                return null;
+            }
+
+            if (string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase))
+            {
+                output.WriteLine("  WARNING: 'admin' is a remote WRITE credential holding the config-table service-credential pivot.");
+                output.WriteLine("           Prefer 'viewer' unless you specifically need remote writes.");
+            }
+
+            var candidate = new PostgresNetworkConfig { Listen = listen, AllowFrom = allowFrom, Role = role };
+            var decision = DarlingManagedPostgres.ResolveNetworkExposure(candidate, certPath, keyPath);
+            if (decision.Exposed)
+            {
+                /* Write the resolver's canonical values (parsed IP, host-bits-zeroed CIDR, normalized role)
+                   so the file matches what the service would compute. */
+                return (decision.ListenIp!, decision.Cidr!, decision.Role!);
+            }
+
+            var reason = decision.DegradeReason ?? "the store resolver rejected these values";
+            output.WriteLine($"  Not accepted: {reason}");
+            if (reason.Contains("whitespace", StringComparison.OrdinalIgnoreCase))
+            {
+                error.WriteLine("  This is a path problem, not an input problem — move postgres.dataDirectory to a space-free path, then re-run.");
+                return null;
+            }
+
+            output.WriteLine("  Let us try again.");
+        }
+    }
+
+    /// <summary>
+    /// Gathers the MCP token (default KEEP an existing one; else generate a fresh 32-char token and
+    /// DPAPI-protect it) plus listen / allowFrom, RE-PROMPTING with the MCP resolver's degrade reason
+    /// until it accepts them. Returns the fields to write plus the generated plaintext (non-null only when
+    /// a token was generated, so the caller prints it once). Returns null on cancel.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static (string Listen, string AllowFrom, string? EncryptedToken, string? PlainToken, string? GeneratedPlain)? GatherMcpInputs(
+        TextReader input, TextWriter output, TextWriter error, McpConfig currentMcp)
+    {
+        string? encryptedToken = null;
+        string? plainToken = null;
+        string? generatedPlain = null;
+
+        var existing = currentMcp.Network;
+        var hasExistingToken = existing is not null
+            && (!string.IsNullOrWhiteSpace(existing.EncryptedToken) || !string.IsNullOrWhiteSpace(existing.Token));
+
+        if (hasExistingToken && AskYesNo(input, output, "An MCP bearer token already exists. Keep it?", defaultYes: true))
+        {
+            if (!string.IsNullOrWhiteSpace(existing!.EncryptedToken))
+            {
+                encryptedToken = existing.EncryptedToken;
+            }
+            else
+            {
+                plainToken = existing!.Token;
+                output.WriteLine("  Keeping the existing PLAINTEXT token (consider regenerating to store it DPAPI-encrypted instead).");
+            }
+        }
+        else
+        {
+            generatedPlain = DarlingManagedPostgres.GeneratePassword();
+            encryptedToken = DarlingSecrets.Protect(generatedPlain);
+        }
+
+        while (true)
+        {
+            var listen = SelectListenAddress(input, output, "MCP");
+            if (listen is null)
+            {
+                output.WriteLine("Cancelled — no changes made.");
+                return null;
+            }
+
+            var allowFrom = Prompt(input, output, "Allowed remote CIDR (e.g. 192.168.1.0/24)");
+            if (allowFrom is null)
+            {
+                output.WriteLine("Cancelled — no changes made.");
+                return null;
+            }
+
+            var candidate = new McpConfig
+            {
+                Enabled = currentMcp.Enabled,
+                Port = currentMcp.Port,
+                Network = new McpNetworkConfig
+                {
+                    Listen = listen,
+                    AllowFrom = allowFrom,
+                    EncryptedToken = encryptedToken,
+                    Token = plainToken,
+                },
+            };
+
+            var decision = DarlingMcpHostService.ResolveMcpBind(candidate, managed: true);
+            if (decision.Mode == DarlingMcpHostService.McpBindMode.NetworkAndLoopback)
+            {
+                return (listen, allowFrom, encryptedToken, plainToken, generatedPlain);
+            }
+
+            output.WriteLine($"  Not accepted: {McpDegradeText(decision.Reason, candidate)}");
+            output.WriteLine("  Let us try again.");
+        }
+    }
+
+    /// <summary>Human text for an MCP bind degrade reason (presentation only — the resolver decides; this narrates).</summary>
+    private static string McpDegradeText(DarlingMcpHostService.McpBindReason reason, McpConfig mcp) => reason switch
+    {
+        DarlingMcpHostService.McpBindReason.ListenInvalid =>
+            $"mcp.network.listen '{mcp.Network?.Listen}' is not a valid IP address (use a specific IP, or 0.0.0.0 for all interfaces).",
+        DarlingMcpHostService.McpBindReason.TokenMissing =>
+            "no bearer token is set (the wizard should have supplied one — this is unexpected).",
+        DarlingMcpHostService.McpBindReason.AllowFromInvalid =>
+            $"mcp.network.allowFrom '{mcp.Network?.AllowFrom}' is not a valid CIDR or its address family does not match listen (e.g. 192.168.1.0/24, host bits zeroed).",
+        DarlingMcpHostService.McpBindReason.ManagedModeRequired =>
+            "network exposure is managed-mode only.",
+        _ => "the MCP resolver rejected these values.",
+    };
+
+    /// <summary>Removes BOTH network blocks (symmetric with the reconcilers), validating parse + loopback-only before the timestamped write, then offers a restart. Shared by the managed Disable choice and the BYO cleanup.</summary>
+    [SupportedOSPlatform("windows")]
+    private static async Task<int> DisableExposureAsync(
+        string resolvedPath, string originalText, TextReader input, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        var newText = DarlingNetworkConfigEditor.RemoveNetworkBlock(originalText, "postgres");
+        newText = DarlingNetworkConfigEditor.RemoveNetworkBlock(newText, "mcp");
+
+        if (string.Equals(newText, originalText, StringComparison.Ordinal))
+        {
+            output.WriteLine("No live network block found — already loopback-only. Nothing to change.");
+            return 0;
+        }
+
+        DarlingConfig reparsed;
+        try
+        {
+            reparsed = DarlingConfig.Parse(newText);
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Internal error: the disabled darling.json did not parse ({ex.Message}). No changes were written.");
+            return 1;
+        }
+
+        var (certPath, keyPath) = ResolveStoreCertPaths(reparsed.Postgres);
+        var storeStillExposed = DarlingManagedPostgres.ResolveNetworkExposure(reparsed.Postgres.Network, certPath, keyPath).Exposed;
+        var mcpStillExposed = DarlingMcpHostService.ResolveMcpBind(reparsed.Mcp, reparsed.Postgres.Managed).Mode
+            == DarlingMcpHostService.McpBindMode.NetworkAndLoopback;
+        if (storeStillExposed || mcpStillExposed)
+        {
+            error.WriteLine("Internal error: exposure is still present after removal. No changes were written.");
+            return 1;
+        }
+
+        if (!await WriteWithBackupAsync(resolvedPath, newText, output, error, cancellationToken))
+        {
+            return 1;
+        }
+
+        output.WriteLine("Network exposure removed. The service reconciles the endpoints OFF (pg_hba rule, firewall, ssl) on its next start.");
+        await OfferRestartAsync(input, output, error, cancellationToken);
+        return 0;
+    }
+
+    /// <summary>Offers to restart the service so the edit applies. Elevated: does it via a 90s-budget Restart-Service + WaitForStatus; otherwise prints the exact manual commands (non-fatal, guidance-first).</summary>
+    [SupportedOSPlatform("windows")]
+    private static async Task OfferRestartAsync(TextReader input, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        output.WriteLine();
+        if (!AskYesNo(input, output, $"Restart the '{ServiceName}' service now to apply?", defaultYes: false))
+        {
+            output.WriteLine("Apply later by restarting the service:");
+            PrintManualRestartCommands(output);
+            return;
+        }
+
+        if (!IsElevated())
+        {
+            output.WriteLine("This shell is not elevated, so it cannot control the service. Run these in an ELEVATED PowerShell:");
+            PrintManualRestartCommands(output);
+            return;
+        }
+
+        output.WriteLine($"Restarting '{ServiceName}' (this can take up to ~90 seconds)...");
+        var command =
+            $"Restart-Service -Name '{ServiceName}' -Force; " +
+            $"(Get-Service -Name '{ServiceName}').WaitForStatus('Running', [TimeSpan]::FromSeconds(75))";
+        try
+        {
+            var (exitCode, psOutput) = await DarlingManagedPostgres.RunPowerShellAsync(command, cancellationToken, TimeSpan.FromSeconds(90));
+            if (exitCode == 0)
+            {
+                output.WriteLine($"Service '{ServiceName}' restarted and is Running.");
+            }
+            else
+            {
+                error.WriteLine($"Restart did not confirm Running (exit {exitCode}): {psOutput}");
+                output.WriteLine("Restart it manually:");
+                PrintManualRestartCommands(output);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Restart attempt failed ({ex.Message}).");
+            output.WriteLine("Restart it manually:");
+            PrintManualRestartCommands(output);
+        }
+    }
+
+    private static void PrintManualRestartCommands(TextWriter output)
+    {
+        output.WriteLine($"  Restart-Service -Name '{ServiceName}' -Force");
+        output.WriteLine($"  (or:  sc.exe stop \"{ServiceName}\"   then   sc.exe start \"{ServiceName}\")");
+    }
+
+    /// <summary>Prints the handoff reminders: the scoped firewall command(s) and, for the store, the --print-viewer-connection step.</summary>
+    [SupportedOSPlatform("windows")]
+    private static void PrintNextSteps(
+        TextWriter output,
+        bool storeConfigured, int storePort, string? storeCidr,
+        bool mcpConfigured, int mcpPort, string? mcpCidr, bool mcpEnabled)
+    {
+        output.WriteLine();
+        output.WriteLine("Next steps:");
+        if (storeConfigured)
+        {
+            output.WriteLine("  Store firewall rule (run ELEVATED; scoped to the port + CIDR):");
+            output.WriteLine("    " + DarlingManagedPostgres.BuildFirewallEnableCommand(
+                $"PerformanceMonitor Darling store (port {storePort})", storePort, storeCidr!));
+            output.WriteLine("  After the service restarts (which generates the TLS cert), get the remote viewer's");
+            output.WriteLine("  paste-ready connection string + certificate with:");
+            output.WriteLine("    PerformanceMonitor.Darling.Service.exe --print-viewer-connection");
+        }
+
+        if (mcpConfigured)
+        {
+            output.WriteLine("  MCP firewall rule (run ELEVATED; scoped to the port + CIDR):");
+            output.WriteLine("    " + DarlingManagedPostgres.BuildFirewallEnableCommand(
+                $"PerformanceMonitor Darling MCP (port {mcpPort})", mcpPort, mcpCidr!));
+            if (!mcpEnabled)
+            {
+                output.WriteLine("  NOTE: mcp.enabled is false, so the MCP endpoint stays down until you enable MCP in the");
+                output.WriteLine("        Viewer's Settings. The network block you just wrote applies once MCP is enabled.");
+            }
+        }
+    }
+
+    /// <summary>Backs up darling.json to a timestamped sibling, then writes the new text. Returns false (with a message) on any I/O failure.</summary>
+    private static async Task<bool> WriteWithBackupAsync(
+        string resolvedPath, string newText, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            var backupPath = resolvedPath + ".bak-" + stamp;
+            for (var suffix = 2; File.Exists(backupPath); suffix++)
+            {
+                backupPath = $"{resolvedPath}.bak-{stamp}-{suffix}";
+            }
+
+            File.Copy(resolvedPath, backupPath, overwrite: false);
+            await File.WriteAllTextAsync(resolvedPath, newText, cancellationToken);
+            output.WriteLine($"Wrote {resolvedPath}");
+            output.WriteLine($"Backup saved: {backupPath}");
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Could not write the configuration: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>True when the current process is running elevated (Administrators role) — required to control the service.</summary>
+    [SupportedOSPlatform("windows")]
+    private static bool IsElevated()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    /// <summary>Writes a prompt and reads a trimmed line. Returns null on EOF (input exhausted); an empty line yields <paramref name="defaultValue"/> (or "").</summary>
+    private static string? Prompt(TextReader input, TextWriter output, string label, string? defaultValue = null)
+    {
+        output.Write(defaultValue is null ? $"{label}: " : $"{label} [{defaultValue}]: ");
+        var line = input.ReadLine();
+        if (line is null)
+        {
+            return null;
+        }
+
+        line = line.Trim();
+        return line.Length == 0 ? defaultValue ?? "" : line;
+    }
+
+    /// <summary>Yes/no prompt; EOF or an empty line yields <paramref name="defaultYes"/>. A leading 'y' (any case) is yes.</summary>
+    private static bool AskYesNo(TextReader input, TextWriter output, string label, bool defaultYes)
+    {
+        output.Write($"{label} [{(defaultYes ? "Y/n" : "y/N")}]: ");
+        var line = input.ReadLine();
+        if (line is null)
+        {
+            return defaultYes;
+        }
+
+        line = line.Trim();
+        return line.Length == 0 ? defaultYes : line.StartsWith("y", StringComparison.OrdinalIgnoreCase);
+    }
 }

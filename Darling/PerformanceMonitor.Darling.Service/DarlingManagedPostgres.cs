@@ -1689,12 +1689,16 @@ public sealed class DarlingManagedPostgres
     }
 
     /// <summary>
-    /// Runs a PowerShell command with captured, interleaved stdout+stderr and the shared status timeout.
-    /// <c>internal</c> so the (separate) MCP host can reuse it for its own best-effort firewall reconcile
+    /// Runs a PowerShell command with captured, interleaved stdout+stderr and a timeout. <c>internal</c>
+    /// so the (separate) MCP host can reuse it for its own best-effort firewall reconcile
     /// (darling-network-endpoints) instead of duplicating it — the firewall command shape is shared via the
     /// pure <see cref="BuildFirewallEnableCommand"/>/<see cref="BuildFirewallDisableCommand"/> builders.
+    /// <paramref name="timeout"/> is optional and defaults to the shared status timeout
+    /// (<see cref="s_statusTimeout"/>); the <c>--configure-network</c> wizard passes a longer one for a
+    /// service restart, which routinely exceeds the status budget. Existing callers are unaffected.
     /// </summary>
-    internal static async Task<(int ExitCode, string Output)> RunPowerShellAsync(string command, CancellationToken cancellationToken)
+    internal static async Task<(int ExitCode, string Output)> RunPowerShellAsync(
+        string command, CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
         /* Full path (not the bare name) — avoid a PATH/CWD hijack of "powershell.exe", matching the house
            style of full-pathing every PG tool. */
@@ -1729,7 +1733,7 @@ public sealed class DarlingManagedPostgres
         process.BeginErrorReadLine();
 
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(s_statusTimeout);
+        timeoutSource.CancelAfter(timeout ?? s_statusTimeout);
         try
         {
             await process.WaitForExitAsync(timeoutSource.Token);

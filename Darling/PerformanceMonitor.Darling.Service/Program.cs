@@ -61,6 +61,24 @@ if (args.Length > 0 && DarlingCliCommands.IsPrintViewerConnectionVerb(args[0]))
     return await DarlingCliCommands.PrintViewerConnectionAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
 }
 
+/* CLI verb: the interactive --configure-network wizard (#1561) — guides the operator through the opt-in
+   store / MCP LAN exposure, validating every input by delegation to the SAME resolvers the running service
+   fail-closes on, then splicing a comment-preserving edit into darling.json behind a timestamped backup. It
+   generates + DPAPI-protects the MCP bearer token, so it is Windows-only (same guard shape as the two verbs
+   above). Optional second arg = an explicit config path. Console.In is the scripted-input testability lever. */
+if (args.Length > 0 && DarlingCliCommands.IsConfigureNetworkVerb(args[0]))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--configure-network requires Windows (DPAPI + service control).");
+        return 1;
+    }
+
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.ConfigureNetworkAsync(
+        configPath, Console.In, Console.Out, Console.Error, CancellationToken.None);
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 /* Windows-service lifetime is a no-op when run from a console, so the same exe

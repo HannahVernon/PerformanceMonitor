@@ -569,6 +569,16 @@ Edit the two password placeholders (and the database/owner names if yours differ
 
 By default both network surfaces bind **loopback only** — the store to `127.0.0.1`, the MCP server to `localhost` — exactly as they always have. Two optional, independent opt-ins let a remote viewer or MCP client on your **trusted LAN** reach them. This is a home-lab / trusted-subnet feature: **never expose either endpoint to the internet.** Both are **managed-mode only** (in bring-your-own mode your own PostgreSQL / reverse proxy governs exposure, and the config is ignored with a warning), and both are **fail-closed** — any invalid or incomplete field degrades that endpoint back to loopback and logs a critical line rather than exposing it. Removing the config on the next restart closes the box again.
 
+### Guided setup (`--configure-network`)
+
+The fastest path is the interactive wizard — run it on the **service host**:
+
+```
+PerformanceMonitor.Darling.Service.exe --configure-network
+```
+
+It shows the current exposure (read from the service's own resolvers), then walks you through the **store**, **MCP**, or **both** (or a **disable** that removes exposure). Every answer is validated **by delegation to the exact checks the running service fail-closes on**, so the wizard can never write a config the service would refuse — it re-prompts with the resolver's own reason. It generates the MCP bearer token for you (DPAPI-protected; the plaintext is printed once, so save it then), edits `darling.json` **in place preserving every comment** behind a timestamped `darling.json.bak-<timestamp>` backup, prints the scoped firewall command(s) and the `--print-viewer-connection` handoff, and offers to restart the service to apply. `install-darling.ps1 -Network` runs it automatically right after the install reaches Running. The manual field reference below documents exactly what it writes.
+
 ### Store endpoint (viewer over the LAN)
 
 Add a `network` block to `postgres` (managed mode):

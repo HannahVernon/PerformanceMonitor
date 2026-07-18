@@ -13,6 +13,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PerformanceMonitor.Darling.Service;
 using Xunit;
+using Host = PerformanceMonitor.Darling.Service.Mcp.DarlingMcpHostService;
 
 namespace Darling.Tests;
 
@@ -283,5 +284,225 @@ public sealed class DarlingPrintViewerConnectionTests
         {
             root.Delete(recursive: true);
         }
+    }
+}
+
+/// <summary>
+/// The <c>--configure-network</c> wizard (#1561): pure verb recognition (unconditional), plus scripted-input
+/// end-to-end runs (Windows-gated, like the sibling <c>--print-viewer-connection</c> E2E, because the wizard
+/// generates a DPAPI token and queries the Windows service). Every run drives the whole flow with a
+/// <see cref="StringReader"/> and asserts the delegated-validation contract: the edit PARSES, the REAL
+/// resolvers accept it, a timestamped backup is created, and the generated token is printed to STDOUT
+/// exactly once with the save-this warning on STDERR. The comment-surgery internals are pinned separately by
+/// <see cref="DarlingNetworkConfigEditorTests"/>.
+/// </summary>
+public sealed class DarlingConfigureNetworkTests
+{
+    private const string CertPath = @"C:\ProgramData\PerformanceMonitorDarling\server.crt";
+    private const string KeyPath = @"C:\ProgramData\PerformanceMonitorDarling\server.key";
+
+    [Theory]
+    [InlineData("--configure-network", true)]
+    [InlineData("--CONFIGURE-NETWORK", true)]
+    [InlineData("--print-viewer-connection", false)]
+    [InlineData("--validate-config", false)]
+    [InlineData("--nonsense", false)]
+    public void IsConfigureNetworkVerb_RecognizesTheVerb_CaseInsensitive(string arg, bool expected)
+    {
+        Assert.Equal(expected, DarlingCliCommands.IsConfigureNetworkVerb(arg));
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Store_WritesBlock_MakesBackup_ParsesAndResolverExposed()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service + uses DPAPI.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-store-");
+        try
+        {
+            var configPath = CopySampleTo(root.FullName);
+
+            /* choice=Store, bind IP typed directly, CIDR, role, then decline restart. */
+            var input = Script("1", "192.168.1.205", "192.168.1.0/24", "viewer", "n");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+            Assert.Equal(0, exit);
+
+            /* The written file parses and the STORE RESOLVER reports it exposed with the entered values. */
+            var written = await File.ReadAllTextAsync(configPath);
+            var config = DarlingConfig.Parse(written);
+            var decision = DarlingManagedPostgres.ResolveNetworkExposure(config.Postgres.Network, CertPath, KeyPath);
+            Assert.True(decision.Exposed);
+            Assert.Equal("192.168.1.205", decision.ListenIp);
+            Assert.Equal("192.168.1.0/24", decision.Cidr);
+            Assert.Equal("viewer", decision.Role);
+
+            /* A timestamped backup exists, and the commented template survived the edit. */
+            Assert.NotEmpty(Directory.GetFiles(root.FullName, "darling.json.bak-*"));
+            Assert.Contains("// \"network\": {", written, StringComparison.Ordinal);
+            Assert.Contains("Backup saved", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Mcp_GeneratesToken_PrintsPlaintextOnce_WarnsOnStderr_StoresEncrypted()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard generates a DPAPI-protected token.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-mcp-");
+        try
+        {
+            var configPath = CopySampleTo(root.FullName);
+
+            /* choice=MCP, bind IP, CIDR, decline restart. No existing token -> one is generated. */
+            var input = Script("2", "192.168.1.205", "192.168.1.0/24", "n");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+            Assert.Equal(0, exit);
+
+            var written = await File.ReadAllTextAsync(configPath);
+            var config = DarlingConfig.Parse(written);
+            Assert.Equal(Host.McpBindMode.NetworkAndLoopback, Host.ResolveMcpBind(config.Mcp, managed: true).Mode);
+
+            /* Stored only DPAPI-encrypted; the plaintext it decrypts to is the token printed to STDOUT. */
+            var encrypted = config.Mcp.Network!.EncryptedToken;
+            Assert.False(string.IsNullOrWhiteSpace(encrypted));
+            var plaintext = DarlingSecrets.Unprotect(encrypted!);
+
+            Assert.Equal(1, CountOccurrences(output.ToString(), plaintext));   // STDOUT: exactly once
+            Assert.Contains("SAVE THIS NOW", error.ToString(), StringComparison.Ordinal); // STDERR: the warning
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Byo_RefusesAndWritesNothing()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-byo-");
+        try
+        {
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            await File.WriteAllTextAsync(configPath,
+                """{ "postgres": { "connectionString": "Host=localhost;Database=darling" } }""");
+
+            var input = Script(); // no blocks present -> no disable offer, straight refusal
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+
+            Assert.Equal(1, exit);
+            Assert.Contains("bring-your-own", output.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(Directory.GetFiles(root.FullName, "darling.json.bak-*")); // nothing written
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Disable_RemovesBlock_BacksUp_ResolverLoopback()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-disable-");
+        try
+        {
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            await File.WriteAllTextAsync(configPath, """
+                {
+                  "postgres": {
+                    "managed": true,
+                    "port": 5641,
+                    "network": { "listen": "192.168.1.205", "allowFrom": "192.168.1.0/24", "role": "viewer" }
+                  },
+                  "servers": [ { "host": "S" } ]
+                }
+                """);
+
+            var input = Script("4", "n"); // Disable, then decline restart
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+            Assert.Equal(0, exit);
+
+            var written = await File.ReadAllTextAsync(configPath);
+            var config = DarlingConfig.Parse(written);
+            Assert.False(DarlingManagedPostgres.ResolveNetworkExposure(config.Postgres.Network, CertPath, KeyPath).Exposed);
+            Assert.NotEmpty(Directory.GetFiles(root.FullName, "darling.json.bak-*"));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_QuitAtMenu_WritesNothing()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-quit-");
+        try
+        {
+            var configPath = CopySampleTo(root.FullName);
+            var before = await File.ReadAllTextAsync(configPath);
+
+            var input = Script("q");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+
+            Assert.Equal(0, exit);
+            Assert.Empty(Directory.GetFiles(root.FullName, "darling.json.bak-*"));
+            Assert.Equal(before, await File.ReadAllTextAsync(configPath)); // untouched
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    private static string CopySampleTo(string directory)
+    {
+        var configPath = Path.Combine(directory, "darling.json");
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "darling.sample.json"), configPath);
+        return configPath;
+    }
+
+    private static StringReader Script(params string[] lines) => new(string.Join("\n", lines) + "\n");
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        if (string.IsNullOrEmpty(needle))
+        {
+            return 0;
+        }
+
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
     }
 }
