@@ -31,11 +31,17 @@ Skip the --test-connection pre-flight gate.
 
 .PARAMETER NoShortcuts
 Do not create the viewer shortcuts.
+
+.PARAMETER Network
+After the service reaches Running, launch the interactive --configure-network wizard to opt into the
+store / MCP LAN endpoints (guided, delegated validation, comment-preserving darling.json edit + backup).
+Off by default; the endpoints stay loopback-only unless you pass this or edit darling.json by hand.
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipPreflight,
-    [switch]$NoShortcuts
+    [switch]$NoShortcuts,
+    [switch]$Network
 )
 
 $ErrorActionPreference = 'Stop'
@@ -121,6 +127,15 @@ Start-Service -Name $serviceName
 (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(60))
 Write-Host "Service is Running. First start does real work (unpack pg-runtime, initdb, store migration, first collection cycle) - give it ~2 minutes." -ForegroundColor Green
 Write-Host "Primary log: %ProgramData%\PerformanceMonitorDarling\logs\darling-service_yyyyMMdd.log"
+
+# -- 5b. Optional guided network setup ------------------------------------------------------------
+# Runs elevated (this whole script is), so the wizard's restart-to-apply works, and its restart is what
+# generates the store TLS cert on the first exposed start. Loopback-only stays the default without -Network.
+if ($Network) {
+    Write-Host ''
+    Write-Host 'Launching the guided network-exposure wizard (--configure-network)...' -ForegroundColor Cyan
+    & $serviceExe --configure-network
+}
 
 # -- 6. Viewer shortcuts --------------------------------------------------------------------------
 if (-not $NoShortcuts) {
