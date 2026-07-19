@@ -131,38 +131,40 @@ function templateMenu() {
 }
 
 function viewCard(v) {
+  const isNotebook = v.kind === "notebook";
   const meta =
     "v" + v.version + " · updated " + relTime(v.updated_at) + (v.updated_by ? " by " + v.updated_by : "");
   const chips = el("div", { class: "vc-chips" });
-  /* Best-guess link from the (optional) summary kind; enrichCard corrects it from the fetched definition. */
-  const href = v.kind === "notebook" ? "#/notebook/" + encodeURIComponent(v.id) : "#/view/" + encodeURIComponent(v.id);
+  /* The list summary carries a concrete `kind` (backend #56), so the link + "Notebook" badge are set SYNCHRONOUSLY
+     here — no wait on the per-card definition fetch (which only fills in the count chips). */
+  const href = (isNotebook ? "#/notebook/" : "#/view/") + encodeURIComponent(v.id);
   const card = el("a", { class: "view-card card", href }, [
-    el("div", { class: "vc-name", text: v.name }),
+    el("div", { class: "vc-name" }, [
+      el("span", { class: "vc-name-text", text: v.name }),
+      isNotebook ? el("span", { class: "notebook-badge", text: "Notebook" }) : null,
+    ]),
     v.description ? el("div", { class: "vc-desc", text: v.description }) : null,
     chips,
     el("div", { class: "vc-meta", text: meta }),
   ]);
-  enrichCard(v.id, chips, card);
+  enrichCard(v.id, chips, isNotebook);
   return card;
 }
 
-/* The list summary omits the definition (kept lightweight server-side), so the kind badge + count/viz chips are
-   fetched per card and filled in progressively — the card renders immediately and never blocks on this fetch, and
-   a failed/empty fetch just leaves the (display:none-when-empty) chip row absent. A notebook is marked with a
-   "Notebook" chip + a cell count, and its card link is corrected to the notebook route. */
-async function enrichCard(id, chips, card) {
+/* The list summary carries `kind` (link + badge already set in viewCard) but NOT the panel/cell counts, so those
+   are fetched per card and filled in progressively — the card renders immediately and never blocks on this fetch,
+   and a failed/empty fetch just leaves the (display:none-when-empty) chip row absent. `isNotebook` comes from the
+   summary; the fetched definition is a robust fallback for the count shape. */
+async function enrichCard(id, chips, isNotebook) {
   const res = await api.getView(id);
   if (res.kind !== "data" || !res.data) return;
   const def = res.data.definition || {};
 
-  if (isNotebookDefinition(def)) {
-    if (card) card.setAttribute("href", "#/notebook/" + encodeURIComponent(id));
+  if (isNotebook || isNotebookDefinition(def)) {
     const cells = Array.isArray(def.cells) ? def.cells : [];
+    if (!cells.length) return;
     const panelCount = cells.filter((c) => c && c.type === "panel").length;
-    const nodes = [
-      el("span", { class: "vc-chip notebook", text: "Notebook" }),
-      el("span", { class: "vc-chip count", text: cells.length + (cells.length === 1 ? " cell" : " cells") }),
-    ];
+    const nodes = [el("span", { class: "vc-chip count", text: cells.length + (cells.length === 1 ? " cell" : " cells") })];
     if (panelCount) nodes.push(el("span", { class: "vc-chip", text: panelCount + (panelCount === 1 ? " panel" : " panels") }));
     mount(chips, nodes);
     return;

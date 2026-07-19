@@ -70,7 +70,9 @@
 }
 .view-card { display: block; cursor: pointer; transition: border-color 0.1s ease, background 0.1s ease; }
 .view-card:hover { background: var(--lighter); text-decoration: none; }
-.view-card .vc-name { font-weight: 600; font-size: 1rem; color: var(--fg); margin-bottom: 0.2rem; }
+.view-card .vc-name { font-weight: 600; font-size: 1rem; color: var(--fg); margin-bottom: 0.2rem; display: flex; align-items: center; gap: 0.4rem; }
+.view-card .vc-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.view-card .vc-name .notebook-badge { flex: 0 0 auto; }
 .view-card .vc-desc {
   font-size: 0.82rem;
   color: var(--dim);
@@ -474,8 +476,6 @@
 .template-item:hover { background: var(--lighter); text-decoration: none; }
 .template-item .template-label { font-weight: 600; font-size: 0.85rem; }
 .template-item .template-desc { font-size: 0.72rem; color: var(--muted); }
-
-.view-card .vc-chip.notebook { color: var(--accent); border-color: rgba(46, 174, 241, 0.35); background: rgba(46, 174, 241, 0.12); font-weight: 600; }
 
 /* The editor: a stacked list of cells + the add-cell row. Each cell is a card with a head (Cell N + kind tag +
    reorder/remove); a markdown cell is a textarea beside a live preview, a panel cell embeds the shared composer. */
