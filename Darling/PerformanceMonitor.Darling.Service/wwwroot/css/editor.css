@@ -375,6 +375,21 @@
 /* The self-describing metric caption under the metric picker (category · archetype · dimensions). */
 .measure-caption { margin-top: 0.35rem; font-size: 0.75rem; color: var(--muted); }
 
+/* Per-server-type availability badges under the measure picker (#1563 D4): informational pills — the measure still
+   works where it applies; the warn variant flags a platform it can't collect on, the plain one a msdb dependency. */
+.measure-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+.measure-badges:empty { display: none; }
+.measure-badge {
+  font-size: 0.68rem;
+  padding: 0.08rem 0.42rem;
+  border-radius: 999px;
+  background: var(--lighter);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.measure-badge.warn { color: var(--warn); }
+
 /* Static (non-editable) field content — the ratio "fixed aggregation" note, the count "unitless" note. */
 .static-field { padding: 0.4rem 0; font-size: 0.85rem; }
 

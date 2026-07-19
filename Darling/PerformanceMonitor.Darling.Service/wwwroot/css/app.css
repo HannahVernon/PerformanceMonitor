@@ -388,6 +388,15 @@ table.data td.sev-Healthy { color: var(--ok); }
 .chart .series-area { stroke: none; }
 .chart-note { margin-top: 0.4rem; font-size: 0.72rem; color: var(--muted); }
 
+/* Time-series stacked-bar segments (#1563 D2): per-series fill set inline; a hairline card-colored seam separates
+   stacked segments and adjacent bars, and a slight fill-opacity keeps them in the same family as the area fills. */
+.chart .series-bar { stroke: var(--card); stroke-width: 0.5; fill-opacity: 0.9; }
+
+/* Render-only threshold reference lines (#1563 D3): a dashed neutral guide + small value label. Deliberately NOT a
+   severity color — a chart mark must never imply a health state (same rule as the categorical series palette). */
+.chart .threshold-line { stroke: var(--dim); stroke-width: 1; stroke-dasharray: 6 4; opacity: 0.7; }
+.chart .threshold-label { fill: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+
 /* A ranked bar chart scrolls vertically inside the panel when its list is tall (the SVG grows per row). */
 .chart-bar { max-height: 340px; overflow-y: auto; }
 .chart-bar svg { max-height: none; }

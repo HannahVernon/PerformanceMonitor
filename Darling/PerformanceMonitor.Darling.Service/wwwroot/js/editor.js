@@ -125,6 +125,7 @@ function newComposedPanel() {
     span: 1,
     title: "",
     hours: null,
+    thresholds: [],
   };
 }
 
@@ -179,6 +180,7 @@ function descToComposedPanel(d) {
     span: d.span === 2 ? 2 : 1,
     title: d.title || "",
     hours: typeof d.hours === "number" ? d.hours : null,
+    thresholds: cleanThresholds(d.thresholds),
   };
 }
 
@@ -224,7 +226,16 @@ function composedPanelToDesc(p) {
   if (filters.length) d.filters = filters;
   if ((p.groupBy || []).length) d.groupBy = [...p.groupBy];
   if (p.hours != null) d.hours = p.hours;
+  const thresholds = cleanThresholds(p.thresholds);
+  if (thresholds.length) d.thresholds = thresholds;
   return d;
+}
+
+/** Normalize a thresholds list to at most 4 finite numbers (design D3) — drops the editor's null/blank entries so
+ *  a stored def (and the preview) only ever carries real reference-line values, matching the server's bounds. */
+function cleanThresholds(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter((n) => typeof n === "number" && isFinite(n)).slice(0, 4);
 }
 
 /* A model filter -> the stored form: an eq/neq value with commas splits into a multi-value array; everything else
@@ -807,7 +818,7 @@ function sampleUnavailableText(res) {
 /* ─────────────────────────── composed (v2) panel editor ─────────────────────────── */
 
 /* Display maps for the compose vocabularies (data-driven off /api/catalog; these only humanize the wire tokens). */
-const VIZ_LABELS = { line: "Line", area: "Area", stacked: "Stacked area", bar: "Bar", pie: "Pie / donut", table: "Table", stat: "Single value" };
+const VIZ_LABELS = { line: "Line", area: "Area", stacked: "Stacked area", "stacked-bar": "Stacked bar", bar: "Bar", pie: "Pie / donut", table: "Table", stat: "Single value" };
 const AGG_LABELS = { sum: "Sum", avg: "Average", min: "Minimum", max: "Maximum", count: "Count", percentile_cont: "95th percentile" };
 const OP_LABELS = { eq: "is (=)", neq: "is not (≠)", like: "matches (LIKE)", gt: ">", gte: "≥", lt: "<", lte: "≤" };
 const BUCKET_LABELS = { minute: "Per minute", hour: "Per hour", day: "Per day" };
@@ -894,7 +905,11 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
       applyMeasureChoice(p, key, compose);
       onStructural();
     });
-    return el("div", {}, [sel, m ? el("div", { class: "measure-caption", text: measureCaption(m, compose) }) : null]);
+    return el("div", {}, [
+      sel,
+      m ? el("div", { class: "measure-caption", text: measureCaption(m, compose) }) : null,
+      m ? measureAvailabilityNote(m) : null,
+    ]);
   }
 
   function shapeAndAggBlock(m) {
@@ -1008,8 +1023,55 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
 
   function advancedBlock(m) {
     const rows = [field("Unit / magnitude", unitControl(m)), field("Time range", timeOverrideControl())];
+    if (vizDrawsThresholds(p.viz)) rows.push(field("Reference lines", thresholdsControl(m)));
     if (p.aggregate === "percentile_cont") rows.push(el("div", { class: "block-help", text: "Percentile is fixed at p95." }));
     return el("details", { class: "composed-advanced" }, [el("summary", { text: "Advanced" }), el("div", { class: "cfg" }, rows)]);
+  }
+
+  /* Up to 4 render-only threshold reference lines (design D3), in the panel's unit. A value edit / add / remove is a
+     LIVE change (its own local redraw so the number inputs keep focus) — never a structural rebuild. Blank/invalid
+     inputs are stored as null and dropped by cleanThresholds on save + preview, so a half-typed value never renders. */
+  function thresholdsControl(m) {
+    if (!Array.isArray(p.thresholds)) p.thresholds = [];
+    const list = p.thresholds;
+    const box = el("div", { class: "item-list thresholds" });
+
+    function redraw() {
+      const rows = list.map((val, i) => {
+        const inp = el("input", { class: "editor-input", type: "number", step: "any", "aria-label": "reference line value " + (i + 1) });
+        inp.value = val == null ? "" : String(val);
+        inp.addEventListener("input", () => {
+          const n = parseFloat(inp.value);
+          list[i] = inp.value.trim() === "" || isNaN(n) ? null : n;
+          onLive();
+        });
+        const rm = el("button", { class: "btn small danger icon", type: "button", text: "×", title: "Remove reference line", "aria-label": "remove reference line" });
+        rm.addEventListener("click", () => {
+          list.splice(i, 1);
+          redraw();
+          onLive();
+        });
+        return el("div", { class: "item-row" }, [inp, rm]);
+      });
+      const addBtn = el("button", { class: "btn small", type: "button", text: "+ Add reference line" });
+      addBtn.disabled = list.length >= 4;
+      addBtn.addEventListener("click", () => {
+        list.push(null);
+        redraw();
+        onLive();
+      });
+      mount(box, [...rows, addBtn]);
+    }
+
+    redraw();
+    const unitText = p.aggregate === "count" ? "count" : p.unit || m.defaultUnit || "";
+    const help = el("div", {
+      class: "block-help",
+      text: unitText
+        ? "Dashed guide lines drawn at these values (in " + unitText + "). Up to 4; values outside the chart's range are skipped."
+        : "Dashed guide lines drawn at these values. Up to 4; values outside the chart's range are skipped.",
+    });
+    return el("div", {}, [box, help]);
   }
 
   function unitControl(m) {
@@ -1241,20 +1303,63 @@ function measureCaption(m, compose) {
   return m.category + " · " + grain + " · groups by " + dimText;
 }
 
+/* A measure's per-server-type constraints from the catalog's appliesTo gate (design D4), or null when it collects
+   everywhere with no msdb dependency (the common case — no badge). `missing` names the platforms it can't collect on;
+   `needsMsdb` flags a SQL-Agent (job) dependency. Purely informational: the measure still works where it applies —
+   auto-greying by the view's actual servers needs a per-server type/edition signal the fleet endpoint doesn't expose. */
+function measureAvailabilityConstraints(m) {
+  const a = m && m.appliesTo;
+  if (!a) return null;
+  const missing = [];
+  if (a.azureSqlDb === false) missing.push("Azure SQL DB");
+  if (a.azureMi === false) missing.push("Azure MI");
+  if (a.awsRds === false) missing.push("AWS RDS");
+  if (a.onPrem === false) missing.push("on-prem");
+  const needsMsdb = a.needsMsdb === true;
+  if (!missing.length && !needsMsdb) return null;
+  return { missing, needsMsdb };
+}
+
+/** A compact one-line availability summary for a measure (the picker option's hover title), or "" when unconstrained. */
+function measureAvailabilitySummary(m) {
+  const c = measureAvailabilityConstraints(m);
+  if (!c) return "";
+  const parts = [];
+  if (c.missing.length) parts.push("not on " + c.missing.join(", "));
+  if (c.needsMsdb) parts.push("needs SQL Agent (msdb)");
+  return parts.join("; ");
+}
+
+/** The availability badges shown under the measure picker for a constrained measure (design D4), or null. */
+function measureAvailabilityNote(m) {
+  const c = measureAvailabilityConstraints(m);
+  if (!c) return null;
+  const badges = [];
+  if (c.missing.length) badges.push(el("span", { class: "measure-badge warn", text: "Not on " + c.missing.join(", ") }));
+  if (c.needsMsdb) badges.push(el("span", { class: "measure-badge", text: "Needs SQL Agent (msdb)" }));
+  return el("div", { class: "measure-badges" }, badges);
+}
+
 /** Whether a viz is compatible with a shape ignoring the group-by requirement (table works with any shape). */
 function vizShapeCompatible(viz, shape) {
   if (viz === "table") return true;
-  if (shape === "timeseries") return viz === "line" || viz === "area" || viz === "stacked";
+  if (shape === "timeseries") return viz === "line" || viz === "area" || viz === "stacked" || viz === "stacked-bar";
   if (shape === "ranked") return viz === "bar" || viz === "pie";
   return viz === "stat";
 }
 
 /** Where a viz belongs (for a disabled option's reason on the wrong shape). */
 function shapeHintFor(viz) {
-  if (viz === "line" || viz === "area" || viz === "stacked") return "over time";
+  if (viz === "line" || viz === "area" || viz === "stacked" || viz === "stacked-bar") return "over time";
   if (viz === "bar" || viz === "pie") return "ranked";
   if (viz === "stat") return "single value";
   return "";
+}
+
+/** Which composed vizzes draw threshold reference lines (design D3): the value-axis charts (line/area/stacked/
+ *  stacked-bar draw them horizontally, the ranked bar vertically). Pie/stat/table have no value axis to mark. */
+function vizDrawsThresholds(viz) {
+  return viz === "line" || viz === "area" || viz === "stacked" || viz === "stacked-bar" || viz === "bar";
 }
 
 /* The full viz↔shape coherence reason (mirrors the server's ValidateVizMode), or null when coherent — drives the
@@ -1263,8 +1368,8 @@ function vizModeReason(viz, shape, groupCount) {
   if (!viz) return null;
   if (viz === "table") return null;
   if (shape === "timeseries") {
-    if (!["line", "area", "stacked"].includes(viz)) return "A " + (VIZ_LABELS[viz] || viz) + " chart isn't a time series — use line, area, or stacked.";
-    if (viz === "stacked" && groupCount === 0) return "A stacked chart needs a group-by (the parts that stack).";
+    if (!["line", "area", "stacked", "stacked-bar"].includes(viz)) return "A " + (VIZ_LABELS[viz] || viz) + " chart isn't a time series — use line, area, stacked, or stacked bar.";
+    if ((viz === "stacked" || viz === "stacked-bar") && groupCount === 0) return "A stacked chart needs a group-by (the parts that stack).";
     return null;
   }
   if (shape === "ranked") {
@@ -1289,7 +1394,9 @@ function buildComposedMeasureSelect(compose, current, onChange) {
     const group = el("optgroup", { label: cat });
     for (const m of ms.sort((a, b) => a.displayName.localeCompare(b.displayName))) {
       const suffix = m.kind === "ratio" ? " (ratio)" : "";
-      group.appendChild(el("option", { value: m.key, text: m.displayName + suffix, title: measureCaption(m, compose) }));
+      const avail = measureAvailabilitySummary(m);
+      const title = avail ? measureCaption(m, compose) + " · " + avail : measureCaption(m, compose);
+      group.appendChild(el("option", { value: m.key, text: m.displayName + suffix, title }));
     }
     sel.appendChild(group);
   }
