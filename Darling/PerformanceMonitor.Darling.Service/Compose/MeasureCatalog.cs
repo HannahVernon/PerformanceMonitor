@@ -134,6 +134,22 @@ public sealed record ComposeUnitFamily(string Name, IReadOnlyList<ComposeUnit> U
 public sealed record ComposeDimension(string SourceTable, string Name, string Column, bool Likeable, bool ViaModuleJoin = false);
 
 /// <summary>
+/// One event-annotation SOURCE (design D5): a collector event table whose rows can be overlaid as point
+/// markers on a time-series panel. <see cref="TimeColumn"/> is the event's OWN time column (when the event
+/// happened — e.g. <c>deadlock_time</c>, not the collector's <c>collection_time</c>) and
+/// <see cref="LabelColumn"/> a short text column for the marker tooltip. Both — like a measure's columns —
+/// are pinned to the owning collector's <c>PayloadColumns</c> by <c>DarlingComposeTests</c>, so the annotation
+/// compiler emits them schema-qualified (<c>collect.&lt;table&gt;</c>) and never touches a caller string.
+/// </summary>
+public sealed record ComposeAnnotationSource(
+    string Key,
+    string DisplayName,
+    string Category,
+    string SourceTable,
+    string TimeColumn,
+    string LabelColumn);
+
+/// <summary>
 /// One measure — a named, composable metric. Everything identifier-bearing (<see cref="SourceTable"/>,
 /// <see cref="Column"/>, <see cref="DeltaColumn"/>, <see cref="AllowedDimensions"/>) is validated against
 /// the collector catalog by test, so the compiler can trust every field is a real column and emit it
@@ -1060,6 +1076,29 @@ public static class MeasureCatalog
     /// <summary>Whether <paramref name="source"/> is a real measure source (a collector table the catalog serves).</summary>
     public static bool IsKnownSource(string? source) =>
         source is not null && Measures.Any(m => string.Equals(m.SourceTable, source, StringComparison.Ordinal));
+
+    /* ─────────────────────────── annotation sources (design D5) ─────────────────────────── */
+
+    /// <summary>The event sources a composed time-series panel may overlay as annotation markers (design D5).
+    /// Each names a real collector event table plus its event-time and label columns — every (table, timeColumn,
+    /// labelColumn) pinned to the owning collector's <c>PayloadColumns</c> by <c>DarlingComposeTests</c>, exactly
+    /// like a measure's columns. These are the SOLE identifiers the annotation compiler emits; a caller supplies
+    /// only a KEY from this list, never a table/column.</summary>
+    public static readonly IReadOnlyList<ComposeAnnotationSource> AnnotationSources = new[]
+    {
+        new ComposeAnnotationSource("deadlocks", "Deadlocks", CatBlocking, "deadlocks", "deadlock_time", "database_name"),
+        new ComposeAnnotationSource("blocked_process_reports", "Blocked-process reports", CatBlocking, "blocked_process_reports", "event_time", "contentious_object"),
+        new ComposeAnnotationSource("long_query_completions", "Long-query completions", CatLongQueries, "long_query_completions", "event_time", "object_name"),
+        new ComposeAnnotationSource("default_trace_events", "Default-trace events", CatDefaultTrace, "default_trace_events", "event_time", "event_name"),
+        new ComposeAnnotationSource("system_health_events", "system_health events", CatSystemHealth, "system_health_events", "event_time", "event_type"),
+    };
+
+    private static readonly Dictionary<string, ComposeAnnotationSource> s_annotationByKey =
+        AnnotationSources.ToDictionary(a => a.Key, StringComparer.Ordinal);
+
+    /// <summary>The annotation source with this key, or null.</summary>
+    public static ComposeAnnotationSource? AnnotationSource(string? key) =>
+        key is not null && s_annotationByKey.TryGetValue(key, out var a) ? a : null;
 
     /* ─────────────────────────── wire-name maps for the enums ─────────────────────────── */
 

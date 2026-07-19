@@ -802,4 +802,187 @@ public sealed class DarlingComposeTests
         Assert.False(job["awsRds"]!.GetValue<bool>());
         Assert.True(job["needsMsdb"]!.GetValue<bool>());
     }
+
+    /* ─────────────────────────── D5: event annotations (catalog pins) ─────────────────────────── */
+
+    [Fact]
+    public void EveryAnnotationSource_IsARealCollectorTable()
+    {
+        var tables = CollectorCatalog.All.Select(c => c.TargetTable).ToHashSet(StringComparer.Ordinal);
+        foreach (var source in MeasureCatalog.AnnotationSources)
+        {
+            Assert.True(tables.Contains(source.SourceTable),
+                $"annotation source '{source.Key}' names table '{source.SourceTable}', which is not a collector table.");
+        }
+    }
+
+    [Fact]
+    public void EveryAnnotationSourceColumns_AreRealPayloadColumns()
+    {
+        /* Same drift-proofing as the measure column pins: an annotation's event-time + label columns must be
+           real payload columns of its collector, so the compiler emits only real, schema-qualified identifiers. */
+        var payload = PayloadColumnsByTable();
+        foreach (var source in MeasureCatalog.AnnotationSources)
+        {
+            var columns = payload[source.SourceTable];
+            Assert.True(columns.Contains(source.TimeColumn),
+                $"annotation source '{source.Key}' time column '{source.TimeColumn}' is not a payload column of '{source.SourceTable}'.");
+            Assert.True(columns.Contains(source.LabelColumn),
+                $"annotation source '{source.Key}' label column '{source.LabelColumn}' is not a payload column of '{source.SourceTable}'.");
+        }
+    }
+
+    [Fact]
+    public void NoAnnotationSource_IsAConfigTable()
+    {
+        /* The same structural config-exclusion guarantee the measures carry: an annotation query can only ever
+           name a collect collector table, never a config control-plane table. */
+        foreach (var source in MeasureCatalog.AnnotationSources)
+        {
+            Assert.False(source.SourceTable.StartsWith("config", StringComparison.Ordinal),
+                $"annotation source '{source.Key}' resolves to a config table '{source.SourceTable}'.");
+        }
+    }
+
+    /* ─────────────────────────── D5: the spec validator ─────────────────────────── */
+
+    [Fact]
+    public void TryParsePanel_AcceptsAnnotations_OnATimeSeries_AndCarriesThemOnThePlan()
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"deadlocks\",\"blocked_process_reports\"]}");
+        Assert.Equal(new[] { "deadlocks", "blocked_process_reports" }, plan.Annotations.Select(a => a.Key));
+    }
+
+    [Fact]
+    public void TryParsePanel_DefaultsAnnotationsToEmpty_WhenAbsent()
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}");
+        Assert.Empty(plan.Annotations);
+    }
+
+    [Theory]
+    /* an unknown annotation-source key. */
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"nope\"]}", "unknown source")]
+    /* annotations on a ranked panel — a marker overlay needs a time axis. */
+    [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"bar\",\"annotations\":[\"deadlocks\"]}", "time-series")]
+    /* annotations on a scalar panel — likewise no time axis. */
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"stat\",\"annotations\":[\"deadlocks\"]}", "time-series")]
+    /* the same source listed twice. */
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"deadlocks\",\"deadlocks\"]}", "more than once")]
+    /* not an array. */
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":\"deadlocks\"}", "must be an array")]
+    public void TryParsePanel_RejectsBadAnnotations_NamingTheReason(string json, string expectedFragment)
+    {
+        Assert.Contains(expectedFragment, RejectReason(json), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryParsePanel_RejectsTooManyAnnotations()
+    {
+        /* All five distinct sources exceeds the cap of four. */
+        var reason = RejectReason("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"," +
+            "\"annotations\":[\"deadlocks\",\"blocked_process_reports\",\"long_query_completions\",\"default_trace_events\",\"system_health_events\"]}");
+        Assert.Contains("maximum", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /* ─────────────────────────── D5: the annotation compiler (safety invariants) ─────────────────────────── */
+
+    private static IReadOnlyList<(string Source, ComposeCompiled Compiled)> CompileAnnotations(
+        PanelPlan plan, IReadOnlyList<string>? servers = null) =>
+        ComposeCompiler.CompileAnnotations(plan, new ComposeRunContext(servers, WindowStart, WindowEnd, ComposeRunContext.NoVariables));
+
+    [Fact]
+    public void CompileAnnotations_ReturnsEmpty_WhenNoneRequested()
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}");
+        Assert.Empty(CompileAnnotations(plan));
+    }
+
+    [Fact]
+    public void CompileAnnotations_EmitsSchemaQualifiedCollect_WindowAndServerBound_Capped()
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"deadlocks\"]}");
+        var (source, one) = Assert.Single(CompileAnnotations(plan, new[] { "PROD-01" }));
+        Assert.Equal("deadlocks", source);
+
+        var sql = one.Sql;
+        Assert.Contains("collect.deadlocks", sql, StringComparison.Ordinal);
+        Assert.Contains("f.deadlock_time AS ts", sql, StringComparison.Ordinal);
+        Assert.Contains("f.database_name AS label", sql, StringComparison.Ordinal);
+        /* window + server scope are the SAME bound parameters the measure query uses ($1/$2 window, $3 server[]). */
+        Assert.Contains("f.deadlock_time >= $1", sql, StringComparison.Ordinal);
+        Assert.Contains("f.deadlock_time <= $2", sql, StringComparison.Ordinal);
+        Assert.Contains("server_name = ANY($3)", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY ts", sql, StringComparison.Ordinal);
+        Assert.Contains($"LIMIT {ComposeLimits.MaxAnnotationEvents}", sql, StringComparison.Ordinal);
+        /* catalog-only: never a config table, and the server name is bound, never interpolated. */
+        Assert.DoesNotContain("config.", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROD-01", sql, StringComparison.Ordinal);
+        Assert.Equal(3, one.Parameters.Count); /* every value bound: $1 start, $2 end, $3 server[] */
+    }
+
+    [Fact]
+    public void CompileAnnotations_HasNoServerPredicate_ForTheWholeFleet()
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"deadlocks\"]}");
+        var (_, one) = Assert.Single(CompileAnnotations(plan));
+        Assert.DoesNotContain("server_name = ANY", one.Sql, StringComparison.Ordinal);
+        Assert.Equal(2, one.Parameters.Count); /* $1 start, $2 end — no server predicate on the fleet */
+    }
+
+    [Fact]
+    public void CompileAnnotations_CompilesOneQueryPerSource_InOrder()
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"deadlocks\",\"system_health_events\"]}");
+        Assert.Equal(new[] { "deadlocks", "system_health_events" }, CompileAnnotations(plan).Select(c => c.Source));
+    }
+
+    [Theory]
+    [InlineData("deadlocks", "collect.deadlocks", "f.deadlock_time AS ts", "f.database_name AS label")]
+    [InlineData("blocked_process_reports", "collect.blocked_process_reports", "f.event_time AS ts", "f.contentious_object AS label")]
+    [InlineData("long_query_completions", "collect.long_query_completions", "f.event_time AS ts", "f.object_name AS label")]
+    [InlineData("default_trace_events", "collect.default_trace_events", "f.event_time AS ts", "f.event_name AS label")]
+    [InlineData("system_health_events", "collect.system_health_events", "f.event_time AS ts", "f.event_type AS label")]
+    public void CompileAnnotations_EachSource_SelectsItsCatalogTimeAndLabelColumns(string key, string table, string tsExpr, string labelExpr)
+    {
+        var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"" + key + "\"]}");
+        var (_, one) = Assert.Single(CompileAnnotations(plan));
+        Assert.Contains(table, one.Sql, StringComparison.Ordinal);
+        Assert.Contains(tsExpr, one.Sql, StringComparison.Ordinal);
+        Assert.Contains(labelExpr, one.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("config.", one.Sql, StringComparison.Ordinal);
+    }
+
+    /* ─────────────────────────── D5: /api/catalog + ValidateDefinition ─────────────────────────── */
+
+    [Fact]
+    public void Catalog_CarriesAnnotationSources()
+    {
+        var compose = Assert.IsType<JsonObject>(DarlingWebEndpoints.BuildCatalogNode()["compose"]);
+        var sources = Assert.IsType<JsonArray>(compose["annotationSources"]);
+        Assert.Equal(MeasureCatalog.AnnotationSources.Count, sources.Count);
+
+        var deadlocks = sources.Cast<JsonObject>().Single(s => s!["key"]!.GetValue<string>() == "deadlocks");
+        Assert.False(string.IsNullOrEmpty(deadlocks["displayName"]!.GetValue<string>()));
+        Assert.False(string.IsNullOrEmpty(deadlocks["category"]!.GetValue<string>()));
+        /* appliesTo parity with measures (D4) so the composer can grey a source a target can't collect. */
+        Assert.NotNull(Assert.IsType<JsonObject>(deadlocks["appliesTo"])["onPrem"]);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsAComposedPanelWithAnnotations()
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"deadlocks\",\"system_health_events\"]}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsAComposedPanelWithABadAnnotation()
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"annotations\":[\"nope\"]}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("unknown source", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
 }
