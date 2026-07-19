@@ -555,4 +555,49 @@ public sealed class DarlingComposeTests
         Assert.True(error is null, error);
         Assert.NotNull(plan);
     }
+
+    /* ─────────────────────────── acceptance flows compile end-to-end ─────────────────────────── */
+
+    [Fact]
+    public void FlowA_AvgProcedureElapsed_LikePattern_OnServer_ValidatesAndCompiles()
+    {
+        /* Acceptance Flow A: "avg procedure elapsed LIKE 'dbo.usp_Payment%' on $server, 24h → line." The panel
+           validates against the catalog + declared $server, then compiles to a schema-qualified, fully-bound,
+           time-bucketed, server-scoped query. */
+        var panel =
+            "{\"source\":\"procedure_stats\",\"measure\":\"proc_elapsed_us\",\"aggregate\":\"avg\"," +
+            "\"timeBucket\":\"hour\",\"viz\":\"line\"," +
+            "\"filters\":[{\"dimension\":\"object_name\",\"op\":\"like\",\"value\":\"dbo.usp_Payment%\"}]}";
+
+        var (plan, error) = ComposeSpec.TryParsePanel(PanelJson(panel), new[] { "srv" });
+        Assert.True(error is null, error);
+
+        var sql = Compile(plan!, new[] { "PROD-01" }); /* $server resolved to one server */
+        Assert.Contains("collect.procedure_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("date_trunc('hour'", sql, StringComparison.Ordinal);
+        Assert.Contains("LIKE $", sql, StringComparison.Ordinal);
+        Assert.Contains("server_name = ANY($", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("usp_Payment", sql, StringComparison.Ordinal); /* the pattern is bound, not interpolated */
+        Assert.DoesNotContain("config.", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FlowB_TopDatabasesByCpu_AcrossTheFleet_ValidatesAndCompiles()
+    {
+        /* Acceptance Flow B: "top-10 databases by CPU across the fleet → bar." No server scope = whole fleet
+           (no server predicate), grouped by database, ranked, bounded by a LIMIT. */
+        var panel =
+            "{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\"," +
+            "\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"bar\"}";
+
+        var plan = ValidPlan(panel);
+        var sql = Compile(plan); /* no server scope => whole fleet */
+        Assert.Contains("collect.query_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("f.database_name", sql, StringComparison.Ordinal);
+        Assert.Contains("GROUP BY", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY value DESC", sql, StringComparison.Ordinal);
+        Assert.Contains("LIMIT $", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("server_name = ANY", sql, StringComparison.Ordinal); /* fleet-wide, no server filter */
+        Assert.DoesNotContain("config.", sql, StringComparison.Ordinal);
+    }
 }
