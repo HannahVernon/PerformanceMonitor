@@ -415,6 +415,40 @@ table.data td.sev-Healthy { color: var(--ok); }
 .chart-legend .leg-val { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .chart-legend.pie-legend .item { width: 100%; }
 
+/* Event-annotation overlays (#1563 D5): a thin colored vertical marker (color set inline per source, from the
+   annotation palette — never a severity/series color) with a wider transparent hit line on top carrying the hover
+   title. The visible line is non-interactive so it never steals the series-hover overlay; the hit line does. */
+.chart .annotation-line { stroke-width: 1.5; opacity: 0.85; pointer-events: none; }
+.chart .annotation-hit { stroke: transparent; stroke-width: 7; pointer-events: stroke; cursor: help; }
+/* The annotation key below the chart: a short vertical tick swatch (distinct from the series' horizontal bar). */
+.chart-legend.annotation-legend { margin-top: 0.25rem; }
+.chart-legend .swatch.annotation-swatch { width: 3px; height: 12px; border-radius: 1px; }
+
+/* Drill-down (#1563 D6): a drillable mark / legend entry gets a pointer cursor + a focus ring (legend entries are
+   activatable, so keyboard users get the :focus-visible ring the util.el onActivate path installs). */
+.chart .drillable { cursor: pointer; }
+.chart-legend .item.drillable { cursor: pointer; border-radius: var(--radius-sm); }
+.chart-legend .item.drillable:hover { color: var(--fg); }
+.chart-legend .item.drillable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The transient drill-down chip above a drilled panel (#1563 D6): the pinned filter(s), a jump to the server page
+   (server dimension), and a clear that pops back. View-state only — nothing is persisted. */
+.drill-chip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+}
+.drill-chip .drill-label { color: var(--dim); }
+.drill-chip .drill-open { margin-left: auto; }
+.drill-chip .drill-clear { padding-left: 0.5rem; padding-right: 0.5rem; }
+
 /* The folded "compiled SQL" transparency block inside a composed panel. */
 .compiled-sql {
   margin: 0;

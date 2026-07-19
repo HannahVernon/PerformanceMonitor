@@ -36,6 +36,7 @@ function emptyCompose() {
   return {
     measures: [],
     dimensions: [],
+    annotationSources: [],
     universalDimensions: [],
     unitFamilies: [],
     aggregates: [],

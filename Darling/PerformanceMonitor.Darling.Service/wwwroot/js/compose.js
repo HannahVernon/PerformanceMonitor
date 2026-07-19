@@ -22,6 +22,8 @@
 
 import { el, mount, loadingStrip, errorStrip, emptyStrip, disclosure, fmtInt, fmtNum, apiSend } from "./util.js";
 import { renderLineChart, renderBarChart, renderPieChart, CATEGORICAL_COLORS } from "./charts.js";
+import { navigateServer } from "./panels.js";
+import { getCatalog } from "./views-api.js";
 
 /** The most series a time chart draws before pooling the rest into a "+N more" note (readability + palette size). */
 const MAX_SERIES = 8;
@@ -39,21 +41,58 @@ export function renderComposedPanelCard(panelSpec, scope) {
     el("h3", {}, [panelSpec.title || measureLabel(panelSpec)]),
     body,
   ]);
-  renderComposedInto(body, panelSpec, scope);
+  driveComposedPanel(body, panelSpec, scope);
   return panel;
 }
 
-/** Run a composed panel and fill `body` with the chart (or the empty/error state). Used by the card + the live preview. */
-export async function renderComposedInto(body, panelSpec, scope) {
+/**
+ * The per-card drill controller (design D6): runs the panel, and — when the viewer clicks a categorical mark —
+ * re-runs it with a TRANSIENT drill filter pinning that mark's group value(s). The drill is view-state only: it is
+ * never persisted (the stored definition renders verbatim), and a "clear" chip pops back to the base spec. Each new
+ * selection REPLACES the drill (a simple "you are viewing X" model), so drilling never stacks into a dead end.
+ */
+function driveComposedPanel(body, panelSpec, scope) {
+  let drill = null; // { keys: [{dimension, value}] } or null
+  function onDrill(next) {
+    drill = next && Array.isArray(next.keys) && next.keys.length ? next : null;
+    run();
+  }
+  function run() {
+    const spec = drill ? withDrillFilters(panelSpec, drill) : panelSpec;
+    renderComposedInto(body, spec, scope, { drill, onDrill });
+  }
+  run();
+}
+
+/** A base panel spec + the drill's pinned filters (design D6): each key becomes an `eq` filter appended to the
+ *  panel's own filters. The value is a scalar string — the run endpoint treats it as a single literal (no comma
+ *  splitting server-side), so a category containing a comma pins correctly. Never mutates the base spec. */
+function withDrillFilters(spec, drill) {
+  const extra = drill.keys.map((k) => ({ dimension: k.dimension, op: "eq", value: k.value }));
+  return { ...spec, filters: [...(Array.isArray(spec.filters) ? spec.filters : []), ...extra] };
+}
+
+/** Run a composed panel and fill `body` with the chart (or the empty/error state). Used by the card + the live
+ *  preview. `opts` (design D5/D6): {drill, onDrill} drive the transient drill-down chip + mark clicks. */
+export async function renderComposedInto(body, panelSpec, scope, opts = {}) {
   mount(body, loadingStrip());
   const res = await runCompose(panelSpec, scope);
   if (res.kind === "error") {
-    mount(body, errorStrip(res.message || "Could not run this panel."));
+    /* Keep the drill chip (with its clear) above a failed drill so the viewer can always pop back. */
+    const nodes = [errorStrip(res.message || "Could not run this panel.")];
+    if (opts.drill && opts.onDrill) nodes.unshift(drillChip(opts.drill, opts.onDrill));
+    mount(body, nodes);
     return;
   }
   const data = res.data || {};
+  /* Resolve annotation display names off the catalog (data-driven, not hardcoded) only when there are markers to
+     draw; getCatalog is a cached promise, so this is effectively free after the first page load. */
+  let annotationMeta = null;
+  if (isTimeSeriesViz(panelSpec.viz) && Array.isArray(data.annotations) && data.annotations.length) {
+    annotationMeta = await annotationMetaMap().catch(() => null);
+  }
   try {
-    mount(body, renderComposedResult(data, panelSpec));
+    mount(body, renderComposedResult(data, panelSpec, { ...opts, annotationMeta }));
   } catch (e) {
     mount(body, errorStrip("Could not render this panel: " + (e && e.message ? e.message : String(e))));
   }
@@ -87,6 +126,9 @@ function toRunPanel(p) {
   if (p.topN != null && p.topN !== "") out.topN = p.topN;
   if (Array.isArray(p.filters) && p.filters.length) out.filters = p.filters;
   if (Array.isArray(p.groupBy) && p.groupBy.length) out.groupBy = p.groupBy;
+  /* Event-annotation sources (design D5) ride only on a time-series spec — the run endpoint rejects them on a
+     ranked/scalar panel — so gate on the emitted timeBucket, mirroring the server's rule. */
+  if (out.timeBucket && Array.isArray(p.annotations) && p.annotations.length) out.annotations = p.annotations;
   return out;
 }
 
@@ -97,11 +139,16 @@ function toRunPanel(p) {
  * note, and a folded "compiled SQL" disclosure (read-only transparency). Empty rows are the honest NO-DATA state
  * (not an error). Returns an array of nodes for the caller to mount.
  */
-export function renderComposedResult(result, panelSpec) {
+export function renderComposedResult(result, panelSpec, opts = {}) {
   const rows = Array.isArray(result.rows) ? result.rows : [];
   const nodes = [];
 
+  /* The transient drill-down chip (design D6) sits above the chart whenever a drill is active — with the pinned
+     filter(s), a clear, and (for a server dimension) a jump to that server's detail page. */
+  const drillNode = opts.drill && opts.onDrill ? drillChip(opts.drill, opts.onDrill) : null;
+
   if (!rows.length) {
+    if (drillNode) nodes.push(drillNode);
     nodes.push(emptyStrip("No data in this window."));
     nodes.push(sqlDisclosure(result.sql));
     return nodes;
@@ -112,6 +159,11 @@ export function renderComposedResult(result, panelSpec) {
   const groupDims = Array.isArray(panelSpec.groupBy) ? panelSpec.groupBy : [];
   /* Render-only reference lines (design D3), in the panel's unit — the chart draws each in-domain value. */
   const thresholds = Array.isArray(panelSpec.thresholds) ? panelSpec.thresholds : null;
+  /* A mark-click drills IN by pinning that mark's group value(s) as a filter (design D6); only offered when the
+     panel groups by real declared dimensions (the chart shapers attach `drill` per mark). */
+  const onSelect = opts.onDrill ? (keys) => opts.onDrill(keys && keys.length ? { keys } : null) : null;
+
+  if (drillNode) nodes.push(drillNode);
 
   switch (panelSpec.viz) {
     case "line":
@@ -129,16 +181,18 @@ export function renderComposedResult(result, panelSpec) {
           clampMax: unit === "percent" ? 100 : null,
           mode: panelSpec.viz,
           thresholds,
+          annotations: annotationLayers(result.annotations, opts.annotationMeta),
+          onSelect,
         })
       );
       if (hidden > 0) nodes.push(el("div", { class: "chart-note", text: `+${hidden} more series not shown.` }));
       break;
     }
     case "bar":
-      nodes.push(renderBarChart({ items: rankedItems(rows, groupDims), formatValue: fmt, unit: axisUnit(unit), thresholds }));
+      nodes.push(renderBarChart({ items: rankedItems(rows, groupDims), formatValue: fmt, unit: axisUnit(unit), thresholds, onSelect }));
       break;
     case "pie":
-      nodes.push(renderPieChart({ items: rankedItems(rows, groupDims), formatValue: fmt }));
+      nodes.push(renderPieChart({ items: rankedItems(rows, groupDims), formatValue: fmt, onSelect }));
       break;
     case "stat":
       nodes.push(renderScalar(rows, panelSpec, fmt));
@@ -170,6 +224,7 @@ export function pivotTimeSeries(rows, groupDims, label) {
 
   const totals = new Map(); // seriesKey -> running total (for the top-N cut)
   const labels = new Map(); // seriesKey -> display label
+  const drills = new Map(); // seriesKey -> drill keys [{dimension, value}] (design D6)
   const byBucket = new Map(); // bucket -> point object
   const order = []; // seriesKey first-seen order (stable colors)
 
@@ -178,6 +233,7 @@ export function pivotTimeSeries(rows, groupDims, label) {
     const key = "s:" + JSON.stringify(groupDims.map((d) => (r[d] == null ? "" : String(r[d]))));
     if (!labels.has(key)) {
       labels.set(key, comboLabel(r, groupDims));
+      drills.set(key, buildDrillKeys(r, groupDims));
       totals.set(key, 0);
       order.push(key);
     }
@@ -202,17 +258,22 @@ export function pivotTimeSeries(rows, groupDims, label) {
     key,
     label: labels.get(key),
     color: CATEGORICAL_COLORS[i % CATEGORICAL_COLORS.length],
+    drill: drills.get(key),
   }));
   return { points: [...byBucket.values()], series, hidden };
 }
 
-/** Shape RANKED rows into charts.js's items[] ({label, value, color}); the category is the group-by combo. */
+/** Shape RANKED rows into charts.js's items[] ({label, value, color, drill}); the category is the group-by combo,
+ *  and `drill` (design D6) carries the row's declared group-dimension values so a click can filter to that category. */
 export function rankedItems(rows, groupDims) {
   const dims = groupDims.length ? groupDims : otherColumns(rows[0]);
   return rows.map((r, i) => ({
     label: dims.length ? comboLabel(r, dims) : "value",
     value: numOrNull(r.value),
     color: CATEGORICAL_COLORS[i % CATEGORICAL_COLORS.length],
+    /* Only DECLARED group-by dims are drillable — a fallback otherColumns() dim isn't a catalog dimension the run
+       endpoint would accept as a filter, so it stays non-drillable. */
+    drill: groupDims.length ? buildDrillKeys(r, groupDims) : null,
   }));
 }
 
@@ -331,6 +392,81 @@ function numOrNull(v) {
   if (v == null || v === "") return null;
   const n = Number(v);
   return isNaN(n) ? null : n;
+}
+
+/* ─────────────────────────── D5 annotations + D6 drill-down ─────────────────────────── */
+
+/** Whether a viz is a time-series chart (the only shape event annotations overlay). */
+function isTimeSeriesViz(viz) {
+  return viz === "line" || viz === "area" || viz === "stacked" || viz === "stacked-bar";
+}
+
+/** The drill keys for a row (design D6): one {dimension, value} per declared group dimension, so a click pins that
+ *  exact category/combo. Returns null when any dimension value is null/empty (a "(none)" bucket can't be filtered to). */
+function buildDrillKeys(row, dims) {
+  if (!Array.isArray(dims) || !dims.length) return null;
+  const keys = [];
+  for (const d of dims) {
+    const v = row[d];
+    if (v == null || v === "") return null;
+    keys.push({ dimension: d, value: String(v) });
+  }
+  return keys.length ? keys : null;
+}
+
+/**
+ * Reshape the run response's `annotations` ([{source, events:[{ts,label}]}], in requested order) into the chart's
+ * layer shape ([{source, displayName, events}]), resolving each source's display name off the catalog map (falling
+ * back to a humanized key). Sources with no events in the window are dropped so the annotation key stays meaningful.
+ */
+function annotationLayers(resultAnnotations, meta) {
+  if (!Array.isArray(resultAnnotations) || !resultAnnotations.length) return null;
+  const layers = [];
+  for (const a of resultAnnotations) {
+    const events = Array.isArray(a.events) ? a.events : [];
+    if (!events.length) continue;
+    const m = meta && typeof meta.get === "function" ? meta.get(a.source) : null;
+    layers.push({ source: a.source, displayName: (m && m.displayName) || humanize(a.source), events });
+  }
+  return layers.length ? layers : null;
+}
+
+/** A cached key -> {displayName} map of the catalog's annotation sources (design D5), so the chart legend/tooltip
+ *  use the same display names the composer offered. getCatalog() is itself cached, so this resolves once per load. */
+let _annotationMetaPromise = null;
+function annotationMetaMap() {
+  if (!_annotationMetaPromise) {
+    _annotationMetaPromise = getCatalog().then((cat) => {
+      const map = new Map();
+      for (const a of ((cat && cat.compose) || {}).annotationSources || []) {
+        if (a && a.key) map.set(a.key, { displayName: a.displayName || a.key });
+      }
+      return map;
+    });
+  }
+  return _annotationMetaPromise;
+}
+
+/**
+ * The transient drill-down chip (design D6): the pinned filter(s) as text, a "clear" that pops back to the base
+ * spec, and — when a pinned dimension is `server` — a jump to that server's existing detail page. Every value is
+ * textContent (R4/XSS); the chip is view-state only (the stored definition is never touched).
+ */
+function drillChip(drill, onDrill) {
+  const parts = drill.keys.map((k) => humanize(k.dimension) + " = " + k.value);
+  const chip = el("div", { class: "drill-chip" }, [
+    el("span", { class: "drill-label", text: "Filtered: " + parts.join(", ") }),
+  ]);
+  const serverKey = drill.keys.find((k) => k.dimension === "server");
+  if (serverKey) {
+    const open = el("button", { class: "btn small drill-open", type: "button", text: "Open server page →" });
+    open.addEventListener("click", () => navigateServer(serverKey.value));
+    chip.appendChild(open);
+  }
+  const clear = el("button", { class: "btn small drill-clear", type: "button", title: "Clear drill-down", "aria-label": "Clear drill-down", text: "×" });
+  clear.addEventListener("click", () => onDrill(null));
+  chip.appendChild(clear);
+  return chip;
 }
 
 /** A soft note when a panel groups by server: a fleet-wide group only lists servers that collect the measure. */

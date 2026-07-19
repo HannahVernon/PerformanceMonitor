@@ -52,6 +52,10 @@ const DEFAULT_RANGE_HOURS = 24;
 /** The default chart per composed-panel shape (a working chart the instant a measure is picked). */
 const DEFAULT_VIZ_FOR_SHAPE = { timeseries: "line", ranked: "bar", scalar: "stat" };
 
+/** The most event-annotation sources a time-series panel may overlay (design D5) — mirrors the server's
+ *  ComposeLimits.MaxAnnotations so the composer caps at the same number the run endpoint accepts. */
+const MAX_ANNOTATIONS = 4;
+
 /* ─────────────────────────── entry ─────────────────────────── */
 
 export async function renderEditor(main, id) {
@@ -126,6 +130,7 @@ function newComposedPanel() {
     title: "",
     hours: null,
     thresholds: [],
+    annotations: [],
   };
 }
 
@@ -181,6 +186,7 @@ function descToComposedPanel(d) {
     title: d.title || "",
     hours: typeof d.hours === "number" ? d.hours : null,
     thresholds: cleanThresholds(d.thresholds),
+    annotations: Array.isArray(d.annotations) ? d.annotations.map(String) : [],
   };
 }
 
@@ -228,6 +234,13 @@ function composedPanelToDesc(p) {
   if (p.hours != null) d.hours = p.hours;
   const thresholds = cleanThresholds(p.thresholds);
   if (thresholds.length) d.thresholds = thresholds;
+  /* Event-annotation sources (design D5) are only meaningful on a time-series panel — the server rejects them
+     otherwise — so emit them only for that shape. Kept in the model across shape changes (like thresholds), just
+     not serialized off a ranked/scalar panel. */
+  if (p.shape === "timeseries") {
+    const annotations = cleanAnnotations(p.annotations);
+    if (annotations.length) d.annotations = annotations;
+  }
   return d;
 }
 
@@ -236,6 +249,21 @@ function composedPanelToDesc(p) {
 function cleanThresholds(list) {
   if (!Array.isArray(list)) return [];
   return list.filter((n) => typeof n === "number" && isFinite(n)).slice(0, 4);
+}
+
+/** Normalize an annotation-source list to at most MAX_ANNOTATIONS distinct non-empty string keys (design D5),
+ *  mirroring the server's dedupe + cap so a stored def (and the preview) matches what the run endpoint accepts. */
+function cleanAnnotations(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const k of list) {
+    if (typeof k !== "string" || !k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= MAX_ANNOTATIONS) break;
+  }
+  return out;
 }
 
 /* A model filter -> the stored form: an eq/neq value with commas splits into a multi-value array; everything else
@@ -1024,8 +1052,48 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
   function advancedBlock(m) {
     const rows = [field("Unit / magnitude", unitControl(m)), field("Time range", timeOverrideControl())];
     if (vizDrawsThresholds(p.viz)) rows.push(field("Reference lines", thresholdsControl(m)));
+    /* Event markers (design D5) overlay only on a time-series panel — the run endpoint rejects them otherwise. */
+    if (p.shape === "timeseries") rows.push(field("Event markers", annotationsControl()));
     if (p.aggregate === "percentile_cont") rows.push(el("div", { class: "block-help", text: "Percentile is fixed at p95." }));
     return el("details", { class: "composed-advanced" }, [el("summary", { text: "Advanced" }), el("div", { class: "cfg" }, rows)]);
+  }
+
+  /* Up to MAX_ANNOTATIONS event-annotation sources (design D5) to overlay as vertical markers on a time chart, a
+     multi-select of chips off the catalog's annotationSources (data-driven — never a hardcoded list). Toggling a
+     chip is a LIVE change (a local redraw so the Advanced section stays open + keeps its scroll), never a structural
+     rebuild. A constrained source (appliesTo, D4) carries its availability as the chip's hover title. */
+  function annotationsControl() {
+    if (!Array.isArray(p.annotations)) p.annotations = [];
+    const sources = compose.annotationSources || [];
+    if (!sources.length) {
+      return el("div", { class: "static-field muted", text: "No annotation sources are available." });
+    }
+    const box = el("div", { class: "annotations-picker" });
+
+    function redraw() {
+      const chips = sources.map((a) => {
+        const on = p.annotations.includes(a.key);
+        const avail = annotationAvailabilitySummary(a);
+        const btn = el("button", { class: "chip" + (on ? " on" : ""), type: "button", text: a.displayName, "aria-pressed": on ? "true" : "false", title: avail || null });
+        btn.disabled = !on && p.annotations.length >= MAX_ANNOTATIONS;
+        btn.addEventListener("click", () => {
+          const idx = p.annotations.indexOf(a.key);
+          if (idx >= 0) p.annotations.splice(idx, 1);
+          else if (p.annotations.length < MAX_ANNOTATIONS) p.annotations.push(a.key);
+          redraw();
+          onLive();
+        });
+        return btn;
+      });
+      mount(box, el("div", { class: "chip-row" }, chips));
+    }
+
+    redraw();
+    const help = el("div", {
+      class: "block-help",
+      text: "Overlay event markers (deadlocks, blocked-process reports, …) as vertical lines on this time chart. Up to " + MAX_ANNOTATIONS + " sources.",
+    });
+    return el("div", {}, [box, help]);
   }
 
   /* Up to 4 render-only threshold reference lines (design D3), in the panel's unit. A value edit / add / remove is a
@@ -1303,12 +1371,13 @@ function measureCaption(m, compose) {
   return m.category + " · " + grain + " · groups by " + dimText;
 }
 
-/* A measure's per-server-type constraints from the catalog's appliesTo gate (design D4), or null when it collects
+/* The per-server-type constraints on an appliesTo gate (design D4), shared by measures AND annotation sources (both
+   carry the identical appliesTo node — the same BuildAppliesToNode on the server). Returns null when it collects
    everywhere with no msdb dependency (the common case — no badge). `missing` names the platforms it can't collect on;
-   `needsMsdb` flags a SQL-Agent (job) dependency. Purely informational: the measure still works where it applies —
-   auto-greying by the view's actual servers needs a per-server type/edition signal the fleet endpoint doesn't expose. */
-function measureAvailabilityConstraints(m) {
-  const a = m && m.appliesTo;
+   `needsMsdb` flags a SQL-Agent (job) dependency. Purely informational: the measure/source still works where it
+   applies — auto-greying by the view's actual servers needs a per-server type/edition signal the fleet endpoint
+   doesn't expose. */
+function availabilityConstraints(a) {
   if (!a) return null;
   const missing = [];
   if (a.azureSqlDb === false) missing.push("Azure SQL DB");
@@ -1320,14 +1389,27 @@ function measureAvailabilityConstraints(m) {
   return { missing, needsMsdb };
 }
 
-/** A compact one-line availability summary for a measure (the picker option's hover title), or "" when unconstrained. */
-function measureAvailabilitySummary(m) {
-  const c = measureAvailabilityConstraints(m);
+/** A compact one-line availability summary from constraints (a picker option/chip's hover title), or "". */
+function availabilitySummary(c) {
   if (!c) return "";
   const parts = [];
   if (c.missing.length) parts.push("not on " + c.missing.join(", "));
   if (c.needsMsdb) parts.push("needs SQL Agent (msdb)");
   return parts.join("; ");
+}
+
+function measureAvailabilityConstraints(m) {
+  return availabilityConstraints(m && m.appliesTo);
+}
+
+/** A compact one-line availability summary for a measure (the picker option's hover title), or "" when unconstrained. */
+function measureAvailabilitySummary(m) {
+  return availabilitySummary(measureAvailabilityConstraints(m));
+}
+
+/** A compact one-line availability summary for an annotation source (the composer chip's hover title, design D5). */
+function annotationAvailabilitySummary(a) {
+  return availabilitySummary(availabilityConstraints(a && a.appliesTo));
 }
 
 /** The availability badges shown under the measure picker for a constrained measure (design D4), or null. */
