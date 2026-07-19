@@ -110,11 +110,14 @@ export function renderComposedResult(result, panelSpec) {
   const unit = panelSpec.unit || "";
   const fmt = (v) => formatComposedValue(v, unit);
   const groupDims = Array.isArray(panelSpec.groupBy) ? panelSpec.groupBy : [];
+  /* Render-only reference lines (design D3), in the panel's unit — the chart draws each in-domain value. */
+  const thresholds = Array.isArray(panelSpec.thresholds) ? panelSpec.thresholds : null;
 
   switch (panelSpec.viz) {
     case "line":
     case "area":
-    case "stacked": {
+    case "stacked":
+    case "stacked-bar": {
       const { points, series, hidden } = pivotTimeSeries(rows, groupDims, measureLabel(panelSpec));
       nodes.push(
         renderLineChart({
@@ -125,13 +128,14 @@ export function renderComposedResult(result, panelSpec) {
           unit: axisUnit(unit),
           clampMax: unit === "percent" ? 100 : null,
           mode: panelSpec.viz,
+          thresholds,
         })
       );
       if (hidden > 0) nodes.push(el("div", { class: "chart-note", text: `+${hidden} more series not shown.` }));
       break;
     }
     case "bar":
-      nodes.push(renderBarChart({ items: rankedItems(rows, groupDims), formatValue: fmt, unit: axisUnit(unit) }));
+      nodes.push(renderBarChart({ items: rankedItems(rows, groupDims), formatValue: fmt, unit: axisUnit(unit), thresholds }));
       break;
     case "pie":
       nodes.push(renderPieChart({ items: rankedItems(rows, groupDims), formatValue: fmt }));

@@ -37,17 +37,23 @@ function svg(tag, attrs) {
 
 /**
  * Render a multi-series time chart into a returned `.chart` node.
- * spec: { points, xKey, series:[{key,label,color}], formatValue?, clampMax?, unit?, mode? }
- *   points    — array of row objects; each row[xKey] is a naive-UTC ISO string, each row[series.key] a number.
- *   clampMax  — cap the y-axis top at this value (percentage charts pass 100 so the domain never exceeds 100).
- *   unit      — a short y-axis unit caption ("%", "ms", "ms/s", ...).
- *   mode      — "line" (default; plain polylines), "area" (each series filled to the baseline), or "stacked"
- *               (series stacked on one another — the "parts of a whole over time" view; the y-domain is the
- *               per-bucket stack SUM). "line"/absent is byte-for-byte the original behavior.
+ * spec: { points, xKey, series:[{key,label,color}], formatValue?, clampMax?, unit?, mode?, thresholds? }
+ *   points     — array of row objects; each row[xKey] is a naive-UTC ISO string, each row[series.key] a number.
+ *   clampMax   — cap the y-axis top at this value (percentage charts pass 100 so the domain never exceeds 100).
+ *   unit       — a short y-axis unit caption ("%", "ms", "ms/s", ...).
+ *   mode       — "line" (default; plain polylines), "area" (each series filled to the baseline), "stacked"
+ *                (series stacked on one another — the "parts of a whole over time" view; the y-domain is the
+ *                per-bucket stack SUM), or "stacked-bar" (the same stack, drawn as a vertical bar per bucket
+ *                segmented by series). "line"/absent is byte-for-byte the original behavior.
+ *   thresholds — optional array of render-only reference-line values in the chart's unit (design D3); each
+ *                in-domain value draws a dashed guide line + label, out-of-domain values are skipped.
  */
 export function renderLineChart(spec) {
-  const { points, xKey, series, formatValue = (v) => String(v), clampMax = null, unit = null, mode = "line" } = spec;
+  const { points, xKey, series, formatValue = (v) => String(v), clampMax = null, unit = null, mode = "line", thresholds = null } = spec;
   const stacked = mode === "stacked";
+  const stackedBar = mode === "stacked-bar";
+  /* Both stacked modes share the cumulative pre-pass, the sum-based y-domain, and the hover-at-stack-top dots. */
+  const usesStack = stacked || stackedBar;
   const filled = mode === "area" || stacked;
 
   /* Parse + sort the x axis (naive UTC -> real Date via parseUtc). */
@@ -64,19 +70,19 @@ export function renderLineChart(spec) {
   const tMax = rows[rows.length - 1].t.getTime();
   const spanMs = tMax - tMin;
 
-  /* A numeric reader: null/NaN reads as null for line/area (a gap), or 0 for stacked (a continuous baseline). */
+  /* A numeric reader: null/NaN reads as null for line/area (a gap), or 0 for a stacked mode (a continuous baseline). */
   const readVal = (r, key) => {
     const v = r[key];
-    return v == null || isNaN(v) ? (stacked ? 0 : null) : Number(v);
+    return v == null || isNaN(v) ? (usesStack ? 0 : null) : Number(v);
   };
 
   /* Stacked pre-pass: cumulative top per series at each row (stackTops[i][k] = sum of series 0..k at row i). */
-  const stackTops = stacked ? rows.map(() => new Array(series.length).fill(0)) : null;
+  const stackTops = usesStack ? rows.map(() => new Array(series.length).fill(0)) : null;
 
   /* y domain. Stacked: 0..max stack sum. Line/area: across every series (0-baselined; non-negative metrics). */
   let dataMax = -Infinity;
   let dataMin = Infinity;
-  if (stacked) {
+  if (usesStack) {
     for (let i = 0; i < rows.length; i++) {
       let running = 0;
       for (let k = 0; k < series.length; k++) {
@@ -154,7 +160,24 @@ export function renderLineChart(spec) {
 
   const xs = rows.map((p) => scaleX(p.t.getTime()));
 
-  if (stacked) {
+  if (stackedBar) {
+    /* Time-series stacked BAR: one vertical bar per bucket, segmented bottom-up by series using the same cumulative
+       tops as the stacked area. Bar width is a fraction of the per-bucket spacing, centered on the bucket and clamped
+       into the plot; a sub-pixel segment is dropped so a dense window degrades cleanly toward a filled band. */
+    const barW = Math.max(1, (PLOT_W / rows.length) * 0.7);
+    for (let i = 0; i < rows.length; i++) {
+      const bx = Math.max(M.l, Math.min(M.l + PLOT_W - barW, xs[i] - barW / 2));
+      for (let k = 0; k < series.length; k++) {
+        const yTop = plotY(stackTops[i][k]);
+        const yBot = plotY(k === 0 ? 0 : stackTops[i][k - 1]);
+        const h = yBot - yTop;
+        if (h < 0.5) continue;
+        root.appendChild(
+          svg("rect", { class: "series-bar", x: bx, y: yTop, width: barW, height: h, fill: normalizeColor(series[k].color) })
+        );
+      }
+    }
+  } else if (stacked) {
     /* Filled bands drawn top series first so lower bands paint over the seams; each band is bounded above by its
        own cumulative top and below by the previous series' cumulative top (the x-axis for series 0). */
     for (let k = series.length - 1; k >= 0; k--) {
@@ -200,6 +223,17 @@ export function renderLineChart(spec) {
     }
   }
 
+  /* Render-only threshold reference lines (design D3): a horizontal dashed guide at each in-domain value (the value
+     runs along the y axis here). An out-of-domain threshold is skipped, never clamped onto an edge — a clamped line
+     would read as a real reference at the wrong value. Drawn above the series, below the hover overlay. */
+  if (Array.isArray(thresholds)) {
+    for (const tv of thresholds) {
+      if (tv == null || isNaN(tv) || tv < yMin || tv > yMax) continue;
+      const ty = scaleY(tv);
+      root.appendChild(thresholdLine(M.l, ty, W - M.r, ty, W - M.r - 4, ty - 4, "end", formatValue(tv)));
+    }
+  }
+
   /* Hover overlay: a transparent rect over the plot capturing mousemove. */
   const hoverLine = svg("line", { class: "hover-line", y1: M.t, y2: M.t + PLOT_H, style: "display:none" });
   root.appendChild(hoverLine);
@@ -236,8 +270,8 @@ export function renderLineChart(spec) {
     while (hoverDots.firstChild) hoverDots.removeChild(hoverDots.firstChild);
     for (let k = 0; k < series.length; k++) {
       const v = readVal(r, series[k].key);
-      if (!stacked && v == null) continue;
-      const cy = stacked ? plotY(stackTops[idx][k]) : plotY(v);
+      if (!usesStack && v == null) continue;
+      const cy = usesStack ? plotY(stackTops[idx][k]) : plotY(v);
       hoverDots.appendChild(svg("circle", { class: "hover-dot", cx: px, cy, r: 3.5, fill: normalizeColor(series[k].color) }));
     }
     hoverDots.style.display = "";
@@ -277,7 +311,7 @@ export function renderLineChart(spec) {
  * Rendered at a per-row height so a tall list stays readable (the container scrolls; the SVG never squashes).
  */
 export function renderBarChart(spec) {
-  const { items, formatValue = (v) => String(v) } = spec;
+  const { items, formatValue = (v) => String(v), thresholds = null } = spec;
   const rows = (items || []).filter((d) => d && d.value != null && !isNaN(d.value));
   if (!rows.length) return el("div", { class: "chart" }, [emptyStrip("No values to chart.")]);
 
@@ -318,6 +352,16 @@ export function renderBarChart(spec) {
     root.appendChild(bar);
     root.appendChild(value);
   });
+
+  /* Render-only threshold reference lines (design D3): a ranked bar's value runs along the x axis, so each in-domain
+     threshold draws a VERTICAL dashed guide across the bars (value label at the top). Out-of-domain values skip. */
+  if (Array.isArray(thresholds)) {
+    for (const tv of thresholds) {
+      if (tv == null || isNaN(tv) || tv < 0 || tv > domainMax) continue;
+      const tx = barLeft + (tv / domainMax) * barW;
+      root.appendChild(thresholdLine(tx, M.t, tx, height, tx, M.t - 4, "middle", formatValue(tv)));
+    }
+  }
 
   const chart = el("div", { class: "chart chart-bar" }, [root]);
   if (rows.length > MAX_BARS) {
@@ -417,6 +461,20 @@ function donutArc(cx, cy, rOuter, rInner, a1, a2) {
     `M ${ox1} ${oy1} A ${rOuter} ${rOuter} 0 ${large} 1 ${ox2} ${oy2} ` +
     `L ${ix2} ${iy2} A ${rInner} ${rInner} 0 ${large} 0 ${ix1} ${iy1} Z`
   );
+}
+
+/**
+ * One render-only threshold reference line (design D3): a dashed, neutral line from (x1,y1) to (x2,y2) with a small
+ * value label at (lx,ly). Shared by the time-series charts (horizontal, value on the y axis) and the ranked bar
+ * (vertical, value on the x axis) so the two can never drift in styling. `text` goes through textContent (R4/XSS).
+ */
+function thresholdLine(x1, y1, x2, y2, lx, ly, anchor, text) {
+  const g = svg("g", { class: "threshold" });
+  g.appendChild(svg("line", { class: "threshold-line", x1, y1, x2, y2 }));
+  const label = svg("text", { class: "threshold-label", x: lx, y: ly, "text-anchor": anchor });
+  label.textContent = text;
+  g.appendChild(label);
+  return g;
 }
 
 function buildLegend(series) {

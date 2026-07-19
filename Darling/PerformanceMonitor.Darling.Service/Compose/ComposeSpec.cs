@@ -38,6 +38,10 @@ public static class ComposeLimits
     public const int MaxFilters = 12;
     public const int MaxGroupBy = 4;
 
+    /// <summary>The most render-only reference lines (thresholds) a panel may carry — a handful of guide lines,
+    /// never a data series. Render-only: thresholds are validated at write time but never enter the compiler.</summary>
+    public const int MaxThresholds = 4;
+
     /// <summary>
     /// The per-session <c>statement_timeout</c> applied to the <c>viewer</c>/<c>mcp</c> roles (the compose
     /// surface's DB identities) — the hard backstop a composed query can never exceed, whatever the compile-time
@@ -106,6 +110,10 @@ public sealed record PanelPlan
     public required IReadOnlyList<ComposeDimension> GroupBy { get; init; }
     public required string Viz { get; init; }
 
+    /// <summary>Optional render-only reference-line values, in the panel's unit (0-4 finite numbers, design D3).
+    /// Validated at parse time but NEVER compiled — the frontend draws them, so they never enter the SQL.</summary>
+    public IReadOnlyList<double> Thresholds { get; init; } = Array.Empty<double>();
+
     /// <summary>True when any filter/groupBy dimension is stitched from the #1568 module join, so the
     /// compiler must emit (and window-bound) the module CTE.</summary>
     public bool UsesModuleJoin =>
@@ -128,7 +136,7 @@ public static class ComposeSpec
     /// <summary>The v2 composed-panel viz vocabulary (design §4) — distinct from v1 read panels' KnownViz
     /// (table/line/stat/bandlist). The composer's viz picker serves this; every stored composed panel's viz
     /// must be in it AND coherent with the panel's mode (<see cref="ValidateVizMode"/>).</summary>
-    public static readonly IReadOnlyList<string> ComposeVizList = new[] { "line", "area", "bar", "stacked", "pie", "table", "stat" };
+    public static readonly IReadOnlyList<string> ComposeVizList = new[] { "line", "area", "bar", "stacked", "stacked-bar", "pie", "table", "stat" };
 
     /// <summary>Set form of <see cref="ComposeVizList"/> for O(1) membership.</summary>
     public static readonly IReadOnlySet<string> KnownComposeViz = new HashSet<string>(ComposeVizList, StringComparer.Ordinal);
@@ -377,6 +385,15 @@ public static class ComposeSpec
             return (null, vizModeError);
         }
 
+        /* thresholds — optional render-only reference lines (design D3). Validated here so a stored def can't
+           carry a non-number/NaN/over-long list, but NOT compiled: the frontend draws them, so they never enter
+           the compiler/SQL. */
+        var (thresholds, thresholdError) = ParseThresholds(panel["thresholds"]);
+        if (thresholdError is not null)
+        {
+            return (null, thresholdError);
+        }
+
         var plan = new PanelPlan
         {
             Measure = measure,
@@ -388,6 +405,7 @@ public static class ComposeSpec
             Filters = filters!,
             GroupBy = groupBy!,
             Viz = viz,
+            Thresholds = thresholds!,
         };
 
         return (plan, null);
@@ -550,6 +568,41 @@ public static class ComposeSpec
         return (dims, null);
     }
 
+    /// <summary>Parses + validates a panel's optional <c>thresholds</c> array (design D3): 0-4 finite numbers,
+    /// in the panel's chosen unit, for render-only reference lines. Rejects a non-array, a non-number,
+    /// NaN/Infinity, or an over-long list. The values are validated but never compiled — the frontend draws
+    /// them — so a stored definition can never carry an un-renderable threshold.</summary>
+    private static (IReadOnlyList<double>? Thresholds, string? Error) ParseThresholds(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return (Array.Empty<double>(), null);
+        }
+
+        if (node is not JsonArray array)
+        {
+            return (null, "panel.thresholds must be an array.");
+        }
+
+        if (array.Count > ComposeLimits.MaxThresholds)
+        {
+            return (null, $"panel has {array.Count} thresholds; the maximum is {ComposeLimits.MaxThresholds}.");
+        }
+
+        var values = new List<double>(array.Count);
+        for (var i = 0; i < array.Count; i++)
+        {
+            if (array[i] is not JsonValue value || !value.TryGetValue<double>(out var number) || !double.IsFinite(number))
+            {
+                return (null, $"threshold {i} must be a finite number.");
+            }
+
+            values.Add(number);
+        }
+
+        return (values, null);
+    }
+
     private static string? ParseViz(JsonNode? node) => node switch
     {
         JsonValue value when value.TryGetValue<string>(out var s) => s,
@@ -564,9 +617,9 @@ public static class ComposeSpec
         || measure.AllowedDimensions.Contains(dimensionName);
 
     /// <summary>Rejects a viz that cannot render the panel's shape (design §4 shape-steering, enforced so a
-    /// stored def is never un-renderable): line/area/stacked are time series; bar/pie are ranked (topN) with a
-    /// categorical group; stat is a single scalar; table renders any shape. A stacked chart also needs a
-    /// group-by (the parts that stack), and a single-value panel cannot group.</summary>
+    /// stored def is never un-renderable): line/area/stacked/stacked-bar are time series; bar/pie are ranked
+    /// (topN) with a categorical group; stat is a single scalar; table renders any shape. A stacked (or
+    /// stacked-bar) chart also needs a group-by (the parts that stack), and a single-value panel cannot group.</summary>
     private static string? ValidateVizMode(string viz, PanelMode mode, int groupByCount)
     {
         if (string.Equals(viz, "table", StringComparison.Ordinal))
@@ -577,12 +630,12 @@ public static class ComposeSpec
         switch (mode)
         {
             case PanelMode.TimeSeries:
-                if (viz is not ("line" or "area" or "stacked"))
+                if (viz is not ("line" or "area" or "stacked" or "stacked-bar"))
                 {
-                    return $"a '{viz}' chart is not a time series; use line/area/stacked (or drop the timeBucket).";
+                    return $"a '{viz}' chart is not a time series; use line/area/stacked/stacked-bar (or drop the timeBucket).";
                 }
 
-                if (string.Equals(viz, "stacked", StringComparison.Ordinal) && groupByCount == 0)
+                if (viz is ("stacked" or "stacked-bar") && groupByCount == 0)
                 {
                     return "a stacked chart needs a group-by dimension (the parts that stack).";
                 }

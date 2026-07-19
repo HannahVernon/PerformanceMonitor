@@ -50,6 +50,22 @@ public enum MeasureKind
     Ratio,
 }
 
+/// <summary>How a <see cref="MeasureKind.Ratio"/> combines its two operands over the window.</summary>
+public enum MeasureRatioMode
+{
+    /// <summary><c>SUM(num) / NULLIF(SUM(den), 0)</c> — the cumulative/delta form (operands have a non-null
+    /// <see cref="ComposeMeasure.AggregationColumn"/>): a throughput or execution-weighted ratio.</summary>
+    Sum,
+
+    /// <summary><c>AVG(num) / NULLIF(AVG(den), 0)</c> — the gauge form: a ratio of two point-in-time readings
+    /// (both operands must be <see cref="MeasureArchetype.Gauge"/>, whose AggregationColumn is null).</summary>
+    /* NOTE: a third execution-WEIGHTED average (product-sum SUM(avg*execs)/SUM(execs), for the Query Store
+       pre-aggregated averages) is deliberately NOT modeled — it needs a weighting primitive the compiler does
+       not yet have, so those measures stay deferred (see the query_store_stats catalog comment) rather than
+       shipped as a wrong avg-of-avgs. */
+    Avg,
+}
+
 /// <summary>The fixed aggregation vocabulary. <c>percentile_cont</c> is legal ONLY on
 /// <see cref="MeasureArchetype.PerEvent"/> measures (the compiler enforces it regardless of the
 /// measure's declared <see cref="ComposeMeasure.ValidAggs"/>).</summary>
@@ -144,6 +160,11 @@ public sealed record ComposeMeasure
     /// <summary>Ratio numerator/denominator — both must be Scalar measures on the SAME source.</summary>
     public string? NumeratorKey { get; init; }
     public string? DenominatorKey { get; init; }
+
+    /// <summary>How a ratio combines its operands (<see cref="MeasureKind.Ratio"/> only): the default
+    /// <see cref="MeasureRatioMode.Sum"/> for cumulative/delta operands, or <see cref="MeasureRatioMode.Avg"/>
+    /// for gauge operands.</summary>
+    public MeasureRatioMode RatioMode { get; init; } = MeasureRatioMode.Sum;
 
     public required string NativeUnit { get; init; }
     public required string DefaultUnit { get; init; }
@@ -1009,6 +1030,23 @@ public static class MeasureCatalog
             Kind = MeasureKind.Ratio, NumeratorKey = "file_io_stall_read_ms", DenominatorKey = "file_reads",
             NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
             ValidAggs = NoAggs, AllowedDimensions = FileIoDims,
+        },
+
+        /* ══════════ Gauge-operand ratios (AVG/NULLIF(AVG)) — a ratio of two point-in-time readings, shown as a
+             percent (native 'ratio' × 100). Both operands are gauges on the same source (RatioMode = Avg). ══════════ */
+        new ComposeMeasure
+        {
+            Key = "grant_used_pct", DisplayName = "Query-memory grant used %", Category = CatMemory, SourceTable = "memory_grant_stats",
+            Kind = MeasureKind.Ratio, RatioMode = MeasureRatioMode.Avg, NumeratorKey = "grant_used_mb", DenominatorKey = "grant_granted_mb",
+            NativeUnit = "ratio", DefaultUnit = "percent", UnitFamily = FamilyFraction,
+            ValidAggs = NoAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "single_use_plan_pct", DisplayName = "Single-use plans %", Category = CatPlanCache, SourceTable = "plan_cache_stats",
+            Kind = MeasureKind.Ratio, RatioMode = MeasureRatioMode.Avg, NumeratorKey = "plan_cache_single_use_plans", DenominatorKey = "plan_cache_total_plans",
+            NativeUnit = "ratio", DefaultUnit = "percent", UnitFamily = FamilyFraction,
+            ValidAggs = NoAggs, AllowedDimensions = PlanCacheDims,
         },
     };
 
