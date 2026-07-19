@@ -285,15 +285,29 @@ public static class ComposeCompiler
 
         if (measure.Kind == MeasureKind.Ratio)
         {
-            var numerator = MeasureCatalog.Measure(measure.NumeratorKey)!;
-            var denominator = MeasureCatalog.Measure(measure.DenominatorKey)!;
-            /* Sum mode (cumulative/delta operands): SUM(delta) / NULLIF(SUM(delta), 0). Avg mode (gauge operands,
-               whose AggregationColumn is null — a gauge is never summable): AVG(col) / NULLIF(AVG(col), 0). */
-            var native = measure.RatioMode == MeasureRatioMode.Avg
-                ? $"(CAST(AVG({FactAlias}.{numerator.Column}) AS double precision) " +
-                  $"/ NULLIF(AVG({FactAlias}.{denominator.Column}), 0))"
-                : $"(CAST(SUM({FactAlias}.{numerator.AggregationColumn}) AS double precision) " +
-                  $"/ NULLIF(SUM({FactAlias}.{denominator.AggregationColumn}), 0))";
+            string native;
+            if (measure.RatioMode == MeasureRatioMode.Weighted)
+            {
+                /* Weighted mode (a pre-aggregated per-interval average weighted by its execution count): the
+                   execution-weighted mean SUM(value * weight) / NULLIF(SUM(weight), 0) across intervals — the
+                   correct average of averages (design §2), not a plain avg-of-avgs. Both operands are raw source
+                   columns, not numerator/denominator measures. */
+                native = $"(CAST(SUM({FactAlias}.{measure.WeightedValueColumn} * {FactAlias}.{measure.WeightColumn}) AS double precision) " +
+                         $"/ NULLIF(SUM({FactAlias}.{measure.WeightColumn}), 0))";
+            }
+            else
+            {
+                var numerator = MeasureCatalog.Measure(measure.NumeratorKey)!;
+                var denominator = MeasureCatalog.Measure(measure.DenominatorKey)!;
+                /* Sum mode (cumulative/delta operands): SUM(delta) / NULLIF(SUM(delta), 0). Avg mode (gauge operands,
+                   whose AggregationColumn is null — a gauge is never summable): AVG(col) / NULLIF(AVG(col), 0). */
+                native = measure.RatioMode == MeasureRatioMode.Avg
+                    ? $"(CAST(AVG({FactAlias}.{numerator.Column}) AS double precision) " +
+                      $"/ NULLIF(AVG({FactAlias}.{denominator.Column}), 0))"
+                    : $"(CAST(SUM({FactAlias}.{numerator.AggregationColumn}) AS double precision) " +
+                      $"/ NULLIF(SUM({FactAlias}.{denominator.AggregationColumn}), 0))";
+            }
+
             return ApplyUnitConversion(native, measure.UnitFamily, measure.NativeUnit, plan.Unit);
         }
 

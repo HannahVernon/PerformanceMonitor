@@ -50,7 +50,7 @@ public enum MeasureKind
     Ratio,
 }
 
-/// <summary>How a <see cref="MeasureKind.Ratio"/> combines its two operands over the window.</summary>
+/// <summary>How a <see cref="MeasureKind.Ratio"/> combines its operands over the window.</summary>
 public enum MeasureRatioMode
 {
     /// <summary><c>SUM(num) / NULLIF(SUM(den), 0)</c> — the cumulative/delta form (operands have a non-null
@@ -59,11 +59,16 @@ public enum MeasureRatioMode
 
     /// <summary><c>AVG(num) / NULLIF(AVG(den), 0)</c> — the gauge form: a ratio of two point-in-time readings
     /// (both operands must be <see cref="MeasureArchetype.Gauge"/>, whose AggregationColumn is null).</summary>
-    /* NOTE: a third execution-WEIGHTED average (product-sum SUM(avg*execs)/SUM(execs), for the Query Store
-       pre-aggregated averages) is deliberately NOT modeled — it needs a weighting primitive the compiler does
-       not yet have, so those measures stay deferred (see the query_store_stats catalog comment) rather than
-       shipped as a wrong avg-of-avgs. */
     Avg,
+
+    /// <summary><c>SUM(value * weight) / NULLIF(SUM(weight), 0)</c> — the execution-WEIGHTED average of a
+    /// column that is ITSELF a pre-aggregated per-interval average (e.g. Query Store <c>avg_duration_us</c>,
+    /// weighted by <c>execution_count</c>). This is the correct weighted mean across pre-aggregated intervals,
+    /// NOT a plain avg-of-avgs (which over-weights sparse intervals — design §2). Its two operands are RAW
+    /// source columns — <see cref="ComposeMeasure.WeightedValueColumn"/> (the per-interval average) and
+    /// <see cref="ComposeMeasure.WeightColumn"/> (the interval's execution weight) — not numerator/denominator
+    /// measures, because the pre-aggregated averages are deliberately NOT exposed as summable scalar measures.</summary>
+    Weighted,
 }
 
 /// <summary>The fixed aggregation vocabulary. <c>percentile_cont</c> is legal ONLY on
@@ -178,9 +183,21 @@ public sealed record ComposeMeasure
     public string? DenominatorKey { get; init; }
 
     /// <summary>How a ratio combines its operands (<see cref="MeasureKind.Ratio"/> only): the default
-    /// <see cref="MeasureRatioMode.Sum"/> for cumulative/delta operands, or <see cref="MeasureRatioMode.Avg"/>
-    /// for gauge operands.</summary>
+    /// <see cref="MeasureRatioMode.Sum"/> for cumulative/delta operands, <see cref="MeasureRatioMode.Avg"/>
+    /// for gauge operands, or <see cref="MeasureRatioMode.Weighted"/> for the execution-weighted average of a
+    /// pre-aggregated per-interval average.</summary>
     public MeasureRatioMode RatioMode { get; init; } = MeasureRatioMode.Sum;
+
+    /// <summary>For a <see cref="MeasureRatioMode.Weighted"/> ratio: the raw source column that is itself a
+    /// pre-aggregated per-interval AVERAGE (e.g. Query Store <c>avg_duration_us</c>), whose execution-weighted
+    /// mean is computed as <c>SUM(value * weight) / SUM(weight)</c>. A real payload column of the source
+    /// (pinned by test); null for every other kind/mode.</summary>
+    public string? WeightedValueColumn { get; init; }
+
+    /// <summary>For a <see cref="MeasureRatioMode.Weighted"/> ratio: the raw source column each interval's
+    /// <see cref="WeightedValueColumn"/> is weighted by (the interval's execution count, e.g.
+    /// <c>execution_count</c>). A real payload column of the source (pinned by test); null otherwise.</summary>
+    public string? WeightColumn { get; init; }
 
     public required string NativeUnit { get; init; }
     public required string DefaultUnit { get; init; }
@@ -956,11 +973,12 @@ public static class MeasureCatalog
             DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = PerfmonDims,
         },
 
-        /* ── query_store_stats — the CORRECT-composable subset only. execution_count is a per-interval count
-             (SUM over the window = total executions). max_duration/max_cpu are per-interval maxima (MAX over the
-             window = the window peak). The pre-aggregated AVG durations are DELIBERATELY omitted: a plain
-             avg-of-avgs is wrong (design §2), and a correct execution-weighted average needs a compiler
-             primitive Compose does not yet have — deferred as a documented follow-up, not shipped wrong. ── */
+        /* ── query_store_stats. execution_count is a per-interval count (SUM over the window = total executions);
+             max_duration/max_cpu are per-interval maxima (MAX over the window = the window peak). The
+             pre-aggregated AVG columns (avg_duration_us / avg_cpu_time_us) are NOT summable — a plain avg-of-avgs
+             over-weights sparse intervals (design §2) — but their correct execution-WEIGHTED average across
+             intervals now ships as a Weighted ratio (SUM(avg * execution_count) / SUM(execution_count)), the
+             product-sum form MeasureRatioMode.Weighted was added for. ── */
         new ComposeMeasure
         {
             Key = "qs_executions", DisplayName = "Query Store executions", Category = CatQueryStore, SourceTable = "query_store_stats",
@@ -981,6 +999,26 @@ public static class MeasureCatalog
             Archetype = MeasureArchetype.Gauge, Column = "max_cpu_time_us",
             NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
             DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QueryStoreDims,
+        },
+        /* The execution-weighted averages of the pre-aggregated per-interval averages (see the Weighted note
+           above): SUM(avg_duration_us * execution_count) / SUM(execution_count), the correct mean per execution
+           across the window — not an avg-of-avgs. Ratio measures, so ValidAggs is empty (a ratio's aggregation
+           is fixed). */
+        new ComposeMeasure
+        {
+            Key = "qs_avg_duration_us", DisplayName = "Query Store avg duration / execution", Category = CatQueryStore, SourceTable = "query_store_stats",
+            Kind = MeasureKind.Ratio, RatioMode = MeasureRatioMode.Weighted,
+            WeightedValueColumn = "avg_duration_us", WeightColumn = "execution_count",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = QueryStoreDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "qs_avg_cpu_us", DisplayName = "Query Store avg CPU / execution", Category = CatQueryStore, SourceTable = "query_store_stats",
+            Kind = MeasureKind.Ratio, RatioMode = MeasureRatioMode.Weighted,
+            WeightedValueColumn = "avg_cpu_time_us", WeightColumn = "execution_count",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = QueryStoreDims,
         },
 
         /* ═══════════ Same-source ratios (design §2c) — the bread-and-butter derived metrics ═══════════ */
