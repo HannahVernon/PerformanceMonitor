@@ -1147,4 +1147,23 @@ public sealed class DarlingComposeTests
         Assert.False(result.IsValid);
         Assert.Contains("panels", result.Error!, StringComparison.OrdinalIgnoreCase);
     }
+
+    /* ─────────────────────────── D7: list-summary kind (badge/route) ─────────────────────────── */
+
+    [Theory]
+    [InlineData("notebook", "notebook")]
+    [InlineData("dashboard", "dashboard")]
+    /* absent kind (a legacy/plain dashboard) defaults to a concrete "dashboard" on the wire. */
+    [InlineData(null, "dashboard")]
+    public void BuildSummariesNode_EmitsAConcreteKind_DefaultingDashboard(string? storedKind, string expectedWireKind)
+    {
+        var summary = new CustomViewSummary(
+            Id: 7, Name: "v", Description: null, Version: 1, UpdatedAt: DateTime.UnixEpoch, UpdatedBy: "web", Kind: storedKind);
+
+        var node = DarlingWebEndpoints.BuildSummariesNode(new[] { summary });
+
+        Assert.Equal(1, node.Count);
+        var one = Assert.IsType<JsonObject>(node[0]);
+        Assert.Equal(expectedWireKind, one["kind"]!.GetValue<string>());
+    }
 }

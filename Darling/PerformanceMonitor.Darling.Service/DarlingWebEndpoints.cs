@@ -1260,8 +1260,10 @@ public static class DarlingWebEndpoints
         ["updated_by"] = view.UpdatedBy,
     };
 
-    /// <summary>The bare-array list wire shape (no definition).</summary>
-    private static JsonArray BuildSummariesNode(IReadOnlyList<CustomViewSummary> views)
+    /// <summary>The bare-array list wire shape (no definition body). Carries the view <c>kind</c> — always
+    /// concrete (<c>"dashboard"</c> when the stored definition declares none) so the list page/sidebar can badge
+    /// and route a notebook vs a dashboard without fetching each full definition.</summary>
+    internal static JsonArray BuildSummariesNode(IReadOnlyList<CustomViewSummary> views)
     {
         var array = new JsonArray();
         foreach (var view in views)
@@ -1274,6 +1276,7 @@ public static class DarlingWebEndpoints
                 ["version"] = view.Version,
                 ["updated_at"] = view.UpdatedAt,
                 ["updated_by"] = view.UpdatedBy,
+                ["kind"] = view.Kind ?? "dashboard",
             });
         }
 

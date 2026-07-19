@@ -93,9 +93,11 @@ public sealed class DarlingCustomViewsLiveTests
             Assert.Equal(view.Id, fetched.View!.Id);
             Assert.Equal(name1, fetched.View.Name);
 
-            /* list -> contains our summary. */
+            /* list -> contains our summary, and the kind scalar reads through — null here, since SampleDefinition
+               is a kindless dashboard (definition->>'kind' is NULL); the wire layer defaults null -> "dashboard". */
             var list = await store.ListAsync(ct);
             Assert.Contains(list, s => s.Id == view.Id && s.Name == name1 && s.Version == 1);
+            Assert.Null(list.Single(s => s.Id == view.Id).Kind);
 
             /* update at the correct version -> Ok, version bumped to 2. */
             var updated = Assert.IsType<CustomViewResult.Ok>(

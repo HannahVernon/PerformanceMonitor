@@ -43,9 +43,11 @@ public sealed class CustomViewStore
         _dataSource = dataSource ?? throw new ArgumentNullException(nameof(dataSource));
     }
 
-    /// <summary>The bare-array list read: no <c>definition</c> column (the list view never needs the body).</summary>
+    /// <summary>The bare-array list read: the (potentially large) <c>definition</c> BODY is never selected — only
+    /// the view <c>kind</c> is extracted as a scalar (<c>definition-&gt;&gt;'kind'</c>) so the list can badge/route
+    /// a notebook vs a dashboard without fetching each definition.</summary>
     public const string ListSql = @"
-SELECT id, name, description, version, updated_at, updated_by
+SELECT id, name, description, version, updated_at, updated_by, (definition->>'kind') AS kind
 FROM custom_views
 ORDER BY name";
 
@@ -100,7 +102,8 @@ RETURNING id, name, definition, description, version, created_at, updated_at, up
                 reader.IsDBNull(2) ? null : reader.GetString(2),
                 reader.GetInt32(3),
                 reader.GetDateTime(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
         }
 
         return results;
@@ -274,14 +277,17 @@ public sealed record CustomView(
     DateTime UpdatedAt,
     string? UpdatedBy);
 
-/// <summary>The lightweight list projection — every field except the <c>definition</c> body.</summary>
+/// <summary>The lightweight list projection — every field except the <c>definition</c> body, plus the view
+/// <c>Kind</c> extracted as a scalar (<c>null</c> when the stored definition declares none — the wire layer
+/// defaults that to <c>"dashboard"</c>) so the list can badge/route a notebook vs a dashboard cheaply.</summary>
 public sealed record CustomViewSummary(
     long Id,
     string Name,
     string? Description,
     int Version,
     DateTime UpdatedAt,
-    string? UpdatedBy);
+    string? UpdatedBy,
+    string? Kind);
 
 /// <summary>
 /// The discriminated outcome of a store operation. Closed (the private base constructor blocks external
