@@ -45,9 +45,9 @@ public sealed record ComposeCompiled(string Sql, IReadOnlyList<NpgsqlParameter> 
 /// <item>Table/column/aggregate/time-column identifiers are catalog constants, emitted schema-qualified
 /// <c>collect.&lt;table&gt;</c> — the composed query can NEVER name a <c>config</c> table or an
 /// off-catalog column, and never relies on search_path.</item>
-/// <item>Every VALUE is a bound parameter: <c>$1</c> serverId, <c>$2</c>/<c>$3</c> the naive-UTC window,
-/// then filter values as <c>= ANY($n)</c> (with the array bound), <c>LIKE $n</c>, threshold <c>$n</c>,
-/// and <c>LIMIT $n</c> for topN.</item>
+/// <item>Every VALUE is a bound parameter: <c>$1</c>/<c>$2</c> the naive-UTC window, then (when the run is
+/// scoped to specific servers) a bound <c>server_name = ANY($n)</c>, then filter values as <c>= ANY($n)</c>
+/// (with the array bound), <c>LIKE $n</c>, threshold <c>$n</c>, and <c>LIMIT $n</c> for topN.</item>
 /// <item>Aggregation is archetype-gated (SUM on the delta of a cumulative, on the column of a delta; AVG/
 /// MIN/MAX on the gauge/per-event column; <c>percentile_cont</c> only on per-event); a ratio is
 /// <c>SUM(a)::float / NULLIF(SUM(b), 0)</c>.</item>
