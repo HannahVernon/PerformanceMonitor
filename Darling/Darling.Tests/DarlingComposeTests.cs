@@ -1166,4 +1166,76 @@ public sealed class DarlingComposeTests
         var one = Assert.IsType<JsonObject>(node[0]);
         Assert.Equal(expectedWireKind, one["kind"]!.GetValue<string>());
     }
+
+    /* ─────────────────────────── D7: seed-template drift guard ─────────────────────────── */
+
+    [Fact]
+    public void ValidateDefinition_AcceptsEverySeedNotebookTemplate()
+    {
+        /* Drift guard for the frontend's NOTEBOOK_TEMPLATES (wwwroot/js/notebook.js): each template's PANEL cells
+           are mirrored here verbatim (the markdown prose is abbreviated — ValidateDefinition only length-checks a
+           cell's text), so if a future MeasureCatalog change renames/removes a measure, dimension, or annotation
+           source a seed template relies on, THIS fails loudly instead of the template silently 400ing in the UI.
+           If a template's panels are added to or restructured, mirror the change here. */
+        var templates = new (string Name, string Definition)[]
+        {
+            ("blocking-rca",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# Blocking-chain RCA\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## 1. Blocking over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Blocked-process reports over time\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"deadlocks\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"## 2. Most-contended objects\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Most-blocked objects\",\"groupBy\":[\"contentious_object\"],\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## 3. Blocking by database\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Blocking by database\",\"groupBy\":[\"database_name\"],\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## 4. Lock modes involved\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"pie\",\"topN\":8,\"title\":\"Lock modes\",\"groupBy\":[\"lock_mode\"],\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"Next steps\"}]}"),
+
+            ("deadlock-postmortem",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# Deadlock post-mortem\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Deadlocks over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"deadlocks\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Deadlocks over time\",\"measure\":\"deadlock_count\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"blocked_process_reports\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"## Deadlocks by database\"}," +
+                "{\"type\":\"panel\",\"source\":\"deadlocks\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Deadlocks by database\",\"groupBy\":[\"database_name\"],\"measure\":\"deadlock_count\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Correlated blocking\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Blocked-process reports (deadlock markers)\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"deadlocks\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"Reading the deadlock graph\"}]}"),
+
+            ("what-changed",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# What changed at 2am?\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Default-trace events over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"default_trace_events\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Default-trace events over time\",\"measure\":\"deftrace_duration_us\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"system_health_events\",\"deadlocks\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"## Events by type\"}," +
+                "{\"type\":\"panel\",\"source\":\"default_trace_events\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Default-trace events by type\",\"groupBy\":[\"event_name\"],\"measure\":\"deftrace_duration_us\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Events by database\"}," +
+                "{\"type\":\"panel\",\"source\":\"default_trace_events\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Default-trace events by database\",\"groupBy\":[\"database_name\"],\"measure\":\"deftrace_duration_us\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Correlate with CPU\"}," +
+                "{\"type\":\"panel\",\"source\":\"cpu_utilization_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"SQL Server CPU % (event markers)\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"unit\":\"percent\",\"annotations\":[\"default_trace_events\",\"system_health_events\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"Where to look next\"}]}"),
+
+            ("memory-oom",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# Memory / OOM walkthrough\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Server memory over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Total server memory\",\"measure\":\"mem_total_server_mb\",\"aggregate\":\"avg\",\"unit\":\"mb\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Query-memory grants\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Granted query memory\",\"measure\":\"grant_granted_mb\",\"aggregate\":\"avg\",\"unit\":\"mb\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Query-memory grant used %\",\"ratio\":\"grant_used_pct\",\"unit\":\"percent\",\"thresholds\":[90]}," +
+                "{\"type\":\"markdown\",\"text\":\"## Grant pressure\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Memory-grant waiters (peak)\",\"measure\":\"grant_waiters\",\"aggregate\":\"max\",\"unit\":\"count\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Memory-grant timeouts\",\"measure\":\"grant_timeouts\",\"aggregate\":\"sum\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Top memory clerks\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_clerks\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Top memory clerks\",\"groupBy\":[\"clerk_type\"],\"measure\":\"clerk_memory_mb\",\"aggregate\":\"max\",\"unit\":\"mb\"}," +
+                "{\"type\":\"markdown\",\"text\":\"RESOURCE_SEMAPHORE notes\"}]}"),
+        };
+
+        foreach (var (name, definition) in templates)
+        {
+            var result = DarlingWebEndpoints.ValidateDefinition(definition);
+            Assert.True(result.IsValid, $"seed template '{name}' failed validation: {result.Error}");
+        }
+    }
 }
