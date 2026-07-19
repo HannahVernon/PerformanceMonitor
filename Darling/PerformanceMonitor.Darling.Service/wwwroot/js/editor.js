@@ -30,12 +30,27 @@
 import { el, mount, apiGet, readTool } from "./util.js";
 import { renderPanel, VIZ } from "./panels.js";
 import { SERIES_COLORS, normalizeColor } from "./charts.js";
+import { renderComposedPanelCard } from "./compose.js";
 import * as api from "./views-api.js";
 import * as derive from "./derive.js";
 
 /** The FORMATTERS keys the format pickers offer (mirrors util.js FORMATTERS). */
 const FORMAT_OPTIONS = ["text", "int", "num1", "num2", "pct", "ms", "mb", "time", "reltime", "bool"];
 const PREVIEW_DEBOUNCE_MS = 350;
+
+/** The view-level default time-range choices (hours) offered in the composer + the rendered view's chrome. */
+const RANGE_OPTIONS = [
+  { hours: 1, label: "Last hour" },
+  { hours: 6, label: "Last 6 hours" },
+  { hours: 24, label: "Last 24 hours" },
+  { hours: 24 * 7, label: "Last 7 days" },
+  { hours: 24 * 30, label: "Last 30 days" },
+  { hours: 24 * 90, label: "Last 90 days" },
+];
+const DEFAULT_RANGE_HOURS = 24;
+
+/** The default chart per composed-panel shape (a working chart the instant a measure is picked). */
+const DEFAULT_VIZ_FOR_SHAPE = { timeseries: "line", ranked: "bar", scalar: "stat" };
 
 /* ─────────────────────────── entry ─────────────────────────── */
 
@@ -70,7 +85,7 @@ export async function renderEditor(main, id) {
     loadedVersion = res.data.version;
     model = viewToModel(res.data);
   } else {
-    model = { name: "", description: "", panels: [newPanel()] };
+    model = { name: "", description: "", panels: [newPanel()], variables: [], rangeHours: null };
   }
 
   buildEditor(main, { model, editingId, loadedVersion, catalog, fleet });
@@ -88,8 +103,33 @@ async function loadFleetOptions() {
 
 /* ─────────────────────────── model <-> stored definition ─────────────────────────── */
 
+/** A new panel — a COMPOSED metric by default (the v2 headline); a read panel is the "advanced" alternative. */
 function newPanel() {
-  return { read: "", params: {}, viz: "", span: 1, title: "", vizcfg: {} };
+  return newComposedPanel();
+}
+
+function newComposedPanel() {
+  return {
+    kind: "source",
+    source: "",
+    measure: "",
+    ratio: "",
+    aggregate: "",
+    unit: "",
+    shape: "timeseries",
+    timeBucket: "hour",
+    topN: 10,
+    filters: [],
+    groupBy: [],
+    viz: "",
+    span: 1,
+    title: "",
+    hours: null,
+  };
+}
+
+function newReadPanel() {
+  return { kind: "read", read: "", params: {}, viz: "", span: 1, title: "", vizcfg: {} };
 }
 
 function viewToModel(view) {
@@ -99,16 +139,63 @@ function viewToModel(view) {
     name: view.name || "",
     description: view.description || "",
     panels: panels.length ? panels : [newPanel()],
+    variables: parseVariables(def.variables),
+    rangeHours: def.range && typeof def.range.hours === "number" ? def.range.hours : null,
   };
 }
 
-/* A stored descriptor -> the editor's panel model. Everything beyond the fields the editor manages directly
-   (title/read/params/viz/span) is preserved verbatim as `vizcfg` (rowsKey/columns/series/stats/unit/subtitle...)
-   and spread back on save, so nothing is lost on an edit round-trip. */
+/** The view's stored template variables -> the model list ({name, dimension, default}); malformed entries dropped. */
+function parseVariables(node) {
+  if (!Array.isArray(node)) return [];
+  return node
+    .filter((v) => v && typeof v === "object" && v.name)
+    .map((v) => ({ name: String(v.name), dimension: v.dimension ? String(v.dimension) : "", default: v.default != null ? String(v.default) : "" }));
+}
+
+/* A stored descriptor -> the editor's panel model, dispatched on kind: a v2 composed panel names a `source`, a v1
+   read panel names a `read`. `kind` is an editor-only field (the stored def carries neither `kind` nor `shape` — the
+   server infers the panel kind from `source`, and shape from timeBucket/topN). */
 function descToPanel(d) {
   const src = d && typeof d === "object" ? d : {};
-  const { title, read, params, viz, span, ...vizcfg } = src;
+  return src.source != null ? descToComposedPanel(src) : descToReadPanel(src);
+}
+
+function descToComposedPanel(d) {
+  const hasBucket = d.timeBucket && d.timeBucket !== "none";
+  const hasTopN = d.topN != null;
   return {
+    kind: "source",
+    source: d.source || "",
+    measure: d.measure || "",
+    ratio: d.ratio || "",
+    aggregate: d.aggregate || "",
+    unit: d.unit || "",
+    shape: hasBucket ? "timeseries" : hasTopN ? "ranked" : "scalar",
+    timeBucket: hasBucket ? d.timeBucket : "hour",
+    topN: hasTopN ? d.topN : 10,
+    filters: Array.isArray(d.filters) ? d.filters.map(descToFilter) : [],
+    groupBy: Array.isArray(d.groupBy) ? d.groupBy.map(String) : [],
+    viz: d.viz || "",
+    span: d.span === 2 ? 2 : 1,
+    title: d.title || "",
+    hours: typeof d.hours === "number" ? d.hours : null,
+  };
+}
+
+/* A stored filter -> the model's single-text-box form: an array value (eq/neq multi) joins to a comma string; a
+   scalar / "$var" value stays as-is. panelToDesc reverses this. */
+function descToFilter(f) {
+  const src = f && typeof f === "object" ? f : {};
+  const value = Array.isArray(src.value) ? src.value.join(", ") : src.value != null ? String(src.value) : "";
+  return { dimension: src.dimension || "", op: src.op || "eq", value };
+}
+
+/* The v1 read panel: everything beyond title/read/params/viz/span is preserved verbatim as `vizcfg` and spread
+   back on save, so nothing is lost on an edit round-trip. */
+function descToReadPanel(d) {
+  const { title, read, params, viz, span, kind, ...vizcfg } = d;
+  return {
+    kind: "read",
     read: read || "",
     params: params && typeof params === "object" && !Array.isArray(params) ? { ...params } : {},
     viz: viz || "",
@@ -119,6 +206,42 @@ function descToPanel(d) {
 }
 
 function panelToDesc(p) {
+  return p.kind === "source" ? composedPanelToDesc(p) : readPanelToDesc(p);
+}
+
+/* A composed panel model -> the stored descriptor. `kind`/`shape`/preview-only fields are dropped: the server
+   reads the panel kind from `source` and the mode from timeBucket/topN. measure XOR ratio; aggregate only for a
+   scalar; timeBucket only for a time series; topN only for a ranked panel. */
+function composedPanelToDesc(p) {
+  const d = { source: p.source, viz: p.viz, span: p.span === 2 ? 2 : 1, title: p.title || "" };
+  if (p.ratio) d.ratio = p.ratio;
+  else d.measure = p.measure;
+  if (!p.ratio && p.aggregate) d.aggregate = p.aggregate;
+  if (p.unit) d.unit = p.unit;
+  if (p.shape === "timeseries") d.timeBucket = p.timeBucket || "hour";
+  else if (p.shape === "ranked") d.topN = clampInt(p.topN, 1, 1000, 10);
+  const filters = (p.filters || []).map(filterToDesc).filter((f) => f.dimension && f.op);
+  if (filters.length) d.filters = filters;
+  if ((p.groupBy || []).length) d.groupBy = [...p.groupBy];
+  if (p.hours != null) d.hours = p.hours;
+  return d;
+}
+
+/* A model filter -> the stored form: an eq/neq value with commas splits into a multi-value array; everything else
+   (a single literal, a LIKE pattern, a threshold, or a "$var" reference) stays a scalar string. */
+function filterToDesc(f) {
+  const raw = f.value == null ? "" : String(f.value);
+  let value = raw;
+  if ((f.op === "eq" || f.op === "neq") && raw.includes(",")) {
+    value = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length);
+  }
+  return { dimension: f.dimension, op: f.op, value };
+}
+
+function readPanelToDesc(p) {
   return {
     title: p.title || "",
     read: p.read,
@@ -130,7 +253,13 @@ function panelToDesc(p) {
 }
 
 function modelToDefinition(model) {
-  return { panels: model.panels.map(panelToDesc) };
+  const def = { panels: model.panels.map(panelToDesc) };
+  const variables = (model.variables || [])
+    .filter((v) => v.name && v.dimension)
+    .map((v) => (v.default ? { name: v.name, dimension: v.dimension, default: v.default } : { name: v.name, dimension: v.dimension }));
+  if (variables.length) def.variables = variables;
+  if (model.rangeHours) def.range = { hours: model.rangeHours };
+  return def;
 }
 
 /** Drop null / undefined / empty-string param values so an optional-left-blank param uses the tool's default. */
@@ -192,7 +321,28 @@ function buildEditor(main, ctx) {
     rebuildPanels();
   });
 
-  const inner = { ...ctx, rebuildPanels, refreshSaveState };
+  /* The scope a composed panel's LIVE preview runs against — the whole fleet + the view's default range + the
+     declared variables (bound to their defaults). Read live at preview time, so it always reflects the current
+     view-scope model. The rendered view lets the viewer change server/time/variable values; this is the author's
+     preview baseline. */
+  function previewScope() {
+    const values = {};
+    for (const v of model.variables || []) {
+      if (v.name && v.dimension && v.dimension !== "server" && v.default) values[v.name] = v.default;
+    }
+    return {
+      server: "All",
+      hours: model.rangeHours || DEFAULT_RANGE_HOURS,
+      variables: (model.variables || [])
+        .filter((v) => v.name && v.dimension)
+        .map((v) => ({ name: v.name, dimension: v.dimension, default: v.default || undefined })),
+      values,
+    };
+  }
+
+  const inner = { ...ctx, rebuildPanels, refreshSaveState, previewScope };
+
+  const viewScopeSection = buildViewScopeSection(model, ctx.catalog, rebuildPanels);
 
   function rebuildPanels() {
     mount(panelsBox, model.panels.map((p, i) => buildPanelEditor(p, i, inner)));
@@ -253,6 +403,7 @@ function buildEditor(main, ctx) {
       el("h2", { text: ctx.editingId != null ? "Edit view" : "New view" }),
     ]),
     el("div", { class: "editor-meta" }, [field("Name", nameInput), field("Description", descInput)]),
+    viewScopeSection,
     el("h3", { class: "section-title", text: "Panels" }),
     panelsBox,
     addBtn,
@@ -274,7 +425,7 @@ function handleSaveError(res, saveStatus, ctx, main) {
   mount(saveStatus, el("div", { class: "strip error" }, parts));
 }
 
-/** The reason SAVE is blocked (name/panels/read/viz/required-params), or null when the view is savable. This is
+/** The reason SAVE is blocked (name/panels + each panel's prerequisites), or null when the view is savable. This is
  *  the button-DISABLING gate; the field-config requirement is enforced separately in onSave (see
  *  fieldConfigProblem) AFTER an auto-derive pass, so the Save click is never blocked from running that derive. */
 function saveBlocker(model, catalog) {
@@ -283,16 +434,41 @@ function saveBlocker(model, catalog) {
   for (let i = 0; i < model.panels.length; i++) {
     const p = model.panels[i];
     const n = i + 1;
-    if (!p.read) return "Panel " + n + ": choose a read.";
-    if (!p.viz) return "Panel " + n + ": choose a visualization.";
-    const missing = missingRequired(p, catalog);
-    if (missing.length) return "Panel " + n + ": fill required " + missing.join(", ") + ".";
+    const problem = p.kind === "source" ? composedBlocker(p, catalog) : readBlocker(p, catalog);
+    if (problem) return "Panel " + n + ": " + problem;
   }
   return null;
 }
 
-/** Which vizzes need a load-bearing field array: table -> columns, line -> series, stat -> stats (bandlist has none). */
+/** A read panel's SAVE blocker (read/viz/required-params), or null. */
+function readBlocker(p, catalog) {
+  if (!p.read) return "choose a read.";
+  if (!p.viz) return "choose a visualization.";
+  const missing = missingRequired(p, catalog);
+  if (missing.length) return "fill required " + missing.join(", ") + ".";
+  return null;
+}
+
+/** A composed panel's SAVE blocker — the coherence rules mirrored from the server so the author gets an inline reason
+ *  (the run endpoint stays the authority; anything subtler surfaces as a preview error). */
+function composedBlocker(p, catalog) {
+  const measure = composedMeasure(p, catalog);
+  if (!measure) return "choose a measure.";
+  const isRatio = measure.kind === "ratio";
+  if (!isRatio && !p.aggregate) return "choose an aggregate.";
+  if (!p.viz) return "choose a chart type.";
+  const groups = (p.groupBy || []).length;
+  if (p.shape === "scalar" && groups > 0) return "a single value can't group — switch to Over time or Ranked.";
+  if (p.shape === "ranked" && groups === 0) return "a ranked chart needs a group-by (the categories to rank).";
+  const reason = vizModeReason(p.viz, p.shape, groups);
+  if (reason) return reason;
+  return null;
+}
+
+/** Which read-panel vizzes need a load-bearing field array: table -> columns, line -> series, stat -> stats.
+ *  Composed panels never do (their fields come from the measure/group-by), so they are excluded here. */
 function needsFieldConfig(p) {
+  if (p.kind === "source") return false;
   return p.viz === "table" || p.viz === "line" || p.viz === "stat";
 }
 
@@ -340,7 +516,46 @@ function fieldConfigProblem(model) {
 
 /* ─────────────────────────── one panel editor ─────────────────────────── */
 
+/* A panel editor is dispatched on kind: a composed (v2) metric editor or a read (v1) editor. Both share the head
+   (Panel N + reorder/remove) and a "Composed / Read" kind toggle; switching kind swaps the panel to that kind's
+   default shape (title + width are carried over) and rebuilds. */
 function buildPanelEditor(p, index, ctx) {
+  const kindToggle = buildKindToggle(p, index, ctx);
+  return p.kind === "source"
+    ? buildComposedPanelEditor(p, index, ctx, kindToggle)
+    : buildReadPanelEditor(p, index, ctx, kindToggle);
+}
+
+/* The segmented "Composed metric / Read" toggle. Switching preserves title + width and resets the rest to the new
+   kind's defaults (the two shapes share almost nothing), then rebuilds every panel so the swapped body renders. */
+function buildKindToggle(p, index, ctx) {
+  const seg = el("div", { class: "kind-toggle", role: "group", "aria-label": "Panel data source" });
+  const opts = [
+    { kind: "source", label: "Composed metric" },
+    { kind: "read", label: "Read (advanced)" },
+  ];
+  for (const o of opts) {
+    const active = (p.kind || "source") === o.kind;
+    const btn = el("button", {
+      class: "kind-opt" + (active ? " active" : ""),
+      type: "button",
+      text: o.label,
+      "aria-pressed": active ? "true" : "false",
+    });
+    btn.addEventListener("click", () => {
+      if ((p.kind || "source") === o.kind) return;
+      const carried = { span: p.span || 1, title: p.title || "" };
+      const next = o.kind === "source" ? newComposedPanel() : newReadPanel();
+      Object.assign(next, carried);
+      ctx.model.panels[index] = next;
+      ctx.rebuildPanels();
+    });
+    seg.appendChild(btn);
+  }
+  return seg;
+}
+
+function buildReadPanelEditor(p, index, ctx, kindToggle) {
   const { catalog, fleet, model } = ctx;
   let lastSample = null;
   let previewTimer = null;
@@ -563,6 +778,7 @@ function buildPanelEditor(p, index, ctx) {
       el("span", { class: "panel-editor-title", text: "Panel " + (index + 1) }),
       headSub,
       el("div", { class: "spacer" }),
+      kindToggle,
       upBtn,
       downBtn,
       removeBtn,
@@ -586,6 +802,621 @@ function sampleUnavailableText(res) {
   if (res.kind === "empty") return "No sample rows in this window yet — add fields manually or adjust the parameters.";
   if (res.kind === "error") return "Could not fetch a sample (" + res.message + ") — add fields manually.";
   return "No sample data — add fields manually.";
+}
+
+/* ─────────────────────────── composed (v2) panel editor ─────────────────────────── */
+
+/* Display maps for the compose vocabularies (data-driven off /api/catalog; these only humanize the wire tokens). */
+const VIZ_LABELS = { line: "Line", area: "Area", stacked: "Stacked area", bar: "Bar", pie: "Pie / donut", table: "Table", stat: "Single value" };
+const AGG_LABELS = { sum: "Sum", avg: "Average", min: "Minimum", max: "Maximum", count: "Count", percentile_cont: "95th percentile" };
+const OP_LABELS = { eq: "is (=)", neq: "is not (≠)", like: "matches (LIKE)", gt: ">", gte: "≥", lt: "<", lte: "≤" };
+const BUCKET_LABELS = { minute: "Per minute", hour: "Per hour", day: "Per day" };
+const ARCHETYPE_LABELS = { Cumulative: "counter", Delta: "per-interval delta", Gauge: "gauge", PerEvent: "per-event" };
+const SHAPE_LABELS = { timeseries: "Over time", ranked: "Ranked", scalar: "Single value" };
+
+/*
+ * The v2 metric composer for one panel: pick a measure (or ratio), an aggregate, a SHAPE (over time / ranked /
+ * single value ⇒ the timeBucket|topN mode), optional group-by + filters, then a chart coherent with that shape.
+ * The live preview POSTs the composed spec to /api/compose/run (through compose.js) against the view's preview
+ * scope. Progressive disclosure: only the metric picker shows until a measure is chosen; unit / per-panel time /
+ * the percentile note live under an Advanced disclosure. The whole config re-renders on a structural change
+ * (measure/aggregate/shape/group/viz) so dependent controls stay coherent; free-text edits update in place.
+ */
+function buildComposedPanelEditor(p, index, ctx, kindToggle) {
+  const { catalog, model } = ctx;
+  const compose = catalog.compose || {};
+  let previewTimer = null;
+
+  const bodyBox = el("div", { class: "panel-editor-body" });
+  const headSub = el("span", { class: "panel-editor-sub" });
+  const previewBox = el("div", { class: "panel-preview" });
+  const previewSection = labeledBlock("Preview", previewBox);
+  previewSection.classList.add("panel-preview-col");
+
+  const upBtn = el("button", { class: "btn small icon", type: "button", text: "↑", title: "Move up", "aria-label": "Move panel up" });
+  const downBtn = el("button", { class: "btn small icon", type: "button", text: "↓", title: "Move down", "aria-label": "Move panel down" });
+  const removeBtn = el("button", { class: "btn small danger", type: "button", text: "Remove", "aria-label": "Remove panel" });
+  upBtn.disabled = index === 0;
+  downBtn.disabled = index === model.panels.length - 1;
+  upBtn.addEventListener("click", () => {
+    swap(model.panels, index, index - 1);
+    ctx.rebuildPanels();
+  });
+  downBtn.addEventListener("click", () => {
+    swap(model.panels, index, index + 1);
+    ctx.rebuildPanels();
+  });
+  removeBtn.addEventListener("click", () => {
+    model.panels.splice(index, 1);
+    if (!model.panels.length) model.panels.push(newPanel());
+    ctx.rebuildPanels();
+  });
+
+  function refreshHead() {
+    const m = composedMeasure(p, catalog);
+    const label = p.title || (m ? m.displayName : "");
+    headSub.textContent = label ? " · " + label : "";
+  }
+
+  function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(renderComposedPreview, PREVIEW_DEBOUNCE_MS);
+  }
+
+  function renderComposedPreview() {
+    const problem = composedPreviewBlocker(p, catalog);
+    if (problem) {
+      mount(previewBox, el("div", { class: "strip empty", text: problem }));
+      return;
+    }
+    /* Render the exact saved-view card (title + framing) against the preview scope — WYSIWYG. */
+    mount(previewBox, renderComposedPanelCard(composedPanelToDesc(p), ctx.previewScope()));
+  }
+
+  /* A structural change (measure/aggregate/shape/group/viz) may reveal or retune dependent controls — re-render
+     the config. A free-text / live change (title/unit/topN/bucket/filters/time) only refreshes save + preview. */
+  function onStructural() {
+    refreshHead();
+    ctx.refreshSaveState();
+    rebuildBody();
+    schedulePreview();
+  }
+  function onLive() {
+    refreshHead();
+    ctx.refreshSaveState();
+    schedulePreview();
+  }
+
+  /* ── config sub-builders (fresh nodes each rebuild, read from the model) ── */
+
+  function measureBlock(m) {
+    const sel = buildComposedMeasureSelect(compose, currentMeasureKey(p), (key) => {
+      applyMeasureChoice(p, key, compose);
+      onStructural();
+    });
+    return el("div", {}, [sel, m ? el("div", { class: "measure-caption", text: measureCaption(m, compose) }) : null]);
+  }
+
+  function shapeAndAggBlock(m) {
+    const kids = [];
+    if (m.kind === "ratio") {
+      kids.push(field("Aggregation", el("div", { class: "static-field muted", text: "Ratio (numerator ÷ denominator)" })));
+    } else {
+      kids.push(field("Aggregate", aggregateSelect(m)));
+    }
+    kids.push(field("Shape", shapeSegmented()));
+    if (p.shape === "timeseries") kids.push(field("Bucket", bucketSelect()));
+    else if (p.shape === "ranked") kids.push(field("Top N", topNInput()));
+    return el("div", { class: "composed-fields" }, kids);
+  }
+
+  function aggregateSelect(m) {
+    if (!p.aggregate) p.aggregate = m.defaultAggregate || (m.validAggregates || [])[0] || "";
+    const sel = el("select", { class: "editor-select", "aria-label": "Aggregate" });
+    for (const a of m.validAggregates || []) sel.appendChild(el("option", { value: a, text: AGG_LABELS[a] || a }));
+    sel.value = p.aggregate || "";
+    sel.addEventListener("change", () => {
+      p.aggregate = sel.value;
+      if (p.aggregate === "count") p.unit = "count";
+      else if (p.unit === "count") p.unit = m.defaultUnit || "";
+      onStructural();
+    });
+    return sel;
+  }
+
+  function shapeSegmented() {
+    const seg = el("div", { class: "seg-control", role: "group", "aria-label": "Panel shape" });
+    for (const v of ["timeseries", "ranked", "scalar"]) {
+      const active = p.shape === v;
+      const btn = el("button", { class: "seg-opt" + (active ? " active" : ""), type: "button", text: SHAPE_LABELS[v], "aria-pressed": active ? "true" : "false" });
+      btn.addEventListener("click", () => {
+        if (p.shape === v) return;
+        p.shape = v;
+        if (v === "timeseries" && !p.timeBucket) p.timeBucket = "hour";
+        if (v === "ranked" && !p.topN) p.topN = 10;
+        if (v === "scalar") p.groupBy = [];
+        if (!vizShapeCompatible(p.viz, p.shape)) p.viz = DEFAULT_VIZ_FOR_SHAPE[p.shape];
+        onStructural();
+      });
+      seg.appendChild(btn);
+    }
+    return seg;
+  }
+
+  function bucketSelect() {
+    const sel = el("select", { class: "editor-select", "aria-label": "Time bucket" });
+    for (const b of (compose.timeBuckets || []).filter((x) => x !== "none")) {
+      sel.appendChild(el("option", { value: b, text: BUCKET_LABELS[b] || b }));
+    }
+    sel.value = p.timeBucket || "hour";
+    sel.addEventListener("change", () => {
+      p.timeBucket = sel.value;
+      onLive();
+    });
+    return sel;
+  }
+
+  function topNInput() {
+    const inp = el("input", { class: "editor-input", type: "number", step: "1", min: "1", max: "1000", "aria-label": "Top N" });
+    inp.value = String(p.topN || 10);
+    inp.addEventListener("input", () => {
+      p.topN = clampInt(inp.value, 1, 1000, 10);
+      onLive();
+    });
+    return inp;
+  }
+
+  function groupByBlock(m) {
+    const dims = dimNamesForMeasure(m, compose);
+    const disabled = p.shape === "scalar";
+    const chips = dims.map((d) => {
+      const on = (p.groupBy || []).includes(d);
+      const btn = el("button", { class: "chip" + (on ? " on" : ""), type: "button", text: dimLabel(d), "aria-pressed": on ? "true" : "false" });
+      btn.disabled = disabled;
+      btn.addEventListener("click", () => {
+        const idx = p.groupBy.indexOf(d);
+        if (idx >= 0) p.groupBy.splice(idx, 1);
+        else p.groupBy.push(d);
+        onStructural();
+      });
+      return btn;
+    });
+    const row = el("div", { class: "chip-row" }, chips.length ? chips : [el("span", { class: "muted", text: "This measure has no group-by dimensions." })]);
+    const hint = disabled
+      ? el("div", { class: "block-help", text: "A single value can't group. Switch to Over time or Ranked to group." })
+      : databaseGrainHint(m, compose);
+    return el("div", {}, [row, hint]);
+  }
+
+  function filtersBlock(m) {
+    const editor = buildComposedFiltersEditor(p, m, compose, onLive);
+    const declared = (model.variables || []).filter((v) => v.name).map((v) => "$" + v.name);
+    const help = declared.length
+      ? el("div", { class: "block-help", text: "Values are literals (comma-separated for is/is-not); reference a view variable as " + declared.join(", ") + "." })
+      : el("div", { class: "block-help", text: "Values are literals (comma-separated for is/is-not). Declare a view variable to filter by $name." });
+    return el("div", {}, [editor, help]);
+  }
+
+  function chartBlock(m) {
+    const sel = buildComposedVizSelect(compose, p.shape, p.viz, (v) => {
+      p.viz = v;
+      onStructural();
+    });
+    const reason = vizModeReason(p.viz, p.shape, (p.groupBy || []).length);
+    return el("div", {}, [field("Chart type", sel), reason ? el("div", { class: "block-help warn-hint", text: reason }) : null]);
+  }
+
+  function advancedBlock(m) {
+    const rows = [field("Unit / magnitude", unitControl(m)), field("Time range", timeOverrideControl())];
+    if (p.aggregate === "percentile_cont") rows.push(el("div", { class: "block-help", text: "Percentile is fixed at p95." }));
+    return el("details", { class: "composed-advanced" }, [el("summary", { text: "Advanced" }), el("div", { class: "cfg" }, rows)]);
+  }
+
+  function unitControl(m) {
+    if (p.aggregate === "count") return el("div", { class: "static-field muted", text: "Count is unitless." });
+    const fam = (compose.unitFamilies || []).find((f) => f.name === m.unitFamily);
+    const units = fam && fam.units.length ? fam.units.map((u) => u.name) : [m.defaultUnit];
+    if (!p.unit || !units.includes(p.unit)) p.unit = m.defaultUnit;
+    const sel = el("select", { class: "editor-select", "aria-label": "Unit" });
+    for (const u of units) sel.appendChild(el("option", { value: u, text: u }));
+    sel.value = p.unit;
+    sel.addEventListener("change", () => {
+      p.unit = sel.value;
+      onLive();
+    });
+    return sel;
+  }
+
+  function timeOverrideControl() {
+    const sel = el("select", { class: "editor-select", "aria-label": "Per-panel time range" });
+    sel.appendChild(el("option", { value: "", text: "Use view default" }));
+    for (const r of RANGE_OPTIONS) sel.appendChild(el("option", { value: String(r.hours), text: r.label }));
+    sel.value = p.hours != null ? String(p.hours) : "";
+    sel.addEventListener("change", () => {
+      p.hours = sel.value ? parseInt(sel.value, 10) : null;
+      onLive();
+    });
+    return sel;
+  }
+
+  function identityBlock() {
+    const titleInput = el("input", { class: "editor-input", type: "text", placeholder: "Panel title", "aria-label": "Panel title" });
+    titleInput.value = p.title || "";
+    titleInput.addEventListener("input", () => {
+      p.title = titleInput.value;
+      refreshHead();
+    });
+    const spanSelect = el("select", { class: "editor-select", "aria-label": "Panel width" }, [
+      el("option", { value: "1", text: "1 column" }),
+      el("option", { value: "2", text: "2 columns (wide)" }),
+    ]);
+    spanSelect.value = String(p.span || 1);
+    spanSelect.addEventListener("change", () => {
+      p.span = spanSelect.value === "2" ? 2 : 1;
+    });
+    return el("div", { class: "composed-fields" }, [field("Title", titleInput, "field-title"), field("Width", spanSelect)]);
+  }
+
+  function rebuildBody() {
+    const m = composedMeasure(p, catalog);
+    const config = [labeledBlock("Metric", measureBlock(m))];
+    if (!m) {
+      config.push(el("div", { class: "panel-hint", text: "Choose a metric to begin." }));
+    } else {
+      config.push(shapeAndAggBlock(m));
+      config.push(labeledBlock("Group by", groupByBlock(m)));
+      config.push(labeledBlock("Filters", filtersBlock(m)));
+      config.push(labeledBlock("Chart", chartBlock(m)));
+      config.push(advancedBlock(m));
+      config.push(identityBlock());
+    }
+    const hasPreview = !!(m && p.viz);
+    const kids = [el("div", { class: "panel-config" }, config)];
+    if (hasPreview) kids.push(previewSection);
+    bodyBox.className = "panel-editor-body" + (hasPreview ? " has-preview" : "");
+    mount(bodyBox, kids);
+  }
+
+  refreshHead();
+  rebuildBody();
+  schedulePreview();
+
+  return el("div", { class: "panel-editor card" }, [
+    el("div", { class: "panel-editor-head" }, [
+      el("span", { class: "panel-editor-title", text: "Panel " + (index + 1) }),
+      headSub,
+      el("div", { class: "spacer" }),
+      kindToggle,
+      upBtn,
+      downBtn,
+      removeBtn,
+    ]),
+    bodyBox,
+  ]);
+}
+
+/** The reason a composed panel can't PREVIEW yet (missing measure/aggregate/chart); subtler run errors surface in
+ *  the preview body itself (the run endpoint is the authority). */
+function composedPreviewBlocker(p, catalog) {
+  const m = composedMeasure(p, catalog);
+  if (!m) return "Choose a metric to preview this panel.";
+  if (m.kind !== "ratio" && !p.aggregate) return "Choose an aggregate to preview this panel.";
+  if (!p.viz) return "Choose a chart type to preview this panel.";
+  /* Catch an incoherent shape/chart/group combo here so the preview shows a clean hint, not a red run error. */
+  return vizModeReason(p.viz, p.shape, (p.groupBy || []).length);
+}
+
+/* The filters sub-editor (its own redraw, so a dimension change can retune the operator list — LIKE only shows on a
+   LIKE-able dimension). A value edit updates the model + preview in place (no redraw, so the text input keeps focus). */
+function buildComposedFiltersEditor(p, measure, compose, onLive) {
+  const box = el("div", { class: "item-list filters" });
+  const dims = dimNamesForMeasure(measure, compose);
+
+  function redraw() {
+    const rows = (p.filters || []).map((f, i) => filterRow(f, i));
+    const addBtn = el("button", { class: "btn small", type: "button", text: "+ Add filter" });
+    addBtn.disabled = !dims.length;
+    addBtn.addEventListener("click", () => {
+      p.filters.push({ dimension: dims[0] || "", op: "eq", value: "" });
+      redraw();
+      onLive();
+    });
+    mount(box, [...rows, addBtn]);
+  }
+
+  function filterRow(f, i) {
+    const dimSel = el("select", { class: "editor-select", "aria-label": "filter dimension" });
+    for (const d of dims) dimSel.appendChild(el("option", { value: d, text: dimLabel(d) }));
+    dimSel.value = f.dimension || dims[0] || "";
+    dimSel.addEventListener("change", () => {
+      f.dimension = dimSel.value;
+      if (f.op === "like" && !dimMeta(compose, measure.source, f.dimension).likeable) f.op = "eq";
+      redraw();
+      onLive();
+    });
+
+    const likeable = dimMeta(compose, measure.source, f.dimension || dims[0]).likeable;
+    const opSel = el("select", { class: "editor-select", "aria-label": "filter operator" });
+    for (const op of compose.filterOps || []) {
+      if (op === "like" && !likeable) continue;
+      opSel.appendChild(el("option", { value: op, text: OP_LABELS[op] || op }));
+    }
+    opSel.value = f.op || "eq";
+    opSel.addEventListener("change", () => {
+      f.op = opSel.value;
+      onLive();
+    });
+
+    const valInput = el("input", { class: "editor-input", type: "text", "aria-label": "filter value", placeholder: valuePlaceholder(f.op) });
+    valInput.value = f.value || "";
+    valInput.addEventListener("input", () => {
+      f.value = valInput.value;
+      onLive();
+    });
+
+    const rm = el("button", { class: "btn small danger icon", type: "button", text: "×", title: "Remove filter", "aria-label": "remove filter" });
+    rm.addEventListener("click", () => {
+      p.filters.splice(i, 1);
+      redraw();
+      onLive();
+    });
+
+    return el("div", { class: "item-row" }, [dimSel, opSel, valInput, rm]);
+  }
+
+  redraw();
+  return box;
+}
+
+function valuePlaceholder(op) {
+  if (op === "eq" || op === "neq") return "value, value, …  or  $variable";
+  if (op === "like") return "pattern with % wildcards";
+  return "threshold  or  $variable";
+}
+
+/* ── composed pure helpers ── */
+
+/** The measure object a composed panel references (by its measure or ratio key), or null. */
+function composedMeasure(p, catalog) {
+  const key = p.ratio || p.measure;
+  if (!key) return null;
+  return ((catalog.compose || {}).measures || []).find((m) => m.key === key) || null;
+}
+
+function currentMeasureKey(p) {
+  return p.ratio || p.measure || "";
+}
+
+/* Apply a measure choice to the panel model: set the source, measure XOR ratio, a default aggregate + unit, and
+   drop any group-by / filter dimension the new measure doesn't allow (so a measure swap never leaves an off-catalog
+   dimension behind). A viz that is now shape-incompatible falls back to the shape's default. */
+function applyMeasureChoice(p, key, compose) {
+  const m = (compose.measures || []).find((x) => x.key === key);
+  if (!m) {
+    p.measure = "";
+    p.ratio = "";
+    p.source = "";
+    return;
+  }
+  p.source = m.source;
+  if (m.kind === "ratio") {
+    p.ratio = m.key;
+    p.measure = "";
+    p.aggregate = "";
+  } else {
+    p.measure = m.key;
+    p.ratio = "";
+    p.aggregate = m.defaultAggregate || (m.validAggregates || [])[0] || "";
+  }
+  p.unit = p.aggregate === "count" ? "count" : m.defaultUnit || "";
+  const allowed = new Set(dimNamesForMeasure(m, compose));
+  p.groupBy = (p.groupBy || []).filter((d) => allowed.has(d));
+  p.filters = (p.filters || []).filter((f) => !f.dimension || allowed.has(f.dimension));
+  if (!p.viz || !vizShapeCompatible(p.viz, p.shape)) p.viz = DEFAULT_VIZ_FOR_SHAPE[p.shape] || "line";
+}
+
+/** The dimensions a measure can group/filter by: the universal `server` (fleet axis) plus its allowed dimensions. */
+function dimNamesForMeasure(m, compose) {
+  const names = [...((compose && compose.universalDimensions) || []), ...((m && m.allowedDimensions) || [])];
+  return [...new Set(names)];
+}
+
+/** A dimension's metadata for a source ({likeable}); the virtual `server` dimension is exact-match only. */
+function dimMeta(compose, source, name) {
+  if (name === "server") return { name, likeable: false };
+  const d = ((compose && compose.dimensions) || []).find((x) => x.source === source && x.name === name);
+  return d ? { name, likeable: !!d.likeable } : { name, likeable: false };
+}
+
+/** A friendly label for a dimension name (the fleet axis is called out; the rest are humanized). */
+function dimLabel(d) {
+  return d === "server" ? "server (fleet)" : derive.humanizeKey(d);
+}
+
+/** The self-describing measure caption: category · archetype · group-by dimensions. */
+function measureCaption(m, compose) {
+  const dims = dimNamesForMeasure(m, compose);
+  const grain = m.kind === "ratio" ? "ratio" : ARCHETYPE_LABELS[m.archetype] || m.archetype;
+  const dimText = dims.length ? dims.map(dimLabel).join(", ") : "server only";
+  return m.category + " · " + grain + " · groups by " + dimText;
+}
+
+/** Whether a viz is compatible with a shape ignoring the group-by requirement (table works with any shape). */
+function vizShapeCompatible(viz, shape) {
+  if (viz === "table") return true;
+  if (shape === "timeseries") return viz === "line" || viz === "area" || viz === "stacked";
+  if (shape === "ranked") return viz === "bar" || viz === "pie";
+  return viz === "stat";
+}
+
+/** Where a viz belongs (for a disabled option's reason on the wrong shape). */
+function shapeHintFor(viz) {
+  if (viz === "line" || viz === "area" || viz === "stacked") return "over time";
+  if (viz === "bar" || viz === "pie") return "ranked";
+  if (viz === "stat") return "single value";
+  return "";
+}
+
+/* The full viz↔shape coherence reason (mirrors the server's ValidateVizMode), or null when coherent — drives the
+   inline hint under the chart picker. */
+function vizModeReason(viz, shape, groupCount) {
+  if (!viz) return null;
+  if (viz === "table") return null;
+  if (shape === "timeseries") {
+    if (!["line", "area", "stacked"].includes(viz)) return "A " + (VIZ_LABELS[viz] || viz) + " chart isn't a time series — use line, area, or stacked.";
+    if (viz === "stacked" && groupCount === 0) return "A stacked chart needs a group-by (the parts that stack).";
+    return null;
+  }
+  if (shape === "ranked") {
+    if (!["bar", "pie"].includes(viz)) return "A " + (VIZ_LABELS[viz] || viz) + " chart can't rank a top-N — use bar or pie.";
+    if (groupCount === 0) return "A " + (VIZ_LABELS[viz] || viz) + " chart needs a group-by (the categories to rank).";
+    return null;
+  }
+  if (groupCount > 0) return "A single value can't group — switch to Over time or Ranked.";
+  if (viz !== "stat") return "A single value uses the stat chart (or a table).";
+  return null;
+}
+
+function buildComposedMeasureSelect(compose, current, onChange) {
+  const sel = el("select", { class: "editor-select", "aria-label": "Metric" });
+  sel.appendChild(el("option", { value: "", text: "— choose a metric —" }));
+  const byCat = new Map();
+  for (const m of compose.measures || []) {
+    if (!byCat.has(m.category)) byCat.set(m.category, []);
+    byCat.get(m.category).push(m);
+  }
+  for (const [cat, ms] of [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const group = el("optgroup", { label: cat });
+    for (const m of ms.sort((a, b) => a.displayName.localeCompare(b.displayName))) {
+      const suffix = m.kind === "ratio" ? " (ratio)" : "";
+      group.appendChild(el("option", { value: m.key, text: m.displayName + suffix, title: measureCaption(m, compose) }));
+    }
+    sel.appendChild(group);
+  }
+  sel.value = current || "";
+  sel.addEventListener("change", () => onChange(sel.value));
+  return sel;
+}
+
+/* The chart picker: every compose viz, with the shapes it can't render disabled + annotated ("Bar — ranked"), so
+   only the coherent charts are selectable for the current shape (design §4 shape-steering). */
+function buildComposedVizSelect(compose, shape, current, onChange) {
+  const sel = el("select", { class: "editor-select", "aria-label": "Chart type" });
+  for (const v of compose.viz || []) {
+    const compatible = vizShapeCompatible(v, shape);
+    const label = (VIZ_LABELS[v] || v) + (compatible ? "" : " — " + shapeHintFor(v));
+    const opt = el("option", { value: v, text: label });
+    if (!compatible) opt.disabled = true;
+    sel.appendChild(opt);
+  }
+  sel.value = current || "";
+  sel.addEventListener("change", () => onChange(sel.value));
+  return sel;
+}
+
+/* The grain-trap guide (design §5): when a measure has NO per-database breakdown, point to same-category measures
+   that DO (else cross-category), so "group CPU by database" doesn't dead-end — returns null when the measure IS
+   per-database or when no alternative exists (no dead-end nag). */
+function databaseGrainHint(measure, compose) {
+  if (!measure || (measure.allowedDimensions || []).includes("database_name")) return null;
+  const alts = (compose.measures || []).filter((m) => m.key !== measure.key && (m.allowedDimensions || []).includes("database_name"));
+  const sameCat = alts.filter((m) => m.category === measure.category);
+  const pick = (sameCat.length ? sameCat : alts).slice(0, 4);
+  if (!pick.length) return null;
+  return el("div", { class: "grain-hint" }, [
+    "No per-database breakdown for this measure. For per-database data, try: ",
+    el("span", { class: "grain-alts", text: pick.map((m) => m.displayName).join(", ") }),
+    ".",
+  ]);
+}
+
+/* ─────────────────────────── view scope (variables + default range) ─────────────────────────── */
+
+/* The view-level scope editor: the DEFAULT time range (the range the rendered view opens with; the viewer can
+   change it) and, folded away, the template variables a panel filter can reference as $name. $database is offered
+   as a one-click add (the common per-database focus). Adding/removing a variable — or changing the range — rebuilds
+   the panels (so previews re-run and the filter var hints refresh) via onStructuralChange. */
+function buildViewScopeSection(model, catalog, onStructuralChange) {
+  const compose = catalog.compose || {};
+  const dimNames = variableDimensionNames(compose);
+
+  const rangeSel = el("select", { class: "editor-select", "aria-label": "Default time range" });
+  rangeSel.appendChild(el("option", { value: "", text: "Default (last 24 hours)" }));
+  for (const r of RANGE_OPTIONS) rangeSel.appendChild(el("option", { value: String(r.hours), text: r.label }));
+  rangeSel.value = model.rangeHours != null ? String(model.rangeHours) : "";
+  rangeSel.addEventListener("change", () => {
+    model.rangeHours = rangeSel.value ? parseInt(rangeSel.value, 10) : null;
+    onStructuralChange();
+  });
+
+  const varsBox = el("div", { class: "item-list vars" });
+
+  function redrawVars() {
+    const rows = model.variables.map((v, i) => varRow(v, i));
+    const addDb = el("button", { class: "btn small", type: "button", text: "+ $database" });
+    addDb.addEventListener("click", () => addVariable("database", "database_name"));
+    const addBtn = el("button", { class: "btn small", type: "button", text: "+ Add variable" });
+    addBtn.addEventListener("click", () => addVariable("", dimNames[0] || "server"));
+    mount(varsBox, [...rows, el("div", { class: "vizcfg-actions" }, [addDb, addBtn])]);
+  }
+
+  function addVariable(name, dimension) {
+    if (name && model.variables.some((v) => v.name === name)) return;
+    model.variables.push({ name, dimension, default: "" });
+    redrawVars();
+    onStructuralChange();
+  }
+
+  function varRow(v, i) {
+    const nameInp = el("input", { class: "editor-input", type: "text", placeholder: "name", "aria-label": "variable name" });
+    nameInp.value = v.name || "";
+    nameInp.addEventListener("input", () => {
+      v.name = nameInp.value.replace(/^\$+/, "");
+    });
+    const dimSel = el("select", { class: "editor-select", "aria-label": "variable dimension" });
+    for (const d of dimNames) dimSel.appendChild(el("option", { value: d, text: d === "server" ? "server" : derive.humanizeKey(d) }));
+    dimSel.value = v.dimension || dimNames[0] || "server";
+    v.dimension = dimSel.value;
+    dimSel.addEventListener("change", () => {
+      v.dimension = dimSel.value;
+    });
+    const defInp = el("input", { class: "editor-input", type: "text", placeholder: "default (optional)", "aria-label": "variable default" });
+    defInp.value = v.default || "";
+    defInp.addEventListener("input", () => {
+      v.default = defInp.value;
+    });
+    const rm = el("button", { class: "btn small danger icon", type: "button", text: "×", title: "Remove variable", "aria-label": "remove variable" });
+    rm.addEventListener("click", () => {
+      model.variables.splice(i, 1);
+      redrawVars();
+      onStructuralChange();
+    });
+    return el("div", { class: "item-row" }, [el("span", { class: "var-dollar", text: "$" }), nameInp, dimSel, defInp, rm]);
+  }
+
+  redrawVars();
+
+  return el("div", { class: "view-scope" }, [
+    el("h3", { class: "section-title", text: "View scope" }),
+    el("div", { class: "view-scope-row" }, [field("Default time range", rangeSel)]),
+    el("details", { class: "vars-panel" }, [
+      el("summary", { text: "Template variables (advanced)" }),
+      el("div", { class: "vars-body" }, [
+        el("div", {
+          class: "block-help",
+          text: "Declare a variable to scope panels view-wide: a panel filter can reference it as $name and the viewer picks its value. $database is the common one.",
+        }),
+        varsBox,
+      ]),
+    ]),
+  ]);
+}
+
+/** The dimension names a template variable may bind to: every catalog dimension name plus the reserved `server`. */
+function variableDimensionNames(compose) {
+  const set = new Set(["server"]);
+  for (const d of compose.dimensions || []) set.add(d.name);
+  return [...set];
 }
 
 /* ─────────────────────────── read / viz pickers ─────────────────────────── */
@@ -1036,6 +1867,13 @@ function toNumber(raw, isInt) {
   if (raw === "" || raw == null) return "";
   const n = isInt ? parseInt(raw, 10) : parseFloat(raw);
   return Number.isNaN(n) ? "" : n;
+}
+
+/** Parse an int and clamp it into [min, max], falling back to `dflt` on a non-number. */
+function clampInt(raw, min, max, dflt) {
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n)) return dflt;
+  return Math.max(min, Math.min(max, n));
 }
 
 function swap(arr, i, j) {

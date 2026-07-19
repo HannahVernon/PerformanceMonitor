@@ -31,12 +31,33 @@ export function getSession() {
   return _sessionPromise;
 }
 
-/** The read catalog — {reads:[{name,category,description,params}], viz:[...]}; empty shells on failure. */
+/** An empty compose sub-catalog — the shell a consumer reads array fields off when the fetch failed. */
+function emptyCompose() {
+  return {
+    measures: [],
+    dimensions: [],
+    universalDimensions: [],
+    unitFamilies: [],
+    aggregates: [],
+    timeBuckets: [],
+    filterOps: [],
+    viz: [],
+  };
+}
+
+/**
+ * The catalog — {reads, viz} for the v1 read picker AND `compose` (measures/dimensions/unit-families/aggregates/
+ * time-buckets/filter-ops/viz) for the v2 composer (#1563). One fetch backs both pickers; empty shells on failure so
+ * every caller can read the array fields without a guard. The compose node is DATA-DRIVEN (B3 grows the measure list
+ * server-side) — the composer never hardcodes a measure.
+ */
 export function getCatalog() {
   if (!_catalogPromise) {
-    _catalogPromise = apiGet("/api/catalog").then((r) =>
-      r.kind === "data" && r.data ? { reads: r.data.reads || [], viz: r.data.viz || [] } : { reads: [], viz: [] }
-    );
+    _catalogPromise = apiGet("/api/catalog").then((r) => {
+      const d = r.kind === "data" && r.data ? r.data : null;
+      const compose = d && d.compose ? { ...emptyCompose(), ...d.compose } : emptyCompose();
+      return { reads: (d && d.reads) || [], viz: (d && d.viz) || [], compose };
+    });
   }
   return _catalogPromise;
 }
@@ -67,10 +88,12 @@ export function deleteView(id) {
 }
 
 /**
- * PURE client-side validation of a view definition against the cached catalog — the exact structural rules the
- * server's ValidateDefinition enforces (read on the allowlist, viz in the vocabulary, span 1|2, no raw path,
- * param keys ⊆ the read's params, required params present). Returns null when valid, else a caller-facing error
- * string. The backend re-validates as the authority; this only gives an immediate, precise error on import.
+ * PURE client-side validation of a view definition against the cached catalog — a fast, precise pre-check on
+ * import that mirrors the structural rules the server's ValidateDefinition enforces. A panel is EITHER a v2
+ * COMPOSED panel (names a `source`: source/measure|ratio/viz checked against catalog.compose) or a v1 READ panel
+ * (names a `read` on the allowlist, viz in the vocabulary, param keys ⊆ the read's params, required params present).
+ * span 1|2 and a raw-`path` ban apply to both. Returns null when valid, else a caller-facing error string. The
+ * backend re-validates as the authority (it owns the full compose cross-check); this only gives an immediate error.
  */
 export function validateDefinition(def, catalog) {
   if (!def || typeof def !== "object" || Array.isArray(def)) {
@@ -82,9 +105,19 @@ export function validateDefinition(def, catalog) {
   if (def.panels.length === 0) {
     return "Definition must have at least one panel.";
   }
+  if (def.variables != null && !Array.isArray(def.variables)) {
+    return "Definition 'variables' must be an array.";
+  }
+  if (def.range != null && (typeof def.range !== "object" || Array.isArray(def.range))) {
+    return "Definition 'range' must be an object.";
+  }
 
   const reads = new Map((catalog.reads || []).map((r) => [r.name, r]));
   const vizSet = new Set(catalog.viz || []);
+  const compose = catalog.compose || {};
+  const sourceSet = new Set((compose.measures || []).map((m) => m.source));
+  const measureByKey = new Map((compose.measures || []).map((m) => [m.key, m]));
+  const composeVizSet = new Set(compose.viz || []);
 
   for (let i = 0; i < def.panels.length; i++) {
     const p = def.panels[i];
@@ -93,10 +126,36 @@ export function validateDefinition(def, catalog) {
       return "Panel " + n + " must be an object.";
     }
     if (p.path != null) {
-      return "Panel " + n + " uses raw 'path' mode, which is not allowed; use 'read'.";
+      return "Panel " + n + " uses raw 'path' mode, which is not allowed; use 'read' or 'source'.";
     }
+    if (p.span != null && p.span !== 1 && p.span !== 2) {
+      return "Panel " + n + " span must be 1 or 2.";
+    }
+
+    /* A composed panel names a source; a read panel names a read. */
+    if (p.source != null) {
+      if (!sourceSet.has(p.source)) {
+        return "Panel " + n + " references unknown source '" + p.source + "'.";
+      }
+      if (p.measure != null && p.ratio != null) {
+        return "Panel " + n + " must set exactly one of 'measure' or 'ratio', not both.";
+      }
+      const key = p.measure != null ? p.measure : p.ratio;
+      const m = measureByKey.get(key);
+      if (!m) {
+        return "Panel " + n + " references unknown measure '" + (key || "") + "'.";
+      }
+      if (m.source !== p.source) {
+        return "Panel " + n + " measure '" + m.key + "' is not on source '" + p.source + "'.";
+      }
+      if (!p.viz || !composeVizSet.has(p.viz)) {
+        return "Panel " + n + " has an unknown or missing chart type '" + (p.viz || "") + "'.";
+      }
+      continue;
+    }
+
     if (!p.read) {
-      return "Panel " + n + " is missing a read.";
+      return "Panel " + n + " is missing a read or source.";
     }
     const rd = reads.get(p.read);
     if (!rd) {
@@ -107,9 +166,6 @@ export function validateDefinition(def, catalog) {
     }
     if (!vizSet.has(p.viz)) {
       return "Panel " + n + " has unknown visualization '" + p.viz + "'.";
-    }
-    if (p.span != null && p.span !== 1 && p.span !== 2) {
-      return "Panel " + n + " span must be 1 or 2.";
     }
 
     const params = p.params || {};

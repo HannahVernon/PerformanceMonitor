@@ -329,3 +329,103 @@
 .save-status { font-size: 0.82rem; }
 .save-status .strip { padding: 0.35rem 0.6rem; }
 .save-status .strip.error { display: inline-flex; align-items: center; gap: 0.5rem; }
+
+/* ─────────────────────────── composed (v2) panel composer (#1563) ─────────────────────────── */
+
+/* The Composed / Read kind toggle in the panel head, and the Over-time / Ranked / Single-value shape segmented
+   control — the same pill idiom (a bordered group of buttons; the active one filled in the accent). */
+.kind-toggle,
+.seg-control {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.kind-opt,
+.seg-opt {
+  padding: 0.3rem 0.65rem;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--bg-dark);
+  color: var(--dim);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  line-height: 1.2;
+}
+.kind-opt:first-child,
+.seg-opt:first-child { border-left: none; }
+.kind-opt:hover,
+.seg-opt:hover { background: var(--lighter); color: var(--fg); }
+.kind-opt.active,
+.seg-opt.active { background: var(--accent); color: var(--bg-dark); }
+.kind-opt:focus-visible,
+.seg-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The composed config field grid (Aggregate / Shape / Bucket|Top-N; Title / Width) — like the read identity grid
+   but even tracks that wrap gracefully as the (possibly narrowed) config column shrinks. */
+.composed-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+/* The self-describing metric caption under the metric picker (category · archetype · dimensions). */
+.measure-caption { margin-top: 0.35rem; font-size: 0.75rem; color: var(--muted); }
+
+/* Static (non-editable) field content — the ratio "fixed aggregation" note, the count "unitless" note. */
+.static-field { padding: 0.4rem 0; font-size: 0.85rem; }
+
+/* Group-by dimension chips (toggle buttons). */
+.chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chip {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-dark);
+  color: var(--dim);
+  font-size: 0.8rem;
+  font-family: var(--font);
+  cursor: pointer;
+}
+.chip:hover { background: var(--lighter); color: var(--fg); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--bg-dark); font-weight: 600; }
+.chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The grain-trap tip (per-database alternatives) and the viz↔shape coherence warning. */
+.grain-hint { margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+.grain-hint .grain-alts { color: var(--dim); }
+.warn-hint { color: var(--warn); }
+
+/* The folded Advanced block (unit / per-panel time / percentile note). */
+.composed-advanced { margin-top: 0.85rem; }
+.composed-advanced > summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--muted); }
+.composed-advanced > summary:hover { color: var(--fg); }
+.composed-advanced > summary::-webkit-details-marker { display: none; }
+.composed-advanced > summary::before { content: "▸ "; color: var(--muted); }
+.composed-advanced[open] > summary::before { content: "▾ "; }
+.composed-advanced > .cfg { margin-top: 0.6rem; }
+
+/* ─────────────────────────── view scope (variables + default range) ─────────────────────────── */
+
+.view-scope { margin: 0.5rem 0 1.25rem; }
+.view-scope .section-title { margin-bottom: 0.6rem; }
+.view-scope-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+.vars-panel {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.85rem;
+}
+.vars-panel > summary { cursor: pointer; font-weight: 600; font-size: 0.82rem; color: var(--muted); }
+.vars-panel > summary:hover { color: var(--fg); }
+.vars-body { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.item-list.vars .item-row { align-items: center; }
+.item-list.vars .var-dollar { color: var(--muted); font-family: var(--mono); font-weight: 700; }
