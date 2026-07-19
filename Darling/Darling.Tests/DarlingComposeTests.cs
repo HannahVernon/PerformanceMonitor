@@ -275,10 +275,10 @@ public sealed class DarlingComposeTests
     private static readonly DateTime WindowStart = new(2026, 7, 18, 0, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime WindowEnd = new(2026, 7, 18, 6, 0, 0, DateTimeKind.Utc);
 
-    private static string Compile(PanelPlan plan, IReadOnlyDictionary<string, string?>? variables = null)
+    private static string Compile(PanelPlan plan, IReadOnlyList<string>? servers = null, IReadOnlyDictionary<string, string?>? variables = null)
     {
         var (compiled, error) = ComposeCompiler.Compile(
-            plan, new ComposeRunContext(42, WindowStart, WindowEnd, variables ?? ComposeRunContext.NoVariables));
+            plan, new ComposeRunContext(servers, WindowStart, WindowEnd, variables ?? ComposeRunContext.NoVariables));
         Assert.True(error is null, error);
         Assert.NotNull(compiled);
         return compiled!.Sql;
@@ -293,14 +293,14 @@ public sealed class DarlingComposeTests
     }
 
     [Fact]
-    public void Compile_BindsTheWindowAndServer_NoRawValues()
+    public void Compile_BindsTheWindowAndServerScope_NoRawValues()
     {
-        var sql = Compile(ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"));
-        Assert.Contains("server_id = $1", sql, StringComparison.Ordinal);
-        Assert.Contains("$2", sql, StringComparison.Ordinal);
-        Assert.Contains("$3", sql, StringComparison.Ordinal);
-        /* The bound serverId (42) must NOT appear as a literal. */
-        Assert.DoesNotContain("42", sql, StringComparison.Ordinal);
+        var sql = Compile(ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"), new[] { "PROD-01" });
+        Assert.Contains("$1", sql, StringComparison.Ordinal);   /* window start */
+        Assert.Contains("$2", sql, StringComparison.Ordinal);   /* window end */
+        Assert.Contains("server_name = ANY($3)", sql, StringComparison.Ordinal);
+        /* The server name is a bound parameter, never interpolated. */
+        Assert.DoesNotContain("PROD-01", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -352,12 +352,15 @@ public sealed class DarlingComposeTests
     public void Compile_ModuleJoin_IsEmittedAndWindowBounded_ForTheDerivedObject()
     {
         var sql = Compile(ValidPlan(
-            "{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"object_name\"],\"viz\":\"table\"}"));
+            "{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"object_name\"],\"viz\":\"bar\"}"), new[] { "PROD-01" });
         Assert.Contains("procedure_stats", sql, StringComparison.Ordinal);
         Assert.Contains("ROW_NUMBER()", sql, StringComparison.Ordinal);
-        /* The #1568 stitch is bounded by the SAME window params ($2/$3), not the full server history. */
-        Assert.Contains("collection_time >= $2", sql, StringComparison.Ordinal);
-        Assert.Contains("collection_time <= $3", sql, StringComparison.Ordinal);
+        /* Per-server attribution — a handle reused across servers attributes per server, not globally. */
+        Assert.Contains("PARTITION BY server_name, sql_handle", sql, StringComparison.Ordinal);
+        /* The #1568 stitch is bounded by the SAME window ($1/$2) and scoped to the same server set ($3). */
+        Assert.Contains("collection_time >= $1", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $2", sql, StringComparison.Ordinal);
+        Assert.Contains("server_name = ANY($3)", sql, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -381,7 +384,7 @@ public sealed class DarlingComposeTests
         var plan = ValidPlan("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"minute\",\"viz\":\"line\"}");
         var start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         var end = start.AddDays(60); /* 60 days of minutes >> MaxBuckets */
-        var (compiled, error) = ComposeCompiler.Compile(plan, new ComposeRunContext(1, start, end, ComposeRunContext.NoVariables));
+        var (compiled, error) = ComposeCompiler.Compile(plan, new ComposeRunContext(null, start, end, ComposeRunContext.NoVariables));
         Assert.Null(compiled);
         Assert.Contains("points", error!, StringComparison.OrdinalIgnoreCase);
     }
@@ -393,7 +396,7 @@ public sealed class DarlingComposeTests
             "{\"source\":\"file_io_stats\",\"measure\":\"file_read_bytes\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"," +
             "\"filters\":[{\"dimension\":\"database_name\",\"op\":\"eq\",\"value\":\"$db\"}]}",
             "db");
-        var sql = Compile(plan, new Dictionary<string, string?>(StringComparer.Ordinal) { ["db"] = "Sales" });
+        var sql = Compile(plan, variables: new Dictionary<string, string?>(StringComparer.Ordinal) { ["db"] = "Sales" });
         Assert.Contains("= ANY($", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("Sales", sql, StringComparison.Ordinal);
     }
@@ -485,5 +488,71 @@ public sealed class DarlingComposeTests
     {
         var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");
         Assert.DoesNotContain("LOOPBACK-ONLY", sql, StringComparison.Ordinal);
+    }
+
+    /* ─────────────────────────── fleet / multi-server (§2b + Flow B) ─────────────────────────── */
+
+    [Fact]
+    public void Compile_Fleet_HasNoServerPredicate_WhenNoServerScope()
+    {
+        var sql = Compile(ValidPlan("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"bar\"}"));
+        Assert.DoesNotContain("server_name = ANY", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Compile_MultiServer_BindsServerNameArray_NeverInterpolated()
+    {
+        var sql = Compile(
+            ValidPlan("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"bar\"}"),
+            new[] { "PROD-01", "PROD-02" });
+        Assert.Contains("server_name = ANY($", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROD-01", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROD-02", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Compile_GroupByServer_SelectsServerName_OnAServerGrainMeasure()
+    {
+        /* Flow B's grain-trap alternative: "top servers by CPU" — group a server-grain gauge by the universal
+           server dimension across the fleet. */
+        var sql = Compile(ValidPlan("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"topN\":5,\"groupBy\":[\"server\"],\"viz\":\"bar\"}"));
+        Assert.Contains("server_name AS server", sql, StringComparison.Ordinal);
+        Assert.Contains("GROUP BY", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TryParsePanel_AllowsServer_AsFilterAndGroupBy_OnEveryMeasure()
+    {
+        /* server is universal even on a measure with NO declared dimensions (cpu is server-grain). */
+        var plan = ValidPlan(
+            "{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"topN\":5,\"groupBy\":[\"server\"],\"viz\":\"bar\"," +
+            "\"filters\":[{\"dimension\":\"server\",\"op\":\"eq\",\"value\":[\"A\",\"B\"]}]}");
+        Assert.Single(plan.GroupBy);
+        Assert.Single(plan.Filters);
+    }
+
+    /* ─────────────────────────── viz ↔ mode coherence (§4) ─────────────────────────── */
+
+    [Theory]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"pie\"}", "not a time series")]
+    [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"line\"}", "ranked")]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"stacked\"}", "needs a group-by")]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"line\"}", "single value")]
+    [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"viz\":\"bar\"}", "needs a group-by")]
+    public void TryParsePanel_RejectsIncoherentVizForMode(string json, string expectedFragment)
+    {
+        Assert.Contains(expectedFragment, RejectReason(json), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"area\"}")]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"groupBy\":[\"wait_type\"],\"viz\":\"stacked\"}")]
+    [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"pie\"}")]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"stat\"}")]
+    public void TryParsePanel_AcceptsCoherentVizForMode(string json)
+    {
+        var (plan, error) = ComposeSpec.TryParsePanel(PanelJson(json), Array.Empty<string>());
+        Assert.True(error is null, error);
+        Assert.NotNull(plan);
     }
 }

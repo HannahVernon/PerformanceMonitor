@@ -253,9 +253,30 @@ public static class MeasureCatalog
     private static readonly Dictionary<(string Source, string Name), ComposeDimension> s_dimByKey =
         Dimensions.ToDictionary(d => (d.SourceTable, d.Name));
 
-    /// <summary>The dimension for (<paramref name="source"/>, <paramref name="name"/>), or null.</summary>
-    public static ComposeDimension? Dimension(string source, string name) =>
-        s_dimByKey.TryGetValue((source, name), out var d) ? d : null;
+    /// <summary>
+    /// The universal <c>server</c> dimension name. <c>server_name</c> is a prefix column on EVERY collector
+    /// table, so server is filterable + group-by-able on every measure (the fleet / multi-server axis, Erik's
+    /// Decision 1 + acceptance Flow B). It is a virtual dimension — allowed for every measure without appearing
+    /// in each one's <see cref="ComposeMeasure.AllowedDimensions"/> — resolved by <see cref="Dimension"/> for
+    /// any source and validated as always-allowed by <see cref="ComposeSpec"/>.
+    /// </summary>
+    public const string ServerDimensionName = "server";
+
+    /// <summary>The virtual <c>server</c> dimension for a source (server_name; exact-match only, not LIKE-able).</summary>
+    public static ComposeDimension ServerDimension(string source) =>
+        new(source, ServerDimensionName, "server_name", Likeable: false);
+
+    /// <summary>The dimension for (<paramref name="source"/>, <paramref name="name"/>), or null. The universal
+    /// <c>server</c> dimension resolves for any known source.</summary>
+    public static ComposeDimension? Dimension(string source, string name)
+    {
+        if (string.Equals(name, ServerDimensionName, StringComparison.Ordinal))
+        {
+            return IsKnownSource(source) ? ServerDimension(source) : null;
+        }
+
+        return s_dimByKey.TryGetValue((source, name), out var d) ? d : null;
+    }
 
     /* ─────────────────────────── measures ─────────────────────────── */
 

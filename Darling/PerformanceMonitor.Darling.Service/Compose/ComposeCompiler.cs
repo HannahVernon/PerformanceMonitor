@@ -18,10 +18,14 @@ using PerformanceMonitor.Darling.Storage;
 
 namespace PerformanceMonitor.Darling.Service;
 
-/// <summary>The server + window + variable bindings a <see cref="PanelPlan"/> compiles against.
-/// The window is naive UTC (Kind=Unspecified is stamped when bound, matching every other Darling read).</summary>
+/// <summary>The server scope + window + variable bindings a <see cref="PanelPlan"/> compiles against. The
+/// window is naive UTC (Kind=Unspecified is stamped when bound, matching every other Darling read).
+/// <see cref="Servers"/> is the resolved <c>$server</c> scope (Erik's Decision 1 fleet axis): null/empty =
+/// the WHOLE FLEET (no server predicate); one or many server names = a bound <c>server_name = ANY($n)</c>
+/// filter, never interpolated (the compile-run endpoint resolves the $server variable to this). Group-by-server
+/// and a per-panel server filter are separate and flow through the normal dimension path.</summary>
 public sealed record ComposeRunContext(
-    int ServerId,
+    IReadOnlyList<string>? Servers,
     DateTime StartUtc,
     DateTime EndUtc,
     IReadOnlyDictionary<string, string?> Variables)
@@ -101,10 +105,13 @@ public static class ComposeCompiler
         }
 
         var p = new ParamList();
-        /* $1 serverId, $2 start, $3 end — the fixed window prelude every Darling read shares. */
-        var serverParam = p.AddInt(context.ServerId);
+        /* $1 start, $2 end — the naive-UTC window prelude. The server scope is OPTIONAL/multi: null/empty
+           $server => the whole fleet (no predicate); one/many servers => a bound server_name = ANY($n), never
+           interpolated (the compile-run endpoint resolves the $server variable to this). */
         var startParam = p.AddTimestamp(context.StartUtc);
         var endParam = p.AddTimestamp(context.EndUtc);
+        var hasServerScope = context.Servers is { Count: > 0 };
+        var serverScopeParam = hasServerScope ? p.AddTextArray(context.Servers!) : null;
 
         var timeColumn = s_timeColumnByTable[plan.Measure.SourceTable];
         var sql = new StringBuilder();
@@ -112,15 +119,21 @@ public static class ComposeCompiler
         /* The #1568 module CTE (window-bounded) — only when a dimension is stitched from it. */
         if (plan.UsesModuleJoin)
         {
+            /* Window-bounded AND scoped to the same server set — partitioned by (server_name, sql_handle) so a
+               handle reused across servers attributes per server, not globally. */
             sql.Append("WITH ").Append(ModuleAlias).Append(" AS (\n");
-            sql.Append("    SELECT sql_handle, object_name, schema_name, database_name\n");
+            sql.Append("    SELECT server_name, sql_handle, object_name, schema_name, database_name\n");
             sql.Append("    FROM (\n");
-            sql.Append("        SELECT sql_handle, object_name, schema_name, database_name,\n");
-            sql.Append("               ROW_NUMBER() OVER (PARTITION BY sql_handle ORDER BY collection_time DESC) AS rn\n");
+            sql.Append("        SELECT server_name, sql_handle, object_name, schema_name, database_name,\n");
+            sql.Append("               ROW_NUMBER() OVER (PARTITION BY server_name, sql_handle ORDER BY collection_time DESC) AS rn\n");
             sql.Append("        FROM ").Append(PgSchemaGenerator.CollectSchema).Append(".procedure_stats\n");
-            sql.Append("        WHERE server_id = ").Append(serverParam).Append('\n');
-            sql.Append("          AND collection_time >= ").Append(startParam).Append('\n');
+            sql.Append("        WHERE collection_time >= ").Append(startParam).Append('\n');
             sql.Append("          AND collection_time <= ").Append(endParam).Append('\n');
+            if (hasServerScope)
+            {
+                sql.Append("          AND server_name = ANY(").Append(serverScopeParam).Append(")\n");
+            }
+
             sql.Append("          AND sql_handle IS NOT NULL\n");
             sql.Append("          AND sql_handle <> ''\n");
             sql.Append("    ) ranked_modules\n");
@@ -155,12 +168,16 @@ public static class ComposeCompiler
         if (plan.UsesModuleJoin)
         {
             sql.Append("LEFT JOIN ").Append(ModuleAlias).Append(" ON ").Append(ModuleAlias)
-                .Append(".sql_handle = ").Append(FactAlias).Append(".sql_handle\n");
+                .Append(".sql_handle = ").Append(FactAlias).Append(".sql_handle AND ").Append(ModuleAlias)
+                .Append(".server_name = ").Append(FactAlias).Append(".server_name\n");
         }
 
-        sql.Append("WHERE ").Append(FactAlias).Append(".server_id = ").Append(serverParam).Append('\n');
-        sql.Append("  AND ").Append(FactAlias).Append('.').Append(timeColumn).Append(" >= ").Append(startParam).Append('\n');
+        sql.Append("WHERE ").Append(FactAlias).Append('.').Append(timeColumn).Append(" >= ").Append(startParam).Append('\n');
         sql.Append("  AND ").Append(FactAlias).Append('.').Append(timeColumn).Append(" <= ").Append(endParam).Append('\n');
+        if (hasServerScope)
+        {
+            sql.Append("  AND ").Append(FactAlias).Append(".server_name = ANY(").Append(serverScopeParam).Append(")\n");
+        }
 
         foreach (var filter in plan.Filters)
         {

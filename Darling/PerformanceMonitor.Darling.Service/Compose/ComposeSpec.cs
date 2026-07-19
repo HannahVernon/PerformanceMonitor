@@ -125,6 +125,14 @@ public static class ComposeSpec
     /// names a <c>read</c> instead; the two coexist in one definition, dispatched per panel.</summary>
     public static bool IsComposedPanel(JsonObject panel) => panel["source"] is not null;
 
+    /// <summary>The v2 composed-panel viz vocabulary (design §4) — distinct from v1 read panels' KnownViz
+    /// (table/line/stat/bandlist). The composer's viz picker serves this; every stored composed panel's viz
+    /// must be in it AND coherent with the panel's mode (<see cref="ValidateVizMode"/>).</summary>
+    public static readonly IReadOnlyList<string> ComposeVizList = new[] { "line", "area", "bar", "stacked", "pie", "table", "stat" };
+
+    /// <summary>Set form of <see cref="ComposeVizList"/> for O(1) membership.</summary>
+    public static readonly IReadOnlySet<string> KnownComposeViz = new HashSet<string>(ComposeVizList, StringComparer.Ordinal);
+
     /* ─────────────────────────── variables ─────────────────────────── */
 
     /// <summary>The set of dimension names a variable may be typed as: every catalog dimension name plus
@@ -339,11 +347,12 @@ public static class ComposeSpec
 
         var mode = hasBucket ? PanelMode.TimeSeries : hasTopN ? PanelMode.Ranked : PanelMode.Scalar;
 
-        /* viz — accept a string or {type}; type ∈ the shared KnownViz vocabulary. */
+        /* viz — the v2 composed-panel vocabulary (distinct from v1 read panels' KnownViz); coherence with the
+           panel's mode is checked below once groupBy is known (design §4). */
         var viz = ParseViz(panel["viz"]);
-        if (viz is null || !DarlingWebEndpoints.KnownViz.Contains(viz))
+        if (viz is null || !KnownComposeViz.Contains(viz))
         {
-            return (null, $"panel has an unknown or missing viz type (one of {string.Join(", ", DarlingWebEndpoints.KnownVizList)}).");
+            return (null, $"panel has an unknown or missing viz type (one of {string.Join(", ", ComposeVizList)}).");
         }
 
         /* filters. */
@@ -358,6 +367,14 @@ public static class ComposeSpec
         if (groupError is not null)
         {
             return (null, groupError);
+        }
+
+        /* viz ↔ mode coherence, so a stored def can never be un-renderable (design §4): line/area/stacked are
+           time series, bar/pie are ranked, stat is a single scalar (table works in any mode). */
+        var vizModeError = ValidateVizMode(viz, mode, groupBy!.Count);
+        if (vizModeError is not null)
+        {
+            return (null, vizModeError);
         }
 
         var plan = new PanelPlan
@@ -404,7 +421,7 @@ public static class ComposeSpec
 
             var dimName = Str(obj, "dimension");
             var dimension = dimName is null ? null : MeasureCatalog.Dimension(source, dimName);
-            if (dimension is null || !measure.AllowedDimensions.Contains(dimName!))
+            if (dimension is null || !IsDimensionAllowed(dimName!, measure))
             {
                 return (null, $"filter {i} references dimension '{dimName}', which is not allowed for measure '{measure.Key}'.");
             }
@@ -517,7 +534,7 @@ public static class ComposeSpec
         {
             var name = (array[i] as JsonValue)?.GetValue<string>();
             var dimension = name is null ? null : MeasureCatalog.Dimension(source, name);
-            if (dimension is null || !measure.AllowedDimensions.Contains(name!))
+            if (dimension is null || !IsDimensionAllowed(name!, measure))
             {
                 return (null, $"groupBy references dimension '{name}', which is not allowed for measure '{measure.Key}'.");
             }
@@ -539,6 +556,66 @@ public static class ComposeSpec
         JsonObject obj => Str(obj, "type"),
         _ => null,
     };
+
+    /// <summary>The universal <c>server</c> axis (fleet / multi-server) is usable by EVERY measure; any other
+    /// dimension must be in the measure's <see cref="ComposeMeasure.AllowedDimensions"/>.</summary>
+    private static bool IsDimensionAllowed(string dimensionName, ComposeMeasure measure) =>
+        string.Equals(dimensionName, MeasureCatalog.ServerDimensionName, StringComparison.Ordinal)
+        || measure.AllowedDimensions.Contains(dimensionName);
+
+    /// <summary>Rejects a viz that cannot render the panel's shape (design §4 shape-steering, enforced so a
+    /// stored def is never un-renderable): line/area/stacked are time series; bar/pie are ranked (topN) with a
+    /// categorical group; stat is a single scalar; table renders any shape. A stacked chart also needs a
+    /// group-by (the parts that stack), and a single-value panel cannot group.</summary>
+    private static string? ValidateVizMode(string viz, PanelMode mode, int groupByCount)
+    {
+        if (string.Equals(viz, "table", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        switch (mode)
+        {
+            case PanelMode.TimeSeries:
+                if (viz is not ("line" or "area" or "stacked"))
+                {
+                    return $"a '{viz}' chart is not a time series; use line/area/stacked (or drop the timeBucket).";
+                }
+
+                if (string.Equals(viz, "stacked", StringComparison.Ordinal) && groupByCount == 0)
+                {
+                    return "a stacked chart needs a group-by dimension (the parts that stack).";
+                }
+
+                return null;
+
+            case PanelMode.Ranked:
+                if (viz is not ("bar" or "pie"))
+                {
+                    return $"a '{viz}' chart cannot render a ranked (topN) panel; use bar or pie.";
+                }
+
+                if (groupByCount == 0)
+                {
+                    return $"a '{viz}' chart needs a group-by dimension (the categories to rank).";
+                }
+
+                return null;
+
+            case PanelMode.Scalar:
+                if (groupByCount > 0)
+                {
+                    return "a single-value panel cannot group by a dimension; add a timeBucket (time series) or a topN (ranked).";
+                }
+
+                return string.Equals(viz, "stat", StringComparison.Ordinal)
+                    ? null
+                    : $"a '{viz}' chart needs a group or time bucket; a single value uses stat (or table).";
+
+            default:
+                return null;
+        }
+    }
 
     private static string? Str(JsonObject obj, string key) =>
         obj[key] is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;

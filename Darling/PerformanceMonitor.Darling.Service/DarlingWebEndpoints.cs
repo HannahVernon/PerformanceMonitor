@@ -306,31 +306,17 @@ public static class DarlingWebEndpoints
 
             var values = ParseRunValues(body["values"]);
 
-            /* Server scope: the top-level 'server' name, else the $server variable's value. Single-server for
-               the B1 slice — the compiler scopes every composed query to one server_id. */
-            var serverName = TryGetString(body, "server");
-            if (string.IsNullOrEmpty(serverName) && values.TryGetValue(ComposeVariable.ServerDimension, out var serverValue))
-            {
-                serverName = serverValue;
-            }
-
-            if (string.IsNullOrEmpty(serverName))
-            {
-                return ErrorResult("'server' is required.", StatusCodes.Status400BadRequest);
-            }
-
-            var serverId = await ResolveServerIdAsync(postgres, serverName, context.RequestAborted);
-            if (serverId is null)
-            {
-                return ErrorResult($"Unknown server '{serverName}'.", StatusCodes.Status400BadRequest);
-            }
+            /* Server scope (Erik's Decision 1 fleet axis): the top-level 'server' (a name or array), else the
+               $server variable value. Absent / "All" / empty => the WHOLE FLEET (no server predicate); one or
+               many names => a bound server_name = ANY filter. */
+            var serverScope = ParseServerScope(body, values);
 
             var hours = body["hours"] is JsonValue hoursValue && hoursValue.TryGetValue<int>(out var h) ? h : DefaultComposeHours;
             hours = Math.Clamp(hours, 1, ComposeLimits.MaxWindowHours);
             var end = DateTime.UtcNow;
             var start = end.AddHours(-hours);
 
-            var (compiled, compileError) = ComposeCompiler.Compile(plan!, new ComposeRunContext(serverId.Value, start, end, values));
+            var (compiled, compileError) = ComposeCompiler.Compile(plan!, new ComposeRunContext(serverScope, start, end, values));
             if (compileError is not null)
             {
                 return ErrorResult(compileError, StatusCodes.Status400BadRequest);
@@ -356,15 +342,48 @@ public static class DarlingWebEndpoints
     /// <summary>Default compose-run window (hours) when the request omits one.</summary>
     private const int DefaultComposeHours = 24;
 
-    /// <summary>Resolves a server name (or display name) to its stored <c>server_id</c>, or null when unknown.
-    /// Bare <c>servers</c> resolves through the viewer pool's <c>collect, config, public</c> search path.</summary>
-    private static async Task<int?> ResolveServerIdAsync(NpgsqlDataSource postgres, string serverName, System.Threading.CancellationToken cancellationToken)
+    /// <summary>Resolves the run's server scope (Erik's Decision 1): the top-level <c>server</c> (a name or an
+    /// array of names), else the <c>$server</c> variable value. Absent / "All" / empty ⇒ null (the whole fleet,
+    /// no server predicate); one or many names ⇒ that list, which the compiler binds as a
+    /// <c>server_name = ANY($n)</c> text[] parameter — never resolved to ids or interpolated.</summary>
+    private static IReadOnlyList<string>? ParseServerScope(JsonObject body, IReadOnlyDictionary<string, string?> values)
     {
-        await using var command = postgres.CreateCommand(
-            "SELECT server_id FROM servers WHERE server_name = $1 OR display_name = $1 ORDER BY server_id LIMIT 1");
-        command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = serverName });
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null or DBNull ? null : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+        var names = new List<string>();
+
+        switch (body["server"])
+        {
+            case JsonArray array:
+                foreach (var item in array)
+                {
+                    if (item is JsonValue v && v.TryGetValue<string>(out var s))
+                    {
+                        AddServer(names, s);
+                    }
+                }
+
+                break;
+            case JsonValue value when value.TryGetValue<string>(out var single):
+                AddServer(names, single);
+                break;
+            default:
+                if (values.TryGetValue(ComposeVariable.ServerDimension, out var fromVariable))
+                {
+                    AddServer(names, fromVariable);
+                }
+
+                break;
+        }
+
+        return names.Count == 0 ? null : names;
+    }
+
+    /// <summary>Adds a server name to the scope, treating null/empty and the literal "All" as "no scope" (fleet).</summary>
+    private static void AddServer(List<string> names, string? name)
+    {
+        if (!string.IsNullOrEmpty(name) && !string.Equals(name, "All", StringComparison.OrdinalIgnoreCase))
+        {
+            names.Add(name);
+        }
     }
 
     /// <summary>Parses the run's resolved variable values (<c>{name: scalar}</c>) into the string map the
@@ -945,11 +964,15 @@ public static class DarlingWebEndpoints
         {
             ["measures"] = measures,
             ["dimensions"] = dimensions,
+            /* server is a virtual dimension present on every source (the fleet axis), not in the per-source
+               dimensions list — surfaced here so the composer offers it on every measure. */
+            ["universalDimensions"] = ToJsonStringArray(new[] { MeasureCatalog.ServerDimensionName }),
             ["unitFamilies"] = unitFamilies,
             ["aggregates"] = ToJsonStringArray(MeasureCatalog.AggregateWireNames),
             ["timeBuckets"] = ToJsonStringArray(MeasureCatalog.TimeBucketWireNames),
             ["filterOps"] = ToJsonStringArray(MeasureCatalog.FilterOpWireNames),
-            ["viz"] = ToJsonStringArray(KnownVizList),
+            /* the v2 composed-panel viz vocabulary (bar/pie/stacked/area added over v1's KnownViz). */
+            ["viz"] = ToJsonStringArray(ComposeSpec.ComposeVizList),
         };
     }
 
