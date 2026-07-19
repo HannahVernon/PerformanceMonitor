@@ -539,6 +539,10 @@ public sealed class DarlingComposeTests
     [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"stacked\"}", "needs a group-by")]
     [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"line\"}", "single value")]
     [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"viz\":\"bar\"}", "needs a group-by")]
+    /* D2: stacked-bar behaves exactly like stacked — a time-series viz that needs a group-by, rejected for ranked/scalar. */
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"stacked-bar\"}", "needs a group-by")]
+    [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"stacked-bar\"}", "ranked")]
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"stacked-bar\"}", "single value")]
     public void TryParsePanel_RejectsIncoherentVizForMode(string json, string expectedFragment)
     {
         Assert.Contains(expectedFragment, RejectReason(json), StringComparison.OrdinalIgnoreCase);
@@ -549,6 +553,8 @@ public sealed class DarlingComposeTests
     [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"groupBy\":[\"wait_type\"],\"viz\":\"stacked\"}")]
     [InlineData("{\"source\":\"query_stats\",\"measure\":\"query_worker_us\",\"aggregate\":\"sum\",\"topN\":10,\"groupBy\":[\"database_name\"],\"viz\":\"pie\"}")]
     [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"stat\"}")]
+    /* D2: stacked-bar accepted for a grouped time series, exactly like stacked. */
+    [InlineData("{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"groupBy\":[\"wait_type\"],\"viz\":\"stacked-bar\"}")]
     public void TryParsePanel_AcceptsCoherentVizForMode(string json)
     {
         var (plan, error) = ComposeSpec.TryParsePanel(PanelJson(json), Array.Empty<string>());
@@ -662,5 +668,138 @@ public sealed class DarlingComposeTests
         Assert.Contains("NULLIF(SUM(", sql, StringComparison.Ordinal);
         Assert.Contains("delta_elapsed_time", sql, StringComparison.Ordinal);
         Assert.Contains("delta_execution_count", sql, StringComparison.Ordinal);
+    }
+
+    /* ─────────────────────────── D1: gauge-operand (Avg) ratios (#1563 follow-ups) ─────────────────────────── */
+
+    [Fact]
+    public void AvgRatio_Operands_AreBothGaugesOnTheSameSource()
+    {
+        var avgRatios = MeasureCatalog.Measures
+            .Where(m => m.Kind == MeasureKind.Ratio && m.RatioMode == MeasureRatioMode.Avg).ToList();
+        Assert.NotEmpty(avgRatios);
+        foreach (var ratio in avgRatios)
+        {
+            var numerator = MeasureCatalog.Measure(ratio.NumeratorKey)!;
+            var denominator = MeasureCatalog.Measure(ratio.DenominatorKey)!;
+            /* an Avg ratio divides two point-in-time gauges (their AggregationColumn is null — never summable). */
+            Assert.Equal(MeasureArchetype.Gauge, numerator.Archetype);
+            Assert.Equal(MeasureArchetype.Gauge, denominator.Archetype);
+            Assert.Equal(ratio.SourceTable, numerator.SourceTable);
+            Assert.Equal(ratio.SourceTable, denominator.SourceTable);
+        }
+    }
+
+    [Fact]
+    public void SumRatio_Operands_HaveANonNullAggregationColumn()
+    {
+        var sumRatios = MeasureCatalog.Measures
+            .Where(m => m.Kind == MeasureKind.Ratio && m.RatioMode == MeasureRatioMode.Sum).ToList();
+        Assert.NotEmpty(sumRatios);
+        foreach (var ratio in sumRatios)
+        {
+            var numerator = MeasureCatalog.Measure(ratio.NumeratorKey)!;
+            var denominator = MeasureCatalog.Measure(ratio.DenominatorKey)!;
+            /* a Sum ratio sums a cumulative/delta column — both operands must have a summable column. */
+            Assert.NotNull(numerator.AggregationColumn);
+            Assert.NotNull(denominator.AggregationColumn);
+        }
+    }
+
+    [Theory]
+    [InlineData("{\"source\":\"memory_grant_stats\",\"ratio\":\"grant_used_pct\",\"timeBucket\":\"hour\",\"viz\":\"line\"}", "used_memory_mb", "granted_memory_mb")]
+    [InlineData("{\"source\":\"plan_cache_stats\",\"ratio\":\"single_use_plan_pct\",\"timeBucket\":\"hour\",\"viz\":\"line\"}", "single_use_plans", "total_plans")]
+    public void Compile_GaugeRatio_IsAvgOverNullifAvg_ScaledToPercent(string json, string numeratorColumn, string denominatorColumn)
+    {
+        var sql = Compile(ValidPlan(json));
+        Assert.Contains($"AVG(f.{numeratorColumn})", sql, StringComparison.Ordinal);
+        Assert.Contains($"NULLIF(AVG(f.{denominatorColumn}), 0)", sql, StringComparison.Ordinal);
+        /* fraction family: native 'ratio' displayed as 'percent' => × 100. */
+        Assert.Contains("* 100.0", sql, StringComparison.Ordinal);
+        /* a gauge ratio never uses the Sum form (gauges are never summable). */
+        Assert.DoesNotContain("SUM(", sql, StringComparison.Ordinal);
+    }
+
+    /* ─────────────────────────── D3: per-panel thresholds (render-only) ─────────────────────────── */
+
+    [Fact]
+    public void TryParsePanel_AcceptsThresholds_AndCarriesThemOnThePlan()
+    {
+        var plan = ValidPlan("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"thresholds\":[80,90]}");
+        Assert.Equal(new[] { 80.0, 90.0 }, plan.Thresholds);
+    }
+
+    [Fact]
+    public void TryParsePanel_DefaultsThresholdsToEmpty_WhenAbsent()
+    {
+        var plan = ValidPlan("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\"}");
+        Assert.Empty(plan.Thresholds);
+    }
+
+    [Theory]
+    [InlineData("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"thresholds\":[1,2,3,4,5]}", "maximum")]
+    [InlineData("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"thresholds\":[\"abc\"]}", "finite number")]
+    [InlineData("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"thresholds\":42}", "must be an array")]
+    public void TryParsePanel_RejectsBadThresholds(string json, string expectedFragment)
+    {
+        Assert.Contains(expectedFragment, RejectReason(json), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryParsePanel_RejectsNonFiniteThreshold()
+    {
+        /* NaN/Infinity can't appear in JSON text, so build the node directly to prove the finite guard. */
+        var panel = PanelJson("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\"}");
+        panel["thresholds"] = new JsonArray(JsonValue.Create(80.0), JsonValue.Create(double.NaN));
+        var (plan, error) = ComposeSpec.TryParsePanel(panel, Array.Empty<string>());
+        Assert.Null(plan);
+        Assert.Contains("finite number", error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Compile_NeverEmitsThresholds_TheyAreRenderOnly()
+    {
+        var sql = Compile(ValidPlan("{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"thresholds\":[80,90]}"));
+        Assert.DoesNotContain("80", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("90", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsAComposedPanelWithThresholds()
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"source\":\"cpu_utilization_stats\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\",\"thresholds\":[80,90]}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    /* ─────────────────────────── D4: per-measure availability (appliesTo) ─────────────────────────── */
+
+    [Fact]
+    public void Catalog_Measures_CarryAppliesTo_ReflectingTheCollectorGate()
+    {
+        var compose = Assert.IsType<JsonObject>(DarlingWebEndpoints.BuildCatalogNode()["compose"]);
+        var measures = Assert.IsType<JsonArray>(compose["measures"]);
+
+        JsonObject AppliesToFor(string measureKey)
+        {
+            var measure = measures.Cast<JsonObject>().Single(m => m!["key"]!.GetValue<string>() == measureKey);
+            return Assert.IsType<JsonObject>(measure["appliesTo"]);
+        }
+
+        /* An all-targets collector (wait_stats) is universally available and needs no msdb. */
+        var wait = AppliesToFor("wait_time_ms");
+        Assert.True(wait["onPrem"]!.GetValue<bool>());
+        Assert.True(wait["azureSqlDb"]!.GetValue<bool>());
+        Assert.True(wait["azureMi"]!.GetValue<bool>());
+        Assert.True(wait["awsRds"]!.GetValue<bool>());
+        Assert.False(wait["needsMsdb"]!.GetValue<bool>());
+
+        /* A SQL-Agent collector (running_jobs) needs msdb and is gated off Azure SQL DB + AWS RDS. */
+        var job = AppliesToFor("runningjob_current_duration_s");
+        Assert.True(job["onPrem"]!.GetValue<bool>());
+        Assert.False(job["azureSqlDb"]!.GetValue<bool>());
+        Assert.True(job["azureMi"]!.GetValue<bool>());
+        Assert.False(job["awsRds"]!.GetValue<bool>());
+        Assert.True(job["needsMsdb"]!.GetValue<bool>());
     }
 }

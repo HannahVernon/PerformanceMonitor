@@ -222,9 +222,13 @@ public static class ComposeCompiler
         {
             var numerator = MeasureCatalog.Measure(measure.NumeratorKey)!;
             var denominator = MeasureCatalog.Measure(measure.DenominatorKey)!;
-            var native =
-                $"(CAST(SUM({FactAlias}.{numerator.AggregationColumn}) AS double precision) " +
-                $"/ NULLIF(SUM({FactAlias}.{denominator.AggregationColumn}), 0))";
+            /* Sum mode (cumulative/delta operands): SUM(delta) / NULLIF(SUM(delta), 0). Avg mode (gauge operands,
+               whose AggregationColumn is null — a gauge is never summable): AVG(col) / NULLIF(AVG(col), 0). */
+            var native = measure.RatioMode == MeasureRatioMode.Avg
+                ? $"(CAST(AVG({FactAlias}.{numerator.Column}) AS double precision) " +
+                  $"/ NULLIF(AVG({FactAlias}.{denominator.Column}), 0))"
+                : $"(CAST(SUM({FactAlias}.{numerator.AggregationColumn}) AS double precision) " +
+                  $"/ NULLIF(SUM({FactAlias}.{denominator.AggregationColumn}), 0))";
             return ApplyUnitConversion(native, measure.UnitFamily, measure.NativeUnit, plan.Unit);
         }
 

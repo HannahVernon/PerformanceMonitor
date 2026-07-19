@@ -17,6 +17,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitor.Darling.Analysis;
 using PerformanceMonitor.Darling.Service.Mcp;
 
@@ -933,6 +934,9 @@ public static class DarlingWebEndpoints
                 ["defaultAggregate"] = defaultAggregate,
                 ["validAggregates"] = validAggregates,
                 ["allowedDimensions"] = allowedDimensions,
+                /* Per-server-type availability (design D4), off the owning collector's AppliesTo gate — so the
+                   composer can grey a measure a given target can't collect (e.g. Agent measures need msdb). */
+                ["appliesTo"] = BuildAppliesToNode(m.SourceTable),
             });
         }
 
@@ -971,8 +975,45 @@ public static class DarlingWebEndpoints
             ["aggregates"] = ToJsonStringArray(MeasureCatalog.AggregateWireNames),
             ["timeBuckets"] = ToJsonStringArray(MeasureCatalog.TimeBucketWireNames),
             ["filterOps"] = ToJsonStringArray(MeasureCatalog.FilterOpWireNames),
-            /* the v2 composed-panel viz vocabulary (bar/pie/stacked/area added over v1's KnownViz). */
+            /* the v2 composed-panel viz vocabulary (bar/pie/stacked/stacked-bar/area added over v1's KnownViz). */
             ["viz"] = ToJsonStringArray(ComposeSpec.ComposeVizList),
+        };
+    }
+
+    /// <summary>Collector definition by its destination table, for the per-measure availability lookup (a
+    /// measure's <c>SourceTable</c> is a collector <c>TargetTable</c>, pinned by <c>DarlingComposeTests</c>).</summary>
+    private static readonly Dictionary<string, ICollectorSchemaInfo> s_collectorByTable =
+        CollectorCatalog.All.ToDictionary(c => c.TargetTable, StringComparer.Ordinal);
+
+    /* Representative target profiles a measure's collector AppliesTo gate is evaluated against (design D4).
+       SqlMajorVersion is pinned to a supported major (16 = SQL 2022) so the version-gated collectors
+       (query_stats/query_store, 2016+) read as available; the msdb-less on-prem profile isolates the SQL-Agent
+       dependency for the needsMsdb flag. */
+    private static readonly CollectorTargetInfo s_onPremTarget = new() { SqlMajorVersion = 16, HasMsdbAccess = true };
+    private static readonly CollectorTargetInfo s_onPremNoMsdbTarget = new() { SqlMajorVersion = 16, HasMsdbAccess = false };
+    private static readonly CollectorTargetInfo s_azureSqlDbTarget = new() { IsAzureSqlDb = true, SqlMajorVersion = 16, HasMsdbAccess = false };
+    private static readonly CollectorTargetInfo s_azureMiTarget = new() { IsAzureManagedInstance = true, SqlMajorVersion = 16, HasMsdbAccess = true };
+    private static readonly CollectorTargetInfo s_awsRdsTarget = new() { IsAwsRds = true, SqlMajorVersion = 16, HasMsdbAccess = true };
+
+    /// <summary>The per-server-type availability of a measure (design D4), derived from its owning collector's
+    /// <see cref="ICollectorSchemaInfo.AppliesTo"/> gate — the single authoritative target gate — so the composer
+    /// can label/grey a measure a given server type can't collect. <c>needsMsdb</c> is the SQL-Agent dependency
+    /// (job/agent measures), detected as "available with msdb, gated without it" on an otherwise-capable on-prem
+    /// target. Returns null only if a measure's source has no collector (impossible — pinned by test).</summary>
+    private static JsonObject? BuildAppliesToNode(string sourceTable)
+    {
+        if (!s_collectorByTable.TryGetValue(sourceTable, out var collector))
+        {
+            return null;
+        }
+
+        return new JsonObject
+        {
+            ["onPrem"] = collector.AppliesTo(s_onPremTarget),
+            ["azureSqlDb"] = collector.AppliesTo(s_azureSqlDbTarget),
+            ["azureMi"] = collector.AppliesTo(s_azureMiTarget),
+            ["awsRds"] = collector.AppliesTo(s_awsRdsTarget),
+            ["needsMsdb"] = collector.AppliesTo(s_onPremTarget) && !collector.AppliesTo(s_onPremNoMsdbTarget),
         };
     }
 
