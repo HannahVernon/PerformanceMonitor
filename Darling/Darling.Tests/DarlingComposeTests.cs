@@ -651,4 +651,16 @@ public sealed class DarlingComposeTests
         var p95 = Compile(ValidPlan("{\"source\":\"blocked_process_reports\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"percentile_cont\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"));
         Assert.Contains("percentile_cont(0.95)", p95, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void B3_AvgPerExecutionRatio_CompilesToWeightedSumOverSum()
+    {
+        /* "avg procedure duration per execution" — the execution-WEIGHTED ratio SUM(elapsed)/SUM(execs), NOT an
+           avg-of-avgs. Proves the bread-and-butter same-source ratio (design §2c). */
+        var sql = Compile(ValidPlan("{\"source\":\"procedure_stats\",\"ratio\":\"proc_avg_elapsed_us\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"));
+        Assert.Contains("collect.procedure_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("NULLIF(SUM(", sql, StringComparison.Ordinal);
+        Assert.Contains("delta_elapsed_time", sql, StringComparison.Ordinal);
+        Assert.Contains("delta_execution_count", sql, StringComparison.Ordinal);
+    }
 }

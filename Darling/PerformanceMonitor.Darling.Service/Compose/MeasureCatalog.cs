@@ -945,6 +945,71 @@ public static class MeasureCatalog
             NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
             DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QueryStoreDims,
         },
+
+        /* ═══════════ Same-source ratios (design §2c) — the bread-and-butter derived metrics ═══════════ */
+        /* Supporting execution-count scalars the "average per execution" ratios divide by (query_stats had no
+           executions measure; procedure_stats already exposes proc_executions). */
+        new ComposeMeasure
+        {
+            Key = "query_executions", DisplayName = "Query executions", Category = CatQueries, SourceTable = "query_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "execution_count", DeltaColumn = "delta_execution_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = QueryDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "file_reads", DisplayName = "File reads", Category = CatFileIo, SourceTable = "file_io_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "num_of_reads", DeltaColumn = "delta_reads",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = FileIoDims,
+        },
+
+        /* Average duration PER EXECUTION — the classic query/proc metric, and the correct (execution-weighted)
+           form of "avg elapsed": SUM(delta_elapsed) / SUM(delta_executions), NOT an avg-of-per-sample-avgs. */
+        new ComposeMeasure
+        {
+            Key = "query_avg_elapsed_us", DisplayName = "Query avg duration / execution", Category = CatQueries, SourceTable = "query_stats",
+            Kind = MeasureKind.Ratio, NumeratorKey = "query_elapsed_us", DenominatorKey = "query_executions",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = QueryDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "query_avg_cpu_us", DisplayName = "Query avg CPU / execution", Category = CatQueries, SourceTable = "query_stats",
+            Kind = MeasureKind.Ratio, NumeratorKey = "query_worker_us", DenominatorKey = "query_executions",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = QueryDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "proc_avg_elapsed_us", DisplayName = "Procedure avg duration / execution", Category = CatProcedures, SourceTable = "procedure_stats",
+            Kind = MeasureKind.Ratio, NumeratorKey = "proc_elapsed_us", DenominatorKey = "proc_executions",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = ProcDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "proc_avg_cpu_us", DisplayName = "Procedure avg CPU / execution", Category = CatProcedures, SourceTable = "procedure_stats",
+            Kind = MeasureKind.Ratio, NumeratorKey = "proc_worker_us", DenominatorKey = "proc_executions",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = ProcDims,
+        },
+
+        /* Latch average wait per waiting request (ms/request) and file average read latency (ms/read). */
+        new ComposeMeasure
+        {
+            Key = "latch_avg_wait_ms", DisplayName = "Latch avg wait / request", Category = CatLatch, SourceTable = "latch_stats",
+            Kind = MeasureKind.Ratio, NumeratorKey = "latch_wait_time_ms", DenominatorKey = "latch_waiting_requests",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = LatchDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "file_avg_read_latency_ms", DisplayName = "File avg read latency", Category = CatFileIo, SourceTable = "file_io_stats",
+            Kind = MeasureKind.Ratio, NumeratorKey = "file_io_stall_read_ms", DenominatorKey = "file_reads",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            ValidAggs = NoAggs, AllowedDimensions = FileIoDims,
+        },
     };
 
     private static readonly Dictionary<string, ComposeMeasure> s_measureByKey =
