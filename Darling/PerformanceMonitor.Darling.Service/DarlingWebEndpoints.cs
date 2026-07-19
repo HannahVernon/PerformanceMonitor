@@ -262,7 +262,168 @@ public static class DarlingWebEndpoints
                 return ErrorResult($"Error deleting view: {ex.Message}", StatusCodes.Status500InternalServerError);
             }
         });
+
+        /* Compile-and-run a single composed panel spec (Custom Views v2, #1563) against the least-privilege
+           viewer pool — the composer's live preview + the "view compiled SQL" transparency. application/json
+           required (the same CSRF gate as the mutations). The panel is validated by the SAME
+           ComposeSpec.TryParsePanel authority the write path uses, so a panel that previews here is a panel that
+           stores — and the compiler emits only catalog identifiers, schema-qualified collect.*, every value
+           bound; the viewer role's statement_timeout is the runaway backstop. */
+        app.MapPost("/api/compose/run", async (HttpContext context) =>
+        {
+            if (!IsJsonContentType(context.Request.ContentType))
+            {
+                return UnsupportedMediaTypeResult();
+            }
+
+            JsonNode? root;
+            try
+            {
+                root = await JsonNode.ParseAsync(context.Request.Body, cancellationToken: context.RequestAborted);
+            }
+            catch (JsonException)
+            {
+                return ErrorResult("Request body is not valid JSON.", StatusCodes.Status400BadRequest);
+            }
+
+            if (root is not JsonObject body || body["panel"] is not JsonObject panel)
+            {
+                return ErrorResult("Request body must be a JSON object with a 'panel'.", StatusCodes.Status400BadRequest);
+            }
+
+            var (variables, variablesError) = ComposeSpec.ParseVariables(body["variables"]);
+            if (variablesError is not null)
+            {
+                return ErrorResult(variablesError, StatusCodes.Status400BadRequest);
+            }
+
+            var declaredVariables = variables!.Select(v => v.Name).ToHashSet(StringComparer.Ordinal);
+            var (plan, planError) = ComposeSpec.TryParsePanel(panel, declaredVariables);
+            if (planError is not null)
+            {
+                return ErrorResult(planError, StatusCodes.Status400BadRequest);
+            }
+
+            var values = ParseRunValues(body["values"]);
+
+            /* Server scope: the top-level 'server' name, else the $server variable's value. Single-server for
+               the B1 slice — the compiler scopes every composed query to one server_id. */
+            var serverName = TryGetString(body, "server");
+            if (string.IsNullOrEmpty(serverName) && values.TryGetValue(ComposeVariable.ServerDimension, out var serverValue))
+            {
+                serverName = serverValue;
+            }
+
+            if (string.IsNullOrEmpty(serverName))
+            {
+                return ErrorResult("'server' is required.", StatusCodes.Status400BadRequest);
+            }
+
+            var serverId = await ResolveServerIdAsync(postgres, serverName, context.RequestAborted);
+            if (serverId is null)
+            {
+                return ErrorResult($"Unknown server '{serverName}'.", StatusCodes.Status400BadRequest);
+            }
+
+            var hours = body["hours"] is JsonValue hoursValue && hoursValue.TryGetValue<int>(out var h) ? h : DefaultComposeHours;
+            hours = Math.Clamp(hours, 1, ComposeLimits.MaxWindowHours);
+            var end = DateTime.UtcNow;
+            var start = end.AddHours(-hours);
+
+            var (compiled, compileError) = ComposeCompiler.Compile(plan!, new ComposeRunContext(serverId.Value, start, end, values));
+            if (compileError is not null)
+            {
+                return ErrorResult(compileError, StatusCodes.Status400BadRequest);
+            }
+
+            try
+            {
+                var rows = await RunComposedQueryAsync(postgres, compiled!, context.RequestAborted);
+                return JsonNodeResult(new JsonObject { ["sql"] = compiled!.Sql, ["rows"] = rows });
+            }
+            catch (PostgresException ex)
+            {
+                /* A statement_timeout cancel (57014) or any bounded query error — client-correctable. */
+                return ErrorResult($"Query failed: {ex.MessageText}", StatusCodes.Status400BadRequest);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return ErrorResult($"Error running query: {ex.Message}", StatusCodes.Status500InternalServerError);
+            }
+        });
     }
+
+    /// <summary>Default compose-run window (hours) when the request omits one.</summary>
+    private const int DefaultComposeHours = 24;
+
+    /// <summary>Resolves a server name (or display name) to its stored <c>server_id</c>, or null when unknown.
+    /// Bare <c>servers</c> resolves through the viewer pool's <c>collect, config, public</c> search path.</summary>
+    private static async Task<int?> ResolveServerIdAsync(NpgsqlDataSource postgres, string serverName, System.Threading.CancellationToken cancellationToken)
+    {
+        await using var command = postgres.CreateCommand(
+            "SELECT server_id FROM servers WHERE server_name = $1 OR display_name = $1 ORDER BY server_id LIMIT 1");
+        command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = serverName });
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToInt32(result, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Parses the run's resolved variable values (<c>{name: scalar}</c>) into the string map the
+    /// compiler binds $var filters from. A non-scalar value maps to null (an unresolved variable).</summary>
+    private static IReadOnlyDictionary<string, string?> ParseRunValues(JsonNode? node)
+    {
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
+        if (node is JsonObject obj)
+        {
+            foreach (var kvp in obj)
+            {
+                values[kvp.Key] = kvp.Value is JsonValue value
+                    ? (value.TryGetValue<string>(out var s) ? s : value.ToString())
+                    : null;
+            }
+        }
+
+        return values;
+    }
+
+    /// <summary>Runs a compiled composed query on the viewer pool and serializes its rows to a JSON array of
+    /// <c>{column: value}</c> objects — generic over the SELECT shape (bucket / group dims / value).</summary>
+    private static async Task<JsonArray> RunComposedQueryAsync(NpgsqlDataSource postgres, ComposeCompiled compiled, System.Threading.CancellationToken cancellationToken)
+    {
+        await using var command = postgres.CreateCommand(compiled.Sql);
+        foreach (var parameter in compiled.Parameters)
+        {
+            command.Parameters.Add(parameter);
+        }
+
+        var rows = new JsonArray();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var row = new JsonObject();
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                row[reader.GetName(i)] = reader.IsDBNull(i) ? null : DbValueToJson(reader.GetValue(i));
+            }
+
+            rows.Add(row);
+        }
+
+        return rows;
+    }
+
+    private static JsonNode? DbValueToJson(object value) => value switch
+    {
+        DateTime dt => JsonValue.Create(dt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture)),
+        double d => JsonValue.Create(d),
+        float f => JsonValue.Create((double)f),
+        decimal m => JsonValue.Create((double)m),
+        long l => JsonValue.Create(l),
+        int n => JsonValue.Create(n),
+        short s => JsonValue.Create((int)s),
+        bool b => JsonValue.Create(b),
+        string str => JsonValue.Create(str),
+        _ => JsonValue.Create(value.ToString()),
+    };
 
     /// <summary>The <c>updated_by</c> stamp for a web edit. The web surface has no per-user identity, so a
     /// constant is honest — it marks the row as web-authored.</summary>
@@ -335,10 +496,14 @@ public static class DarlingWebEndpoints
     /// <summary>
     /// PURE structural validation of a stored view definition — the authority the POST/PUT routes run before any
     /// write (400 on failure, naming the offending panel). Requires a JSON object with a non-empty <c>panels</c>
-    /// array (size- and count-capped); each panel must be an object with a <c>read</c> on the
-    /// <see cref="BuildReadDispatch"/> allowlist (the same dispatch the parity test pins — drift-proof), a
-    /// <c>viz</c> in <see cref="KnownViz"/>, and (if present) a <c>span</c> of 1 or 2. Raw <c>path</c>-mode is
-    /// REJECTED — a definition must stay on the read allowlist, never name an arbitrary endpoint path.
+    /// array (size- and count-capped) and validates the view-level <c>variables</c> (§2b) + <c>range</c>. Each
+    /// panel is EITHER a v2 COMPOSED panel (names a <c>source</c>) — cross-checked against the measure catalog +
+    /// the declared variables by <see cref="ComposeSpec.TryParsePanel"/>, the same authority the compile-run path
+    /// uses, so a stored composed panel can always compile — or a v1 READ panel (names a <c>read</c> on the
+    /// <see cref="BuildReadDispatch"/> allowlist with a <c>viz</c> in <see cref="KnownViz"/>); the two coexist and
+    /// are dispatched per panel. A <c>span</c> of 1 or 2 and any series <c>color</c> (a <c>#rrggbb</c> hex) are
+    /// validated for both modes. Raw <c>path</c>-mode is REJECTED — a definition must stay on the allowlists,
+    /// never name an arbitrary endpoint path.
     /// </summary>
     internal static DefinitionValidation ValidateDefinition(string? definitionJson)
     {
@@ -382,6 +547,22 @@ public static class DarlingWebEndpoints
             return DefinitionValidation.Fail($"definition has {panels.Count} panels; the maximum is {MaxPanelCount}.");
         }
 
+        /* View-level template variables (§2b) + global range — validated once; the declared variable names
+           are the allowlist a composed panel's $var filters must reference. */
+        var (variables, variablesError) = ComposeSpec.ParseVariables(rootObject["variables"]);
+        if (variablesError is not null)
+        {
+            return DefinitionValidation.Fail(variablesError);
+        }
+
+        var (_, rangeError) = ComposeSpec.ParseRange(rootObject["range"]);
+        if (rangeError is not null)
+        {
+            return DefinitionValidation.Fail(rangeError);
+        }
+
+        var declaredVariables = variables!.Select(v => v.Name).ToHashSet(StringComparer.Ordinal);
+
         var reads = BuildReadDispatch();
         for (var i = 0; i < panels.Count; i++)
         {
@@ -390,32 +571,46 @@ public static class DarlingWebEndpoints
                 return DefinitionValidation.Fail($"panel {i} must be an object.");
             }
 
-            /* Stay on the read allowlist: a raw endpoint path is never storable. */
+            /* Stay on the allowlist: a raw endpoint path is never storable (either panel mode). */
             if (panel["path"] is not null)
             {
-                return DefinitionValidation.Fail($"panel {i} uses raw 'path' mode, which is not allowed; use 'read'.");
+                return DefinitionValidation.Fail($"panel {i} uses raw 'path' mode, which is not allowed; use 'read' or 'source'.");
             }
 
-            var read = TryGetString(panel, "read");
-            if (string.IsNullOrEmpty(read))
+            /* A panel is EITHER a v2 composed panel (names a 'source') — validated by the compose authority
+               against the measure catalog + the declared variables — or a v1 read panel (names a 'read'). The
+               two coexist in one definition, dispatched per panel. */
+            if (ComposeSpec.IsComposedPanel(panel))
             {
-                return DefinitionValidation.Fail($"panel {i} is missing 'read'.");
+                var (_, composeError) = ComposeSpec.TryParsePanel(panel, declaredVariables);
+                if (composeError is not null)
+                {
+                    return DefinitionValidation.Fail($"panel {i}: {composeError}");
+                }
             }
-
-            if (!reads.ContainsKey(read))
+            else
             {
-                return DefinitionValidation.Fail($"panel {i} references unknown read '{read}'.");
-            }
+                var read = TryGetString(panel, "read");
+                if (string.IsNullOrEmpty(read))
+                {
+                    return DefinitionValidation.Fail($"panel {i} is missing 'read' or 'source'.");
+                }
 
-            var viz = TryGetString(panel, "viz");
-            if (string.IsNullOrEmpty(viz))
-            {
-                return DefinitionValidation.Fail($"panel {i} is missing 'viz'.");
-            }
+                if (!reads.ContainsKey(read))
+                {
+                    return DefinitionValidation.Fail($"panel {i} references unknown read '{read}'.");
+                }
 
-            if (!KnownViz.Contains(viz))
-            {
-                return DefinitionValidation.Fail($"panel {i} has unknown viz '{viz}'.");
+                var viz = TryGetString(panel, "viz");
+                if (string.IsNullOrEmpty(viz))
+                {
+                    return DefinitionValidation.Fail($"panel {i} is missing 'viz'.");
+                }
+
+                if (!KnownViz.Contains(viz))
+                {
+                    return DefinitionValidation.Fail($"panel {i} has unknown viz '{viz}'.");
+                }
             }
 
             if (panel["span"] is JsonValue spanValue)
@@ -676,7 +871,97 @@ public static class DarlingWebEndpoints
             viz.Add(v);
         }
 
-        return new JsonObject { ["reads"] = reads, ["viz"] = viz };
+        /* v1 keys (reads/viz) unchanged; the v2 composed-view catalog rides alongside under "compose". */
+        return new JsonObject { ["reads"] = reads, ["viz"] = viz, ["compose"] = BuildComposeCatalogNode() };
+    }
+
+    /// <summary>
+    /// The v2 (Custom Views composer) catalog: the measure/dimension/unit-family/aggregate/time-bucket/filter-op
+    /// vocabularies the composer picks from, straight off <see cref="MeasureCatalog"/> (the SOLE identifier
+    /// source the compiler emits). Served under <c>/api/catalog</c>'s <c>compose</c> key so a single fetch backs
+    /// both the v1 read picker and the v2 composer.
+    /// </summary>
+    internal static JsonObject BuildComposeCatalogNode()
+    {
+        var measures = new JsonArray();
+        foreach (var m in MeasureCatalog.Measures)
+        {
+            var validAggregates = new JsonArray();
+            foreach (var a in m.ValidAggs)
+            {
+                validAggregates.Add(MeasureCatalog.WireName(a));
+            }
+
+            var allowedDimensions = new JsonArray();
+            foreach (var d in m.AllowedDimensions)
+            {
+                allowedDimensions.Add(d);
+            }
+
+            string? defaultAggregate = m.Kind == MeasureKind.Ratio ? null : MeasureCatalog.WireName(m.DefaultTimeAgg);
+
+            measures.Add(new JsonObject
+            {
+                ["key"] = m.Key,
+                ["displayName"] = m.DisplayName,
+                ["category"] = m.Category,
+                ["source"] = m.SourceTable,
+                ["kind"] = m.Kind == MeasureKind.Ratio ? "ratio" : "scalar",
+                ["archetype"] = m.Archetype.ToString(),
+                ["nativeUnit"] = m.NativeUnit,
+                ["defaultUnit"] = m.DefaultUnit,
+                ["unitFamily"] = m.UnitFamily,
+                ["defaultAggregate"] = defaultAggregate,
+                ["validAggregates"] = validAggregates,
+                ["allowedDimensions"] = allowedDimensions,
+            });
+        }
+
+        var dimensions = new JsonArray();
+        foreach (var d in MeasureCatalog.Dimensions)
+        {
+            dimensions.Add(new JsonObject
+            {
+                ["source"] = d.SourceTable,
+                ["name"] = d.Name,
+                ["likeable"] = d.Likeable,
+                ["viaModuleJoin"] = d.ViaModuleJoin,
+            });
+        }
+
+        var unitFamilies = new JsonArray();
+        foreach (var family in MeasureCatalog.UnitFamilies)
+        {
+            var units = new JsonArray();
+            foreach (var unit in family.Units)
+            {
+                units.Add(new JsonObject { ["name"] = unit.Name, ["baseFactor"] = unit.BaseFactor });
+            }
+
+            unitFamilies.Add(new JsonObject { ["name"] = family.Name, ["units"] = units });
+        }
+
+        return new JsonObject
+        {
+            ["measures"] = measures,
+            ["dimensions"] = dimensions,
+            ["unitFamilies"] = unitFamilies,
+            ["aggregates"] = ToJsonStringArray(MeasureCatalog.AggregateWireNames),
+            ["timeBuckets"] = ToJsonStringArray(MeasureCatalog.TimeBucketWireNames),
+            ["filterOps"] = ToJsonStringArray(MeasureCatalog.FilterOpWireNames),
+            ["viz"] = ToJsonStringArray(KnownVizList),
+        };
+    }
+
+    private static JsonArray ToJsonStringArray(IReadOnlyList<string> values)
+    {
+        var array = new JsonArray();
+        foreach (var value in values)
+        {
+            array.Add(value);
+        }
+
+        return array;
     }
 
     private static JsonValue? ToJsonValue(object? value) => value switch

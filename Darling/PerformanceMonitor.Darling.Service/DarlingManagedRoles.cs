@@ -31,9 +31,10 @@ namespace PerformanceMonitor.Darling.Service;
 /// can never DROP, alter schema, touch <c>collect</c> data, or create objects.</item>
 /// <item><b><c>viewer</c></b> — SELECT on both schemas, and (the single write exception, #1563)
 /// INSERT/UPDATE/DELETE on ONLY <c>config.custom_views</c> (the web dashboard's user-authored view
-/// definitions — non-secret JSON; app-layer editing is loopback-gated server-side). No other writes
-/// anywhere. A locked-down deployment points the Viewer at this ("look but don't touch" — plus its own
-/// saved custom views).</item>
+/// definitions — non-secret JSON; editing is any AUTHENTICATED seat, the web surface's normal networked
+/// mode gated server-side by the host's token+CIDR auth — NOT loopback-only). No other writes anywhere. A
+/// locked-down deployment points the Viewer at this ("look but don't touch" — plus its own saved custom
+/// views).</item>
 /// <item><b><c>mcp</c></b> — the (optionally network-exposed) MCP host's store identity
 /// (darling-network-endpoints, D3-role): the SAME read surface as <c>viewer</c> (SELECT on
 /// <c>collect</c> + <c>config</c>-minus-the-secret-columns) PLUS exactly two narrow writes — INSERT
@@ -285,6 +286,7 @@ public static class DarlingManagedRoles
         const string collect = PgSchemaGenerator.CollectSchema;
         const string config = PgSchemaGenerator.ConfigSchema;
         const string marker = RoleMarker;
+        const string statementTimeout = ComposeLimits.StatementTimeout;
 
         /* The fail-closed viewer column-ACL carve for the secret-bearing config tables (see
            ViewerRestrictedConfigTables). Runs AFTER the blanket config GRANT below, so it strips
@@ -332,6 +334,16 @@ END $do$;
 ALTER ROLE {admin}  LOGIN NOSUPERUSER PASSWORD '{adminPassword}';
 ALTER ROLE {viewer} LOGIN NOSUPERUSER PASSWORD '{viewerPassword}';
 ALTER ROLE {mcp}    LOGIN NOSUPERUSER PASSWORD '{mcpPassword}';
+
+-- 1c. statement_timeout backstop on the composed-query identities (Custom Views v2, #1563). viewer is the web
+--     dashboard's DB identity and mcp the optional network MCP identity; both serve the network-reachable
+--     compose surface over a raw, no-rollup store, so a runaway aggregation can NEVER pin the store beyond this
+--     (a LIMIT bounds output, not work). A role SET applies to every future session and re-asserts each start.
+--     admin (the Settings writer, small config writes) is deliberately NOT bounded. NOT a versioned migration:
+--     a role statement_timeout has no probeable schema footprint, so tying it to StorageVersion would break the
+--     viewer's connect-time version gate.
+ALTER ROLE {viewer} SET statement_timeout = '{statementTimeout}';
+ALTER ROLE {mcp}    SET statement_timeout = '{statementTimeout}';
 
 -- 2. Schema usage + SELECT everywhere (ALL TABLES covers tables AND views). collect holds no secrets,
 --    so admin+viewer read all of it. config: admin (the writer, and the Settings window's identity) reads
@@ -397,9 +409,10 @@ GRANT CONNECT ON DATABASE {database} TO {mcp};
 
 -- 7. Custom views (#1563): the SINGLE exception to viewer-writes-nothing. The web dashboard connects as the
 --    least-privilege viewer role, and its custom-view composer INSERT/UPDATE/DELETEs rows in exactly this one
---    config table (non-secret dashboard JSON -- no ViewerRestrictedConfigTables carve). App-layer editing is
---    LOOPBACK-ONLY, enforced SERVER-SIDE in DarlingWebEndpoints (never trusted to a client flag); this DB grant
---    is only the narrow floor beneath that gate. EXPLICIT single-table statement with NO ALTER DEFAULT
+--    config table (non-secret dashboard JSON -- no ViewerRestrictedConfigTables carve). Editing is any
+--    AUTHENTICATED seat -- the web surface's normal networked mode, gated server-side by the host's token+CIDR
+--    auth (NOT loopback-only); this DB grant is only the narrow floor beneath that gate. EXPLICIT single-table
+--    statement with NO ALTER DEFAULT
 --    PRIVILEGES, mirroring the mcp section above (ADP has no per-table form -> an ADP write would broaden viewer
 --    to ALL of config); provisioning re-runs every start, so a dropped/recreated table re-grants (self-heal).
 --    The target must already exist here, so provisioning runs AFTER migration (V31 created config.custom_views).

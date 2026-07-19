@@ -12,9 +12,10 @@
 --              dismissals, analysis mutes). The Viewer's default identity (darling.json
 --              postgres.connectAs = "admin").
 --   viewer  -- reads both schemas; the ONLY write it gets is INSERT/UPDATE/DELETE on config.custom_views
---              (the web dashboard's user-authored view definitions, #1563 -- non-secret JSON, loopback-gated
---              server-side). All other write actions degrade gracefully. Point a locked-down Viewer at this
---              with postgres.connectAs = "viewer".
+--              (the web dashboard's user-authored view definitions, #1563 -- non-secret JSON; edited by any
+--              authenticated seat, gated server-side by the host's token+CIDR auth -- not loopback-only). All
+--              other write actions degrade gracefully. Point a locked-down Viewer at this with
+--              postgres.connectAs = "viewer".
 --
 -- PREREQUISITE: the V8 migration (which the service applies on startup) must already have created
 -- the collect and config schemas and moved the tables into them. Run this AFTER the service has
@@ -64,6 +65,13 @@ END $$;
 ALTER ROLE admin  LOGIN NOSUPERUSER PASSWORD 'CHANGE_ME_ADMIN_PASSWORD';
 ALTER ROLE viewer LOGIN NOSUPERUSER PASSWORD 'CHANGE_ME_VIEWER_PASSWORD';
 
+-- 1a. statement_timeout backstop on viewer (Custom Views v2, #1563): the web dashboard's compose surface
+--     connects as viewer and runs network-reachable aggregations over a raw, no-rollup store, so this caps a
+--     runaway query at the database (a LIMIT bounds output, not work). Keep this value in step with
+--     ComposeLimits.StatementTimeout in the service. (Managed mode also sets this on the network 'mcp' role,
+--     which a BYO deployment does not create -- your own PostgreSQL governs any MCP-role exposure it wants.)
+ALTER ROLE viewer SET statement_timeout = '15s';
+
 -- 2. Schema usage + SELECT on everything that exists now (ALL TABLES covers tables AND views). collect
 --    holds no secrets, so admin+viewer read all of it. config: admin (the writer, and the Settings
 --    window's identity) reads every column; viewer reads all config tables too -- MINUS the secret columns
@@ -101,8 +109,9 @@ GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO admin;
 
 -- 3b. Custom views (#1563): the SINGLE viewer write. The web dashboard connects as the least-privilege
 --     viewer role and its custom-view composer writes exactly this one config table (non-secret dashboard
---     JSON). App-layer editing is loopback-only, enforced server-side; this narrow grant is only the floor
---     beneath that gate. EXPLICIT single-table statement, NO ALTER DEFAULT PRIVILEGES (ADP has no per-table
+--     JSON). Editing is any authenticated seat -- the web surface's normal networked mode, gated server-side
+--     by the host's token+CIDR auth (not loopback-only); this narrow grant is only the floor beneath that
+--     gate. EXPLICIT single-table statement, NO ALTER DEFAULT PRIVILEGES (ADP has no per-table
 --     form -> it would broaden viewer to ALL of config). config.custom_views is created by the V31 migration,
 --     so re-run this script AFTER the service has migrated your store to V31 (else this line errors: no table).
 GRANT INSERT, UPDATE, DELETE ON config.custom_views TO viewer;
