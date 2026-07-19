@@ -296,8 +296,13 @@ public sealed class DarlingCustomViewsTests
         Assert.Contains("version = version + 1", CustomViewStore.UpdateSql, StringComparison.Ordinal);
         Assert.Contains("RETURNING", CustomViewStore.UpdateSql, StringComparison.Ordinal);
 
-        /* The list read never selects the (potentially large) definition body. */
-        Assert.DoesNotContain("definition", CustomViewStore.ListSql, StringComparison.Ordinal);
+        /* The list read extracts only the kind SCALAR (definition->>'kind') for the badge/route — it must still
+           NOT select the (potentially large) definition BODY column. Positive guard so it stays meaningful:
+           after removing the scalar extraction, no other 'definition' reference may remain in the query (so it
+           still fails if someone later drags the whole body into the list SELECT). */
+        Assert.Contains("definition->>'kind'", CustomViewStore.ListSql, StringComparison.Ordinal);
+        var listWithoutKindScalar = CustomViewStore.ListSql.Replace("definition->>'kind'", string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("definition", listWithoutKindScalar, StringComparison.Ordinal);
     }
 
     [Fact]

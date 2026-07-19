@@ -530,6 +530,13 @@ public static class DarlingWebEndpoints
     /// <summary>The abuse bound on panel count — a dashboard far larger than any real one.</summary>
     internal const int MaxPanelCount = 48;
 
+    /// <summary>The abuse bound on a notebook's cell count (design D7) — a notebook far longer than any real one.</summary>
+    internal const int MaxNotebookCells = 100;
+
+    /// <summary>The abuse bound on a single markdown cell's text (UTF-8 bytes, design D7) — generous for real
+    /// prose/tables, bounded against a definition padded out to the whole-doc size cap by one giant cell.</summary>
+    internal const int MaxMarkdownCellBytes = 32 * 1024;
+
     /// <summary>The outcome of <see cref="ValidateDefinition"/>: valid, or invalid with a caller-facing reason.</summary>
     internal readonly record struct DefinitionValidation(bool IsValid, string? Error)
     {
@@ -540,15 +547,20 @@ public static class DarlingWebEndpoints
 
     /// <summary>
     /// PURE structural validation of a stored view definition — the authority the POST/PUT routes run before any
-    /// write (400 on failure, naming the offending panel). Requires a JSON object with a non-empty <c>panels</c>
-    /// array (size- and count-capped) and validates the view-level <c>variables</c> (§2b) + <c>range</c>. Each
-    /// panel is EITHER a v2 COMPOSED panel (names a <c>source</c>) — cross-checked against the measure catalog +
-    /// the declared variables by <see cref="ComposeSpec.TryParsePanel"/>, the same authority the compile-run path
-    /// uses, so a stored composed panel can always compile — or a v1 READ panel (names a <c>read</c> on the
+    /// write (400 on failure, naming the offending panel/cell). After the shared preamble (size cap, JSON parse,
+    /// object check) it dispatches on the view <b>kind</b>: a <c>"kind":"notebook"</c> definition routes to
+    /// <see cref="ValidateNotebookDefinition"/> (design D7); everything else (no <c>kind</c>, or
+    /// <c>"kind":"dashboard"</c>) is a DASHBOARD, validated below unchanged.
+    ///
+    /// <para><b>Dashboard.</b> Requires a JSON object with a non-empty <c>panels</c> array (size- and
+    /// count-capped) and validates the view-level <c>variables</c> (§2b) + <c>range</c>. Each panel is EITHER a v2
+    /// COMPOSED panel (names a <c>source</c>) — cross-checked against the measure catalog + the declared variables
+    /// by <see cref="ComposeSpec.TryParsePanel"/>, the same authority the compile-run path uses, so a stored
+    /// composed panel can always compile — or a v1 READ panel (names a <c>read</c> on the
     /// <see cref="BuildReadDispatch"/> allowlist with a <c>viz</c> in <see cref="KnownViz"/>); the two coexist and
     /// are dispatched per panel. A <c>span</c> of 1 or 2 and any series <c>color</c> (a <c>#rrggbb</c> hex) are
     /// validated for both modes. Raw <c>path</c>-mode is REJECTED — a definition must stay on the allowlists,
-    /// never name an arbitrary endpoint path.
+    /// never name an arbitrary endpoint path.</para>
     /// </summary>
     internal static DefinitionValidation ValidateDefinition(string? definitionJson)
     {
@@ -575,6 +587,15 @@ public static class DarlingWebEndpoints
         if (root is not JsonObject rootObject)
         {
             return DefinitionValidation.Fail("definition must be a JSON object.");
+        }
+
+        /* Kind dispatch (design D7): a notebook is a distinct view kind stored in the SAME config.custom_views
+           table, marked by a top-level "kind":"notebook" and carrying "cells" in place of "panels". Route it to
+           its own validator; a dashboard (no "kind", or "kind":"dashboard") falls through to the panels path
+           below, unchanged. The shared preamble above (size cap, JSON parse, object check) already covered both. */
+        if (string.Equals(TryGetString(rootObject, "kind"), "notebook", StringComparison.Ordinal))
+        {
+            return ValidateNotebookDefinition(rootObject);
         }
 
         if (rootObject["panels"] is not JsonArray panels)
@@ -686,6 +707,104 @@ public static class DarlingWebEndpoints
                         }
                     }
                 }
+            }
+        }
+
+        return DefinitionValidation.Valid;
+    }
+
+    /// <summary>
+    /// PURE structural validation of a NOTEBOOK definition (design D7) — the <c>"kind":"notebook"</c> arm of
+    /// <see cref="ValidateDefinition"/> (the shared preamble — size cap, JSON parse, object check — already ran).
+    /// A notebook is a view kind stored in the SAME <c>config.custom_views</c> table as a dashboard, distinguished
+    /// by its top-level <c>"kind":"notebook"</c> and a <c>cells</c> array in place of <c>panels</c>. Requires a
+    /// non-empty <c>cells</c> array (count-capped at <see cref="MaxNotebookCells"/>) and validates the view-level
+    /// <c>variables</c> (§2b) + <c>range</c> through the SAME <see cref="ComposeSpec"/> authorities a dashboard
+    /// routes through. Each cell is validated by its <c>type</c>:
+    /// <list type="bullet">
+    /// <item><c>markdown</c> — must carry a string <c>text</c> within <see cref="MaxMarkdownCellBytes"/> (UTF-8).</item>
+    /// <item><c>panel</c> — a v2 COMPOSED panel validated by <see cref="ComposeSpec.TryParsePanel"/> against the
+    /// notebook's declared variables (the EXACT authority a dashboard's composed panel routes through), so a
+    /// notebook panel cell carries all the v2 safety — catalog-resolved identifiers, bound values, caps — and can
+    /// always compile.</item>
+    /// </list>
+    /// An unknown cell <c>type</c>, a missing/oversize markdown <c>text</c>, an invalid panel cell, or an over-cap
+    /// cell count is rejected (400), naming the offending cell by index.
+    /// </summary>
+    internal static DefinitionValidation ValidateNotebookDefinition(JsonObject rootObject)
+    {
+        if (rootObject["cells"] is not JsonArray cells)
+        {
+            return DefinitionValidation.Fail("notebook.cells must be an array.");
+        }
+
+        if (cells.Count == 0)
+        {
+            return DefinitionValidation.Fail("notebook.cells must have at least one cell.");
+        }
+
+        if (cells.Count > MaxNotebookCells)
+        {
+            return DefinitionValidation.Fail($"notebook has {cells.Count} cells; the maximum is {MaxNotebookCells}.");
+        }
+
+        /* View-level template variables (§2b) + global range — the SAME authorities the dashboard path routes
+           through; the declared variable names are the allowlist a panel cell's $var filters must reference. */
+        var (variables, variablesError) = ComposeSpec.ParseVariables(rootObject["variables"]);
+        if (variablesError is not null)
+        {
+            return DefinitionValidation.Fail(variablesError);
+        }
+
+        var (_, rangeError) = ComposeSpec.ParseRange(rootObject["range"]);
+        if (rangeError is not null)
+        {
+            return DefinitionValidation.Fail(rangeError);
+        }
+
+        var declaredVariables = variables!.Select(v => v.Name).ToHashSet(StringComparer.Ordinal);
+
+        for (var i = 0; i < cells.Count; i++)
+        {
+            if (cells[i] is not JsonObject cell)
+            {
+                return DefinitionValidation.Fail($"cell {i} must be an object.");
+            }
+
+            var type = TryGetString(cell, "type");
+            switch (type)
+            {
+                case "markdown":
+                    /* A markdown cell is prose only — a string 'text' (present, a real string) within the cell
+                       byte cap. It never enters the compiler; the renderer is responsible for safe markdown->HTML. */
+                    if (cell["text"] is not JsonValue textValue || !textValue.TryGetValue<string>(out var text))
+                    {
+                        return DefinitionValidation.Fail($"cell {i} (markdown) must have a string 'text'.");
+                    }
+
+                    if (System.Text.Encoding.UTF8.GetByteCount(text) > MaxMarkdownCellBytes)
+                    {
+                        return DefinitionValidation.Fail(
+                            $"cell {i} (markdown) text exceeds the maximum size of {MaxMarkdownCellBytes} bytes.");
+                    }
+
+                    break;
+
+                case "panel":
+                    /* A panel cell is a v2 composed panel, validated by the SAME ComposeSpec.TryParsePanel authority
+                       a dashboard's composed panel routes through (against the notebook's declared variables) — so a
+                       stored notebook panel cell can always compile and carries all the v2 safety. */
+                    var (_, panelError) = ComposeSpec.TryParsePanel(cell, declaredVariables);
+                    if (panelError is not null)
+                    {
+                        return DefinitionValidation.Fail($"cell {i}: {panelError}");
+                    }
+
+                    break;
+
+                default:
+                    return DefinitionValidation.Fail(
+                        $"cell {i} has an unknown type '{type}'; expected 'markdown' or 'panel'.");
             }
         }
 
@@ -1141,8 +1260,10 @@ public static class DarlingWebEndpoints
         ["updated_by"] = view.UpdatedBy,
     };
 
-    /// <summary>The bare-array list wire shape (no definition).</summary>
-    private static JsonArray BuildSummariesNode(IReadOnlyList<CustomViewSummary> views)
+    /// <summary>The bare-array list wire shape (no definition body). Carries the view <c>kind</c> — always
+    /// concrete (<c>"dashboard"</c> when the stored definition declares none) so the list page/sidebar can badge
+    /// and route a notebook vs a dashboard without fetching each full definition.</summary>
+    internal static JsonArray BuildSummariesNode(IReadOnlyList<CustomViewSummary> views)
     {
         var array = new JsonArray();
         foreach (var view in views)
@@ -1155,6 +1276,7 @@ public static class DarlingWebEndpoints
                 ["version"] = view.Version,
                 ["updated_at"] = view.UpdatedAt,
                 ["updated_by"] = view.UpdatedBy,
+                ["kind"] = view.Kind ?? "dashboard",
             });
         }
 

@@ -985,4 +985,257 @@ public sealed class DarlingComposeTests
         Assert.False(result.IsValid);
         Assert.Contains("unknown source", result.Error!, StringComparison.OrdinalIgnoreCase);
     }
+
+    /* ─────────────────────────── D7: notebook mode (kind dispatch) ─────────────────────────── */
+
+    [Fact]
+    public void ValidateDefinition_AcceptsANotebook_WithMarkdownAndPanelCells()
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[" +
+            "{\"type\":\"markdown\",\"text\":\"# Wait analysis\\nSome prose about the panel below.\"}," +
+            "{\"type\":\"panel\",\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsAMarkdownOnlyNotebook()
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[{\"type\":\"markdown\",\"text\":\"just prose, no panels\"}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsANotebook_WithVariablesRange_AndAVariableFilterPanelCell()
+    {
+        /* A notebook's view-level variables + range validate through the SAME authorities a dashboard uses, and a
+           panel cell's $var filter resolves against those declared variables. */
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\"," +
+            "\"variables\":[{\"name\":\"db\",\"dimension\":\"database_name\"}]," +
+            "\"range\":{\"hours\":24}," +
+            "\"cells\":[" +
+            "{\"type\":\"markdown\",\"text\":\"scoped to $db\"}," +
+            "{\"type\":\"panel\",\"source\":\"procedure_stats\",\"measure\":\"proc_elapsed_us\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\"," +
+            "\"filters\":[{\"dimension\":\"database_name\",\"op\":\"eq\",\"value\":\"$db\"}]}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Theory]
+    /* cells missing entirely / not an array. */
+    [InlineData("{\"kind\":\"notebook\"}", "must be an array")]
+    [InlineData("{\"kind\":\"notebook\",\"cells\":\"nope\"}", "must be an array")]
+    /* an empty cells array. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[]}", "at least one")]
+    /* a cell that is not an object. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[\"nope\"]}", "must be an object")]
+    /* an unknown cell type. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"type\":\"chart\",\"text\":\"x\"}]}", "unknown type")]
+    /* a cell with no type at all. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"text\":\"x\"}]}", "unknown type")]
+    /* a markdown cell missing 'text'. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"type\":\"markdown\"}]}", "string 'text'")]
+    /* a markdown cell whose 'text' is present but not a string. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"type\":\"markdown\",\"text\":42}]}", "string 'text'")]
+    public void ValidateDefinition_RejectsBadNotebook_NamingTheReason(string json, string expectedFragment)
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(json);
+        Assert.False(result.IsValid);
+        Assert.Contains(expectedFragment, result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithAnInvalidPanelCell_NamingTheCell()
+    {
+        /* A panel cell routes through the EXACT ComposeSpec.TryParsePanel authority a dashboard's composed panel
+           uses, so an off-catalog measure is caught and the offending cell is named by index. */
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[" +
+            "{\"type\":\"markdown\",\"text\":\"intro\"}," +
+            "{\"type\":\"panel\",\"source\":\"wait_stats\",\"measure\":\"nope\",\"aggregate\":\"sum\",\"viz\":\"table\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("cell 1", result.Error!, StringComparison.Ordinal);
+        Assert.Contains("unknown measure", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebookPanelCell_WithAnUndeclaredVariable()
+    {
+        /* The panel cell's $var must reference a variable the notebook declared — the same allowlist a dashboard
+           composed panel enforces. */
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[" +
+            "{\"type\":\"panel\",\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"table\"," +
+            "\"filters\":[{\"dimension\":\"wait_type\",\"op\":\"eq\",\"value\":\"$nope\"}]}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("undeclared variable", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithBadViewVariables()
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"variables\":[{\"name\":\"x\",\"dimension\":\"nope\"}]," +
+            "\"cells\":[{\"type\":\"markdown\",\"text\":\"x\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("dimension", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithBadRange()
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"range\":{\"hours\":0}," +
+            "\"cells\":[{\"type\":\"markdown\",\"text\":\"x\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("range.hours", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithOversizeMarkdownText()
+    {
+        /* One markdown cell over the per-cell byte cap, while the whole doc stays under the 128 KB definition cap
+           — so this pins the per-cell bound specifically, not the doc bound. */
+        var bigText = new string('a', DarlingWebEndpoints.MaxMarkdownCellBytes + 1);
+        var notebook = new JsonObject
+        {
+            ["kind"] = "notebook",
+            ["cells"] = new JsonArray(new JsonObject { ["type"] = "markdown", ["text"] = bigText }),
+        };
+        var result = DarlingWebEndpoints.ValidateDefinition(notebook.ToJsonString());
+        Assert.False(result.IsValid);
+        Assert.Contains("maximum size", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithTooManyCells()
+    {
+        var cells = new JsonArray();
+        for (var i = 0; i < DarlingWebEndpoints.MaxNotebookCells + 1; i++)
+        {
+            cells.Add(new JsonObject { ["type"] = "markdown", ["text"] = "x" });
+        }
+
+        var notebook = new JsonObject { ["kind"] = "notebook", ["cells"] = cells };
+        var result = DarlingWebEndpoints.ValidateDefinition(notebook.ToJsonString());
+        Assert.False(result.IsValid);
+        Assert.Contains("maximum", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_StillAcceptsADashboard_AfterTheKindDispatch()
+    {
+        /* Regression: the D7 kind dispatch leaves the dashboard path untouched — a plain {panels} dashboard (no
+           kind) and an explicit "kind":"dashboard" both validate through the same unchanged panels path. */
+        var noKind = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}]}");
+        Assert.True(noKind.IsValid, noKind.Error);
+
+        var explicitDashboard = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"dashboard\",\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}]}");
+        Assert.True(explicitDashboard.IsValid, explicitDashboard.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsACellsDoc_SentWithoutTheNotebookKind()
+    {
+        /* Without "kind":"notebook", a cells-only doc is just a dashboard missing its panels — rejected, so a
+           notebook can never be silently mistaken for (or stored as) an empty dashboard. */
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"cells\":[{\"type\":\"markdown\",\"text\":\"x\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("panels", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /* ─────────────────────────── D7: list-summary kind (badge/route) ─────────────────────────── */
+
+    [Theory]
+    [InlineData("notebook", "notebook")]
+    [InlineData("dashboard", "dashboard")]
+    /* absent kind (a legacy/plain dashboard) defaults to a concrete "dashboard" on the wire. */
+    [InlineData(null, "dashboard")]
+    public void BuildSummariesNode_EmitsAConcreteKind_DefaultingDashboard(string? storedKind, string expectedWireKind)
+    {
+        var summary = new CustomViewSummary(
+            Id: 7, Name: "v", Description: null, Version: 1, UpdatedAt: DateTime.UnixEpoch, UpdatedBy: "web", Kind: storedKind);
+
+        var node = DarlingWebEndpoints.BuildSummariesNode(new[] { summary });
+
+        Assert.Equal(1, node.Count);
+        var one = Assert.IsType<JsonObject>(node[0]);
+        Assert.Equal(expectedWireKind, one["kind"]!.GetValue<string>());
+    }
+
+    /* ─────────────────────────── D7: seed-template drift guard ─────────────────────────── */
+
+    [Fact]
+    public void ValidateDefinition_AcceptsEverySeedNotebookTemplate()
+    {
+        /* Drift guard for the frontend's NOTEBOOK_TEMPLATES (wwwroot/js/notebook.js): each template's PANEL cells
+           are mirrored here verbatim (the markdown prose is abbreviated — ValidateDefinition only length-checks a
+           cell's text), so if a future MeasureCatalog change renames/removes a measure, dimension, or annotation
+           source a seed template relies on, THIS fails loudly instead of the template silently 400ing in the UI.
+           If a template's panels are added to or restructured, mirror the change here. */
+        var templates = new (string Name, string Definition)[]
+        {
+            ("blocking-rca",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# Blocking-chain RCA\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## 1. Blocking over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Blocked-process reports over time\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"deadlocks\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"## 2. Most-contended objects\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Most-blocked objects\",\"groupBy\":[\"contentious_object\"],\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## 3. Blocking by database\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Blocking by database\",\"groupBy\":[\"database_name\"],\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## 4. Lock modes involved\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"pie\",\"topN\":8,\"title\":\"Lock modes\",\"groupBy\":[\"lock_mode\"],\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"Next steps\"}]}"),
+
+            ("deadlock-postmortem",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# Deadlock post-mortem\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Deadlocks over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"deadlocks\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Deadlocks over time\",\"measure\":\"deadlock_count\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"blocked_process_reports\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"## Deadlocks by database\"}," +
+                "{\"type\":\"panel\",\"source\":\"deadlocks\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Deadlocks by database\",\"groupBy\":[\"database_name\"],\"measure\":\"deadlock_count\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Correlated blocking\"}," +
+                "{\"type\":\"panel\",\"source\":\"blocked_process_reports\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Blocked-process reports (deadlock markers)\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"deadlocks\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"Reading the deadlock graph\"}]}"),
+
+            ("what-changed",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# What changed at 2am?\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Default-trace events over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"default_trace_events\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Default-trace events over time\",\"measure\":\"deftrace_duration_us\",\"aggregate\":\"count\",\"unit\":\"count\",\"annotations\":[\"system_health_events\",\"deadlocks\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"## Events by type\"}," +
+                "{\"type\":\"panel\",\"source\":\"default_trace_events\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Default-trace events by type\",\"groupBy\":[\"event_name\"],\"measure\":\"deftrace_duration_us\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Events by database\"}," +
+                "{\"type\":\"panel\",\"source\":\"default_trace_events\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Default-trace events by database\",\"groupBy\":[\"database_name\"],\"measure\":\"deftrace_duration_us\",\"aggregate\":\"count\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Correlate with CPU\"}," +
+                "{\"type\":\"panel\",\"source\":\"cpu_utilization_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"SQL Server CPU % (event markers)\",\"measure\":\"sqlserver_cpu_utilization\",\"aggregate\":\"avg\",\"unit\":\"percent\",\"annotations\":[\"default_trace_events\",\"system_health_events\"]}," +
+                "{\"type\":\"markdown\",\"text\":\"Where to look next\"}]}"),
+
+            ("memory-oom",
+                "{\"kind\":\"notebook\",\"cells\":[" +
+                "{\"type\":\"markdown\",\"text\":\"# Memory / OOM walkthrough\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Server memory over time\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Total server memory\",\"measure\":\"mem_total_server_mb\",\"aggregate\":\"avg\",\"unit\":\"mb\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Query-memory grants\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Granted query memory\",\"measure\":\"grant_granted_mb\",\"aggregate\":\"avg\",\"unit\":\"mb\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Query-memory grant used %\",\"ratio\":\"grant_used_pct\",\"unit\":\"percent\",\"thresholds\":[90]}," +
+                "{\"type\":\"markdown\",\"text\":\"## Grant pressure\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Memory-grant waiters (peak)\",\"measure\":\"grant_waiters\",\"aggregate\":\"max\",\"unit\":\"count\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_grant_stats\",\"viz\":\"line\",\"timeBucket\":\"hour\",\"title\":\"Memory-grant timeouts\",\"measure\":\"grant_timeouts\",\"aggregate\":\"sum\",\"unit\":\"count\"}," +
+                "{\"type\":\"markdown\",\"text\":\"## Top memory clerks\"}," +
+                "{\"type\":\"panel\",\"source\":\"memory_clerks\",\"viz\":\"bar\",\"topN\":10,\"title\":\"Top memory clerks\",\"groupBy\":[\"clerk_type\"],\"measure\":\"clerk_memory_mb\",\"aggregate\":\"max\",\"unit\":\"mb\"}," +
+                "{\"type\":\"markdown\",\"text\":\"RESOURCE_SEMAPHORE notes\"}]}"),
+        };
+
+        foreach (var (name, definition) in templates)
+        {
+            var result = DarlingWebEndpoints.ValidateDefinition(definition);
+            Assert.True(result.IsValid, $"seed template '{name}' failed validation: {result.Error}");
+        }
+    }
 }
