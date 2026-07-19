@@ -16,9 +16,12 @@
  *   #/view/{id}         — a saved custom view, rendered (#1563)
  *   #/view/{id}/edit    — the composer editing a saved view (#1563)
  *   #/view/new          — the composer creating a new view (#1563)
+ *   #/notebook/{id}     — a saved notebook, rendered as a document (#1563 D7; renderView kind-detects)
+ *   #/notebook/{id}/edit— the notebook composer editing a saved notebook (#1563 D7)
+ *   #/notebook/new      — the notebook composer creating a new notebook (optionally /new/{template})
  * The refresh loop re-renders the active page every 60s and PAUSES while the tab is hidden (the interval skips
  * work when document.hidden), refreshing once immediately when the tab becomes visible again. The 60s refresh
- * DELIBERATELY does NOT re-render the composer route (the editor-route poll guard) — a background rebuild there
+ * DELIBERATELY does NOT re-render either composer route (the editor-route poll guard) — a background rebuild there
  * would discard an in-progress edit — while the sidebar (server list + view list) still refreshes.
  */
 
@@ -29,6 +32,7 @@ import { renderServer } from "./pages/server.js";
 import { renderAlerts } from "./pages/alerts.js";
 import { renderViewList, renderView } from "./pages/views.js";
 import { renderEditor } from "./editor.js";
+import { renderNotebookEditor } from "./notebook.js";
 import { getSession, listViews } from "./views-api.js";
 
 const POLL_MS = 60000;
@@ -51,6 +55,15 @@ function currentRoute() {
     return { name: "editor", id: decodeURIComponent(h.slice("#/view/".length, h.length - "/edit".length)) };
   }
   if (h.startsWith("#/view/")) return { name: "view", id: decodeURIComponent(h.slice("#/view/".length)) };
+  /* Notebook routes (#1563 D7): /new (optionally /new/{template}) + /{id} + /{id}/edit, tested most-specific first. */
+  if (h === "#/notebook/new") return { name: "notebookEditor", id: "new" };
+  if (h.startsWith("#/notebook/new/")) {
+    return { name: "notebookEditor", id: "new", template: decodeURIComponent(h.slice("#/notebook/new/".length)) };
+  }
+  if (h.startsWith("#/notebook/") && h.endsWith("/edit")) {
+    return { name: "notebookEditor", id: decodeURIComponent(h.slice("#/notebook/".length, h.length - "/edit".length)) };
+  }
+  if (h.startsWith("#/notebook/")) return { name: "notebook", id: decodeURIComponent(h.slice("#/notebook/".length)) };
   return { name: "fleet" };
 }
 
@@ -62,12 +75,20 @@ function route() {
   else if (r.name === "views") renderViewList(main);
   else if (r.name === "view") renderView(main, r.id);
   else if (r.name === "editor") renderEditor(main, r.id);
+  else if (r.name === "notebook") renderView(main, r.id); // renderView kind-detects -> notebook document
+  else if (r.name === "notebookEditor") renderNotebookEditor(main, r.id, r.template);
   else renderFleet(main);
 }
 
-/* The sidebar's "Custom Views" nav stays lit across the list, the renderer, and the composer. */
+/* Whether a route targets a specific saved view/notebook (its renderer or composer) — the routes whose sidebar
+   entry should light up, and which the poll guard must not clobber (for the composer forms). */
+function isViewItemRoute(name) {
+  return name === "view" || name === "editor" || name === "notebook" || name === "notebookEditor";
+}
+
+/* The sidebar's "Custom Views" nav stays lit across the list, both renderers, and both composers. */
 function navKeyFor(r) {
-  return r.name === "view" || r.name === "editor" || r.name === "views" ? "views" : r.name;
+  return r.name === "views" || isViewItemRoute(r.name) ? "views" : r.name;
 }
 
 function setActiveNav(r) {
@@ -87,7 +108,7 @@ function updateServerActive(r) {
 function updateViewActive(r) {
   if (!viewList) return;
   viewList.querySelectorAll(".view-item").forEach((item) => {
-    const active = (r.name === "view" || r.name === "editor") && item.dataset.view === String(r.id);
+    const active = isViewItemRoute(r.name) && item.dataset.view === String(r.id);
     item.classList.toggle("active", active);
   });
 }
@@ -135,11 +156,14 @@ async function refreshViewList() {
 
   if (res.kind === "data" && Array.isArray(res.data)) {
     for (const v of res.data) {
-      const active = (r.name === "view" || r.name === "editor") && String(r.id) === String(v.id);
+      const active = isViewItemRoute(r.name) && String(r.id) === String(v.id);
+      /* The summary carries the view kind (definition->>'kind'), so the sidebar links + badges a notebook without
+         fetching its definition; a notebook links to its own route and gets a document glyph (CSS). */
+      const isNotebook = v.kind === "notebook";
       items.push(
         el("a", {
-          class: "view-item" + (active ? " active" : ""),
-          href: "#/view/" + encodeURIComponent(v.id),
+          class: "view-item" + (active ? " active" : "") + (isNotebook ? " is-notebook" : ""),
+          href: (isNotebook ? "#/notebook/" : "#/view/") + encodeURIComponent(v.id),
           dataset: { view: String(v.id) },
           title: v.description || v.name,
           text: v.name,
@@ -150,6 +174,7 @@ async function refreshViewList() {
 
   if (session.can_edit) {
     items.push(el("a", { class: "view-item new-view", href: "#/view/new", text: "＋ New view" }));
+    items.push(el("a", { class: "view-item new-view", href: "#/notebook/new", text: "＋ New notebook" }));
   }
 
   if (!items.length) {
@@ -191,9 +216,11 @@ function updateStatusBar(d) {
 function refresh() {
   refreshSidebar();
   refreshViewList();
-  /* Poll-clobber guard (#1563): never re-render the composer from the background poll — a rebuild would discard
-     an in-progress edit. hashchange still routes to it normally; only this periodic refresh skips it. */
-  if (currentRoute().name === "editor") return;
+  /* Poll-clobber guard (#1563): never re-render a composer (dashboard OR notebook, #1563 D7) from the background
+     poll — a rebuild would discard an in-progress edit. hashchange still routes to it normally; only this periodic
+     refresh skips it. */
+  const routeName = currentRoute().name;
+  if (routeName === "editor" || routeName === "notebookEditor") return;
   route();
 }
 

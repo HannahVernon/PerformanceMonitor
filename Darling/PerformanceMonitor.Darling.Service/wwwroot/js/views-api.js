@@ -100,6 +100,13 @@ export function validateDefinition(def, catalog) {
   if (!def || typeof def !== "object" || Array.isArray(def)) {
     return "Definition must be a JSON object.";
   }
+
+  /* A notebook is a distinct view kind (kind:"notebook" + a `cells` array) sharing the same CRUD; route it to its
+     own structural check (#1563 D7). A dashboard (no kind / kind:"dashboard") validates its `panels` below. */
+  if (def.kind === "notebook") {
+    return validateNotebookDefinition(def, catalog);
+  }
+
   if (!Array.isArray(def.panels)) {
     return "Definition must have a 'panels' array.";
   }
@@ -115,10 +122,7 @@ export function validateDefinition(def, catalog) {
 
   const reads = new Map((catalog.reads || []).map((r) => [r.name, r]));
   const vizSet = new Set(catalog.viz || []);
-  const compose = catalog.compose || {};
-  const sourceSet = new Set((compose.measures || []).map((m) => m.source));
-  const measureByKey = new Map((compose.measures || []).map((m) => [m.key, m]));
-  const composeVizSet = new Set(compose.viz || []);
+  const sets = composeCatalogSets(catalog);
 
   for (let i = 0; i < def.panels.length; i++) {
     const p = def.panels[i];
@@ -135,23 +139,8 @@ export function validateDefinition(def, catalog) {
 
     /* A composed panel names a source; a read panel names a read. */
     if (p.source != null) {
-      if (!sourceSet.has(p.source)) {
-        return "Panel " + n + " references unknown source '" + p.source + "'.";
-      }
-      if (p.measure != null && p.ratio != null) {
-        return "Panel " + n + " must set exactly one of 'measure' or 'ratio', not both.";
-      }
-      const key = p.measure != null ? p.measure : p.ratio;
-      const m = measureByKey.get(key);
-      if (!m) {
-        return "Panel " + n + " references unknown measure '" + (key || "") + "'.";
-      }
-      if (m.source !== p.source) {
-        return "Panel " + n + " measure '" + m.key + "' is not on source '" + p.source + "'.";
-      }
-      if (!p.viz || !composeVizSet.has(p.viz)) {
-        return "Panel " + n + " has an unknown or missing chart type '" + (p.viz || "") + "'.";
-      }
+      const composeErr = validateComposedPanelSpec(p, "Panel " + n, sets);
+      if (composeErr) return composeErr;
       continue;
     }
 
@@ -186,5 +175,90 @@ export function validateDefinition(def, catalog) {
     }
   }
 
+  return null;
+}
+
+/**
+ * PURE client-side validation of a NOTEBOOK definition (#1563 D7), mirroring the server's ValidateNotebookDefinition
+ * so a bad import is caught before the round-trip (the backend re-validates as the authority). Requires a non-empty
+ * `cells` array; each cell is a `markdown` cell (a string `text`) or a `panel` cell (a v2 COMPOSED panel spec
+ * spread at the cell's top level — the SAME shape a dashboard's composed panel uses). Returns null when valid, else
+ * a caller-facing error string. The compose CROSS-checks (aggregate/shape/unit coherence, $var resolution) belong
+ * to the server; this catches the structural mistakes an import is likely to carry.
+ */
+function validateNotebookDefinition(def, catalog) {
+  if (!Array.isArray(def.cells)) {
+    return "Notebook definition must have a 'cells' array.";
+  }
+  if (def.cells.length === 0) {
+    return "Notebook must have at least one cell.";
+  }
+  if (def.variables != null && !Array.isArray(def.variables)) {
+    return "Definition 'variables' must be an array.";
+  }
+  if (def.range != null && (typeof def.range !== "object" || Array.isArray(def.range))) {
+    return "Definition 'range' must be an object.";
+  }
+
+  const sets = composeCatalogSets(catalog);
+  for (let i = 0; i < def.cells.length; i++) {
+    const cell = def.cells[i];
+    const n = i + 1;
+    if (!cell || typeof cell !== "object" || Array.isArray(cell)) {
+      return "Cell " + n + " must be an object.";
+    }
+    if (cell.type === "markdown") {
+      if (cell.text != null && typeof cell.text !== "string") {
+        return "Cell " + n + " (markdown) text must be a string.";
+      }
+      continue;
+    }
+    if (cell.type === "panel") {
+      if (cell.path != null) {
+        return "Cell " + n + " uses raw 'path' mode, which is not allowed.";
+      }
+      if (cell.source == null) {
+        return "Cell " + n + " (panel) is missing a 'source'.";
+      }
+      const composeErr = validateComposedPanelSpec(cell, "Cell " + n, sets);
+      if (composeErr) return composeErr;
+      continue;
+    }
+    return "Cell " + n + " has an unknown type '" + (cell.type || "") + "' (expected 'markdown' or 'panel').";
+  }
+
+  return null;
+}
+
+/** The catalog lookups a composed-panel check needs (shared by the dashboard + notebook validators). */
+function composeCatalogSets(catalog) {
+  const compose = catalog.compose || {};
+  return {
+    sourceSet: new Set((compose.measures || []).map((m) => m.source)),
+    measureByKey: new Map((compose.measures || []).map((m) => [m.key, m])),
+    composeVizSet: new Set(compose.viz || []),
+  };
+}
+
+/** Validate a v2 COMPOSED panel spec (names a `source`) against the catalog. `label` prefixes the error ("Panel 2"
+ *  / "Cell 3"). Returns null when valid, else the error string. Shared by dashboard panels + notebook panel cells. */
+function validateComposedPanelSpec(p, label, sets) {
+  if (!sets.sourceSet.has(p.source)) {
+    return label + " references unknown source '" + p.source + "'.";
+  }
+  if (p.measure != null && p.ratio != null) {
+    return label + " must set exactly one of 'measure' or 'ratio', not both.";
+  }
+  const key = p.measure != null ? p.measure : p.ratio;
+  const m = sets.measureByKey.get(key);
+  if (!m) {
+    return label + " references unknown measure '" + (key || "") + "'.";
+  }
+  if (m.source !== p.source) {
+    return label + " measure '" + m.key + "' is not on source '" + p.source + "'.";
+  }
+  if (!p.viz || !sets.composeVizSet.has(p.viz)) {
+    return label + " has an unknown or missing chart type '" + (p.viz || "") + "'.";
+  }
   return null;
 }

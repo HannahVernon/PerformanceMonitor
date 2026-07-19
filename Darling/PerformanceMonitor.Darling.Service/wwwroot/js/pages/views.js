@@ -22,6 +22,8 @@
 import { el, mount, apiGet, loadingStrip, errorStrip, emptyStrip, relTime } from "../util.js";
 import { renderPanel, VIZ } from "../panels.js";
 import { renderComposedPanelCard } from "../compose.js";
+import { renderMarkdown } from "../markdown.js";
+import { NOTEBOOK_TEMPLATES, isNotebookDefinition } from "../notebook.js";
 import * as api from "../views-api.js";
 
 /** The time-range choices the rendered view's chrome offers (mirrors the composer's RANGE_OPTIONS). */
@@ -82,14 +84,19 @@ function firstRunHero(canEdit) {
   }
   const suggestions = ["Top waits by server", "CPU trend over time", "Slowest procedures by database"];
   return el("div", { class: "views-hero" }, [
-    el("div", { class: "hero-title", text: "Compose your own dashboards" }),
+    el("div", { class: "hero-title", text: "Compose your own dashboards & notebooks" }),
     el("div", {
       class: "hero-pitch",
       text:
-        "Pick a metric, aggregate it, group and filter it, and chart it as a line, bar, pie, stacked area, or stat — " +
-        "then save a named view every seat can open, re-scoped live by server and time range. No SQL to write.",
+        "Build a DASHBOARD — pick a metric, aggregate it, group and filter it, and chart it as a line, bar, pie, " +
+        "stacked area, or stat — or a NOTEBOOK that mixes markdown notes with those same charts into a guided " +
+        "investigation. Both save for every seat and re-scope live by server and time range. No SQL to write.",
     }),
-    el("a", { class: "btn primary hero-cta", href: "#/view/new", text: "New view" }),
+    el("div", { class: "hero-ctas" }, [
+      el("a", { class: "btn primary hero-cta", href: "#/view/new", text: "New view" }),
+      el("a", { class: "btn hero-cta", href: "#/notebook/new", text: "New notebook" }),
+      templateMenu(),
+    ]),
     el("div", { class: "hero-suggest" }, [
       el("span", { class: "hero-suggest-label", text: "Popular starting points" }),
       el("div", { class: "hero-suggest-chips" }, suggestions.map((s) => el("span", { class: "hero-chip", text: s }))),
@@ -102,7 +109,24 @@ function listHead(canEdit) {
   return el("div", { class: "page-head" }, [
     el("h2", { text: "Custom Views" }),
     el("div", { class: "spacer" }),
+    canEdit ? templateMenu() : null,
+    canEdit ? el("a", { class: "btn", href: "#/notebook/new", text: "New notebook" }) : null,
     canEdit ? el("a", { class: "btn primary", href: "#/view/new", text: "New view" }) : null,
+  ]);
+}
+
+/* The "New from template" menu (#1563 D7): a <details> dropdown of the seed notebooks, each linking to the
+   notebook composer pre-filled from that template. Built with el()/textContent like everything else. */
+function templateMenu() {
+  const items = NOTEBOOK_TEMPLATES.map((t) =>
+    el("a", { class: "template-item", href: "#/notebook/new/" + encodeURIComponent(t.key), title: t.description }, [
+      el("span", { class: "template-label", text: t.label }),
+      el("span", { class: "template-desc", text: t.description }),
+    ])
+  );
+  return el("details", { class: "template-menu" }, [
+    el("summary", { class: "btn template-summary", text: "New from template ▾" }),
+    el("div", { class: "template-list" }, items),
   ]);
 }
 
@@ -110,23 +134,40 @@ function viewCard(v) {
   const meta =
     "v" + v.version + " · updated " + relTime(v.updated_at) + (v.updated_by ? " by " + v.updated_by : "");
   const chips = el("div", { class: "vc-chips" });
-  const card = el("a", { class: "view-card card", href: "#/view/" + encodeURIComponent(v.id) }, [
+  /* Best-guess link from the (optional) summary kind; enrichCard corrects it from the fetched definition. */
+  const href = v.kind === "notebook" ? "#/notebook/" + encodeURIComponent(v.id) : "#/view/" + encodeURIComponent(v.id);
+  const card = el("a", { class: "view-card card", href }, [
     el("div", { class: "vc-name", text: v.name }),
     v.description ? el("div", { class: "vc-desc", text: v.description }) : null,
     chips,
     el("div", { class: "vc-meta", text: meta }),
   ]);
-  enrichCard(v.id, chips);
+  enrichCard(v.id, chips, card);
   return card;
 }
 
-/* The list summary omits the definition (kept lightweight server-side), so panel count + distinct viz-type chips
-   are fetched per card and filled in progressively — the card renders immediately and never blocks on this fetch,
-   and a failed/empty fetch just leaves the (display:none-when-empty) chip row absent. */
-async function enrichCard(id, chips) {
+/* The list summary omits the definition (kept lightweight server-side), so the kind badge + count/viz chips are
+   fetched per card and filled in progressively — the card renders immediately and never blocks on this fetch, and
+   a failed/empty fetch just leaves the (display:none-when-empty) chip row absent. A notebook is marked with a
+   "Notebook" chip + a cell count, and its card link is corrected to the notebook route. */
+async function enrichCard(id, chips, card) {
   const res = await api.getView(id);
   if (res.kind !== "data" || !res.data) return;
   const def = res.data.definition || {};
+
+  if (isNotebookDefinition(def)) {
+    if (card) card.setAttribute("href", "#/notebook/" + encodeURIComponent(id));
+    const cells = Array.isArray(def.cells) ? def.cells : [];
+    const panelCount = cells.filter((c) => c && c.type === "panel").length;
+    const nodes = [
+      el("span", { class: "vc-chip notebook", text: "Notebook" }),
+      el("span", { class: "vc-chip count", text: cells.length + (cells.length === 1 ? " cell" : " cells") }),
+    ];
+    if (panelCount) nodes.push(el("span", { class: "vc-chip", text: panelCount + (panelCount === 1 ? " panel" : " panels") }));
+    mount(chips, nodes);
+    return;
+  }
+
   const panels = Array.isArray(def.panels) ? def.panels : [];
   if (!panels.length) return;
   const vizTypes = [];
@@ -142,13 +183,14 @@ async function enrichCard(id, chips) {
 }
 
 /* Paste-to-import (can_edit only): parse -> client-validate against the catalog -> POST (backend re-validates).
-   Accepts an exported view {name, description?, definition} or a bare definition {panels:[...]} plus a name. */
+   Accepts an exported view/notebook {name, description?, definition} or a bare definition ({panels:[…]} dashboard
+   or {kind:"notebook", cells:[…]} notebook) plus a name. */
 function importPanel() {
   const textarea = el("textarea", {
     class: "import-box",
     rows: "4",
-    placeholder: 'Paste an exported view JSON here — {"name": "...", "definition": {"panels": [...]}}',
-    "aria-label": "Paste exported view JSON",
+    placeholder: 'Paste exported view or notebook JSON — {"name": "...", "definition": { ... }}',
+    "aria-label": "Paste exported view or notebook JSON",
   });
   const status = el("div", { class: "import-status" });
   const importBtn = el("button", { class: "btn", type: "button", text: "Import" });
@@ -169,9 +211,10 @@ function importPanel() {
       return;
     }
 
-    const def = parsed && parsed.definition ? parsed.definition : parsed && parsed.panels ? parsed : null;
+    const def =
+      parsed && parsed.definition ? parsed.definition : parsed && (parsed.panels || parsed.cells) ? parsed : null;
     if (!def) {
-      mount(status, errorStrip("The JSON must contain a 'definition' (or be a definition with 'panels')."));
+      mount(status, errorStrip("The JSON must contain a 'definition' (or be a definition with 'panels' or 'cells')."));
       return;
     }
     const name = (parsed.name || "").trim();
@@ -192,14 +235,15 @@ function importPanel() {
     const result = await api.createView({ name, description: parsed.description || null, definition: def });
     importBtn.disabled = false;
     if (result.kind === "data" && result.data) {
-      location.hash = "#/view/" + encodeURIComponent(result.data.id);
+      const route = isNotebookDefinition(def) ? "#/notebook/" : "#/view/";
+      location.hash = route + encodeURIComponent(result.data.id);
       return;
     }
-    mount(status, errorStrip(result.message || "Could not import the view."));
+    mount(status, errorStrip(result.message || "Could not import."));
   });
 
   return el("details", { class: "import-panel" }, [
-    el("summary", { text: "Import a view" }),
+    el("summary", { text: "Import a view or notebook" }),
     el("div", { class: "import-body" }, [textarea, el("div", { class: "import-actions" }, [importBtn]), status]),
   ]);
 }
@@ -222,6 +266,13 @@ export async function renderView(main, id) {
 
   const view = res.data || {};
   const def = view.definition || {};
+
+  /* A notebook is the same stored row with a kind:"notebook" definition — render it as a document, not a grid. */
+  if (isNotebookDefinition(def)) {
+    renderNotebookDoc(main, view, session, catalog, fleetRes);
+    return;
+  }
+
   const panels = Array.isArray(def.panels) ? def.panels : [];
   const canEdit = !!session.can_edit;
   const readSet = new Set((catalog.reads || []).map((r) => r.name));
@@ -275,6 +326,83 @@ export async function renderView(main, id) {
 
   mount(main, [head, status, controls, gridBox]);
   renderGrid();
+}
+
+/* ─────────────────────────── notebook renderer (#1563 D7) ─────────────────────────── */
+
+/*
+ * Render a notebook definition as a vertical DOCUMENT: markdown cells through the air-gapped renderMarkdown, panel
+ * cells through the SAME composed-panel card + validation the dashboard grid uses (panelOrError). It reuses this
+ * page's server/time/variable scope bar (buildViewControls) exactly as a dashboard does, so flipping the scope
+ * re-scopes every panel cell at once. Export/Delete/Edit are shared with the dashboard renderer; Edit points at the
+ * notebook composer route.
+ */
+async function renderNotebookDoc(main, view, session, catalog, fleetRes) {
+  const def = view.definition || {};
+  const cells = Array.isArray(def.cells) ? def.cells : [];
+  const canEdit = !!session.can_edit;
+  const readSet = new Set((catalog.reads || []).map((r) => r.name));
+  const sourceSet = new Set(((catalog.compose || {}).measures || []).map((m) => m.source));
+
+  const status = el("div", { class: "view-status" });
+  const head = el("div", { class: "page-head" }, [
+    backToViews(),
+    el("h2", { text: view.name || "Notebook" }),
+    el("span", { class: "notebook-badge", text: "Notebook" }),
+    view.description ? el("div", { class: "meta", text: view.description }) : null,
+    el("div", { class: "spacer" }),
+    exportButton(view),
+    canEdit ? el("a", { class: "btn small", href: "#/notebook/" + encodeURIComponent(view.id) + "/edit", text: "Edit" }) : null,
+    canEdit ? deleteButton(view.id, status) : null,
+  ]);
+
+  if (!cells.length) {
+    mount(main, [head, status, emptyStrip("This notebook has no cells yet.")]);
+    return;
+  }
+
+  /* Scope bar identical to a dashboard's: it only drives the panel cells (markdown is static). Skipped when a
+     notebook is prose-only (no panel cells to re-scope). */
+  const fleet = fleetOptions(fleetRes);
+  const variables = Array.isArray(def.variables) ? def.variables.filter((v) => v && v.name) : [];
+  const defaultHours = def.range && typeof def.range.hours === "number" ? def.range.hours : 24;
+  const hasPanels = cells.some((c) => c && c.type === "panel" && c.source != null);
+
+  const state = { server: "All", hours: defaultHours, values: {} };
+  for (const v of variables) {
+    if (v.dimension !== "server" && v.default) state.values[v.name] = v.default;
+  }
+
+  function currentScope() {
+    return {
+      server: state.server,
+      hours: state.hours,
+      variables: variables.map((v) => ({ name: v.name, dimension: v.dimension, default: v.default || undefined })),
+      values: { ...state.values },
+    };
+  }
+
+  const docBox = el("div", { class: "notebook-doc" });
+  function renderDoc() {
+    mount(docBox, cells.map((cell) => renderCell(cell, readSet, sourceSet, currentScope())));
+  }
+
+  const controls = hasPanels ? buildViewControls(fleet, variables, state, defaultHours, renderDoc) : null;
+  mount(main, [head, status, controls, docBox]);
+  renderDoc();
+}
+
+/* One notebook cell -> a document block: a markdown cell renders through renderMarkdown (XSS-safe); a panel cell
+   through the shared panelOrError (unknown source/viz -> a clean strip, exactly as in the dashboard grid). */
+function renderCell(cell, readSet, sourceSet, scope) {
+  if (!cell || typeof cell !== "object") return null;
+  if (cell.type === "markdown") {
+    return el("div", { class: "notebook-md markdown-body" }, [renderMarkdown(cell.text)]);
+  }
+  if (cell.type === "panel") {
+    return el("div", { class: "notebook-panel" }, [panelOrError(cell, readSet, sourceSet, scope)]);
+  }
+  return null;
 }
 
 function backToViews() {

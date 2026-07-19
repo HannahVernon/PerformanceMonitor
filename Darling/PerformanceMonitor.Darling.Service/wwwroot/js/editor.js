@@ -112,7 +112,7 @@ function newPanel() {
   return newComposedPanel();
 }
 
-function newComposedPanel() {
+export function newComposedPanel() {
   return {
     kind: "source",
     source: "",
@@ -166,7 +166,7 @@ function descToPanel(d) {
   return src.source != null ? descToComposedPanel(src) : descToReadPanel(src);
 }
 
-function descToComposedPanel(d) {
+export function descToComposedPanel(d) {
   const hasBucket = d.timeBucket && d.timeBucket !== "none";
   const hasTopN = d.topN != null;
   return {
@@ -220,7 +220,7 @@ function panelToDesc(p) {
 /* A composed panel model -> the stored descriptor. `kind`/`shape`/preview-only fields are dropped: the server
    reads the panel kind from `source` and the mode from timeBucket/topN. measure XOR ratio; aggregate only for a
    scalar; timeBucket only for a time series; topN only for a ranked panel. */
-function composedPanelToDesc(p) {
+export function composedPanelToDesc(p) {
   const d = { source: p.source, viz: p.viz, span: p.span === 2 ? 2 : 1, title: p.title || "" };
   if (p.ratio) d.ratio = p.ratio;
   else d.measure = p.measure;
@@ -490,7 +490,7 @@ function readBlocker(p, catalog) {
 
 /** A composed panel's SAVE blocker — the coherence rules mirrored from the server so the author gets an inline reason
  *  (the run endpoint stays the authority; anything subtler surfaces as a preview error). */
-function composedBlocker(p, catalog) {
+export function composedBlocker(p, catalog) {
   const measure = composedMeasure(p, catalog);
   if (!measure) return "choose a measure.";
   const isRatio = measure.kind === "ratio";
@@ -863,14 +863,7 @@ const SHAPE_LABELS = { timeseries: "Over time", ranked: "Ranked", scalar: "Singl
  */
 function buildComposedPanelEditor(p, index, ctx, kindToggle) {
   const { catalog, model } = ctx;
-  const compose = catalog.compose || {};
-  let previewTimer = null;
-
-  const bodyBox = el("div", { class: "panel-editor-body" });
   const headSub = el("span", { class: "panel-editor-sub" });
-  const previewBox = el("div", { class: "panel-preview" });
-  const previewSection = labeledBlock("Preview", previewBox);
-  previewSection.classList.add("panel-preview-col");
 
   const upBtn = el("button", { class: "btn small icon", type: "button", text: "↑", title: "Move up", "aria-label": "Move panel up" });
   const downBtn = el("button", { class: "btn small icon", type: "button", text: "↓", title: "Move down", "aria-label": "Move panel down" });
@@ -897,6 +890,63 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
     headSub.textContent = label ? " · " + label : "";
   }
 
+  /* The dashboard wraps the shared composer body in a panel head (kind toggle + reorder/remove). The body owns its
+     own config rebuild + debounced preview; onChange only refreshes the head echo + the view-level save state. */
+  const body = buildComposedPanelBody(p, {
+    catalog,
+    getVariables: () => ctx.model.variables,
+    previewScope: ctx.previewScope,
+    onChange: () => {
+      refreshHead();
+      ctx.refreshSaveState();
+    },
+    showWidth: true,
+  });
+
+  refreshHead();
+
+  return el("div", { class: "panel-editor card" }, [
+    el("div", { class: "panel-editor-head" }, [
+      el("span", { class: "panel-editor-title", text: "Panel " + (index + 1) }),
+      headSub,
+      el("div", { class: "spacer" }),
+      kindToggle,
+      upBtn,
+      downBtn,
+      removeBtn,
+    ]),
+    body,
+  ]);
+}
+
+/**
+ * The composed (v2) panel COMPOSER BODY — the config form (metric / shape / group / filters / chart / advanced /
+ * identity) plus the live WYSIWYG preview — extracted from buildComposedPanelEditor (#1563 D7) so it is shared
+ * VERBATIM by BOTH the dashboard composer (wrapped in a panel head with a kind toggle + reorder/remove) and the
+ * notebook composer (wrapped in a cell head). Returns the `.panel-editor-body` node; the caller owns the head.
+ *
+ * opts:
+ *   catalog       — the compose catalog (compose = catalog.compose).
+ *   getVariables  — () => the view/notebook's declared template variables (for the filter "$name" hints).
+ *   previewScope  — () => the scope the live preview runs against (whole fleet + default range + variable defaults).
+ *   onChange      — () => notify the wrapper a field changed (refresh its head echo + save state); the body owns
+ *                   its own config rebuild + debounced preview, so onChange never rebuilds anything itself.
+ *   showWidth     — show the Width (span 1|2) control; false for a notebook cell (single-column document flow).
+ */
+export function buildComposedPanelBody(p, opts) {
+  const catalog = opts.catalog;
+  const compose = catalog.compose || {};
+  const getVariables = opts.getVariables || (() => []);
+  const previewScope = opts.previewScope || (() => ({}));
+  const onChange = opts.onChange || (() => {});
+  const showWidth = opts.showWidth !== false;
+  let previewTimer = null;
+
+  const bodyBox = el("div", { class: "panel-editor-body" });
+  const previewBox = el("div", { class: "panel-preview" });
+  const previewSection = labeledBlock("Preview", previewBox);
+  previewSection.classList.add("panel-preview-col");
+
   function schedulePreview() {
     clearTimeout(previewTimer);
     previewTimer = setTimeout(renderComposedPreview, PREVIEW_DEBOUNCE_MS);
@@ -908,21 +958,19 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
       mount(previewBox, el("div", { class: "strip empty", text: problem }));
       return;
     }
-    /* Render the exact saved-view card (title + framing) against the preview scope — WYSIWYG. */
-    mount(previewBox, renderComposedPanelCard(composedPanelToDesc(p), ctx.previewScope()));
+    /* Render the exact saved card (title + framing) against the preview scope — WYSIWYG. */
+    mount(previewBox, renderComposedPanelCard(composedPanelToDesc(p), previewScope()));
   }
 
   /* A structural change (measure/aggregate/shape/group/viz) may reveal or retune dependent controls — re-render
      the config. A free-text / live change (title/unit/topN/bucket/filters/time) only refreshes save + preview. */
   function onStructural() {
-    refreshHead();
-    ctx.refreshSaveState();
+    onChange();
     rebuildBody();
     schedulePreview();
   }
   function onLive() {
-    refreshHead();
-    ctx.refreshSaveState();
+    onChange();
     schedulePreview();
   }
 
@@ -1033,7 +1081,7 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
 
   function filtersBlock(m) {
     const editor = buildComposedFiltersEditor(p, m, compose, onLive);
-    const declared = (model.variables || []).filter((v) => v.name).map((v) => "$" + v.name);
+    const declared = (getVariables() || []).filter((v) => v.name).map((v) => "$" + v.name);
     const help = declared.length
       ? el("div", { class: "block-help", text: "Values are literals (comma-separated for is/is-not); reference a view variable as " + declared.join(", ") + "." })
       : el("div", { class: "block-help", text: "Values are literals (comma-separated for is/is-not). Declare a view variable to filter by $name." });
@@ -1174,17 +1222,21 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
     titleInput.value = p.title || "";
     titleInput.addEventListener("input", () => {
       p.title = titleInput.value;
-      refreshHead();
+      onChange();
     });
-    const spanSelect = el("select", { class: "editor-select", "aria-label": "Panel width" }, [
-      el("option", { value: "1", text: "1 column" }),
-      el("option", { value: "2", text: "2 columns (wide)" }),
-    ]);
-    spanSelect.value = String(p.span || 1);
-    spanSelect.addEventListener("change", () => {
-      p.span = spanSelect.value === "2" ? 2 : 1;
-    });
-    return el("div", { class: "composed-fields" }, [field("Title", titleInput, "field-title"), field("Width", spanSelect)]);
+    const fields = [field("Title", titleInput, "field-title")];
+    if (showWidth) {
+      const spanSelect = el("select", { class: "editor-select", "aria-label": "Panel width" }, [
+        el("option", { value: "1", text: "1 column" }),
+        el("option", { value: "2", text: "2 columns (wide)" }),
+      ]);
+      spanSelect.value = String(p.span || 1);
+      spanSelect.addEventListener("change", () => {
+        p.span = spanSelect.value === "2" ? 2 : 1;
+      });
+      fields.push(field("Width", spanSelect));
+    }
+    return el("div", { class: "composed-fields" }, fields);
   }
 
   function rebuildBody() {
@@ -1207,22 +1259,9 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
     mount(bodyBox, kids);
   }
 
-  refreshHead();
   rebuildBody();
   schedulePreview();
-
-  return el("div", { class: "panel-editor card" }, [
-    el("div", { class: "panel-editor-head" }, [
-      el("span", { class: "panel-editor-title", text: "Panel " + (index + 1) }),
-      headSub,
-      el("div", { class: "spacer" }),
-      kindToggle,
-      upBtn,
-      downBtn,
-      removeBtn,
-    ]),
-    bodyBox,
-  ]);
+  return bodyBox;
 }
 
 /** The reason a composed panel can't PREVIEW yet (missing measure/aggregate/chart); subtler run errors surface in
@@ -1525,7 +1564,7 @@ function databaseGrainHint(measure, compose) {
    change it) and, folded away, the template variables a panel filter can reference as $name. $database is offered
    as a one-click add (the common per-database focus). Adding/removing a variable — or changing the range — rebuilds
    the panels (so previews re-run and the filter var hints refresh) via onStructuralChange. */
-function buildViewScopeSection(model, catalog, onStructuralChange) {
+export function buildViewScopeSection(model, catalog, onStructuralChange) {
   const compose = catalog.compose || {};
   const dimNames = variableDimensionNames(compose);
 
@@ -1968,14 +2007,14 @@ function itemList(className, items, renderRow, onChange, addLabel, makeNew) {
   return box;
 }
 
-function field(label, control, extraClass) {
+export function field(label, control, extraClass) {
   return el("label", { class: "editor-field" + (extraClass ? " " + extraClass : "") }, [
     el("span", { class: "field-label", text: label }),
     control,
   ]);
 }
 
-function labeledBlock(label, node) {
+export function labeledBlock(label, node) {
   return el("div", { class: "editor-block" }, [el("div", { class: "block-label", text: label }), node]);
 }
 

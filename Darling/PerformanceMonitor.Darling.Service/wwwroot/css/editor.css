@@ -444,3 +444,86 @@
 .vars-body { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; }
 .item-list.vars .item-row { align-items: center; }
 .item-list.vars .var-dollar { color: var(--muted); font-family: var(--mono); font-weight: 700; }
+
+/* ─────────────────────────── notebook composer (#1563 D7) ─────────────────────────── */
+
+/* List-page affordances: the hero's CTA row, the "New from template" dropdown, and the notebook card chip. */
+.views-hero .hero-ctas { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; justify-content: center; }
+
+.template-menu { position: relative; }
+.template-menu > .template-summary { list-style: none; cursor: pointer; }
+.template-menu > .template-summary::-webkit-details-marker { display: none; }
+.template-list {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  margin-top: 0.3rem;
+  min-width: 300px;
+  max-width: 360px;
+  padding: 0.35rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+}
+.template-item { display: flex; flex-direction: column; gap: 0.1rem; padding: 0.45rem 0.55rem; border-radius: var(--radius-sm); color: var(--fg); }
+.template-item:hover { background: var(--lighter); text-decoration: none; }
+.template-item .template-label { font-weight: 600; font-size: 0.85rem; }
+.template-item .template-desc { font-size: 0.72rem; color: var(--muted); }
+
+.view-card .vc-chip.notebook { color: var(--accent); border-color: rgba(46, 174, 241, 0.35); background: rgba(46, 174, 241, 0.12); font-weight: 600; }
+
+/* The editor: a stacked list of cells + the add-cell row. Each cell is a card with a head (Cell N + kind tag +
+   reorder/remove); a markdown cell is a textarea beside a live preview, a panel cell embeds the shared composer. */
+.cells-box { display: flex; flex-direction: column; gap: 1.1rem; margin-bottom: 1rem; }
+.cells-add { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+
+.notebook-cell { padding: 0.9rem 1rem; }
+.cell-editor-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+.cell-editor-head .cell-editor-title { font-weight: 700; font-size: 0.9rem; color: var(--fg); }
+.cell-editor-head .cell-kind-tag {
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+}
+.cell-editor-head .spacer { flex: 1; }
+
+.md-cell-body { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+@media (max-width: 900px) {
+  .md-cell-body { grid-template-columns: 1fr; }
+}
+.md-cell-body .md-edit-col,
+.md-cell-body .md-preview-col { min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.md-cell-body .block-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+.md-textarea {
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-dark);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.md-textarea:focus { outline: none; border-color: var(--accent); }
+.md-preview {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-dark);
+  min-height: 190px;
+  overflow-x: auto;
+}
