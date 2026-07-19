@@ -985,4 +985,166 @@ public sealed class DarlingComposeTests
         Assert.False(result.IsValid);
         Assert.Contains("unknown source", result.Error!, StringComparison.OrdinalIgnoreCase);
     }
+
+    /* ─────────────────────────── D7: notebook mode (kind dispatch) ─────────────────────────── */
+
+    [Fact]
+    public void ValidateDefinition_AcceptsANotebook_WithMarkdownAndPanelCells()
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[" +
+            "{\"type\":\"markdown\",\"text\":\"# Wait analysis\\nSome prose about the panel below.\"}," +
+            "{\"type\":\"panel\",\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsAMarkdownOnlyNotebook()
+    {
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[{\"type\":\"markdown\",\"text\":\"just prose, no panels\"}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_AcceptsANotebook_WithVariablesRange_AndAVariableFilterPanelCell()
+    {
+        /* A notebook's view-level variables + range validate through the SAME authorities a dashboard uses, and a
+           panel cell's $var filter resolves against those declared variables. */
+        var ok = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\"," +
+            "\"variables\":[{\"name\":\"db\",\"dimension\":\"database_name\"}]," +
+            "\"range\":{\"hours\":24}," +
+            "\"cells\":[" +
+            "{\"type\":\"markdown\",\"text\":\"scoped to $db\"}," +
+            "{\"type\":\"panel\",\"source\":\"procedure_stats\",\"measure\":\"proc_elapsed_us\",\"aggregate\":\"avg\",\"timeBucket\":\"hour\",\"viz\":\"line\"," +
+            "\"filters\":[{\"dimension\":\"database_name\",\"op\":\"eq\",\"value\":\"$db\"}]}]}");
+        Assert.True(ok.IsValid, ok.Error);
+    }
+
+    [Theory]
+    /* cells missing entirely / not an array. */
+    [InlineData("{\"kind\":\"notebook\"}", "must be an array")]
+    [InlineData("{\"kind\":\"notebook\",\"cells\":\"nope\"}", "must be an array")]
+    /* an empty cells array. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[]}", "at least one")]
+    /* a cell that is not an object. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[\"nope\"]}", "must be an object")]
+    /* an unknown cell type. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"type\":\"chart\",\"text\":\"x\"}]}", "unknown type")]
+    /* a cell with no type at all. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"text\":\"x\"}]}", "unknown type")]
+    /* a markdown cell missing 'text'. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"type\":\"markdown\"}]}", "string 'text'")]
+    /* a markdown cell whose 'text' is present but not a string. */
+    [InlineData("{\"kind\":\"notebook\",\"cells\":[{\"type\":\"markdown\",\"text\":42}]}", "string 'text'")]
+    public void ValidateDefinition_RejectsBadNotebook_NamingTheReason(string json, string expectedFragment)
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(json);
+        Assert.False(result.IsValid);
+        Assert.Contains(expectedFragment, result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithAnInvalidPanelCell_NamingTheCell()
+    {
+        /* A panel cell routes through the EXACT ComposeSpec.TryParsePanel authority a dashboard's composed panel
+           uses, so an off-catalog measure is caught and the offending cell is named by index. */
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[" +
+            "{\"type\":\"markdown\",\"text\":\"intro\"}," +
+            "{\"type\":\"panel\",\"source\":\"wait_stats\",\"measure\":\"nope\",\"aggregate\":\"sum\",\"viz\":\"table\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("cell 1", result.Error!, StringComparison.Ordinal);
+        Assert.Contains("unknown measure", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebookPanelCell_WithAnUndeclaredVariable()
+    {
+        /* The panel cell's $var must reference a variable the notebook declared — the same allowlist a dashboard
+           composed panel enforces. */
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"cells\":[" +
+            "{\"type\":\"panel\",\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"viz\":\"table\"," +
+            "\"filters\":[{\"dimension\":\"wait_type\",\"op\":\"eq\",\"value\":\"$nope\"}]}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("undeclared variable", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithBadViewVariables()
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"variables\":[{\"name\":\"x\",\"dimension\":\"nope\"}]," +
+            "\"cells\":[{\"type\":\"markdown\",\"text\":\"x\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("dimension", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithBadRange()
+    {
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"notebook\",\"range\":{\"hours\":0}," +
+            "\"cells\":[{\"type\":\"markdown\",\"text\":\"x\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("range.hours", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithOversizeMarkdownText()
+    {
+        /* One markdown cell over the per-cell byte cap, while the whole doc stays under the 128 KB definition cap
+           — so this pins the per-cell bound specifically, not the doc bound. */
+        var bigText = new string('a', DarlingWebEndpoints.MaxMarkdownCellBytes + 1);
+        var notebook = new JsonObject
+        {
+            ["kind"] = "notebook",
+            ["cells"] = new JsonArray(new JsonObject { ["type"] = "markdown", ["text"] = bigText }),
+        };
+        var result = DarlingWebEndpoints.ValidateDefinition(notebook.ToJsonString());
+        Assert.False(result.IsValid);
+        Assert.Contains("maximum size", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsANotebook_WithTooManyCells()
+    {
+        var cells = new JsonArray();
+        for (var i = 0; i < DarlingWebEndpoints.MaxNotebookCells + 1; i++)
+        {
+            cells.Add(new JsonObject { ["type"] = "markdown", ["text"] = "x" });
+        }
+
+        var notebook = new JsonObject { ["kind"] = "notebook", ["cells"] = cells };
+        var result = DarlingWebEndpoints.ValidateDefinition(notebook.ToJsonString());
+        Assert.False(result.IsValid);
+        Assert.Contains("maximum", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateDefinition_StillAcceptsADashboard_AfterTheKindDispatch()
+    {
+        /* Regression: the D7 kind dispatch leaves the dashboard path untouched — a plain {panels} dashboard (no
+           kind) and an explicit "kind":"dashboard" both validate through the same unchanged panels path. */
+        var noKind = DarlingWebEndpoints.ValidateDefinition(
+            "{\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}]}");
+        Assert.True(noKind.IsValid, noKind.Error);
+
+        var explicitDashboard = DarlingWebEndpoints.ValidateDefinition(
+            "{\"kind\":\"dashboard\",\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"wait_time_ms\",\"aggregate\":\"sum\",\"timeBucket\":\"hour\",\"viz\":\"line\"}]}");
+        Assert.True(explicitDashboard.IsValid, explicitDashboard.Error);
+    }
+
+    [Fact]
+    public void ValidateDefinition_RejectsACellsDoc_SentWithoutTheNotebookKind()
+    {
+        /* Without "kind":"notebook", a cells-only doc is just a dashboard missing its panels — rejected, so a
+           notebook can never be silently mistaken for (or stored as) an empty dashboard. */
+        var result = DarlingWebEndpoints.ValidateDefinition(
+            "{\"cells\":[{\"type\":\"markdown\",\"text\":\"x\"}]}");
+        Assert.False(result.IsValid);
+        Assert.Contains("panels", result.Error!, StringComparison.OrdinalIgnoreCase);
+    }
 }
