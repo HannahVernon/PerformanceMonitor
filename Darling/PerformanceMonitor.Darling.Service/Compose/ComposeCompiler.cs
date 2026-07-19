@@ -207,6 +207,71 @@ public static class ComposeCompiler
         return (new ComposeCompiled(sql.ToString(), p.Parameters), null);
     }
 
+    /// <summary>
+    /// Compiles the panel's event-annotation overlays (design D5) into one bounded parameterized query per
+    /// requested source — the SAME discipline as <see cref="Compile"/>: identifiers come ONLY from the annotation
+    /// catalog (schema-qualified <c>collect.&lt;table&gt;</c>, never a caller string); the window and the (optional)
+    /// server scope are the SAME bound parameters the measure query uses (never interpolated); and each query is
+    /// capped at <see cref="ComposeLimits.MaxAnnotationEvents"/> and ordered by event time. Returns one
+    /// <c>(sourceKey, compiled)</c> pair per requested source (empty when the panel requests none). Annotations
+    /// never change the measure query — the endpoint runs these separately and returns their events alongside it.
+    /// </summary>
+    public static IReadOnlyList<(string Source, ComposeCompiled Compiled)> CompileAnnotations(PanelPlan plan, ComposeRunContext context)
+    {
+        if (plan is null)
+        {
+            throw new ArgumentNullException(nameof(plan));
+        }
+
+        if (context is null)
+        {
+            throw new ArgumentNullException(nameof(context));
+        }
+
+        if (plan.Annotations.Count == 0)
+        {
+            return Array.Empty<(string, ComposeCompiled)>();
+        }
+
+        var results = new List<(string, ComposeCompiled)>(plan.Annotations.Count);
+        foreach (var source in plan.Annotations)
+        {
+            results.Add((source.Key, CompileAnnotation(source, context)));
+        }
+
+        return results;
+    }
+
+    /// <summary>Compiles one annotation source into its bounded, catalog-only, schema-qualified event query:
+    /// <c>SELECT f.&lt;timeCol&gt; AS ts, f.&lt;labelCol&gt; AS label FROM collect.&lt;table&gt; AS f WHERE
+    /// f.&lt;timeCol&gt; BETWEEN $1 AND $2 [AND f.server_name = ANY($3)] ORDER BY ts LIMIT
+    /// &lt;MaxAnnotationEvents&gt;</c>. Every identifier is a catalog constant; every value is bound.</summary>
+    private static ComposeCompiled CompileAnnotation(ComposeAnnotationSource source, ComposeRunContext context)
+    {
+        var p = new ParamList();
+        var startParam = p.AddTimestamp(context.StartUtc);
+        var endParam = p.AddTimestamp(context.EndUtc);
+        var hasServerScope = context.Servers is { Count: > 0 };
+        var serverScopeParam = hasServerScope ? p.AddTextArray(context.Servers!) : null;
+
+        var sql = new StringBuilder();
+        sql.Append("SELECT ").Append(FactAlias).Append('.').Append(source.TimeColumn).Append(" AS ts, ")
+            .Append(FactAlias).Append('.').Append(source.LabelColumn).Append(" AS label\n");
+        sql.Append("FROM ").Append(PgSchemaGenerator.CollectSchema).Append('.').Append(source.SourceTable)
+            .Append(" AS ").Append(FactAlias).Append('\n');
+        sql.Append("WHERE ").Append(FactAlias).Append('.').Append(source.TimeColumn).Append(" >= ").Append(startParam).Append('\n');
+        sql.Append("  AND ").Append(FactAlias).Append('.').Append(source.TimeColumn).Append(" <= ").Append(endParam).Append('\n');
+        if (hasServerScope)
+        {
+            sql.Append("  AND ").Append(FactAlias).Append(".server_name = ANY(").Append(serverScopeParam).Append(")\n");
+        }
+
+        sql.Append("ORDER BY ts\n");
+        sql.Append("LIMIT ").Append(ComposeLimits.MaxAnnotationEvents);
+
+        return new ComposeCompiled(sql.ToString(), p.Parameters);
+    }
+
     /// <summary>The qualified reference for a dimension column: <c>m.</c> for a module-join dimension,
     /// <c>f.</c> for a fact column.</summary>
     private static string ColumnRef(ComposeDimension dimension) =>

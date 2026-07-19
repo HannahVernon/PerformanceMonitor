@@ -42,6 +42,15 @@ public static class ComposeLimits
     /// never a data series. Render-only: thresholds are validated at write time but never enter the compiler.</summary>
     public const int MaxThresholds = 4;
 
+    /// <summary>The most event-annotation sources a time-series panel may overlay (design D5) — a handful of
+    /// marker layers, never a data series. Each is a separate bounded event query alongside the measure query.</summary>
+    public const int MaxAnnotations = 4;
+
+    /// <summary>The most annotation events one source returns for a panel (design D5) — the hard <c>LIMIT</c> on
+    /// each overlay query, so a dense window draws a capped set of markers rather than fanning out. Bounds OUTPUT;
+    /// the viewer role's <see cref="StatementTimeout"/> bounds the WORK.</summary>
+    public const int MaxAnnotationEvents = 200;
+
     /// <summary>
     /// The per-session <c>statement_timeout</c> applied to the <c>viewer</c>/<c>mcp</c> roles (the compose
     /// surface's DB identities) — the hard backstop a composed query can never exceed, whatever the compile-time
@@ -113,6 +122,13 @@ public sealed record PanelPlan
     /// <summary>Optional render-only reference-line values, in the panel's unit (0-4 finite numbers, design D3).
     /// Validated at parse time but NEVER compiled — the frontend draws them, so they never enter the SQL.</summary>
     public IReadOnlyList<double> Thresholds { get; init; } = Array.Empty<double>();
+
+    /// <summary>Optional event-annotation sources to overlay as markers on a TIME-SERIES panel (design D5):
+    /// 0-<see cref="ComposeLimits.MaxAnnotations"/> catalog-resolved sources. Only ever non-empty for a
+    /// <see cref="PanelMode.TimeSeries"/> panel (a marker overlay needs a time axis — parse rejects them
+    /// otherwise). They do NOT change the measure query: each is compiled to its own bounded event query by
+    /// <see cref="ComposeCompiler.CompileAnnotations"/> and returned alongside the panel's rows.</summary>
+    public IReadOnlyList<ComposeAnnotationSource> Annotations { get; init; } = Array.Empty<ComposeAnnotationSource>();
 
     /// <summary>True when any filter/groupBy dimension is stitched from the #1568 module join, so the
     /// compiler must emit (and window-bound) the module CTE.</summary>
@@ -394,6 +410,16 @@ public static class ComposeSpec
             return (null, thresholdError);
         }
 
+        /* annotations — optional event-marker overlays (design D5), each a known annotation-source KEY, capped,
+           and only meaningful on a time-series panel (a marker overlay needs a time axis — rejected on a
+           ranked/scalar panel so a stored def is never un-renderable). They do NOT change the measure query: the
+           compiler emits a separate bounded event query per source. */
+        var (annotations, annotationError) = ParseAnnotations(panel["annotations"], mode);
+        if (annotationError is not null)
+        {
+            return (null, annotationError);
+        }
+
         var plan = new PanelPlan
         {
             Measure = measure,
@@ -406,6 +432,7 @@ public static class ComposeSpec
             GroupBy = groupBy!,
             Viz = viz,
             Thresholds = thresholds!,
+            Annotations = annotations!,
         };
 
         return (plan, null);
@@ -601,6 +628,61 @@ public static class ComposeSpec
         }
 
         return (values, null);
+    }
+
+    /// <summary>Parses + validates a panel's optional <c>annotations</c> array (design D5): 0-<see
+    /// cref="ComposeLimits.MaxAnnotations"/> known annotation-source KEYS (deduped) to overlay as event markers.
+    /// Rejects a non-array, a non-string/unknown key, a duplicate, or an over-long list — and rejects ANY
+    /// annotation on a non-time-series panel (a marker overlay needs a time axis, so a stored def is never
+    /// un-renderable). Returns the catalog-resolved sources, which the compiler emits schema-qualified; the
+    /// caller supplies only a key, never a table/column.</summary>
+    private static (IReadOnlyList<ComposeAnnotationSource>? Annotations, string? Error) ParseAnnotations(JsonNode? node, PanelMode mode)
+    {
+        if (node is null)
+        {
+            return (Array.Empty<ComposeAnnotationSource>(), null);
+        }
+
+        if (node is not JsonArray array)
+        {
+            return (null, "panel.annotations must be an array.");
+        }
+
+        if (array.Count == 0)
+        {
+            return (Array.Empty<ComposeAnnotationSource>(), null);
+        }
+
+        if (mode != PanelMode.TimeSeries)
+        {
+            return (null, "annotations are only valid on a time-series panel (add a timeBucket).");
+        }
+
+        if (array.Count > ComposeLimits.MaxAnnotations)
+        {
+            return (null, $"panel has {array.Count} annotations; the maximum is {ComposeLimits.MaxAnnotations}.");
+        }
+
+        var sources = new List<ComposeAnnotationSource>(array.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < array.Count; i++)
+        {
+            var key = array[i] is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
+            var source = MeasureCatalog.AnnotationSource(key);
+            if (source is null)
+            {
+                return (null, $"annotation {i} references unknown source '{key}'.");
+            }
+
+            if (!seen.Add(key!))
+            {
+                return (null, $"annotation source '{key}' is listed more than once.");
+            }
+
+            sources.Add(source);
+        }
+
+        return (sources, null);
     }
 
     private static string? ParseViz(JsonNode? node) => node switch

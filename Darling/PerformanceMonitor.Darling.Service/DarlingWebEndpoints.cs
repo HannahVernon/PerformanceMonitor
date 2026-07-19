@@ -317,7 +317,8 @@ public static class DarlingWebEndpoints
             var end = DateTime.UtcNow;
             var start = end.AddHours(-hours);
 
-            var (compiled, compileError) = ComposeCompiler.Compile(plan!, new ComposeRunContext(serverScope, start, end, values));
+            var runContext = new ComposeRunContext(serverScope, start, end, values);
+            var (compiled, compileError) = ComposeCompiler.Compile(plan!, runContext);
             if (compileError is not null)
             {
                 return ErrorResult(compileError, StatusCodes.Status400BadRequest);
@@ -326,7 +327,11 @@ public static class DarlingWebEndpoints
             try
             {
                 var rows = await RunComposedQueryAsync(postgres, compiled!, context.RequestAborted);
-                return JsonNodeResult(new JsonObject { ["sql"] = compiled!.Sql, ["rows"] = rows });
+                /* Event-annotation overlays (design D5): one bounded, catalog-only event query per requested
+                   source, on the SAME window + server scope, under the same viewer statement_timeout. Additive —
+                   {sql, rows} are unchanged; a panel that requests no annotations returns an empty array. */
+                var annotations = await RunAnnotationsAsync(postgres, plan!, runContext, context.RequestAborted);
+                return JsonNodeResult(new JsonObject { ["sql"] = compiled!.Sql, ["rows"] = rows, ["annotations"] = annotations });
             }
             catch (PostgresException ex)
             {
@@ -429,6 +434,26 @@ public static class DarlingWebEndpoints
         }
 
         return rows;
+    }
+
+    /// <summary>Compiles + runs the panel's event-annotation overlays (design D5) on the viewer pool, returning
+    /// the added top-level <c>annotations</c> array: one <c>{source, events:[{ts, label}]}</c> object per requested
+    /// source (an EMPTY events list when a source has no events in the window). Each query is catalog-only,
+    /// schema-qualified <c>collect.*</c>, window + server-scoped, and capped — the same discipline and viewer
+    /// <c>statement_timeout</c> backstop as the measure query. An annotation query failure surfaces through the
+    /// caller's try/catch exactly like the measure query's (a runaway overlay fails the run with a clear 400,
+    /// rather than silently dropping markers the caller can't tell are missing).</summary>
+    private static async Task<JsonArray> RunAnnotationsAsync(
+        NpgsqlDataSource postgres, PanelPlan plan, ComposeRunContext runContext, System.Threading.CancellationToken cancellationToken)
+    {
+        var annotations = new JsonArray();
+        foreach (var (source, compiled) in ComposeCompiler.CompileAnnotations(plan, runContext))
+        {
+            var events = await RunComposedQueryAsync(postgres, compiled, cancellationToken);
+            annotations.Add(new JsonObject { ["source"] = source, ["events"] = events });
+        }
+
+        return annotations;
     }
 
     private static JsonNode? DbValueToJson(object value) => value switch
@@ -964,10 +989,26 @@ public static class DarlingWebEndpoints
             unitFamilies.Add(new JsonObject { ["name"] = family.Name, ["units"] = units });
         }
 
+        /* Event-annotation sources (design D5): the marker overlays the composer offers on a time-series panel.
+           Carries appliesTo off the owning collector's gate (like measures, D4) so the composer can grey a source
+           a given target can't collect — e.g. default_trace_events / system_health differ by platform. */
+        var annotationSources = new JsonArray();
+        foreach (var a in MeasureCatalog.AnnotationSources)
+        {
+            annotationSources.Add(new JsonObject
+            {
+                ["key"] = a.Key,
+                ["displayName"] = a.DisplayName,
+                ["category"] = a.Category,
+                ["appliesTo"] = BuildAppliesToNode(a.SourceTable),
+            });
+        }
+
         return new JsonObject
         {
             ["measures"] = measures,
             ["dimensions"] = dimensions,
+            ["annotationSources"] = annotationSources,
             /* server is a virtual dimension present on every source (the fleet axis), not in the per-source
                dimensions list — surfaced here so the composer offers it on every measure. */
             ["universalDimensions"] = ToJsonStringArray(new[] { MeasureCatalog.ServerDimensionName }),

@@ -47,9 +47,14 @@ function svg(tag, attrs) {
  *                segmented by series). "line"/absent is byte-for-byte the original behavior.
  *   thresholds — optional array of render-only reference-line values in the chart's unit (design D3); each
  *                in-domain value draws a dashed guide line + label, out-of-domain values are skipped.
+ *   annotations— optional event-marker overlays (design D5): [{ source, displayName, events:[{ts, label}] }] in
+ *                catalog order; each source draws vertical markers in its own ANNOTATION_COLORS hue with a hover
+ *                title (source · label · local time) and an entry in a small annotation key below the chart.
+ *   onSelect   — optional drill callback (design D6): a legend entry for a grouped series calls onSelect(series.drill)
+ *                — [{dimension, value}] — so the caller can re-run the panel filtered to that series' group value.
  */
 export function renderLineChart(spec) {
-  const { points, xKey, series, formatValue = (v) => String(v), clampMax = null, unit = null, mode = "line", thresholds = null } = spec;
+  const { points, xKey, series, formatValue = (v) => String(v), clampMax = null, unit = null, mode = "line", thresholds = null, annotations = null, onSelect = null } = spec;
   const stacked = mode === "stacked";
   const stackedBar = mode === "stacked-bar";
   /* Both stacked modes share the cumulative pre-pass, the sum-based y-domain, and the hover-at-stack-top dots. */
@@ -242,10 +247,42 @@ export function renderLineChart(spec) {
   const overlay = svg("rect", { x: M.l, y: M.t, width: PLOT_W, height: PLOT_H, fill: "transparent" });
   root.appendChild(overlay);
 
+  /* Event-annotation overlays (design D5): a vertical marker at each event's time, one color per source (drawn ON
+     TOP of the hover overlay so each marker's native <title> — source · label · local time — is hoverable, matching
+     the ranked charts' native-title idiom). The visible line is thin + non-interactive; a wider transparent hit line
+     carries the title. Out-of-window events are skipped, not clamped (the backend scopes them to the panel window,
+     but a marker outside the plotted domain would otherwise pile onto an edge); dense windows just fill toward a band. */
+  const annotationKey = [];
+  if (Array.isArray(annotations) && annotations.length) {
+    const g = svg("g", { class: "annotations" });
+    annotations.forEach((layer, li) => {
+      const color = normalizeColor(ANNOTATION_COLORS[li % ANNOTATION_COLORS.length]);
+      let drawn = 0;
+      for (const ev of layer.events || []) {
+        const t = parseUtc(ev.ts);
+        if (!t) continue;
+        const ms = t.getTime();
+        if (ms < tMin || ms > tMax) continue;
+        const mx = scaleX(ms);
+        g.appendChild(svg("line", { class: "annotation-line", x1: mx, y1: M.t, x2: mx, y2: M.t + PLOT_H, stroke: color }));
+        const hit = svg("line", { class: "annotation-hit", x1: mx, y1: M.t, x2: mx, y2: M.t + PLOT_H });
+        const title = svg("title");
+        const lbl = ev.label == null || ev.label === "" ? "" : String(ev.label);
+        title.textContent = layer.displayName + (lbl ? " · " + lbl : "") + " · " + t.toLocaleString();
+        hit.appendChild(title);
+        g.appendChild(hit);
+        drawn++;
+      }
+      if (drawn > 0) annotationKey.push({ label: layer.displayName, color, count: drawn });
+    });
+    root.appendChild(g);
+  }
+
   const chart = el("div", { class: "chart" }, [root]);
   const tooltip = el("div", { class: "chart-tooltip" });
   chart.appendChild(tooltip);
-  chart.appendChild(buildLegend(series));
+  chart.appendChild(buildLegend(series, onSelect));
+  if (annotationKey.length) chart.appendChild(buildAnnotationLegend(annotationKey));
 
   overlay.addEventListener("mousemove", (ev) => {
     const rect = root.getBoundingClientRect();
@@ -309,9 +346,11 @@ export function renderLineChart(spec) {
  * spec: { items:[{label,value,color?}], formatValue?, unit? } — items already ordered (value DESC) + bounded by
  * the query's topN. Bars scale to the largest value; each carries a native SVG <title> for the full label+value.
  * Rendered at a per-row height so a tall list stays readable (the container scrolls; the SVG never squashes).
+ * onSelect (design D6): when an item carries a `drill` ([{dimension, value}]), its bar becomes clickable and calls
+ * onSelect(item.drill) so the caller can re-run the panel filtered to that category (a transient drill-down).
  */
 export function renderBarChart(spec) {
-  const { items, formatValue = (v) => String(v), thresholds = null } = spec;
+  const { items, formatValue = (v) => String(v), thresholds = null, onSelect = null } = spec;
   const rows = (items || []).filter((d) => d && d.value != null && !isNaN(d.value));
   if (!rows.length) return el("div", { class: "chart" }, [emptyStrip("No values to chart.")]);
 
@@ -338,11 +377,17 @@ export function renderBarChart(spec) {
     const label = svg("text", { class: "bar-label", x: labelW, y: y + rowH * 0.7, "text-anchor": "end" });
     label.textContent = trunclabel(d.label);
 
-    const track = svg("rect", { class: "bar-track", x: barLeft, y, width: barW, height: rowH, rx: 3 });
-    const bar = svg("rect", { class: "bar", x: barLeft, y, width: w, height: rowH, rx: 3, fill: color });
+    const drillable = !!(onSelect && d.drill);
+    const track = svg("rect", { class: drillable ? "bar-track drillable" : "bar-track", x: barLeft, y, width: barW, height: rowH, rx: 3 });
+    const bar = svg("rect", { class: drillable ? "bar drillable" : "bar", x: barLeft, y, width: w, height: rowH, rx: 3, fill: color });
     const title = svg("title");
-    title.textContent = (d.label == null || d.label === "" ? "—" : String(d.label)) + " · " + formatValue(val);
+    title.textContent = (d.label == null || d.label === "" ? "—" : String(d.label)) + " · " + formatValue(val) + (drillable ? " · click to filter" : "");
     bar.appendChild(title);
+    if (drillable) {
+      const fire = () => onSelect(d.drill);
+      bar.addEventListener("click", fire);
+      track.addEventListener("click", fire);
+    }
 
     const value = svg("text", { class: "bar-value", x: barLeft + w + 6, y: y + rowH * 0.7 });
     value.textContent = formatValue(val);
@@ -376,19 +421,20 @@ export function renderBarChart(spec) {
  * per-slice values sits below. Slice/legend text is textContent-only (labels may be untrusted).
  */
 export function renderPieChart(spec) {
-  const { items, formatValue = (v) => String(v) } = spec;
+  const { items, formatValue = (v) => String(v), onSelect = null } = spec;
   const rows = (items || [])
     .filter((d) => d && d.value != null && !isNaN(d.value) && Number(d.value) > 0)
-    .map((d) => ({ label: d.label == null || d.label === "" ? "—" : String(d.label), value: Number(d.value), color: d.color }));
+    .map((d) => ({ label: d.label == null || d.label === "" ? "—" : String(d.label), value: Number(d.value), color: d.color, drill: d.drill || null }));
   if (!rows.length) return el("div", { class: "chart" }, [emptyStrip("No positive values to chart.")]);
 
-  /* Pool the long tail into "Other" so the donut never fans into unreadable slivers. */
+  /* Pool the long tail into "Other" so the donut never fans into unreadable slivers (the pooled wedge is a mix of
+     categories, so it carries no drill — D6). */
   let slices = rows;
   if (rows.length > MAX_SLICES) {
     const head = rows.slice(0, MAX_SLICES - 1);
     const tail = rows.slice(MAX_SLICES - 1);
     const otherValue = tail.reduce((sum, d) => sum + d.value, 0);
-    slices = head.concat([{ label: `Other (${tail.length})`, value: otherValue, color: NEUTRAL_SLICE }]);
+    slices = head.concat([{ label: `Other (${tail.length})`, value: otherValue, color: NEUTRAL_SLICE, drill: null }]);
   }
   slices.forEach((d, i) => {
     if (!d.color) d.color = CATEGORICAL_COLORS[i % CATEGORICAL_COLORS.length];
@@ -406,10 +452,12 @@ export function renderPieChart(spec) {
   for (const d of slices) {
     /* Clamp a lone 100% slice below a full turn — a 360° SVG arc (start == end point) renders nothing. */
     const sweep = Math.min((d.value / total) * 360, 359.999);
-    const path = svg("path", { class: "pie-slice", d: donutArc(cx, cy, rOuter, rInner, angle, angle + sweep), fill: normalizeColor(d.color) });
+    const drillable = !!(onSelect && d.drill);
+    const path = svg("path", { class: drillable ? "pie-slice drillable" : "pie-slice", d: donutArc(cx, cy, rOuter, rInner, angle, angle + sweep), fill: normalizeColor(d.color) });
     const title = svg("title");
-    title.textContent = `${d.label} · ${formatValue(d.value)} (${Math.round((d.value / total) * 100)}%)`;
+    title.textContent = `${d.label} · ${formatValue(d.value)} (${Math.round((d.value / total) * 100)}%)` + (drillable ? " · click to filter" : "");
     path.appendChild(title);
+    if (drillable) path.addEventListener("click", () => onSelect(d.drill));
     root.appendChild(path);
     angle += sweep;
   }
@@ -424,13 +472,19 @@ export function renderPieChart(spec) {
   const legend = el(
     "div",
     { class: "chart-legend pie-legend" },
-    slices.map((d) =>
-      el("span", { class: "item" }, [
+    slices.map((d) => {
+      const drillable = !!(onSelect && d.drill);
+      const props = { class: drillable ? "item drillable" : "item" };
+      if (drillable) {
+        props.onActivate = () => onSelect(d.drill);
+        props.title = "Filter to " + d.label;
+      }
+      return el("span", props, [
         el("span", { class: "swatch dot", style: "background:" + normalizeColor(d.color) }),
         el("span", { text: d.label }),
         el("span", { class: "leg-val", text: formatValue(d.value) }),
-      ])
-    )
+      ]);
+    })
   );
 
   return el("div", { class: "chart chart-pie" }, [el("div", { class: "pie-wrap" }, [root]), legend]);
@@ -477,14 +531,38 @@ function thresholdLine(x1, y1, x2, y2, lx, ly, anchor, text) {
   return g;
 }
 
-function buildLegend(series) {
+/** The series key below a time chart. onSelect (design D6): a grouped series' entry becomes an activatable (mouse +
+ *  keyboard) control that calls onSelect(series.drill) to re-run the panel filtered to that series' group value. */
+function buildLegend(series, onSelect) {
   return el(
     "div",
     { class: "chart-legend" },
-    series.map((s) =>
-      el("span", { class: "item" }, [
+    series.map((s) => {
+      const drillable = !!(onSelect && s.drill);
+      const props = { class: drillable ? "item drillable" : "item" };
+      if (drillable) {
+        props.onActivate = () => onSelect(s.drill);
+        props.title = "Filter to " + s.label;
+      }
+      return el("span", props, [
         el("span", { class: "swatch", style: "background:" + normalizeColor(s.color) }),
         el("span", { text: s.label }),
+      ]);
+    })
+  );
+}
+
+/** The event-annotation key below a time chart (design D5): one entry per active source (its marker color + a count
+ *  of markers drawn in view). A plain key — annotation sources are not a data series, so it is never drillable. */
+function buildAnnotationLegend(entries) {
+  return el(
+    "div",
+    { class: "chart-legend annotation-legend" },
+    entries.map((e) =>
+      el("span", { class: "item" }, [
+        el("span", { class: "swatch annotation-swatch", style: "background:" + normalizeColor(e.color) }),
+        el("span", { text: e.label }),
+        el("span", { class: "leg-val", text: String(e.count) }),
       ])
     )
   );
@@ -508,6 +586,14 @@ export const CATEGORICAL_COLORS = [
 
 /** The muted color for a pie's pooled "Other" wedge — a neutral gray that recedes behind the real categories. */
 const NEUTRAL_SLICE = "#5b626e";
+
+/**
+ * The event-annotation marker palette (#1563 D5) — deliberately DISJOINT from both CATEGORICAL_COLORS (the cool
+ * blues/purples/grays the data series use) and the ok/warn/err severity colors, so an annotation marker never
+ * reads as a data series OR as a health state. Warm/distinct hues (pink, orange, brown, indigo), one per source,
+ * cycled at the D5 cap of four. All #rrggbb literals (air-gap safe); pass through normalizeColor like every color.
+ */
+export const ANNOTATION_COLORS = ["#ec407a", "#ff8f00", "#8d6e63", "#5e35b1"];
 
 /**
  * Presentation guard (defense-in-depth behind the server-side ValidateDefinition authority): a series color
