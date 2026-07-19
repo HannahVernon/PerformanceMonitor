@@ -19,9 +19,20 @@
  * descriptions) reaches the DOM through el()/textContent (R4 — never innerHTML).
  */
 
-import { el, mount, loadingStrip, errorStrip, emptyStrip, relTime } from "../util.js";
+import { el, mount, apiGet, loadingStrip, errorStrip, emptyStrip, relTime } from "../util.js";
 import { renderPanel, VIZ } from "../panels.js";
+import { renderComposedPanelCard } from "../compose.js";
 import * as api from "../views-api.js";
+
+/** The time-range choices the rendered view's chrome offers (mirrors the composer's RANGE_OPTIONS). */
+const VIEW_RANGE_OPTIONS = [
+  { hours: 1, label: "Last hour" },
+  { hours: 6, label: "Last 6 hours" },
+  { hours: 24, label: "Last 24 hours" },
+  { hours: 24 * 7, label: "Last 7 days" },
+  { hours: 24 * 30, label: "Last 30 days" },
+  { hours: 24 * 90, label: "Last 90 days" },
+];
 
 /* ─────────────────────────── list page ─────────────────────────── */
 
@@ -64,19 +75,19 @@ function firstRunHero(canEdit) {
       el("div", {
         class: "hero-pitch",
         text:
-          "Custom views are composed on the machine running Darling (a loopback connection). Once created they " +
-          "appear here for every seat to open and export.",
+          "Your session couldn't be confirmed, so the composer is read-only right now — reload the page to create a " +
+          "view. Once created, custom views appear here for every seat to open and export.",
       }),
     ]);
   }
-  const suggestions = ["Top waits by server", "CPU & memory trends", "Blocking & deadlock snapshot"];
+  const suggestions = ["Top waits by server", "CPU trend over time", "Slowest procedures by database"];
   return el("div", { class: "views-hero" }, [
     el("div", { class: "hero-title", text: "Compose your own dashboards" }),
     el("div", {
       class: "hero-pitch",
       text:
-        "Pick from the read catalog, choose a visualization (table, line, stat, or bandlist), set its parameters, " +
-        "and save a named view every seat can open — no SQL and no query engine, just the reads Darling already collects.",
+        "Pick a metric, aggregate it, group and filter it, and chart it as a line, bar, pie, stacked area, or stat — " +
+        "then save a named view every seat can open, re-scoped live by server and time range. No SQL to write.",
     }),
     el("a", { class: "btn primary hero-cta", href: "#/view/new", text: "New view" }),
     el("div", { class: "hero-suggest" }, [
@@ -198,7 +209,12 @@ function importPanel() {
 export async function renderView(main, id) {
   mount(main, loadingStrip("Loading view…"));
 
-  const [session, catalog, res] = await Promise.all([api.getSession(), api.getCatalog(), api.getView(id)]);
+  const [session, catalog, res, fleetRes] = await Promise.all([
+    api.getSession(),
+    api.getCatalog(),
+    api.getView(id),
+    apiGet("/api/fleet"),
+  ]);
   if (res.kind === "error") {
     mount(main, [el("div", { class: "page-head" }, [backToViews(), el("h2", { text: "View" })]), errorStrip(res.message)]);
     return;
@@ -209,6 +225,7 @@ export async function renderView(main, id) {
   const panels = Array.isArray(def.panels) ? def.panels : [];
   const canEdit = !!session.can_edit;
   const readSet = new Set((catalog.reads || []).map((r) => r.name));
+  const sourceSet = new Set(((catalog.compose || {}).measures || []).map((m) => m.source));
 
   const status = el("div", { class: "view-status" });
   const head = el("div", { class: "page-head" }, [
@@ -226,21 +243,178 @@ export async function renderView(main, id) {
     return;
   }
 
-  const grid = el("div", { class: "panel-grid" }, panels.map((p) => panelOrError(p, readSet)));
-  mount(main, [head, status, grid]);
+  /* View-level scope (Erik's Decision 1): server / time / template-variable controls at the top re-scope EVERY
+     panel at once. The scope only affects composed panels (v1 read panels carry their own fixed params); flipping
+     it re-runs the whole grid. `state` is the live control state; currentScope() snapshots it for a run. */
+  const fleet = fleetOptions(fleetRes);
+  const variables = Array.isArray(def.variables) ? def.variables.filter((v) => v && v.name) : [];
+  const defaultHours = def.range && typeof def.range.hours === "number" ? def.range.hours : 24;
+  const hasComposed = panels.some((p) => p && p.source != null);
+
+  const state = { server: "All", hours: defaultHours, values: {} };
+  for (const v of variables) {
+    if (v.dimension !== "server" && v.default) state.values[v.name] = v.default;
+  }
+
+  function currentScope() {
+    return {
+      server: state.server,
+      hours: state.hours,
+      variables: variables.map((v) => ({ name: v.name, dimension: v.dimension, default: v.default || undefined })),
+      values: { ...state.values },
+    };
+  }
+
+  const gridBox = el("div", { class: "panel-grid" });
+  function renderGrid() {
+    mount(gridBox, panels.map((p) => panelOrError(p, readSet, sourceSet, currentScope())));
+  }
+
+  /* The chrome is only meaningful when a composed panel can re-scope; a pure v1 read view skips it. */
+  const controls = hasComposed ? buildViewControls(fleet, variables, state, defaultHours, renderGrid) : null;
+
+  mount(main, [head, status, controls, gridBox]);
+  renderGrid();
 }
 
 function backToViews() {
   return el("a", { href: "#/views", text: "← Views" });
 }
 
-/* Pre-check the panel against the catalog + viz registry so an unknown read/viz is a clean strip, not a 404. */
-function panelOrError(p, readSet) {
+/* Fleet server options for the scope picker (value = stored server_name, label = display name). */
+function fleetOptions(fleetRes) {
+  if (fleetRes.kind !== "data" || !fleetRes.data) return [];
+  return [...(fleetRes.data.cards || [])]
+    .map((c) => ({ value: c.server_name || c.display_name, label: c.display_name }))
+    .filter((o) => o.value)
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/* The view-scope control bar: a server scope picker (single / multi / All), a time-range select, and a value input
+   per declared template variable (a server-typed variable is covered by the scope picker, so it is not repeated). */
+function buildViewControls(fleet, variables, state, defaultHours, onChange) {
+  const fields = [
+    el("div", { class: "vc-field" }, [el("span", { class: "vc-label", text: "Servers" }), buildServerScopePicker(fleet, state, onChange)]),
+    el("div", { class: "vc-field" }, [el("span", { class: "vc-label", text: "Time range" }), buildRangeSelect(defaultHours, state, onChange)]),
+  ];
+  for (const v of variables) {
+    if (v.dimension === "server") continue;
+    fields.push(el("div", { class: "vc-field" }, [el("span", { class: "vc-label", text: "$" + v.name }), varControl(v, state, onChange)]));
+  }
+  return el("div", { class: "view-controls" }, fields);
+}
+
+/* A template-variable value input. Bound to state.values on `change` (not each keystroke, so the grid re-runs on
+   commit, not per character). Empty clears the binding (the panels referencing it then return no rows — the honest
+   "pick a value" state, since the compose contract has no wildcard for an unbound $var). */
+function varControl(v, state, onChange) {
+  const inp = el("input", { class: "filter-box", type: "text", placeholder: "(pick a value)", "aria-label": v.name });
+  inp.value = state.values[v.name] || "";
+  inp.addEventListener("change", () => {
+    const val = inp.value.trim();
+    if (val) state.values[v.name] = val;
+    else delete state.values[v.name];
+    onChange();
+  });
+  return inp;
+}
+
+/* A native <select> time-range picker bound to state.hours. A stored default outside the standard options is added
+   so the view opens on exactly what it declared. */
+function buildRangeSelect(defaultHours, state, onChange) {
+  const sel = el("select", { class: "filter-box", "aria-label": "Time range" });
+  for (const r of VIEW_RANGE_OPTIONS) sel.appendChild(el("option", { value: String(r.hours), text: r.label }));
+  if (!VIEW_RANGE_OPTIONS.some((r) => r.hours === defaultHours)) {
+    sel.appendChild(el("option", { value: String(defaultHours), text: "Default (" + defaultHours + "h)" }));
+  }
+  sel.value = String(state.hours);
+  sel.addEventListener("change", () => {
+    state.hours = parseInt(sel.value, 10) || defaultHours;
+    onChange();
+  });
+  return sel;
+}
+
+/* The server scope picker: a <details> dropdown of checkboxes — "All servers (fleet)" plus each fleet server.
+   state.server is "All" (or an empty selection ⇒ fleet) or an array of names; checking a server switches off All,
+   and clearing every server falls back to All. <details> gives open/close + keyboard for free (no outside-click JS). */
+function buildServerScopePicker(fleet, state, onChange) {
+  const summary = el("summary", { class: "scope-summary" });
+  const list = el("div", { class: "scope-list" });
+
+  const isAll = () => state.server === "All" || (Array.isArray(state.server) && state.server.length === 0);
+  const names = () => (Array.isArray(state.server) ? state.server : []);
+  const labelFor = (val) => {
+    const o = fleet.find((x) => x.value === val);
+    return o ? o.label : val;
+  };
+
+  function toggle(val, on) {
+    let arr = isAll() ? [] : [...names()];
+    if (on) {
+      if (!arr.includes(val)) arr.push(val);
+    } else {
+      arr = arr.filter((x) => x !== val);
+    }
+    state.server = arr.length ? arr : "All";
+  }
+
+  function refresh() {
+    const n = names();
+    summary.textContent = isAll() ? "All servers (fleet)" : n.length === 1 ? labelFor(n[0]) : n.length + " servers";
+  }
+
+  function redraw() {
+    const rows = [
+      checkRow("All servers (fleet)", isAll(), () => {
+        state.server = "All";
+        redraw();
+        onChange();
+      }),
+    ];
+    for (const o of fleet) {
+      const on = !isAll() && names().includes(o.value);
+      rows.push(
+        checkRow(o.label, on, () => {
+          toggle(o.value, !on);
+          redraw();
+          onChange();
+        })
+      );
+    }
+    mount(list, rows);
+    refresh();
+  }
+
+  redraw();
+  return el("details", { class: "scope-picker" }, [summary, list]);
+}
+
+function checkRow(label, checked, onToggle) {
+  const box = el("input", { type: "checkbox", class: "editor-check" });
+  box.checked = checked;
+  box.addEventListener("change", onToggle);
+  return el("label", { class: "scope-item" }, [box, el("span", { text: label })]);
+}
+
+/* Pre-check a panel against the catalog so an unknown read/source/viz is a clean strip, not an opaque 404 / crash.
+   A composed panel (names a `source`) runs through /api/compose/run with the view scope; a read panel through the
+   v1 renderPanel (its own fixed params, scope-independent). */
+function panelOrError(p, readSet, sourceSet, scope) {
   if (!p || typeof p !== "object") {
     return panelErrorCard("Invalid panel", "This panel is not an object.");
   }
   if (p.path != null) {
     return panelErrorCard(p.title, "This panel uses raw 'path' mode, which is not supported.");
+  }
+  if (p.source != null) {
+    if (!sourceSet.has(p.source)) {
+      return panelErrorCard(p.title, "Unknown source '" + p.source + "'. It may have been renamed or removed.");
+    }
+    if (!p.viz) {
+      return panelErrorCard(p.title, "This composed panel has no chart type.");
+    }
+    return renderComposedPanelCard(p, scope);
   }
   if (!p.read || !readSet.has(p.read)) {
     return panelErrorCard(p.title, "Unknown read '" + (p.read || "") + "'. It may have been renamed or removed.");

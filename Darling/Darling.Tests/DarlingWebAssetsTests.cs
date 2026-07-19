@@ -47,6 +47,7 @@ public sealed class DarlingWebAssetsTests
     [InlineData("js/views-api.js")]
     [InlineData("js/derive.js")]
     [InlineData("js/editor.js")]
+    [InlineData("js/compose.js")]
     [InlineData("js/pages/fleet.js")]
     [InlineData("js/pages/server.js")]
     [InlineData("js/pages/alerts.js")]
