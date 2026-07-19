@@ -600,4 +600,55 @@ public sealed class DarlingComposeTests
         Assert.DoesNotContain("server_name = ANY", sql, StringComparison.Ordinal); /* fleet-wide, no server filter */
         Assert.DoesNotContain("config.", sql, StringComparison.Ordinal);
     }
+
+    /* ─────────────────────────── B3 full catalog fill ─────────────────────────── */
+
+    [Fact]
+    public void B3_Catalog_CoversTheExpectedSources()
+    {
+        /* The B3 fill: every remaining collector table with composable measures is in the catalog (config
+           snapshots + query_store are deliberately excluded — see the source comments). */
+        var sources = MeasureCatalog.Measures.Select(m => m.SourceTable).ToHashSet(StringComparer.Ordinal);
+        foreach (var expected in new[]
+        {
+            "latch_stats", "spinlock_stats", "cpu_scheduler_stats", "plan_cache_stats", "memory_stats",
+            "memory_clerks", "memory_grant_stats", "tempdb_stats", "database_size_stats", "index_object_stats",
+            "session_stats", "session_summary_stats", "waiting_tasks", "query_snapshots",
+            "blocked_process_reports", "dmv_blocking_snapshots", "deadlocks", "system_health_events",
+            "default_trace_events", "running_jobs", "job_history", "perfmon_stats", "query_store_stats",
+        })
+        {
+            Assert.True(sources.Contains(expected), $"catalog is missing a measure for '{expected}'.");
+        }
+    }
+
+    [Fact]
+    public void B3_CountOnlyEventMeasure_CompilesToCountStar()
+    {
+        var sql = Compile(ValidPlan("{\"source\":\"deadlocks\",\"measure\":\"deadlock_count\",\"aggregate\":\"count\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"));
+        Assert.Contains("collect.deadlocks", sql, StringComparison.Ordinal);
+        Assert.Contains("COUNT(*)", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("config.", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void B3_ServerGrainGauge_CompilesAndGroupsByServer()
+    {
+        /* A server-grain gauge (memory) grouped by the universal server dimension = "top servers by memory". */
+        var sql = Compile(ValidPlan("{\"source\":\"memory_stats\",\"measure\":\"mem_total_server_mb\",\"aggregate\":\"avg\",\"topN\":5,\"groupBy\":[\"server\"],\"viz\":\"bar\"}"));
+        Assert.Contains("collect.memory_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("AVG(", sql, StringComparison.Ordinal);
+        Assert.Contains("server_name AS server", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void B3_PerEventMeasure_SupportsCountAndPercentile()
+    {
+        /* blocked_process_reports: COUNT of reports, and a true p95 block duration (per-event rows exist). */
+        var count = Compile(ValidPlan("{\"source\":\"blocked_process_reports\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"count\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"));
+        Assert.Contains("COUNT(*)", count, StringComparison.Ordinal);
+
+        var p95 = Compile(ValidPlan("{\"source\":\"blocked_process_reports\",\"measure\":\"bpr_wait_time_ms\",\"aggregate\":\"percentile_cont\",\"timeBucket\":\"hour\",\"viz\":\"line\"}"));
+        Assert.Contains("percentile_cont(0.95)", p95, StringComparison.Ordinal);
+    }
 }

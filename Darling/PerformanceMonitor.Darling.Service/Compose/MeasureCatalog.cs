@@ -248,6 +248,69 @@ public static class MeasureCatalog
         new ComposeDimension("long_query_completions", "database_name", "database_name", Likeable: true),
         new ComposeDimension("long_query_completions", "object_name", "object_name", Likeable: true),
         new ComposeDimension("long_query_completions", "result", "result", Likeable: false),
+
+        /* ── B3 dimensions (every column pinned to the collector's PayloadColumns by test) ── */
+        new ComposeDimension("latch_stats", "latch_class", "latch_class", Likeable: true),
+        new ComposeDimension("spinlock_stats", "spinlock_name", "spinlock_name", Likeable: true),
+        new ComposeDimension("memory_clerks", "clerk_type", "clerk_type", Likeable: true),
+        new ComposeDimension("plan_cache_stats", "cacheobjtype", "cacheobjtype", Likeable: true),
+        new ComposeDimension("plan_cache_stats", "objtype", "objtype", Likeable: true),
+
+        new ComposeDimension("database_size_stats", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("database_size_stats", "file_name", "file_name", Likeable: true),
+        new ComposeDimension("database_size_stats", "file_type_desc", "file_type_desc", Likeable: true),
+        new ComposeDimension("database_size_stats", "recovery_model_desc", "recovery_model_desc", Likeable: true),
+
+        new ComposeDimension("index_object_stats", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("index_object_stats", "schema_name", "schema_name", Likeable: true),
+        new ComposeDimension("index_object_stats", "table_name", "table_name", Likeable: true),
+        new ComposeDimension("index_object_stats", "index_name", "index_name", Likeable: true),
+        new ComposeDimension("index_object_stats", "index_type_desc", "index_type_desc", Likeable: true),
+
+        new ComposeDimension("session_stats", "program_name", "program_name", Likeable: true),
+
+        new ComposeDimension("waiting_tasks", "wait_type", "wait_type", Likeable: true),
+        new ComposeDimension("waiting_tasks", "database_name", "database_name", Likeable: true),
+
+        new ComposeDimension("query_snapshots", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("query_snapshots", "status", "status", Likeable: true),
+        new ComposeDimension("query_snapshots", "wait_type", "wait_type", Likeable: true),
+        new ComposeDimension("query_snapshots", "program_name", "program_name", Likeable: true),
+        new ComposeDimension("query_snapshots", "login_name", "login_name", Likeable: true),
+        new ComposeDimension("query_snapshots", "host_name", "host_name", Likeable: true),
+
+        new ComposeDimension("blocked_process_reports", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("blocked_process_reports", "contentious_object", "contentious_object", Likeable: true),
+        new ComposeDimension("blocked_process_reports", "lock_mode", "lock_mode", Likeable: true),
+
+        new ComposeDimension("dmv_blocking_snapshots", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("dmv_blocking_snapshots", "contentious_object", "contentious_object", Likeable: true),
+        new ComposeDimension("dmv_blocking_snapshots", "lock_mode", "lock_mode", Likeable: true),
+        new ComposeDimension("dmv_blocking_snapshots", "blocking_status", "blocking_status", Likeable: true),
+
+        new ComposeDimension("deadlocks", "database_name", "database_name", Likeable: true),
+
+        new ComposeDimension("system_health_events", "event_type", "event_type", Likeable: true),
+
+        new ComposeDimension("default_trace_events", "event_name", "event_name", Likeable: true),
+        new ComposeDimension("default_trace_events", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("default_trace_events", "object_name", "object_name", Likeable: true),
+        new ComposeDimension("default_trace_events", "login_name", "login_name", Likeable: true),
+
+        new ComposeDimension("running_jobs", "job_name", "job_name", Likeable: true),
+
+        new ComposeDimension("job_history", "job_name", "job_name", Likeable: true),
+        new ComposeDimension("job_history", "step_name", "step_name", Likeable: true),
+        new ComposeDimension("job_history", "run_status_desc", "run_status_desc", Likeable: true),
+        new ComposeDimension("job_history", "category_name", "category_name", Likeable: true),
+
+        new ComposeDimension("perfmon_stats", "object_name", "object_name", Likeable: true),
+        new ComposeDimension("perfmon_stats", "counter_name", "counter_name", Likeable: true),
+        new ComposeDimension("perfmon_stats", "instance_name", "instance_name", Likeable: true),
+
+        new ComposeDimension("query_store_stats", "database_name", "database_name", Likeable: true),
+        new ComposeDimension("query_store_stats", "module_name", "module_name", Likeable: true),
+        new ComposeDimension("query_store_stats", "query_hash", "query_hash", Likeable: false),
     };
 
     private static readonly Dictionary<(string Source, string Name), ComposeDimension> s_dimByKey =
@@ -284,6 +347,10 @@ public static class MeasureCatalog
     private static readonly ComposeAggregate[] GaugeAggs = { ComposeAggregate.Avg, ComposeAggregate.Min, ComposeAggregate.Max };
     private static readonly ComposeAggregate[] PerEventAggs = { ComposeAggregate.Count, ComposeAggregate.Sum, ComposeAggregate.Avg, ComposeAggregate.Min, ComposeAggregate.Max, ComposeAggregate.PercentileCont };
     private static readonly ComposeAggregate[] NoAggs = Array.Empty<ComposeAggregate>();
+    /* Pure event-count tables (deadlocks, system_health) carry no numeric per-event column worth aggregating —
+       only COUNT(*) is meaningful. Their measure names a real (non-numeric) column to satisfy the schema pin;
+       the compiler's COUNT path never reads it. */
+    private static readonly ComposeAggregate[] CountOnlyAggs = { ComposeAggregate.Count };
 
     private const string CatWaits = "Waits";
     private const string CatCpu = "CPU";
@@ -291,6 +358,21 @@ public static class MeasureCatalog
     private const string CatQueries = "Queries";
     private const string CatFileIo = "File I/O";
     private const string CatLongQueries = "Long Queries";
+    /* ── B3 categories ── */
+    private const string CatLatch = "Latches & Spinlocks";
+    private const string CatScheduler = "CPU Scheduler";
+    private const string CatPlanCache = "Plan Cache";
+    private const string CatMemory = "Memory";
+    private const string CatTempdb = "TempDB";
+    private const string CatDatabaseSize = "Database Size";
+    private const string CatIndexes = "Indexes & Objects";
+    private const string CatSessions = "Sessions";
+    private const string CatBlocking = "Blocking & Deadlocks";
+    private const string CatSystemHealth = "System Health";
+    private const string CatDefaultTrace = "Default Trace";
+    private const string CatJobs = "Agent Jobs";
+    private const string CatPerfmon = "Perfmon Counters";
+    private const string CatQueryStore = "Query Store";
 
     private static readonly string[] WaitDims = { "wait_type" };
     private static readonly string[] ProcDims = { "database_name", "schema_name", "object_name" };
@@ -298,6 +380,25 @@ public static class MeasureCatalog
     private static readonly string[] FileIoDims = { "database_name", "file_name" };
     private static readonly string[] LqcDims = { "database_name", "object_name", "result" };
     private static readonly string[] NoDims = Array.Empty<string>();
+    /* ── B3 per-table dimension allow-lists (server is universal, added separately) ── */
+    private static readonly string[] LatchDims = { "latch_class" };
+    private static readonly string[] SpinlockDims = { "spinlock_name" };
+    private static readonly string[] ClerkDims = { "clerk_type" };
+    private static readonly string[] PlanCacheDims = { "cacheobjtype", "objtype" };
+    private static readonly string[] DbSizeDims = { "database_name", "file_name", "file_type_desc", "recovery_model_desc" };
+    private static readonly string[] IndexDims = { "database_name", "schema_name", "table_name", "index_name", "index_type_desc" };
+    private static readonly string[] SessionStatsDims = { "program_name" };
+    private static readonly string[] WaitingTaskDims = { "wait_type", "database_name" };
+    private static readonly string[] QuerySnapshotDims = { "database_name", "status", "wait_type", "program_name", "login_name", "host_name" };
+    private static readonly string[] BlockingDims = { "database_name", "contentious_object", "lock_mode" };
+    private static readonly string[] DmvBlockingDims = { "database_name", "contentious_object", "lock_mode", "blocking_status" };
+    private static readonly string[] DeadlockDims = { "database_name" };
+    private static readonly string[] SysHealthDims = { "event_type" };
+    private static readonly string[] DefaultTraceDims = { "event_name", "database_name", "object_name", "login_name" };
+    private static readonly string[] RunningJobDims = { "job_name" };
+    private static readonly string[] JobHistoryDims = { "job_name", "step_name", "run_status_desc", "category_name" };
+    private static readonly string[] PerfmonDims = { "object_name", "counter_name", "instance_name" };
+    private static readonly string[] QueryStoreDims = { "database_name", "module_name", "query_hash" };
 
     /// <summary>The catalog. Every measure's SourceTable is a real collector; every Column/DeltaColumn is a
     /// real payload column of that collector (pinned by test).</summary>
@@ -439,6 +540,410 @@ public static class MeasureCatalog
             Archetype = MeasureArchetype.PerEvent, Column = "cpu_time_microseconds",
             NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
             DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = PerEventAggs, AllowedDimensions = LqcDims,
+        },
+
+        /* ═══════════════════ B3 full catalog fill (remaining collector tables) ═══════════════════ */
+
+        /* ── latch_stats (Cumulative + delta; dim latch_class) ── */
+        new ComposeMeasure
+        {
+            Key = "latch_wait_time_ms", DisplayName = "Latch wait time", Category = CatLatch, SourceTable = "latch_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "wait_time_ms", DeltaColumn = "delta_wait_time_ms",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = LatchDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "latch_waiting_requests", DisplayName = "Latch waiting requests", Category = CatLatch, SourceTable = "latch_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "waiting_requests_count", DeltaColumn = "delta_waiting_requests_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = LatchDims,
+        },
+
+        /* ── spinlock_stats (Cumulative + delta; dim spinlock_name) ── */
+        new ComposeMeasure
+        {
+            Key = "spinlock_collisions", DisplayName = "Spinlock collisions", Category = CatLatch, SourceTable = "spinlock_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "collisions", DeltaColumn = "delta_collisions",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = SpinlockDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "spinlock_spins", DisplayName = "Spinlock spins", Category = CatLatch, SourceTable = "spinlock_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "spins", DeltaColumn = "delta_spins",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = SpinlockDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "spinlock_backoffs", DisplayName = "Spinlock backoffs", Category = CatLatch, SourceTable = "spinlock_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "backoffs", DeltaColumn = "delta_backoffs",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = SpinlockDims,
+        },
+
+        /* ── cpu_scheduler_stats (Gauge, server-grain) ── */
+        new ComposeMeasure
+        {
+            Key = "scheduler_runnable_pct", DisplayName = "Runnable-tasks %", Category = CatScheduler, SourceTable = "cpu_scheduler_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "runnable_percent",
+            NativeUnit = "percent", DefaultUnit = "percent", UnitFamily = FamilyPercent,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "scheduler_runnable_tasks", DisplayName = "Runnable tasks", Category = CatScheduler, SourceTable = "cpu_scheduler_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_runnable_tasks_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+
+        /* ── plan_cache_stats (Gauge; dims cacheobjtype, objtype) ── */
+        new ComposeMeasure
+        {
+            Key = "plan_cache_total_plans", DisplayName = "Cached plans", Category = CatPlanCache, SourceTable = "plan_cache_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_plans",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = PlanCacheDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "plan_cache_single_use_plans", DisplayName = "Single-use plans", Category = CatPlanCache, SourceTable = "plan_cache_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "single_use_plans",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = PlanCacheDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "plan_cache_size_mb", DisplayName = "Plan-cache size", Category = CatPlanCache, SourceTable = "plan_cache_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_size_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = PlanCacheDims,
+        },
+
+        /* ── memory_stats (Gauge MB, server-grain) ── */
+        new ComposeMeasure
+        {
+            Key = "mem_total_server_mb", DisplayName = "Total server memory", Category = CatMemory, SourceTable = "memory_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_server_memory_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "mem_target_server_mb", DisplayName = "Target server memory", Category = CatMemory, SourceTable = "memory_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "target_server_memory_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "mem_buffer_pool_mb", DisplayName = "Buffer pool", Category = CatMemory, SourceTable = "memory_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "buffer_pool_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "mem_available_physical_mb", DisplayName = "Available physical memory", Category = CatMemory, SourceTable = "memory_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "available_physical_memory_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+
+        /* ── memory_clerks (Gauge; dim clerk_type) ── */
+        new ComposeMeasure
+        {
+            Key = "clerk_memory_mb", DisplayName = "Memory-clerk allocation", Category = CatMemory, SourceTable = "memory_clerks",
+            Archetype = MeasureArchetype.Gauge, Column = "memory_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = ClerkDims,
+        },
+
+        /* ── memory_grant_stats (Gauge MB + cumulative counts, server-grain) ── */
+        new ComposeMeasure
+        {
+            Key = "grant_granted_mb", DisplayName = "Granted query memory", Category = CatMemory, SourceTable = "memory_grant_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "granted_memory_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "grant_used_mb", DisplayName = "Used query memory", Category = CatMemory, SourceTable = "memory_grant_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "used_memory_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "grant_waiters", DisplayName = "Memory-grant waiters", Category = CatMemory, SourceTable = "memory_grant_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "waiter_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "grant_timeouts", DisplayName = "Memory-grant timeouts", Category = CatMemory, SourceTable = "memory_grant_stats",
+            Archetype = MeasureArchetype.Cumulative, Column = "timeout_error_count", DeltaColumn = "timeout_error_count_delta",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = NoDims,
+        },
+
+        /* ── tempdb_stats (Gauge MB, server-grain) ── */
+        new ComposeMeasure
+        {
+            Key = "tempdb_total_reserved_mb", DisplayName = "TempDB reserved", Category = CatTempdb, SourceTable = "tempdb_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_reserved_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "tempdb_version_store_mb", DisplayName = "TempDB version store", Category = CatTempdb, SourceTable = "tempdb_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "version_store_reserved_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "tempdb_user_object_mb", DisplayName = "TempDB user objects", Category = CatTempdb, SourceTable = "tempdb_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "user_object_reserved_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+
+        /* ── database_size_stats (Gauge MB; per database/file) ── */
+        new ComposeMeasure
+        {
+            Key = "dbsize_total_mb", DisplayName = "Database file size", Category = CatDatabaseSize, SourceTable = "database_size_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_size_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = DbSizeDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "dbsize_used_mb", DisplayName = "Database space used", Category = CatDatabaseSize, SourceTable = "database_size_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "used_size_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = DbSizeDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "dbsize_volume_free_mb", DisplayName = "Volume free space", Category = CatDatabaseSize, SourceTable = "database_size_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "volume_free_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Min, ValidAggs = GaugeAggs, AllowedDimensions = DbSizeDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "dbsize_vlf_count", DisplayName = "VLF count", Category = CatDatabaseSize, SourceTable = "database_size_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "vlf_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = DbSizeDims,
+        },
+
+        /* ── index_object_stats (daily; sizes + usage as a current-snapshot value — no delta column exists,
+             so the cumulative usage counters are exposed as gauges over the daily snapshots) ── */
+        new ComposeMeasure
+        {
+            Key = "index_reserved_mb", DisplayName = "Index reserved size", Category = CatIndexes, SourceTable = "index_object_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "reserved_mb",
+            NativeUnit = "mb", DefaultUnit = "mb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = IndexDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "index_total_rows", DisplayName = "Index/table rows", Category = CatIndexes, SourceTable = "index_object_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_rows",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = IndexDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "index_user_seeks", DisplayName = "Index seeks (cumulative)", Category = CatIndexes, SourceTable = "index_object_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "user_seeks",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = IndexDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "index_user_updates", DisplayName = "Index updates (cumulative)", Category = CatIndexes, SourceTable = "index_object_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "user_updates",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = IndexDims,
+        },
+
+        /* ── session_stats (per application; point-in-time connection counts) ── */
+        new ComposeMeasure
+        {
+            Key = "session_connection_count", DisplayName = "Connections", Category = CatSessions, SourceTable = "session_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "connection_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = SessionStatsDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "session_running_count", DisplayName = "Running sessions", Category = CatSessions, SourceTable = "session_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "running_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = SessionStatsDims,
+        },
+
+        /* ── session_summary_stats (server-wide session gauges) ── */
+        new ComposeMeasure
+        {
+            Key = "sessum_total_sessions", DisplayName = "Total sessions", Category = CatSessions, SourceTable = "session_summary_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "total_sessions",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "sessum_idle_over_30min", DisplayName = "Idle sessions (>30 min)", Category = CatSessions, SourceTable = "session_summary_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "idle_sessions_over_30min",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = NoDims,
+        },
+
+        /* ── waiting_tasks (point-in-time current waits) ── */
+        new ComposeMeasure
+        {
+            Key = "waiting_task_duration_ms", DisplayName = "Current wait duration", Category = CatWaits, SourceTable = "waiting_tasks",
+            Archetype = MeasureArchetype.Gauge, Column = "wait_duration_ms",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = WaitingTaskDims,
+        },
+
+        /* ── query_snapshots (point-in-time running requests) ── */
+        new ComposeMeasure
+        {
+            Key = "snapshot_cpu_time_ms", DisplayName = "Active query CPU time", Category = CatQueries, SourceTable = "query_snapshots",
+            Archetype = MeasureArchetype.Gauge, Column = "cpu_time_ms",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QuerySnapshotDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "snapshot_elapsed_ms", DisplayName = "Active query elapsed time", Category = CatQueries, SourceTable = "query_snapshots",
+            Archetype = MeasureArchetype.Gauge, Column = "total_elapsed_time_ms",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QuerySnapshotDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "snapshot_granted_memory_gb", DisplayName = "Active query granted memory", Category = CatQueries, SourceTable = "query_snapshots",
+            Archetype = MeasureArchetype.Gauge, Column = "granted_query_memory_gb",
+            NativeUnit = "gb", DefaultUnit = "gb", UnitFamily = FamilyBytes,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QuerySnapshotDims,
+        },
+
+        /* ── blocked_process_reports (per-event; wait_time_ms is the per-event value) ── */
+        new ComposeMeasure
+        {
+            Key = "bpr_wait_time_ms", DisplayName = "Blocked-process report", Category = CatBlocking, SourceTable = "blocked_process_reports",
+            Archetype = MeasureArchetype.PerEvent, Column = "wait_time_ms",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Count, ValidAggs = PerEventAggs, AllowedDimensions = BlockingDims,
+        },
+
+        /* ── dmv_blocking_snapshots (per-event; wait_time_ms) ── */
+        new ComposeMeasure
+        {
+            Key = "dmvblock_wait_time_ms", DisplayName = "DMV blocking snapshot", Category = CatBlocking, SourceTable = "dmv_blocking_snapshots",
+            Archetype = MeasureArchetype.PerEvent, Column = "wait_time_ms",
+            NativeUnit = "ms", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Count, ValidAggs = PerEventAggs, AllowedDimensions = DmvBlockingDims,
+        },
+
+        /* ── deadlocks (per-event, count-only — no numeric per-event column) ── */
+        new ComposeMeasure
+        {
+            Key = "deadlock_count", DisplayName = "Deadlocks", Category = CatBlocking, SourceTable = "deadlocks",
+            Archetype = MeasureArchetype.PerEvent, Column = "deadlock_time",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Count, ValidAggs = CountOnlyAggs, AllowedDimensions = DeadlockDims,
+        },
+
+        /* ── system_health_events (per-event, count-only) ── */
+        new ComposeMeasure
+        {
+            Key = "syshealth_event_count", DisplayName = "system_health events", Category = CatSystemHealth, SourceTable = "system_health_events",
+            Archetype = MeasureArchetype.PerEvent, Column = "event_time",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Count, ValidAggs = CountOnlyAggs, AllowedDimensions = SysHealthDims,
+        },
+
+        /* ── default_trace_events (per-event; duration_us is the per-event value) ── */
+        new ComposeMeasure
+        {
+            Key = "deftrace_duration_us", DisplayName = "Default-trace event", Category = CatDefaultTrace, SourceTable = "default_trace_events",
+            Archetype = MeasureArchetype.PerEvent, Column = "duration_us",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Count, ValidAggs = PerEventAggs, AllowedDimensions = DefaultTraceDims,
+        },
+
+        /* ── running_jobs (point-in-time current run duration; dim job_name) ── */
+        new ComposeMeasure
+        {
+            Key = "runningjob_current_duration_s", DisplayName = "Running-job duration", Category = CatJobs, SourceTable = "running_jobs",
+            Archetype = MeasureArchetype.Gauge, Column = "current_duration_seconds",
+            NativeUnit = "s", DefaultUnit = "s", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = RunningJobDims,
+        },
+
+        /* ── job_history (per job-run; run_duration_seconds is the per-event value) ── */
+        new ComposeMeasure
+        {
+            Key = "jobhistory_run_duration_s", DisplayName = "Job run", Category = CatJobs, SourceTable = "job_history",
+            Archetype = MeasureArchetype.PerEvent, Column = "run_duration_seconds",
+            NativeUnit = "s", DefaultUnit = "s", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Count, ValidAggs = PerEventAggs, AllowedDimensions = JobHistoryDims,
+        },
+
+        /* ── perfmon_stats (EAV: the counter value; the unit VARIES per counter — cntr_type is not stored — so
+             it is tagged 'count' as an honest placeholder, and the user picks the counter via counter_name) ── */
+        new ComposeMeasure
+        {
+            Key = "perfmon_value", DisplayName = "Perfmon counter value", Category = CatPerfmon, SourceTable = "perfmon_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "cntr_value",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Avg, ValidAggs = GaugeAggs, AllowedDimensions = PerfmonDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "perfmon_value_delta", DisplayName = "Perfmon counter (per-interval delta)", Category = CatPerfmon, SourceTable = "perfmon_stats",
+            Archetype = MeasureArchetype.Delta, Column = "delta_cntr_value",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = PerfmonDims,
+        },
+
+        /* ── query_store_stats — the CORRECT-composable subset only. execution_count is a per-interval count
+             (SUM over the window = total executions). max_duration/max_cpu are per-interval maxima (MAX over the
+             window = the window peak). The pre-aggregated AVG durations are DELIBERATELY omitted: a plain
+             avg-of-avgs is wrong (design §2), and a correct execution-weighted average needs a compiler
+             primitive Compose does not yet have — deferred as a documented follow-up, not shipped wrong. ── */
+        new ComposeMeasure
+        {
+            Key = "qs_executions", DisplayName = "Query Store executions", Category = CatQueryStore, SourceTable = "query_store_stats",
+            Archetype = MeasureArchetype.Delta, Column = "execution_count",
+            NativeUnit = "count", DefaultUnit = "count", UnitFamily = FamilyCount,
+            DefaultTimeAgg = ComposeAggregate.Sum, ValidAggs = CumulativeAggs, AllowedDimensions = QueryStoreDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "qs_max_duration_us", DisplayName = "Query Store peak duration", Category = CatQueryStore, SourceTable = "query_store_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "max_duration_us",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QueryStoreDims,
+        },
+        new ComposeMeasure
+        {
+            Key = "qs_max_cpu_us", DisplayName = "Query Store peak CPU time", Category = CatQueryStore, SourceTable = "query_store_stats",
+            Archetype = MeasureArchetype.Gauge, Column = "max_cpu_time_us",
+            NativeUnit = "us", DefaultUnit = "ms", UnitFamily = FamilyDuration,
+            DefaultTimeAgg = ComposeAggregate.Max, ValidAggs = GaugeAggs, AllowedDimensions = QueryStoreDims,
         },
     };
 
