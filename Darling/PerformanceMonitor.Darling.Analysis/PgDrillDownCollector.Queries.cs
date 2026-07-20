@@ -337,8 +337,8 @@ plan_dedup AS
 ),
 latest AS
 (
-    -- The most recently executed plan per query. DISTINCT ON instead of the old ranked+self-join, so
-    -- plan_dedup is materialized ONCE rather than the whole pipeline running twice (once per join side).
+    -- The most recently executed plan per query. DISTINCT ON instead of the old self-referential rank,
+    -- so plan_dedup is materialized ONCE rather than the whole pipeline running twice (once per side).
     SELECT DISTINCT ON (database_name, query_id) *
     FROM plan_dedup
     ORDER BY database_name, query_id, last_exec DESC
