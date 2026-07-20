@@ -410,7 +410,7 @@ WHERE hypertable_name = 'wait_stats'
     }
 
     [Fact]
-    public async Task CompressionJobSelfHeal_DetectsNegativeInfinity_AndRearms_AgainstDevPostgres()
+    public async Task CompressionJobSelfHeal_DetectionQueryValid_AndRearmSucceeds_AgainstDevPostgres()
     {
         var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
         Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
@@ -427,7 +427,7 @@ WHERE hypertable_name = 'wait_stats'
         Assert.Equal(CollectorCatalog.All.Count, await TimescaleSupport.ConvertToHypertablesAsync(connection, null, ct));
         Assert.Equal(CollectorCatalog.All.Count, await TimescaleSupport.ApplyCompressionPolicyAsync(connection, null, ct));
 
-        /* Pick one real compression policy job to exercise (on wait_stats). */
+        /* Pick one real compression policy job (on wait_stats). */
         long jobId;
         using (var find = new NpgsqlCommand(@"
 SELECT j.job_id
@@ -442,47 +442,30 @@ LIMIT 1", connection))
             jobId = Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        try
-        {
-            /* A healthy, freshly-applied job is NOT flagged — proves the full query + predicate path against
-               real views and does not false-alarm. */
-            var healthy = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
-            Assert.DoesNotContain(healthy, s => s.JobId == jobId);
+        /* (1) The detection query is valid SQL against the REAL timescaledb_information job_stats/jobs views
+           (including the `next_start = '-infinity'::timestamptz` comparison), and a healthy freshly-applied
+           compression job is NOT flagged — no false alarm. This is the full ReadStuckCompressionJobsAsync path
+           against the live schema. */
+        var healthy = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
+        Assert.DoesNotContain(healthy, s => s.JobId == jobId);
 
-            /* Force the dead-scheduler state (next_start = -infinity) exactly as the TimescaleDB bug does; the
-               documented operator fix is alter_job(..., next_start => now()), which is what TryRearmJobAsync runs.
-               $1::integer for the same reason as RearmJobSql — a bound long is bigint, and alter_job takes job_id integer. */
-            using (var kill = new NpgsqlCommand("SELECT alter_job($1::integer, next_start => '-infinity'::timestamptz)", connection))
-            {
-                kill.Parameters.AddWithValue(jobId);
-                await kill.ExecuteNonQueryAsync(ct);
-            }
+        /* (2) The #1586 REGRESSION GUARD: the production re-arm runs the real alter_job against TimescaleDB and
+           SUCCEEDS. The job_id MUST be sent as `integer`, not `bigint` — an un-cast bound long fails with
+           `42883: function alter_job(bigint, ...) does not exist`, which shipped in #1585 and made every
+           self-heal re-arm silently throw. This drives the exact production path (TryRearmJobAsync ->
+           RearmJobSql `alter_job($1::integer, next_start => now())`), which the unit tests — using a fake re-arm
+           delegate — cannot reach.
 
-            /* Detection now flags exactly this job via the SQL -infinity comparison. */
-            var stuck = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
-            Assert.Contains(stuck, s => s.JobId == jobId);
+           We deliberately do NOT simulate the stuck state by forcing next_start to -infinity: TimescaleDB
+           REJECTS `alter_job(..., next_start => '-infinity')` with `22023: cannot set next start to -infinity`
+           (the dead-scheduler -infinity arises from TimescaleDB's own background scheduler on a failed run, not
+           from a user call, so it cannot be injected through the public API). The -infinity / Running-past-bound
+           DETECTION logic is covered by the pure IsCompressionJobStuck unit tests. */
+        Assert.True(await TimescaleSupport.TryRearmJobAsync(connection, jobId, null, ct));
 
-            /* The parameterized re-arm succeeds against the real job... */
-            Assert.True(await TimescaleSupport.TryRearmJobAsync(connection, jobId, null, ct));
-
-            /* ...and the job is no longer stuck (next_start is now finite again). */
-            var afterHeal = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
-            Assert.DoesNotContain(afterHeal, s => s.JobId == jobId);
-        }
-        finally
-        {
-            /* Restore a sane schedule so sibling live tests see a healthy job. */
-            try
-            {
-                using var restore = new NpgsqlCommand("SELECT alter_job($1::integer, next_start => now())", connection);
-                restore.Parameters.AddWithValue(jobId);
-                await restore.ExecuteNonQueryAsync(ct);
-            }
-            catch
-            {
-                /* Best-effort restore. */
-            }
-        }
+        /* (3) After a real re-arm (next_start => now()) the job is scheduled/running within bound, not stuck. */
+        var afterRearm = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
+        Assert.DoesNotContain(afterRearm, s => s.JobId == jobId);
     }
 
     private static async Task DeleteTestRowsAsync(NpgsqlConnection connection)
