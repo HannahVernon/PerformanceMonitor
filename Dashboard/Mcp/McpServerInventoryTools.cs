@@ -87,7 +87,8 @@ public sealed class McpServerInventoryTools
                 socket_count = row.SocketCount,
                 cores_per_socket = row.CoresPerSocket,
                 is_hadr_enabled = row.IsHadrEnabled,
-                is_clustered = row.IsClustered
+                is_clustered = row.IsClustered,
+                hardware_unavailable_reason = row.HardwareUnavailableReason
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex)

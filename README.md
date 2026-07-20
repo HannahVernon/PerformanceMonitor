@@ -471,6 +471,8 @@ GRANT VIEW DATABASE STATE TO [your-managed-identity-or-app-registration-name];
 
 For a large fleet, grant an Entra **group** instead of provisioning each identity individually where your architecture allows it. SQL Agent and msdb are not available on Azure SQL Database — those collectors are skipped automatically.
 
+> `VIEW DATABASE STATE` is what lets the `sys.dm_os_*` DMVs return server hardware inventory (CPU count, physical memory, socket and core topology) and memory metrics on each monitored database. If the contained user lacks it, edition, version, and storage still resolve from permission-free scalars, so the FinOps **Server Inventory** grid keeps the server's row and shows a non-alarming "Hardware Note" that hardware inventory is unavailable, instead of dropping the entire row (#1535).
+
 ### Azure SQL Managed Instance
 
 Works like on-premises. Use server-level logins with `VIEW SERVER STATE`. SQL Agent is available.
