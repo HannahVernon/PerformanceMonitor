@@ -205,7 +205,7 @@ public sealed class TimescaleSupportTests
     public void RearmJobSql_IsParameterized_NotInterpolated()
     {
         /* The job_id is ALWAYS bound as $1, never interpolated; next_start is SQL now(), not a value. */
-        Assert.Equal("SELECT alter_job($1, next_start => now())", TimescaleSupport.RearmJobSql);
+        Assert.Equal("SELECT alter_job($1::integer, next_start => now())", TimescaleSupport.RearmJobSql);
         Assert.Contains("$1", TimescaleSupport.RearmJobSql, StringComparison.Ordinal);
         Assert.Contains("next_start => now()", TimescaleSupport.RearmJobSql, StringComparison.Ordinal);
     }
@@ -450,8 +450,9 @@ LIMIT 1", connection))
             Assert.DoesNotContain(healthy, s => s.JobId == jobId);
 
             /* Force the dead-scheduler state (next_start = -infinity) exactly as the TimescaleDB bug does; the
-               documented operator fix is alter_job(..., next_start => now()), which is what TryRearmJobAsync runs. */
-            using (var kill = new NpgsqlCommand("SELECT alter_job($1, next_start => '-infinity'::timestamptz)", connection))
+               documented operator fix is alter_job(..., next_start => now()), which is what TryRearmJobAsync runs.
+               $1::integer for the same reason as RearmJobSql — a bound long is bigint, and alter_job takes job_id integer. */
+            using (var kill = new NpgsqlCommand("SELECT alter_job($1::integer, next_start => '-infinity'::timestamptz)", connection))
             {
                 kill.Parameters.AddWithValue(jobId);
                 await kill.ExecuteNonQueryAsync(ct);
@@ -473,7 +474,7 @@ LIMIT 1", connection))
             /* Restore a sane schedule so sibling live tests see a healthy job. */
             try
             {
-                using var restore = new NpgsqlCommand("SELECT alter_job($1, next_start => now())", connection);
+                using var restore = new NpgsqlCommand("SELECT alter_job($1::integer, next_start => now())", connection);
                 restore.Parameters.AddWithValue(jobId);
                 await restore.ExecuteNonQueryAsync(ct);
             }

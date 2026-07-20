@@ -370,10 +370,14 @@ public static class TimescaleSupport
     /// The parameterized re-arm statement (#1581): reschedule a background job to run immediately, which
     /// un-sticks a job whose <c>next_start</c> has become <c>-infinity</c> (the scheduler will never re-fire
     /// it otherwise — the field-incident root cause). The job_id is ALWAYS bound as <c>$1</c>, never
-    /// interpolated (a bound integer, but the discipline is uniform with DarlingRetention's parameterized
-    /// paths); <c>now()</c> is SQL, not a value.
+    /// interpolated (the discipline is uniform with DarlingRetention's parameterized paths); <c>now()</c> is
+    /// SQL, not a value. It is cast <c>$1::integer</c> because TimescaleDB's <c>alter_job</c> takes
+    /// <c>job_id integer</c>, but <see cref="StuckCompressionJob.JobId"/> is a <c>long</c> that Npgsql sends as
+    /// <c>bigint</c>; Postgres does NOT down-cast bigint→integer during function resolution, so an un-cast bind
+    /// fails with <c>42883: function alter_job(bigint, ...) does not exist</c> (a real defect the gated-live
+    /// test caught — a TimescaleDB job_id never exceeds int4, so the cast is always safe).
     /// </summary>
-    public const string RearmJobSql = "SELECT alter_job($1, next_start => now())";
+    public const string RearmJobSql = "SELECT alter_job($1::integer, next_start => now())";
 
     /* The stuck-Running bound floor: a compression run on a single day-chunk of 1-minute-cadence data
        finishes in seconds-to-minutes, so a run still 'Running' past this floor (when it dominates
