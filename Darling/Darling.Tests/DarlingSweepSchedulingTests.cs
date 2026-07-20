@@ -343,4 +343,75 @@ public sealed class DarlingSweepSchedulingTests
             Assert.Equal(DarlingWorker.SeedJitter(id, DailyMinutes * 60), DarlingWorker.SeedJitter(id, DailyMinutes * 60));
         }
     }
+
+    /* ---------------- #1581 cold-start launch stagger (ColdStartFirstSweepDue) ---------------- */
+
+    /* A fixed cold-start instant so the launch-time assertions are deterministic (no wall-clock). */
+    private static readonly DateTime ColdStart = new(2026, 07, 20, 12, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Drift tripwire: the cold-start launch-spread window is 150s — the fixed post-connect analysis-phase
+    /// window, reused so no new tuning knob is introduced. A change is a deliberate capacity decision that must
+    /// break this test first (the MaxConcurrentServerSweeps rationale, applied to the launch spread).
+    /// </summary>
+    [Fact]
+    public void ColdStartSpreadSeconds_Is150()
+    {
+        Assert.Equal(150, DarlingWorker.ColdStartSpreadSeconds);
+    }
+
+    /// <summary>
+    /// The first-sweep launch offset is bounded within [0, ColdStartSpreadSeconds) for every realistic FNV id: it
+    /// can never defer a server's FIRST post-startup catch-up beyond the small window (so steady-state cadence is
+    /// untouched — the stagger only shifts the ONE launch), nor pull it before the captured startup instant (a
+    /// negative offset would re-herd it exactly like no stagger). Exercises the same uint-cast safety the
+    /// underlying CadencePhaseOffset guarantees, through the composition the seeding actually uses.
+    /// </summary>
+    [Fact]
+    public void ColdStartFirstSweepDue_IsBounded_WithinSpreadWindow()
+    {
+        foreach (var id in RealisticServerIds)
+        {
+            var offset = DarlingWorker.ColdStartFirstSweepDue(ColdStart, id) - ColdStart;
+            Assert.True(offset >= TimeSpan.Zero, $"id {id}: first-sweep offset must be >= 0 (never before startup)");
+            Assert.True(offset < TimeSpan.FromSeconds(DarlingWorker.ColdStartSpreadSeconds),
+                $"id {id}: first-sweep offset must be < the {DarlingWorker.ColdStartSpreadSeconds}s spread window");
+        }
+    }
+
+    /// <summary>
+    /// The herd is actually broken on cold start: across the ≥10 distinct realistic ids the first-sweep launch
+    /// offsets are NOT all zero and NOT all identical — a service restart no longer launches every server's first
+    /// catch-up body in the same sweep tick. Minimal de-herd pin (not a distribution claim), mirroring the
+    /// CadencePhaseOffset one.
+    /// </summary>
+    [Fact]
+    public void ColdStartFirstSweepDue_IsSpread_AcrossDistinctIds()
+    {
+        Assert.True(RealisticServerIds.Length >= 10, "need ≥10 distinct ids to make the spread pin meaningful");
+
+        var offsets = RealisticServerIds
+            .Select(id => DarlingWorker.ColdStartFirstSweepDue(ColdStart, id) - ColdStart)
+            .ToArray();
+
+        Assert.Contains(offsets, o => o > TimeSpan.Zero);   /* not all zero (every server launching at the base instant is still a herd) */
+        Assert.True(offsets.Distinct().Count() > 1,
+            "all servers' first-sweep launches phased to the same instant — the fleet would still herd on restart");
+    }
+
+    /// <summary>
+    /// Deterministic and restart-stable: the first-sweep launch time is a PURE function of (coldStartInstant, id)
+    /// with no Random, so re-deriving it for the same inputs yields the same instant. (The base instant differs
+    /// per restart, which is correct — the OFFSET from that base is what must be stable, and it is.)
+    /// </summary>
+    [Fact]
+    public void ColdStartFirstSweepDue_IsDeterministic_ForSameInputs()
+    {
+        foreach (var id in RealisticServerIds)
+        {
+            Assert.Equal(
+                DarlingWorker.ColdStartFirstSweepDue(ColdStart, id),
+                DarlingWorker.ColdStartFirstSweepDue(ColdStart, id));
+        }
+    }
 }
