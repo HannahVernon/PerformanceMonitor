@@ -39,6 +39,28 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         private const int ConnectionCheckTimeoutSeconds = 5;
 
+        /// <summary>
+        /// Detection query for the connectivity check - UTC offset, engine edition and RDS flag from
+        /// scalar functions that need NO special permission. Deliberately carries NO
+        /// <c>FROM sys.dm_os_sys_info</c>: that DMV requires VIEW DATABASE STATE, which an Azure SQL
+        /// DB login often lacks, so coupling edition detection to it let a permission-starved Azure
+        /// DB throw the probe and mis-detect as on-prem instead of being correctly rejected as
+        /// unsupported (#1535). Columns: 0 utc_offset, 1 engine_edition, 2 is_aws_rds.
+        /// </summary>
+        internal const string DetectionQueryText = @"
+            SELECT
+                DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
+                CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
+                CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds";
+
+        /// <summary>
+        /// Best-effort start-time read - <c>sqlserver_start_time</c> is the only probe fact that
+        /// needs <c>sys.dm_os_sys_info</c>. Run in its OWN try/catch so a permission failure leaves
+        /// ServerStartTime unset without flipping IsOnline.
+        /// </summary>
+        internal const string ServerStartTimeQueryText =
+            "SELECT sqlserver_start_time FROM sys.dm_os_sys_info";
+
         public ServerManager()
         {
             _configFilePath = ResolveSharedServersJsonPath();
@@ -585,14 +607,11 @@ ORDER BY e.database_name;", connection);
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                // Query server start time and UTC offset to verify connectivity
-                using var command = new SqlCommand(@"
-                    SELECT
-                        sqlserver_start_time,
-                        DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
-                        CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
-                        CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds
-                    FROM sys.dm_os_sys_info", connection);
+                // Detection query (UTC offset, engine edition, RDS) - permission-free scalars, NO
+                // sys.dm_os_sys_info, so a permission-starved Azure SQL DB login still returns
+                // EngineEdition 5 and is correctly rejected below instead of mis-detected as
+                // on-prem (#1535).
+                using var command = new SqlCommand(DetectionQueryText, connection);
                 command.CommandTimeout = ConnectionCheckTimeoutSeconds;
 
                 using var reader = await command.ExecuteReaderAsync();
@@ -602,20 +621,35 @@ ORDER BY e.database_name;", connection);
                 {
                     if (!reader.IsDBNull(0))
                     {
-                        status.ServerStartTime = reader.GetDateTime(0);
+                        status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(0));
                     }
                     if (!reader.IsDBNull(1))
                     {
-                        status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(1));
+                        status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(1));
                     }
                     if (!reader.IsDBNull(2))
                     {
-                        status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(2));
+                        status.IsAwsRds = Convert.ToInt32(reader.GetValue(2)) == 1;
                     }
-                    if (!reader.IsDBNull(3))
+                }
+
+                // Best-effort start-time read (its OWN try/catch): sqlserver_start_time is the only
+                // fact that needs sys.dm_os_sys_info, so a permission gap here leaves ServerStartTime
+                // unset without flipping IsOnline or failing the detection above (#1535).
+                try
+                {
+                    using var startCommand = new SqlCommand(ServerStartTimeQueryText, connection);
+                    startCommand.CommandTimeout = ConnectionCheckTimeoutSeconds;
+
+                    using var startReader = await startCommand.ExecuteReaderAsync();
+                    if (await startReader.ReadAsync() && !startReader.IsDBNull(0))
                     {
-                        status.IsAwsRds = Convert.ToInt32(reader.GetValue(3)) == 1;
+                        status.ServerStartTime = startReader.GetDateTime(0);
                     }
+                }
+                catch (SqlException startEx)
+                {
+                    Logger.Info($"Server '{server.DisplayName}' start time unavailable (server is still online): {startEx.Message}");
                 }
 
                 /* Azure SQL DB not supported for Full Dashboard (no full system catalog access)
