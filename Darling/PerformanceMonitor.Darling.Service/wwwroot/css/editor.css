@@ -378,7 +378,9 @@
 .measure-caption { margin-top: 0.35rem; font-size: 0.75rem; color: var(--muted); }
 
 /* Per-server-type availability badges under the measure picker (#1563 D4): informational pills — the measure still
-   works where it applies; the warn variant flags a platform it can't collect on, the plain one a msdb dependency. */
+   works where it applies; the warn variant flags a platform it can't collect on, the plain one a msdb dependency.
+   The grey variant is the stronger per-server verdict shown when the view's $server resolves to one concrete server
+   the measure can't collect on (dashed to read as blocked/unavailable, distinct from the solid informational warn). */
 .measure-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
 .measure-badges:empty { display: none; }
 .measure-badge {
@@ -391,6 +393,7 @@
   white-space: nowrap;
 }
 .measure-badge.warn { color: var(--warn); }
+.measure-badge.grey { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 
 /* Static (non-editable) field content — the ratio "fixed aggregation" note, the count "unitless" note. */
 .static-field { padding: 0.4rem 0; font-size: 0.85rem; }
