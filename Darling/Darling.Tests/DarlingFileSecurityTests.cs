@@ -141,6 +141,65 @@ public sealed class DarlingFileSecurityTests
         Assert.False(DarlingFileSecurity.IsTrustedOwner(path));
     }
 
+    [Fact]
+    public void HardenDirectory_OnTheCredentialParent_LeavesTheSiblingLogDirectoryWritable()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "ACLs are Windows-only.");
+
+        /* Mirrors the REAL on-disk layout. DarlingManagedPostgres hardens ParentOf(dataDirectory) —
+           %ProgramData%\PerformanceMonitorDarling — which ALSO contains the service's own `logs`
+           directory (a sibling of the `pg` data dir). #1581 asked whether that credential lockdown is
+           what silenced file logging in the field. It is NOT: HardenDirectory grants
+           WindowsIdentity.GetCurrent().User — the identity the service is actually running as — Full
+           Control with ContainerInherit|ObjectInherit, so `logs` INHERITS write access and the running
+           service can never lock itself out. Proven with real I/O, not just ACE inspection, because
+           that is the claim that matters. A field ACL failure therefore means something EXTERNAL
+           re-ACL'd the path (on the field box, a SYSTEM-context SSM operation on one log file), not
+           that the hardening scope is wrong — so DO NOT "fix" this by narrowing the scope off the
+           parent, which would drop the inherited protection from the data dir subtree (server.key). */
+        var parent = Path.Combine(Path.GetTempPath(), "darling-acl-parent-" + Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(parent, "logs");
+        Directory.CreateDirectory(logs);
+        var existingLog = Path.Combine(logs, "darling-service_existing.log");
+        File.WriteAllText(existingLog, "before\n");
+        try
+        {
+            /* Exactly what DarlingManagedPostgres does before initdb. */
+            DarlingFileSecurity.HardenDirectory(parent, allowInteractiveTraverse: true);
+
+            /* 1. An already-open-style log file stays APPENDABLE (the flush path). */
+            File.AppendAllText(existingLog, "after\n");
+            Assert.Equal("before\nafter\n", File.ReadAllText(existingLog));
+
+            /* 2. A NEW log file — the daily-rotation case — can still be created and written. */
+            var rotatedLog = Path.Combine(logs, "darling-service_rotated.log");
+            File.WriteAllText(rotatedLog, "rotated\n");
+            Assert.Equal("rotated\n", File.ReadAllText(rotatedLog));
+
+            /* 3. A subdirectory created AFTER hardening — the initdb data-dir case — is writable, which
+                  is the whole reason the parent is hardened first (the subtree inherits). */
+            var dataDir = Path.Combine(parent, "pg");
+            Directory.CreateDirectory(dataDir);
+            var serverKey = Path.Combine(dataDir, "server.key");
+            File.WriteAllText(serverKey, "key\n");
+            Assert.Equal("key\n", File.ReadAllText(serverKey));
+
+            /* 4. The lockdown DID reach both (no world-readable principal survives) — the log directory
+                  really is swept into the credential ACL; it is simply still writable by the service. */
+            foreach (var swept in new[] { logs, dataDir })
+            {
+                var rules = ReadRules(new DirectoryInfo(swept).GetAccessControl());
+                Assert.DoesNotContain(rules, r => r.sid.Equals(s_everyone));
+                Assert.DoesNotContain(rules, r => r.sid.Equals(s_authenticatedUsers));
+                Assert.DoesNotContain(rules, r => r.sid.Equals(s_builtinUsers));
+            }
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
+    }
+
     private static (SecurityIdentifier sid, FileSystemRights rights, InheritanceFlags inheritance)[] ReadRules(
         FileSystemSecurity security)
     {
