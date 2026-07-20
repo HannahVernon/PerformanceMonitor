@@ -477,3 +477,138 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           vpk upload github --repoUrl https://github.com/${{ github.repository }} --channel darlingviewer -o releases/velopack-darlingviewer --releaseName "v$env:VERSION" --tag "v$env:VERSION" --merge --token $env:GH_TOKEN
+
+  # #1587: gated-live Darling coverage BEFORE merge, not only in the nightly. Darling.Tests has
+  # live-PostgreSQL tests (the *_AgainstDevPostgres classes) gated on DARLING_TEST_PG, which the
+  # build job above never sets — so those tests only ever ran post-merge in nightly.yml. That is
+  # exactly how #1586's alter_job(bigint) bug merged AND deployed clean: the test that catches it is
+  # gated-live, and PR CI did not run it. This job stands up a throwaway PostgreSQL + TimescaleDB
+  # from the bundled pg-runtime and runs the FULL Darling suite against it — but ONLY when Darling
+  # code (or this workflow) changed, so a Lite/Dashboard-only PR pays nothing. On a non-Darling
+  # change every step below no-ops via the path filter and the job still reports SUCCESS, so it can
+  # be made a required check without blocking unrelated PRs (the same always-runs-reports-a-result
+  # shape the build job uses for doc-only changes). Mirrors the nightly darling-pg job step-for-step;
+  # the one live-SQL-Server E2E stays skipped (DARLING_TEST_SQL unset — no SQL Server on the runner).
+  darling-pg:
+    name: Darling PostgreSQL tests
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Only do the expensive TimescaleDB work when Darling code changed — or when THIS workflow
+      # changed, so a change to the gate itself is exercised by the gate (this is what makes the PR
+      # that introduces this job validate itself end-to-end). Doc-only Darling edits don't trigger
+      # it. Skipped entirely on release: the dev push that produced the release commit already ran
+      # it, so the filter step doesn't run and every step below no-ops.
+      - name: Detect changed paths
+        id: filter
+        if: github.event_name != 'release'
+        uses: dorny/paths-filter@v3
+        with:
+          # On push, compare against the previous commit on this branch (mirrors the build job);
+          # on pull_request, an empty base makes the action diff against the PR base branch.
+          base: ${{ github.event_name == 'push' && github.event.before || '' }}
+          filters: |
+            darling:
+              - 'Darling/**'
+              - '!Darling/**/*.md'
+              - '.github/workflows/build.yml'
+
+      - name: Setup .NET 10.0
+        if: steps.filter.outputs.darling == 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # Same cache key the release job and nightly.yml use (the fetch script's own content hash), so
+      # a warm cache from any of the three means no ~340MB EDB/TimescaleDB download here.
+      - name: Cache Darling pg-runtime.zip
+        if: steps.filter.outputs.darling == 'true'
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip (cache miss only)
+        if: steps.filter.outputs.darling == 'true' && steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
+
+      - name: Extract pg-runtime
+        if: steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        run: |
+          $zip  = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime.zip"
+          $dest = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          if (-not (Test-Path "$dest\pgsql\bin\pg_ctl.exe")) { throw "pg-runtime missing pgsql\bin\pg_ctl.exe" }
+
+      - name: Restore Darling.Tests
+        if: steps.filter.outputs.darling == 'true'
+        run: dotnet restore Darling/Darling.Tests/Darling.Tests.csproj --locked-mode
+
+      - name: Build Darling.Tests
+        if: steps.filter.outputs.darling == 'true'
+        run: dotnet build Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-restore
+
+      # Throwaway cluster from the bundled runtime. initdb TRUST auth is acceptable ONLY here: an
+      # ephemeral CI runner, loopback-only, throwaway data (the product default is scram-sha-256 +
+      # a generated credential). Superuser is "darling" (not "postgres") so CREATE SCHEMA ...
+      # AUTHORIZATION darling in the V8 schema-split migration resolves. Settings mirror
+      # DarlingManagedPostgres.BuildConfAppend (timescaledb preload, port 5541, loopback bind).
+      - name: Initialize and start throwaway PostgreSQL
+        if: steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          $logFile = "$env:RUNNER_TEMP\darling-pg.log"
+          & "$bin\initdb.exe" -D $dataDir -U darling -A trust --encoding=UTF8
+          if ($LASTEXITCODE -ne 0) { throw "initdb failed ($LASTEXITCODE)" }
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "shared_preload_libraries = 'timescaledb'"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "port = 5541"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "listen_addresses = '127.0.0.1'"
+          & "$bin\pg_ctl.exe" -D $dataDir -l $logFile -w start
+          if ($LASTEXITCODE -ne 0) { if (Test-Path $logFile) { Get-Content $logFile -Tail 50 }; throw "pg_ctl start failed ($LASTEXITCODE)" }
+          & "$bin\createdb.exe" -h 127.0.0.1 -p 5541 -U darling darling
+          if ($LASTEXITCODE -ne 0) { throw "createdb failed ($LASTEXITCODE)" }
+
+      # DARLING_TEST_PG lights up the [Collection("live-postgres")] classes; DARLING_TEST_PGRUNTIME
+      # lights up the managed-bootstrap E2E. DARLING_TEST_SQL is intentionally unset — the one
+      # live-SQL-Server E2E stays skipped (no SQL Server on the runner). Full suite (not a filtered
+      # subset): the ungated ~3s overlap with the build job is negligible and a filter could hide a
+      # test the way narrow filters have bitten before.
+      - name: Run Darling PG tests
+        if: steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        env:
+          DARLING_TEST_PG: "Host=127.0.0.1;Port=5541;Username=darling;Database=darling"
+          DARLING_TEST_PGRUNTIME: ${{ github.workspace }}\Darling\artifacts\pg-runtime
+        run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal --logger "trx;LogFileName=darling-pr.trx" --results-directory TestResults
+
+      - name: Stop PostgreSQL
+        if: always() && steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          if (Test-Path "$bin\pg_ctl.exe") { & "$bin\pg_ctl.exe" -D $dataDir -m fast -w stop }
+          exit 0
+
+      - name: Upload PG log and test results on failure
+        if: failure() && steps.filter.outputs.darling == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: darling-pg-failure
+          path: |
+            ${{ runner.temp }}/darling-pg.log
+            TestResults/
+          if-no-files-found: ignore
