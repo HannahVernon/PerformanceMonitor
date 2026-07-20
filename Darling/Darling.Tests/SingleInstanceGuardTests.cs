@@ -130,8 +130,26 @@ public sealed class SingleInstanceGuardTests
         Assert.True(acquired.Wait(TimeSpan.FromSeconds(5)), "the holder thread did not acquire the mutex in time");
         holder.Join(TimeSpan.FromSeconds(5));
 
-        using var guard = SingleInstanceGuard.TryAcquire(name);
-        Assert.True(guard.Owns);
+        /* The kernel marks the mutex abandoned as the holder's OS thread is torn down, which completes shortly
+           AFTER Thread.Join returns (Join synchronizes on the MANAGED thread; the native teardown that abandons
+           the mutex can lag by a few milliseconds). The production TryAcquire is a non-blocking WaitOne(0), so a
+           poll landing in that window sees the mutex still owned by the dying thread and returns false — a race
+           that exists ONLY for this in-process crash SIMULATION, never in production, where the crashed PROCESS
+           is fully dead (all handles closed by OS process teardown) before the SCM starts the replacement. Retry
+           the non-blocking acquire until the abandonment is observable, then assert the real contract: an
+           abandoned mutex is acquired WITH the abandoned warning. The guard itself must NOT retry — a false there
+           means a LIVE second instance holds the lock and exiting is correct — so the retry lives here, not in
+           the production code. */
+        var guard = SingleInstanceGuard.TryAcquire(name);
+        for (var attempt = 0; attempt < 200 && !guard.Owns; attempt++)
+        {
+            guard.Dispose();
+            Thread.Sleep(10);
+            guard = SingleInstanceGuard.TryAcquire(name);
+        }
+
+        using var acquiredGuard = guard;
+        Assert.True(guard.Owns, "an abandoned mutex must become acquirable once the holder thread is fully torn down");
         Assert.True(guard.WasAbandoned);
     }
 }
