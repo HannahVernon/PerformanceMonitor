@@ -166,6 +166,87 @@ public sealed class DarlingSweepSchedulingTests
         Assert.Equal(4, DarlingWorker.MaxConcurrentServerSweeps);
     }
 
+    /// <summary>The watchdog threshold both channels are judged against (drift tripwire).</summary>
+    [Fact]
+    public void SweepWatchdogSeconds_Is60()
+    {
+        Assert.Equal(60, DarlingWorker.SweepWatchdogSeconds);
+    }
+
+    /// <summary>
+    /// THE regression case. A body that has been QUEUED behind the N=4 gate for ten minutes has not started
+    /// executing, so it is capacity pressure — never a hang. Attributing gate queue time to the hang channel is
+    /// what fired ~82 warnings/hour at 24 servers on a demonstrably healthy fleet (0 collector errors, data
+    /// landing), burying the one signal that warning exists to raise.
+    /// </summary>
+    [Fact]
+    public void ClassifySweepEpisode_LongQueuedBody_IsCapacityNotAHang()
+    {
+        var signal = DarlingWorker.ClassifySweepEpisode(
+            episodeSeconds: 600, running: false, runningSeconds: 0, alreadyWarned: false, alreadyQueuedInfo: false);
+
+        Assert.Equal(DarlingWorker.SweepEpisodeSignal.Queued, signal);
+    }
+
+    /// <summary>
+    /// The precise field shape: a body queued ~5 minutes behind the gate that then ran for 3 seconds. The
+    /// EPISODE is long (303s) but execution is trivial — nothing is stalled. The old measurement (episode only)
+    /// called this a hang; it must now be silent, because by the time the watchdog looks the body is running
+    /// fine and its queue wait was already reported on the capacity channel.
+    /// </summary>
+    [Fact]
+    public void ClassifySweepEpisode_LongQueueThenFastExecution_IsSilent()
+    {
+        var signal = DarlingWorker.ClassifySweepEpisode(
+            episodeSeconds: 303, running: true, runningSeconds: 3, alreadyWarned: false, alreadyQueuedInfo: false);
+
+        Assert.Equal(DarlingWorker.SweepEpisodeSignal.None, signal);
+    }
+
+    /// <summary>A body genuinely EXECUTING past the threshold is the real stall the watchdog exists for.</summary>
+    [Fact]
+    public void ClassifySweepEpisode_RunningPastThreshold_IsAHang()
+    {
+        var signal = DarlingWorker.ClassifySweepEpisode(
+            episodeSeconds: 75, running: true, runningSeconds: 61, alreadyWarned: false, alreadyQueuedInfo: false);
+
+        Assert.Equal(DarlingWorker.SweepEpisodeSignal.Hang, signal);
+    }
+
+    /// <summary>Neither channel fires under its threshold.</summary>
+    [Theory]
+    [InlineData(59, true, 59)]    // executing, just under
+    [InlineData(59, false, 0)]    // queued, just under
+    public void ClassifySweepEpisode_UnderThreshold_IsSilent(double episodeSeconds, bool running, double runningSeconds)
+    {
+        var signal = DarlingWorker.ClassifySweepEpisode(
+            episodeSeconds, running, runningSeconds, alreadyWarned: false, alreadyQueuedInfo: false);
+
+        Assert.Equal(DarlingWorker.SweepEpisodeSignal.None, signal);
+    }
+
+    /// <summary>
+    /// Each channel latches independently, once per episode — a long stall is flagged once, not every 15s sweep,
+    /// and the same for a long queue wait. The latches must not cross-suppress: a body warned for a hang has
+    /// nothing to say on the capacity channel and vice versa.
+    /// </summary>
+    [Fact]
+    public void ClassifySweepEpisode_EachChannelLatchesOncePerEpisode()
+    {
+        Assert.Equal(
+            DarlingWorker.SweepEpisodeSignal.None,
+            DarlingWorker.ClassifySweepEpisode(75, running: true, runningSeconds: 61, alreadyWarned: true, alreadyQueuedInfo: false));
+
+        Assert.Equal(
+            DarlingWorker.SweepEpisodeSignal.None,
+            DarlingWorker.ClassifySweepEpisode(600, running: false, runningSeconds: 0, alreadyWarned: false, alreadyQueuedInfo: true));
+
+        /* A queued-latched body that later starts running can still raise a genuine hang. */
+        Assert.Equal(
+            DarlingWorker.SweepEpisodeSignal.Hang,
+            DarlingWorker.ClassifySweepEpisode(700, running: true, runningSeconds: 90, alreadyWarned: false, alreadyQueuedInfo: true));
+    }
+
     /// <summary>
     /// #1556 working-set launch guard: below the threshold the fleet may launch new collection bodies;
     /// at or above it, launches are held so the process backs away from the commit-limit exhaustion the
