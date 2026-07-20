@@ -16,6 +16,15 @@ namespace PerformanceMonitor.Darling.Analysis;
 
 public sealed partial class PgDrillDownCollector
 {
+    /// <summary>
+    /// Per-command timeout for every drill-down query. These run inside the shared DarlingWorker sweep
+    /// loop whose watchdog warns at 60s ("collection body has not completed after 60s" -> stale-status
+    /// flapping), so no single drill-down query may run unbounded: even an optimized one must fail fast on
+    /// a cold cache / index bloat / a much busier server rather than eat the whole budget. Npgsql defaults
+    /// to 30s already, but pinning it here makes the bound explicit and independent of any global default.
+    /// </summary>
+    private const int DrillDownCommandTimeoutSeconds = 30;
+
     public const string SpikePeakSql = @"
 SELECT collection_time, sqlserver_cpu_utilization
 FROM v_cpu_utilization_stats
@@ -43,6 +52,7 @@ LIMIT 5";
 
         // Step 1: Find when the spike occurred
         using var peakCmd = new NpgsqlCommand(SpikePeakSql, connection);
+        peakCmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         peakCmd.Parameters.AddWithValue(context.ServerId);
         peakCmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
         peakCmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
@@ -62,6 +72,7 @@ LIMIT 5";
 
         // Step 2: Get queries active within 2 minutes of peak
         using var queryCmd = new NpgsqlCommand(QueriesAtSpikeSql, connection);
+        queryCmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         queryCmd.Parameters.AddWithValue(context.ServerId);
         queryCmd.Parameters.AddWithValue(AsNaive(peakTime.Value.AddMinutes(-2)));
         queryCmd.Parameters.AddWithValue(AsNaive(peakTime.Value.AddMinutes(2)));
@@ -118,6 +129,7 @@ LIMIT 5";
         await using var connection = await _postgres.OpenConnectionAsync();
 
         using var cmd = new NpgsqlCommand(TopCpuQueriesSql, connection);
+        cmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         cmd.Parameters.AddWithValue(context.ServerId);
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
@@ -159,6 +171,7 @@ LIMIT 5";
         await using var connection = await _postgres.OpenConnectionAsync();
 
         using var cmd = new NpgsqlCommand(TopSpillingQueriesSql, connection);
+        cmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         cmd.Parameters.AddWithValue(context.ServerId);
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
@@ -238,6 +251,7 @@ LIMIT 5";
         await using var connection = await _postgres.OpenConnectionAsync();
 
         using var cmd = new NpgsqlCommand(ParameterSensitiveSql, connection);
+        cmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         cmd.Parameters.AddWithValue(context.ServerId);
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
@@ -268,6 +282,12 @@ LIMIT 5";
     public const string RegressedQueriesSql = @"
 WITH deduped AS
 (
+    -- LOAD-BEARING (correctness, not just perf): query_store_stats rows are CUMULATIVE per-Query-Store-
+    -- interval snapshots. The QueryStoreCollector is incremental and re-fetches the OPEN interval every
+    -- cycle as its last_execution_time advances (WHERE last_execution_time > watermark), so the SAME
+    -- interval (same first_execution_time) is collected repeatedly with a GROWING execution_count. Keep
+    -- only the LATEST snapshot per interval; summing the accumulating snapshots would multiply-count
+    -- executions and corrupt the execution_count-weighted cpu/duration averages.
     SELECT
         database_name,
         query_id,
@@ -287,14 +307,24 @@ WITH deduped AS
     WHERE server_id = $1
     AND   execution_type_desc = 'Regular'
     AND   last_execution_time >= $2
+    -- Chunk-exclusion bound. collection_time >= last_execution_time ALWAYS (a row is collected AFTER the
+    -- interval's last execution), so last_execution_time >= $2 provably implies this; the 1-day slack is
+    -- safety. query_store_stats is a hypertable partitioned on collection_time, so this lets TimescaleDB
+    -- exclude whole chunks instead of decompress-then-filter as retained history grows.
+    AND   collection_time >= $2 - interval '1 day'
 ),
-plan_agg AS
+plan_dedup AS
 (
+    -- Aggregate the DISTINCT intervals (rn = 1) per (query_id, plan hash). Collapses the old
+    -- plan_agg(per plan_id) + plan_dedup(per hash) two-stage into one: a weighted-avg of weighted-avgs
+    -- equals the direct execution_count-weighted avg, and MAX(plan_id) is unchanged. MAX(plan_id) carries
+    -- the most recently observed plan_id in the hash forward (newer plans are less likely evicted by
+    -- Query Store retention; any plan_id sharing the hash forces the same execution shape).
     SELECT
         database_name,
         query_id,
-        plan_id,
-        any_value(query_plan_hash) AS query_plan_hash,
+        query_plan_hash,
+        MAX(plan_id) AS plan_id,
         any_value(query_text) AS query_text,
         SUM(execution_count) AS execs,
         SUM(avg_cpu_time_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
@@ -302,75 +332,48 @@ plan_agg AS
         MAX(last_execution_time) AS last_exec
     FROM deduped
     WHERE rn = 1
-    GROUP BY database_name, query_id, plan_id
-),
-plan_dedup AS
-(
-    -- MAX(plan_id) carries the most recently observed plan_id in the hash partition
-    -- forward — newer plans are less likely evicted by Query Store retention.
-    -- Functionally any plan_id sharing the hash forces the same execution shape.
-    SELECT
-        database_name,
-        query_id,
-        query_plan_hash,
-        MAX(plan_id) AS plan_id,
-        any_value(query_text) AS query_text,
-        SUM(execs) AS execs,
-        SUM(cpu_per_exec * execs) / NULLIF(SUM(execs), 0) AS cpu_per_exec,
-        SUM(dur_per_exec * execs) / NULLIF(SUM(execs), 0) AS dur_per_exec,
-        MAX(last_exec) AS last_exec
-    FROM plan_agg
     GROUP BY database_name, query_id, query_plan_hash
-    HAVING SUM(execs) >= 25
+    HAVING SUM(execution_count) >= 25
 ),
-ranked AS
+latest AS
 (
-    SELECT
-        *,
-        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY last_exec DESC) AS recency,
-        ROW_NUMBER() OVER (PARTITION BY database_name, query_id ORDER BY cpu_per_exec ASC) AS cheapness
+    -- The most recently executed plan per query. DISTINCT ON instead of the old self-referential rank,
+    -- so plan_dedup is materialized ONCE rather than the whole pipeline running twice (once per side).
+    SELECT DISTINCT ON (database_name, query_id) *
     FROM plan_dedup
+    ORDER BY database_name, query_id, last_exec DESC
 ),
-compared AS
+cheapest AS
 (
-    SELECT
-        l.database_name,
-        l.query_id,
-        l.query_plan_hash AS latest_plan_hash,
-        l.cpu_per_exec AS latest_cpu,
-        l.dur_per_exec AS latest_dur,
-        b.query_plan_hash AS best_plan_hash,
-        b.plan_id AS best_plan_id,
-        b.cpu_per_exec AS best_cpu,
-        b.dur_per_exec AS best_dur,
-        l.query_text,
-        GREATEST
-        (
-            l.cpu_per_exec / NULLIF(b.cpu_per_exec, 0),
-            l.dur_per_exec / NULLIF(b.dur_per_exec, 0)
-        ) AS regression_factor
-    FROM ranked AS l
-    JOIN ranked AS b
-      ON  b.database_name = l.database_name
-      AND b.query_id = l.query_id
-      AND b.cheapness = 1
-    WHERE l.recency = 1
-    AND   l.query_plan_hash <> b.query_plan_hash
+    -- The cheapest (best) plan per query by cpu-per-exec.
+    SELECT DISTINCT ON (database_name, query_id) *
+    FROM plan_dedup
+    ORDER BY database_name, query_id, cpu_per_exec ASC
 )
 SELECT
-    database_name,
-    query_id,
-    latest_plan_hash,
-    latest_cpu,
-    latest_dur,
-    best_plan_hash,
-    best_plan_id,
-    best_cpu,
-    best_dur,
-    regression_factor,
-    LEFT(query_text, 500) AS query_text
-FROM compared
-WHERE regression_factor >= 2
+    l.database_name,
+    l.query_id,
+    l.query_plan_hash AS latest_plan_hash,
+    l.cpu_per_exec AS latest_cpu,
+    l.dur_per_exec AS latest_dur,
+    b.query_plan_hash AS best_plan_hash,
+    b.plan_id AS best_plan_id,
+    b.cpu_per_exec AS best_cpu,
+    b.dur_per_exec AS best_dur,
+    GREATEST
+    (
+        l.cpu_per_exec / NULLIF(b.cpu_per_exec, 0),
+        l.dur_per_exec / NULLIF(b.dur_per_exec, 0)
+    ) AS regression_factor,
+    LEFT(l.query_text, 500) AS query_text
+FROM latest AS l
+JOIN cheapest AS b USING (database_name, query_id)
+WHERE l.query_plan_hash <> b.query_plan_hash
+AND   GREATEST
+      (
+          l.cpu_per_exec / NULLIF(b.cpu_per_exec, 0),
+          l.dur_per_exec / NULLIF(b.dur_per_exec, 0)
+      ) >= 2
 ORDER BY regression_factor DESC
 LIMIT 5";
 
@@ -385,6 +388,7 @@ LIMIT 5";
         await using var connection = await _postgres.OpenConnectionAsync();
 
         using var cmd = new NpgsqlCommand(RegressedQueriesSql, connection);
+        cmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         cmd.Parameters.AddWithValue(context.ServerId);
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart.AddDays(-14)));
 
@@ -445,6 +449,7 @@ GROUP BY database_name, query_hash";
         await using var connection = await _postgres.OpenConnectionAsync();
 
         using var cmd = new NpgsqlCommand(BadActorDetailSql, connection);
+        cmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         cmd.Parameters.AddWithValue(context.ServerId);
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
@@ -487,6 +492,7 @@ LIMIT 5";
         await using var connection = await _postgres.OpenConnectionAsync();
 
         using var cmd = new NpgsqlCommand(PendingGrantsSql, connection);
+        cmd.CommandTimeout = DrillDownCommandTimeoutSeconds;
         cmd.Parameters.AddWithValue(context.ServerId);
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeStart));
         cmd.Parameters.AddWithValue(AsNaive(context.TimeRangeEnd));
