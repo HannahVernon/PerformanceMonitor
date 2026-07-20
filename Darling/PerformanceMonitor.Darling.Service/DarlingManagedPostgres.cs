@@ -1653,9 +1653,20 @@ public sealed class DarlingManagedPostgres
         => $"Remove-NetFirewallRule -DisplayName '{ruleName}' -ErrorAction SilentlyContinue; " +
            $"New-NetFirewallRule -DisplayName '{ruleName}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {port} -RemoteAddress {remoteCidr} | Out-Null";
 
-    /// <summary>Idempotent-named disable command (remove-by-name). Pure + testable.</summary>
+    /// <summary>
+    /// Idempotent-named disable command (remove-by-name). Pure + testable.
+    /// Deliberately NOT `-ErrorAction SilentlyContinue`: that suppresses the error OUTPUT but the cmdlet
+    /// failure still makes powershell.exe exit 1, so removing an already-absent rule — the COMMON no-op
+    /// (the rule was never created, or a prior shutdown already removed it) — logged
+    /// "Could not remove the firewall rule automatically (exit 1: )" with an EMPTY message on every
+    /// shutdown, on every host. "Rule absent" IS this command's desired end state, so ObjectNotFound is
+    /// swallowed and we exit 0; any OTHER failure (e.g. access denied, which leaves a stale allow rule
+    /// behind and is worth knowing about) rethrows so the caller still warns — with a real message.
+    /// The catch alone is not enough: a caught error leaves the exit state non-zero, hence the exit 0.
+    /// </summary>
     internal static string BuildFirewallDisableCommand(string ruleName)
-        => $"Remove-NetFirewallRule -DisplayName '{ruleName}' -ErrorAction SilentlyContinue";
+        => $"try {{ Remove-NetFirewallRule -DisplayName '{ruleName}' -ErrorAction Stop }} " +
+           $"catch {{ if ($_.CategoryInfo.Category -ne 'ObjectNotFound') {{ throw }} }}; exit 0";
 
     /// <summary>
     /// Best-effort firewall reconcile (D1): add/remove the scoped, idempotent-named inbound rule via

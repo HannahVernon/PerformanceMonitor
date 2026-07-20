@@ -269,6 +269,25 @@ public sealed class DarlingNetworkTests
         Assert.DoesNotContain("New-NetFirewallRule", cmd, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void BuildFirewallDisableCommand_TreatsAnAbsentRuleAsSuccess()
+    {
+        /* An absent rule IS this command's desired end state, but `-ErrorAction SilentlyContinue` only
+           hides the error TEXT — powershell.exe still exits 1 — so removing an already-absent rule logged
+           "Could not remove the firewall rule automatically (exit 1: )" with an empty message on every
+           shutdown, reproduced on two independent hosts. Pin the shape that actually exits 0:
+           ObjectNotFound is swallowed, anything else rethrows so a real failure (access denied leaving a
+           stale allow rule) still warns, and the explicit `exit 0` is required because a CAUGHT error
+           still leaves a non-zero exit state. */
+        var cmd = DarlingManagedPostgres.BuildFirewallDisableCommand("PerformanceMonitor Darling store (port 5641)");
+
+        Assert.DoesNotContain("-ErrorAction SilentlyContinue", cmd, StringComparison.Ordinal);
+        Assert.Contains("-ErrorAction Stop", cmd, StringComparison.Ordinal);
+        Assert.Contains("ObjectNotFound", cmd, StringComparison.Ordinal);
+        Assert.Contains("throw", cmd, StringComparison.Ordinal);
+        Assert.Contains("exit 0", cmd, StringComparison.Ordinal);
+    }
+
     /* ---- store loopback-degrade decision (DarlingManagedPostgres.ResolveNetworkExposure) ---- */
 
     private const string CertPath = @"C:\ProgramData\PerformanceMonitorDarling\server.crt";
