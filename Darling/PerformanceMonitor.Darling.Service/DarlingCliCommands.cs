@@ -13,6 +13,7 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Threading;
@@ -20,6 +21,31 @@ using System.Threading.Tasks;
 using PerformanceMonitor.Darling.Service.Mcp;
 
 namespace PerformanceMonitor.Darling.Service;
+
+/// <summary>
+/// What the exe should do for its command-line, decided from the FIRST argument by
+/// <see cref="DarlingCliCommands.ClassifyStartupArgs"/> (#1581). Before this, an UNRECOGNIZED flag
+/// (the incident's <c>Service.exe --version</c>) fell through into a real service startup, spawning a
+/// second instance — the outage. Now only <see cref="StartHost"/> (no args) or a recognized verb reaches
+/// the host; anything else prints and exits.
+/// </summary>
+public enum StartupAction
+{
+    /// <summary>No arguments — run the service host (also how the SCM starts it).</summary>
+    StartHost,
+
+    /// <summary><c>--version</c>/<c>-v</c> — print the product version and exit 0.</summary>
+    PrintVersion,
+
+    /// <summary><c>--help</c>/<c>-h</c> — print usage and exit 0.</summary>
+    PrintHelp,
+
+    /// <summary>A recognized one-shot verb (encrypt-password, test-connection, …) — dispatched by Program.</summary>
+    RunKnownVerb,
+
+    /// <summary>An unrecognized argument — print "unknown option" + usage to stderr and exit non-zero.</summary>
+    UnknownOption,
+}
 
 /// <summary>
 /// One-shot CLI verbs the service exe supports alongside the Windows-service host — currently the
@@ -31,6 +57,10 @@ namespace PerformanceMonitor.Darling.Service;
 /// </summary>
 public static class DarlingCliCommands
 {
+    /// <summary>The verb that encrypts a SQL-auth password for darling.json (reads stdin).</summary>
+    public static bool IsEncryptPasswordVerb(string arg) =>
+        string.Equals(arg, "--encrypt-password", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The verb aliases handled by <see cref="TryGetValidateConfigVerb"/>.</summary>
     public static bool IsValidateConfigVerb(string arg) =>
         string.Equals(arg, "--test-connection", StringComparison.OrdinalIgnoreCase)
@@ -43,6 +73,92 @@ public static class DarlingCliCommands
     /// <summary>The verb <see cref="ConfigureNetworkAsync"/> handles — the interactive exposure wizard (#1561).</summary>
     public static bool IsConfigureNetworkVerb(string arg) =>
         string.Equals(arg, "--configure-network", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary><c>--version</c>/<c>-v</c> — print the product version and exit.</summary>
+    public static bool IsVersionVerb(string arg) =>
+        string.Equals(arg, "--version", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(arg, "-v", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary><c>--help</c>/<c>-h</c>/<c>-?</c>/<c>/?</c> — print usage and exit.</summary>
+    public static bool IsHelpVerb(string arg) =>
+        string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(arg, "-h", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(arg, "-?", StringComparison.Ordinal)
+        || string.Equals(arg, "/?", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Every one-shot CLI verb the exe recognizes as its FIRST argument — the allow-list
+    /// <see cref="ClassifyStartupArgs"/> uses and the single source of truth Program's dispatch mirrors, so the
+    /// two can never drift. Excludes <c>--version</c>/<c>--help</c> (those are their own classifications).
+    /// </summary>
+    public static bool IsKnownVerb(string arg) =>
+        IsEncryptPasswordVerb(arg)
+        || IsValidateConfigVerb(arg)
+        || IsPrintViewerConnectionVerb(arg)
+        || IsConfigureNetworkVerb(arg);
+
+    /// <summary>
+    /// Classifies the exe's command line from its FIRST argument (#1581): no args → run the host; a recognized
+    /// verb → dispatch it; <c>--version</c>/<c>--help</c> → print + exit; ANYTHING else → an unknown option that
+    /// must NOT start the host (the incident: <c>Service.exe --version</c> used to fall through into a real
+    /// startup and spawn a second instance). Pure so it pins directly.
+    /// </summary>
+    public static StartupAction ClassifyStartupArgs(string[]? args)
+    {
+        if (args is null || args.Length == 0)
+        {
+            return StartupAction.StartHost;
+        }
+
+        var first = args[0];
+        if (IsVersionVerb(first))
+        {
+            return StartupAction.PrintVersion;
+        }
+
+        if (IsHelpVerb(first))
+        {
+            return StartupAction.PrintHelp;
+        }
+
+        if (IsKnownVerb(first))
+        {
+            return StartupAction.RunKnownVerb;
+        }
+
+        return StartupAction.UnknownOption;
+    }
+
+    /// <summary>
+    /// The product version string for <c>--version</c> — the assembly's informational version (the csproj
+    /// <c>&lt;Version&gt;</c>), with any SemVer <c>+build</c> metadata suffix stripped, falling back to the
+    /// assembly version. Pure (reads this assembly's own attributes), so it pins directly.
+    /// </summary>
+    public static string ProductVersion()
+    {
+        var assembly = typeof(DarlingCliCommands).Assembly;
+        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informational))
+        {
+            var plus = informational.IndexOf('+', StringComparison.Ordinal);
+            return plus >= 0 ? informational[..plus] : informational;
+        }
+
+        return assembly.GetName().Version?.ToString() ?? "unknown";
+    }
+
+    /// <summary>The usage text for <c>--help</c> and the unknown-option error. Pure ASCII, one verb per line.</summary>
+    public static string UsageText() =>
+        "PerformanceMonitor Darling service." + Environment.NewLine +
+        Environment.NewLine +
+        "Usage:" + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe                     Run the service (also how the Windows Service Control Manager starts it)." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --version, -v       Print the product version and exit." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --help, -h          Print this help and exit." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --test-connection   Validate darling.json and probe every configured server." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --encrypt-password  Encrypt a SQL-auth password for darling.json (reads stdin)." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --print-viewer-connection   Print a remote-viewer connection string (managed store)." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --configure-network Interactive LAN-exposure wizard.";
 
     /// <summary>
     /// Loads + validates darling.json, then probes every server. Prints one PASS/FAIL line per server and a

@@ -655,6 +655,189 @@ public sealed class DarlingSelfAlertTests
             () => e2.ApplyDiskPressureAsync(5 * Gib, 100 * Gib, null, Ct));
     }
 
+    /* ---------------- compression-job self-heal (#1581) ---------------- */
+
+    /// <summary>Records the job_ids passed to the re-arm delegate and returns a configurable success.</summary>
+    private sealed class RearmRecorder
+    {
+        public List<long> Calls { get; } = new();
+        public bool Result { get; set; } = true;
+        public Func<long, Task<bool>> Delegate => id =>
+        {
+            Calls.Add(id);
+            return Task.FromResult(Result);
+        };
+    }
+
+    private static IReadOnlyList<StuckCompressionJob> Stuck(params long[] jobIds)
+    {
+        var list = new List<StuckCompressionJob>();
+        foreach (var id in jobIds)
+        {
+            list.Add(new StuckCompressionJob(id, "wait_stats", "next_start is -infinity — the scheduler will never run it again"));
+        }
+
+        return list;
+    }
+
+    [Fact]
+    public async Task CompressionJobs_FirstDetection_RearmsOnce_AndFiresCritical()
+    {
+        var h = new Harness();
+        var e = h.Build();
+        var rearm = new RearmRecorder();
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+
+        /* Re-armed exactly once. */
+        Assert.Equal(1001L, Assert.Single(rearm.Calls));
+
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal("Compression Job Stuck", fired.MetricName);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+        Assert.Equal("compressjob:1001", fired.ServerKey);  /* prefixed so it never parses as a server_id */
+        Assert.Contains("auto-re-armed", fired.ShortMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CompressionJobs_ReHangAfterSelfHeal_Escalates_AndStopsRearming()
+    {
+        var h = new Harness();
+        var e = h.Build();
+        var rearm = new RearmRecorder();
+
+        /* Check 1: detect + re-arm + fire. */
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+
+        /* Check 2 (an hour later): STILL stuck = a re-hang. Escalate, and do NOT re-arm again. */
+        h.Now = h.Now.AddHours(1);
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+
+        Assert.Single(rearm.Calls);  /* never re-armed a second time */
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+        var escalated = h.Deliverer.Outcomes[1];
+        Assert.Equal(AlertSeverityLevel.Critical, escalated.Severity);
+        Assert.Contains("re-hung", escalated.ShortMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CompressionJobs_AfterEscalation_NeverRearms_ReFiresOnlyOnCooldown()
+    {
+        var h = new Harness();
+        var e = h.Build();
+        var rearm = new RearmRecorder();
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);  /* detect + re-arm */
+        h.Now = h.Now.AddHours(1);
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);  /* escalate (fire) */
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+
+        /* Inside the 5-minute cooldown after the escalation: no re-fire, no re-arm. */
+        h.Now = h.Now.AddMinutes(1);
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+        Assert.Single(rearm.Calls);
+        Assert.Equal(2, h.Deliverer.Outcomes.Count);
+
+        /* After the cooldown: re-fires (still no re-arm). */
+        h.Now = h.Now.AddMinutes(5);
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+        Assert.Single(rearm.Calls);
+        Assert.Equal(3, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task CompressionJobs_RearmFailure_EscalatesImmediately_AndNeverRetriesRearm()
+    {
+        var h = new Harness();
+        var e = h.Build();
+        var rearm = new RearmRecorder { Result = false };  /* alter_job fails (e.g. permission) */
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+
+        /* Tried once, failed -> escalated with an "auto-re-arm FAILED" alert. */
+        Assert.Single(rearm.Calls);
+        var fired = Assert.Single(h.Deliverer.Outcomes);
+        Assert.Equal(AlertSeverityLevel.Critical, fired.Severity);
+        Assert.Contains("FAILED", fired.ShortMessage, StringComparison.Ordinal);
+
+        /* Next check: never retries the re-arm (already escalated). */
+        h.Now = h.Now.AddHours(1);
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+        Assert.Single(rearm.Calls);
+    }
+
+    [Fact]
+    public async Task CompressionJobs_Recovery_WritesOneResolutionRow_AndClearsState()
+    {
+        var h = new Harness();
+        var e = h.Build();
+        var rearm = new RearmRecorder();
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);  /* stuck */
+        Assert.Empty(h.History.Records);
+
+        /* No longer stuck: exactly one "Compression Job Recovered" audit row (BuildResolutionRecord maps the
+           resolution Title onto the history MetricName, mirroring the disk-pressure recovery). */
+        await e.ApplyCompressionJobsStuckAsync(Stuck(), rearm.Delegate, Ct);
+        var resolved = Assert.Single(h.History.Records);
+        Assert.Equal("Compression Job Recovered", resolved.MetricName);
+        Assert.True(resolved.AlertSent);
+        Assert.Contains("running on schedule again", resolved.DetailText, StringComparison.Ordinal);
+
+        /* Still healthy next check — no duplicate resolution (edge-triggered), and a re-stuck job would be a
+           fresh first-detection again (state was cleared) -> a new re-arm. */
+        await e.ApplyCompressionJobsStuckAsync(Stuck(), rearm.Delegate, Ct);
+        Assert.Single(h.History.Records);
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+        Assert.Equal(2, rearm.Calls.Count);  /* re-stuck after recovery -> re-armed fresh */
+    }
+
+    [Fact]
+    public async Task CompressionJobs_AlertsDisabled_DoesNotFireOrRearm()
+    {
+        var h = new Harness();
+        h.Settings.AlertsEnabled = false;
+        var e = h.Build();
+        var rearm = new RearmRecorder();
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001), rearm.Delegate, Ct);
+
+        Assert.Empty(rearm.Calls);
+        Assert.Empty(h.Deliverer.Outcomes);
+    }
+
+    [Fact]
+    public async Task CompressionJobs_MultipleStuckJobs_EachRearmedOncePerCheck()
+    {
+        var h = new Harness();
+        var e = h.Build();
+        var rearm = new RearmRecorder();
+
+        await e.ApplyCompressionJobsStuckAsync(Stuck(1001, 1002, 1003), rearm.Delegate, Ct);
+
+        Assert.Equal(new[] { 1001L, 1002L, 1003L }, rearm.Calls);
+        Assert.Equal(3, h.Deliverer.Outcomes.Count);
+    }
+
+    [Fact]
+    public async Task CompressionJobs_EvaluateWrapper_IsolatesAThrowingSeam_DoesNotPropagate()
+    {
+        /* The worker's compression sweep opens the connection OUTSIDE the evaluator; the Evaluate wrapper must
+           still swallow a throw from the mute check OR the re-arm delegate so it can never propagate out of the
+           un-guarded sweep loop and stop collection for the whole fleet. */
+        var h = new Harness { MuteThrows = true };
+        var e = h.Build();
+
+        /* A throwing mute check (inside FireAsync, after a successful re-arm) is isolated. */
+        await e.EvaluateCompressionJobsAsync(Stuck(1001), _ => Task.FromResult(true), Ct);
+        Assert.Empty(h.Deliverer.Outcomes);
+
+        /* A throwing re-arm delegate is isolated too. */
+        var e2 = new Harness().Build();
+        await e2.EvaluateCompressionJobsAsync(Stuck(1002), _ => throw new InvalidOperationException("boom"), Ct);
+    }
+
     /* ---------------- master switch ---------------- */
 
     [Fact]

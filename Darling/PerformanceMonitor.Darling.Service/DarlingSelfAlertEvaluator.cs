@@ -10,11 +10,13 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using PerformanceMonitor.Alerting;
+using PerformanceMonitor.Darling.Storage;
 using PerformanceMonitor.Notifications;
 
 namespace PerformanceMonitor.Darling.Service;
@@ -115,6 +117,26 @@ internal sealed class DarlingSelfAlertEvaluator
 
     /// <summary>The fixed key for the fleet-level Store Disk Pressure edge (not a real server).</summary>
     private const string DiskKey = "store";
+
+    /* Compression-job self-heal edge state (#1581). FLEET-level like disk pressure (one shared store), but
+       MULTI-keyed by job_id (a store has many compression policy jobs). The state is the re-arm-once/escalate
+       machine: ReArmed = detected + re-armed once this episode (a later still-stuck reading is a RE-HANG);
+       Escalated = re-hung after self-heal, or the re-arm itself failed — a human signal, so the service STOPS
+       re-arming and only re-fires the CRITICAL on cooldown. An entry is dropped (and a resolution row written)
+       when the job stops being stuck. Keyed by the CompressionKeyPrefix + job_id so the alert serverKey never
+       collides with a real server_id (an int hash) — the deliverer's #1236 int.TryParse override no-ops on it,
+       exactly like the non-numeric DiskKey. */
+    private enum CompressionJobHealth { ReArmed, Escalated }
+    private readonly ConcurrentDictionary<string, CompressionJobHealth> _compressionJobState = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTime> _lastCompressionJobAlert = new(StringComparer.Ordinal);
+
+    /// <summary>The alert metric name every compression-job self-alert fires under (first-detection + escalation
+    /// re-fires share it, so the deliverer's per-metric cooldown and the recovery resolution correlate cleanly;
+    /// escalation is distinguished by the message, not a second metric name).</summary>
+    private const string CompressionJobMetric = "Compression Job Stuck";
+
+    /// <summary>Prefixes the fleet-level compression-job alert serverKey so it never parses as a server_id.</summary>
+    private const string CompressionKeyPrefix = "compressjob:";
 
     /* Whether the service has successfully connected to this server at least once THIS process-run. Guards
        collection-stopped: unlike the Dashboard (whose target-side collection_log keeps filling regardless of
@@ -571,6 +593,161 @@ internal sealed class DarlingSelfAlertEvaluator
             await RecordResolutionAsync(new AlertResolution(
                 DiskKey, "Monitor Store", "Store Disk Pressure",
                 "Store Disk Pressure Resolved", "Monitor store volume free space recovered"), cancellationToken);
+        }
+    }
+
+    /* ---------------- compression-job self-heal (fleet-level, polled — #1581) ---------------- */
+
+    /// <summary>
+    /// The isolating entry point the worker's hourly compression-job health sweep calls — the fleet-level twin
+    /// of <see cref="EvaluateDiskPressureAsync"/>. Wraps <see cref="ApplyCompressionJobsStuckAsync"/> in the SAME
+    /// failure isolation the sibling store-alerts use, so a throwing seam — the pre-deliver mute check, or the
+    /// caller-supplied re-arm delegate — can never propagate out of the (otherwise un-guarded) collection sweep
+    /// loop and stop collection for the whole fleet. Cancellation still propagates.
+    /// </summary>
+    public async Task EvaluateCompressionJobsAsync(
+        IReadOnlyList<StuckCompressionJob> stuckJobs,
+        Func<long, Task<bool>> rearmAsync,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ApplyCompressionJobsStuckAsync(stuckJobs, rearmAsync, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Compression-job health self-alert failed: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Edge-applies the fleet-level compression-job self-heal machine (#1581) from the set of currently-stuck
+    /// compression jobs the worker detected. Per job, in one check:
+    /// <list type="bullet">
+    /// <item><b>First detection</b> — re-arm it ONCE (<paramref name="rearmAsync"/> → <c>alter_job</c>), then
+    /// FIRE a CRITICAL "self-healed" alert. If the re-arm itself fails (usually a permission problem the service
+    /// cannot fix), go straight to Escalated and FIRE an "auto-re-arm FAILED" alert instead — so we neither loop
+    /// alter_job nor stay silent.</item>
+    /// <item><b>Re-hang</b> (still stuck after a prior self-heal) — ESCALATE: FIRE a CRITICAL "re-hung after
+    /// self-heal" alert and STOP re-arming (looping alter_job on a job that re-hangs is a product-bug signal for
+    /// a human).</item>
+    /// <item><b>Already escalated</b> — never re-arm; re-fire the CRITICAL only on the alert cooldown.</item>
+    /// </list>
+    /// A job that is no longer stuck has RECOVERED: its state is dropped and one "Compression Job Recovered"
+    /// resolution row is written (the sibling conditions' edge shape). Gated on the master alerts switch.
+    /// Re-arm happens at most ONCE per job per check (only on the first-detection transition). Internal so it
+    /// pins directly with a recording deliverer, a controllable clock, and a fake re-arm delegate.
+    /// </summary>
+    internal async Task ApplyCompressionJobsStuckAsync(
+        IReadOnlyList<StuckCompressionJob> stuckJobs,
+        Func<long, Task<bool>> rearmAsync,
+        CancellationToken cancellationToken)
+    {
+        if (!_settings.AlertsEnabled)
+        {
+            return;
+        }
+
+        var now = _utcNow();
+        var stillStuck = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var job in stuckJobs)
+        {
+            var key = job.JobId.ToString(CultureInfo.InvariantCulture);
+            stillStuck.Add(key);
+
+            var label = string.IsNullOrEmpty(job.HypertableName)
+                ? $"compression job {key}"
+                : $"compression job {key} on {job.HypertableName}";
+
+            if (!_compressionJobState.TryGetValue(key, out var state))
+            {
+                /* First detection this episode: re-arm ONCE, then alert on the outcome. */
+                bool rearmed = await rearmAsync(job.JobId);
+                _lastCompressionJobAlert[key] = now;
+                if (rearmed)
+                {
+                    _compressionJobState[key] = CompressionJobHealth.ReArmed;
+                    await FireAsync(
+                        CompressionKeyPrefix + key, "Monitor Store", CompressionJobMetric,
+                        job.Reason, "running on schedule",
+                        detail: $"TimescaleDB {label} was stuck ({job.Reason}) and has been automatically re-armed " +
+                            "(alter_job next_start => now). A stuck compression policy halts the store's archival tier, so " +
+                            "uncompressed data grows without bound until the disk fills and collection stops for the WHOLE " +
+                            "fleet, and a headless service has no dashboard to warn you. If it re-hangs the service will " +
+                            "escalate and stop auto-re-arming — investigate the TimescaleDB background-worker health.",
+                        severity: AlertSeverityLevel.Critical,
+                        shortMessage: $"{label} was stuck — auto-re-armed", cancellationToken);
+                }
+                else
+                {
+                    /* The re-arm failed — usually the store login does not own the job. Treat as escalated so we
+                       never loop alter_job on it, and page: a human must re-arm it (or grant ownership). */
+                    _compressionJobState[key] = CompressionJobHealth.Escalated;
+                    await FireAsync(
+                        CompressionKeyPrefix + key, "Monitor Store", CompressionJobMetric,
+                        job.Reason, "running on schedule",
+                        detail: $"TimescaleDB {label} is stuck ({job.Reason}) and the service could NOT re-arm it — " +
+                            "alter_job failed, usually because the store login does not own the job. Compression is halted, " +
+                            "so the store will grow without bound until the disk fills. Re-arm it manually as the store owner " +
+                            "(SELECT alter_job(<job_id>, next_start => now())), or grant ownership, then investigate why it hung.",
+                        severity: AlertSeverityLevel.Critical,
+                        shortMessage: $"{label} stuck — auto-re-arm FAILED", cancellationToken);
+                }
+            }
+            else if (state == CompressionJobHealth.ReArmed)
+            {
+                /* Still stuck after last check's self-heal = a RE-HANG. Escalate and STOP re-arming (looping
+                   alter_job on a job that re-hangs just churns — it is a product-bug signal for a human). */
+                _compressionJobState[key] = CompressionJobHealth.Escalated;
+                _lastCompressionJobAlert[key] = now;
+                await FireAsync(
+                    CompressionKeyPrefix + key, "Monitor Store", CompressionJobMetric,
+                    job.Reason, "running on schedule",
+                    detail: $"TimescaleDB {label} is STILL stuck ({job.Reason}) after an automatic re-arm last cycle — it " +
+                        "re-hung, so the service has STOPPED auto-re-arming it. This is a product-bug signal: the compression " +
+                        "background worker is failing to make progress. Investigate the PostgreSQL/TimescaleDB logs and the " +
+                        "background-worker settings; compression stays halted until it is fixed.",
+                    severity: AlertSeverityLevel.Critical,
+                    shortMessage: $"{label} re-hung after self-heal — escalated", cancellationToken);
+            }
+            else
+            {
+                /* Already escalated: never re-arm again; keep paging on the cooldown while it stays stuck. */
+                if (CooldownElapsed(_lastCompressionJobAlert, key, now))
+                {
+                    _lastCompressionJobAlert[key] = now;
+                    await FireAsync(
+                        CompressionKeyPrefix + key, "Monitor Store", CompressionJobMetric,
+                        job.Reason, "running on schedule",
+                        detail: $"TimescaleDB {label} remains stuck ({job.Reason}) after escalation — still not compressing. " +
+                            "Manual intervention is required; the service will not auto-re-arm it.",
+                        severity: AlertSeverityLevel.Critical,
+                        shortMessage: $"{label} still stuck after escalation", cancellationToken);
+                }
+            }
+        }
+
+        /* Recovery: any job we were tracking that is no longer stuck has recovered — drop its state and write
+           one resolution row (the sibling conditions' edge shape). ToList() so the removal does not mutate the
+           collection under enumeration. */
+        foreach (var key in _compressionJobState.Keys.ToList())
+        {
+            if (stillStuck.Contains(key))
+            {
+                continue;
+            }
+
+            _compressionJobState.TryRemove(key, out _);
+            _lastCompressionJobAlert.TryRemove(key, out _);
+            await RecordResolutionAsync(new AlertResolution(
+                CompressionKeyPrefix + key, "Monitor Store", CompressionJobMetric,
+                "Compression Job Recovered",
+                $"TimescaleDB compression job {key} is running on schedule again"), cancellationToken);
         }
     }
 

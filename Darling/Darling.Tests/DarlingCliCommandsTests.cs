@@ -104,6 +104,101 @@ public sealed class DarlingCliCommandsTests
 }
 
 /// <summary>
+/// The #1581 startup-argument classification (Fix B): the pure <see cref="DarlingCliCommands.ClassifyStartupArgs"/>
+/// decision and the verb-recognition helpers it composes. The incident was <c>Service.exe --version</c> falling
+/// through into a real service startup and spawning a second instance — so the contract these pin is: only no-arg
+/// or a RECOGNIZED verb reaches the host; <c>--version</c>/<c>--help</c> print + exit; ANYTHING else is an unknown
+/// option that must NOT start the host.
+/// </summary>
+public sealed class DarlingStartupArgsTests
+{
+    [Theory]
+    [InlineData("--version", true)]
+    [InlineData("-v", true)]
+    [InlineData("--VERSION", true)]
+    [InlineData("-V", true)]
+    [InlineData("--help", false)]
+    [InlineData("--nonsense", false)]
+    public void IsVersionVerb_RecognizesVersionFlags_CaseInsensitive(string arg, bool expected) =>
+        Assert.Equal(expected, DarlingCliCommands.IsVersionVerb(arg));
+
+    [Theory]
+    [InlineData("--help", true)]
+    [InlineData("-h", true)]
+    [InlineData("-?", true)]
+    [InlineData("/?", true)]
+    [InlineData("--HELP", true)]
+    [InlineData("--version", false)]
+    [InlineData("--nonsense", false)]
+    public void IsHelpVerb_RecognizesHelpFlags_CaseInsensitive(string arg, bool expected) =>
+        Assert.Equal(expected, DarlingCliCommands.IsHelpVerb(arg));
+
+    [Theory]
+    [InlineData("--encrypt-password", true)]
+    [InlineData("--test-connection", true)]
+    [InlineData("--validate-config", true)]
+    [InlineData("--print-viewer-connection", true)]
+    [InlineData("--configure-network", true)]
+    [InlineData("--version", false)]   // its own classification, not a "known verb"
+    [InlineData("--help", false)]
+    [InlineData("--nonsense", false)]
+    public void IsKnownVerb_CoversEveryDispatchedVerb(string arg, bool expected) =>
+        Assert.Equal(expected, DarlingCliCommands.IsKnownVerb(arg));
+
+    [Fact]
+    public void ClassifyStartupArgs_NoArgs_StartsHost()
+    {
+        Assert.Equal(StartupAction.StartHost, DarlingCliCommands.ClassifyStartupArgs(Array.Empty<string>()));
+        Assert.Equal(StartupAction.StartHost, DarlingCliCommands.ClassifyStartupArgs(null));
+    }
+
+    [Theory]
+    [InlineData("--version", StartupAction.PrintVersion)]
+    [InlineData("-v", StartupAction.PrintVersion)]
+    [InlineData("--help", StartupAction.PrintHelp)]
+    [InlineData("-h", StartupAction.PrintHelp)]
+    [InlineData("--encrypt-password", StartupAction.RunKnownVerb)]
+    [InlineData("--test-connection", StartupAction.RunKnownVerb)]
+    [InlineData("--configure-network", StartupAction.RunKnownVerb)]
+    [InlineData("--version-bogus", StartupAction.UnknownOption)]
+    [InlineData("--nonsense", StartupAction.UnknownOption)]
+    [InlineData("/install", StartupAction.UnknownOption)]
+    public void ClassifyStartupArgs_ClassifiesFirstArg(string arg, StartupAction expected) =>
+        Assert.Equal(expected, DarlingCliCommands.ClassifyStartupArgs(new[] { arg }));
+
+    [Fact]
+    public void ClassifyStartupArgs_UsesOnlyTheFirstArg()
+    {
+        /* Extra args after a recognized first arg do not change the classification. */
+        Assert.Equal(StartupAction.PrintVersion, DarlingCliCommands.ClassifyStartupArgs(new[] { "--version", "extra" }));
+        Assert.Equal(StartupAction.RunKnownVerb, DarlingCliCommands.ClassifyStartupArgs(new[] { "--test-connection", "cfg.json" }));
+    }
+
+    [Fact]
+    public void ProductVersion_IsNonEmpty_AndStripsBuildMetadata()
+    {
+        var version = DarlingCliCommands.ProductVersion();
+        Assert.False(string.IsNullOrWhiteSpace(version));
+        /* Any SemVer +build metadata is stripped for a clean --version line. */
+        Assert.DoesNotContain('+', version);
+        /* The leading component parses as a version (e.g. "3.1.0"). */
+        Assert.NotNull(System.Version.Parse(version.Split('-', '+')[0]));
+    }
+
+    [Fact]
+    public void UsageText_ListsTheKeyVerbs_AndIsAscii()
+    {
+        var usage = DarlingCliCommands.UsageText();
+        Assert.Contains("--version", usage, StringComparison.Ordinal);
+        Assert.Contains("--help", usage, StringComparison.Ordinal);
+        Assert.Contains("--test-connection", usage, StringComparison.Ordinal);
+        Assert.Contains("--encrypt-password", usage, StringComparison.Ordinal);
+        Assert.Contains("--configure-network", usage, StringComparison.Ordinal);
+        Assert.All(usage, ch => Assert.True(ch < 128, $"usage text must be ASCII; found U+{(int)ch:X4}"));
+    }
+}
+
+/// <summary>
 /// The <c>--print-viewer-connection</c> verb (darling-network-endpoints D8): the pure connection-string /
 /// host builders (unit-testable without DPAPI or a store), plus a Windows-gated end-to-end that decrypts a
 /// temp <c>viewer</c> credential + emits the cert, asserting the paste-ready shape and the live-secret warning.
