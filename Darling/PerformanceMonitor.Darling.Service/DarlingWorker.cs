@@ -102,6 +102,18 @@ public sealed class DarlingWorker : BackgroundService
     internal const int MaxConcurrentServerSweeps = 4;
 
     /// <summary>
+    /// #1581 cold-start launch-spread window (seconds). On a service restart the whole fleet's FIRST sweep bodies
+    /// would otherwise launch in a single 15s tick and queue behind the <see cref="MaxConcurrentServerSweeps"/>
+    /// gate, so the ones that waited past 60s logged "collection body has not completed after 60s" en masse (the
+    /// field herd: 366 warnings over ~10 min, nothing actually broken — 0 collector errors, data landed). Each
+    /// server's first launch is deferred by a deterministic per-server offset in [0, ColdStartSpreadSeconds); 150s
+    /// mirrors the fixed post-connect analysis-phase window (<see cref="CadencePhaseOffset"/>) so no new tuning
+    /// knob is introduced. Distinct from the per-collector #1575 seed jitter, which staggers WHICH collectors are
+    /// due once a body runs, not WHEN the heavyweight connect body itself launches. A drift tripwire pins it.
+    /// </summary>
+    internal const int ColdStartSpreadSeconds = 150;
+
+    /// <summary>
     /// The working-set launch-guard threshold, as a fraction of available memory (#1556). Pinned by a test
     /// (a drift tripwire): the launch guard is the fleet-level backstop against the commit-limit exhaustion
     /// the field incident hit, so its threshold must not silently drift.
@@ -321,6 +333,16 @@ public sealed class DarlingWorker : BackgroundService
         public Task? InFlightSweep { get; set; }
         public DateTime SweepStartedUtc { get; set; }
         public bool WarnedThisEpisode { get; set; }
+
+        /* #1581 cold-start stagger: the earliest UTC this server's FIRST post-startup sweep body may launch —
+           the captured startup instant plus a deterministic per-server CadencePhaseOffset capped at
+           ColdStartSpreadSeconds — so a service restart does not launch every server's initial catch-up body in
+           one tick and slam the N=4 gate (the field herd that logged "collection body has not completed after
+           60s" en masse). Seeded ONCE at construction for the initial fleet (single-threaded startup) and read
+           only by the OUTER launch loop; a reconcile-ADDED server keeps the MinValue default and launches
+           promptly (a single add is not a herd). Gates ONLY the first launch (InFlightSweep still null), so
+           steady-state cadence is untouched. */
+        public DateTime FirstSweepDueUtc { get; set; } = DateTime.MinValue;
 
         /* Retired containment (#1553 D1): set TRUE (write-once) by the reconcile-remove branch when this server
            is disabled/deleted, alongside Runtime=null and _selfAlerts.Forget. A body launched — or gate-queued —
@@ -562,9 +584,20 @@ public sealed class DarlingWorker : BackgroundService
            default true keeps every SKU collecting Object DDL; set false to silence a benchmark box's flood. */
         var runner = new DarlingCollectorRunner(postgres, deltas, _logger, () => config.CapturePlans, () => config.CollectSchemaChangeEvents);
         var servers = new List<ServerLoopState>();
+        /* #1581 cold-start stagger: capture ONE startup instant so every initial server's first-sweep offset is
+           measured from the same base — the deterministic per-server ColdStartFirstSweepDue then spreads the
+           fleet's FIRST catch-up bodies across ColdStartSpreadSeconds instead of launching all of them in a
+           single sweep tick and slamming the N=4 gate (the field herd). Reconcile-ADDED servers below keep the
+           MinValue default and launch promptly. */
+        var coldStartInstant = DateTime.UtcNow;
         foreach (var server in initialServers)
         {
-            servers.Add(new ServerLoopState { Config = server });
+            servers.Add(new ServerLoopState
+            {
+                Config = server,
+                FirstSweepDueUtc = ColdStartFirstSweepDue(
+                    coldStartInstant, ServerIdHelper.GetDeterministicHashCode(server.StorageName)),
+            });
         }
 
         /* Phase-5 slice D: the shared alert engine, wired to the PG-backed stores (V3) and the
@@ -757,6 +790,19 @@ public sealed class DarlingWorker : BackgroundService
                 if (!mayLaunchSweeps)
                 {
                     break;
+                }
+
+                /* #1581 cold-start stagger: hold this server's FIRST sweep body (InFlightSweep still null) until
+                   its deterministic per-server offset elapses, so a service restart does not launch all N
+                   servers' initial catch-up bodies in ONE tick — the field herd where 24 servers stamped
+                   SweepStartedUtc together, queued behind the N=4 gate, and every one that waited past 60s logged
+                   "collection body has not completed after 60s". The offset is bounded by ColdStartSpreadSeconds,
+                   so no first launch is deferred beyond that window; once a body has launched (InFlightSweep
+                   non-null) this no longer applies, so the relaunch path below and steady-state cadence are
+                   untouched. A reconcile-added server has FirstSweepDueUtc == MinValue and launches immediately. */
+                if (server.InFlightSweep is null && DateTime.UtcNow < server.FirstSweepDueUtc)
+                {
+                    continue;
                 }
 
                 if (server.InFlightSweep is { IsCompleted: false })
@@ -1326,6 +1372,22 @@ public sealed class DarlingWorker : BackgroundService
     /// </summary>
     internal static TimeSpan SeedJitter(int serverId, int frequencySeconds)
         => CadencePhaseOffset(serverId, Math.Min(frequencySeconds, 150));
+
+    /// <summary>
+    /// The #1581 cold-start launch time for one server's FIRST post-startup sweep body: the captured
+    /// <paramref name="coldStartInstant"/> plus a deterministic per-server <see cref="CadencePhaseOffset"/> capped
+    /// at <see cref="ColdStartSpreadSeconds"/>. Spreads the fleet's initial catch-up across that small window so a
+    /// service restart does not launch all N servers' first bodies in ONE sweep tick and slam the N=4 gate — the
+    /// field herd where the queued bodies crossed 60s and logged "collection body has not completed after 60s" en
+    /// masse (nothing broken, but 366 spurious warnings over ~10 min). Distinct from the per-collector #1575 seed
+    /// jitter (<see cref="SeedJitter"/> / <see cref="ComputeSeededNextDue"/>), which staggers WHICH collectors are
+    /// due once a body runs but not WHEN the heavyweight connect body itself launches — so cold start still
+    /// herded. Pure and restart-stable (a function of the id, no <see cref="Random"/>) so a unit test can pin the
+    /// spread + bound; applied ONLY to the initial fleet's first launch, never the steady-state advance. Internal
+    /// so a unit test can pin its shape.
+    /// </summary>
+    internal static DateTime ColdStartFirstSweepDue(DateTime coldStartInstant, int serverId)
+        => coldStartInstant.Add(CadencePhaseOffset(serverId, ColdStartSpreadSeconds));
 
     /// <summary>
     /// The pure #1575 seed policy for one collector's first post-connect / newly-enabled due time, decided from
