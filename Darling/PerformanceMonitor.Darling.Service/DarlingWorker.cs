@@ -75,6 +75,11 @@ public sealed class DarlingWorker : BackgroundService
        run it on the 30-second alert sweep. */
     private static readonly TimeSpan s_diskCheckInterval = TimeSpan.FromMinutes(5);
 
+    /* The compression-job self-heal check's cadence (fleet-level, #1581). Compression is a slow archival tier
+       and a stuck policy job takes hours to matter, so hourly is ample and cheap (one job_stats read + at most
+       one alter_job per stuck job) — no need for the 15s sweep or the 30s alert cadence. */
+    private static readonly TimeSpan s_compressionCheckInterval = TimeSpan.FromHours(1);
+
     /* The analysis pipeline's per-run budget — Lite's App default hardcoded (AnalysisTimeoutSeconds
        120; not a control-plane knob). The CADENCE (interval), the enabled gate, and the notify gate
        are now control-plane knobs read live from config.Analysis (config_alert_settings' analysis
@@ -225,6 +230,11 @@ public sealed class DarlingWorker : BackgroundService
     /* MinValue = the first sweep after startup evaluates the store disk-pressure self-alert, then every
        s_diskCheckInterval. Fleet-level (one shared store), so it is a single field, not per-server. */
     private DateTime _nextDiskCheckUtc = DateTime.MinValue;
+
+    /* MinValue = the first sweep after startup evaluates the compression-job self-heal check (#1581), then
+       every s_compressionCheckInterval. Fleet-level (one shared store), so it is a single field, not
+       per-server; only consulted when _timescaleAvailable. */
+    private DateTime _nextCompressionCheckUtc = DateTime.MinValue;
 
     /* Fleet-level working-set launch-guard latch (#1556): true once ShouldLaunchSweeps has tripped this
        episode, so its CRITICAL log is emitted ONCE rather than every sweep (the WarnedThisEpisode idiom —
@@ -821,6 +831,16 @@ public sealed class DarlingWorker : BackgroundService
             {
                 _nextDiskCheckUtc = DateTime.UtcNow.Add(s_diskCheckInterval);
                 await EvaluateStoreDiskPressureAsync(config, stoppingToken);
+            }
+
+            /* #1581: the compression-job self-heal backstop. TimescaleDB compression policy jobs can silently
+               die (next_start = -infinity) or hang, halting the store's archival tier so uncompressed data grows
+               without bound until the disk fills and collection stops for the WHOLE fleet (the field incident).
+               Timescale-only; own hourly cadence; failure-isolated inside EvaluateCompressionJobHealthAsync. */
+            if (_timescaleAvailable && DateTime.UtcNow >= _nextCompressionCheckUtc)
+            {
+                _nextCompressionCheckUtc = DateTime.UtcNow.Add(s_compressionCheckInterval);
+                await EvaluateCompressionJobHealthAsync(stoppingToken);
             }
 
             try
@@ -1599,6 +1619,37 @@ LIMIT 1", connection);
         {
             _logger.LogDebug("Store disk-pressure check: could not read pg_database_size: {Message}", ex.Message);
             return null;
+        }
+    }
+
+    /// <summary>
+    /// The #1581 compression-job self-heal check (fleet-level, hourly, Timescale-only): read every stuck
+    /// COMPRESSION-policy job (<see cref="TimescaleSupport.ReadStuckCompressionJobsAsync"/>) and hand them to the
+    /// self-alert evaluator's re-arm-once/escalate machine, wired to <see cref="TimescaleSupport.TryRearmJobAsync"/>
+    /// on the SAME open connection. One stuck job whose <c>next_start</c> went <c>-infinity</c> silently halts the
+    /// store's archival tier — the field incident — so this makes it visible AND self-heals it. Failure-isolated
+    /// at the worker level too (the connection open is OUTSIDE the evaluator's own isolation): a store hiccup logs
+    /// and skips this check, never aborting the sweep — mirroring the purge / disk-check isolation.
+    /// </summary>
+    private async Task EvaluateCompressionJobHealthAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = await _postgres!.OpenConnectionAsync(cancellationToken);
+            var stuckJobs = await TimescaleSupport.ReadStuckCompressionJobsAsync(
+                connection, DateTime.UtcNow, _logger, cancellationToken);
+            await _selfAlerts!.EvaluateCompressionJobsAsync(
+                stuckJobs,
+                jobId => TimescaleSupport.TryRearmJobAsync(connection, jobId, _logger, cancellationToken),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            /* Shutdown — quiet and expected. */
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("Compression-job health check failed: {Message}", ex.Message);
         }
     }
 

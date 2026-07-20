@@ -14,9 +14,38 @@ using Microsoft.Extensions.Logging;
 using PerformanceMonitor.Darling.Service;
 using PerformanceMonitor.Darling.Service.Mcp;
 
+/* #1581: classify the FIRST argument before anything else. Only a no-arg invocation (StartHost — how the
+   Windows Service Control Manager starts the exe) or a RECOGNIZED verb reaches the host; --version/--help
+   print and exit 0; an UNKNOWN option prints usage to stderr and exits NON-ZERO without starting the host.
+   The incident: `Service.exe --version` used to fall through into a real service startup and spawn a second
+   instance that fought the first over the bundled PostgreSQL and ports — the outage. The recognized-verb
+   dispatch below is unchanged; it only runs for the RunKnownVerb / StartHost fall-through. */
+switch (DarlingCliCommands.ClassifyStartupArgs(args))
+{
+    case StartupAction.PrintVersion:
+        Console.WriteLine(DarlingCliCommands.ProductVersion());
+        return 0;
+
+    case StartupAction.PrintHelp:
+        Console.WriteLine(DarlingCliCommands.UsageText());
+        return 0;
+
+    case StartupAction.UnknownOption:
+        Console.Error.WriteLine($"Unknown option: {args[0]}");
+        Console.Error.WriteLine();
+        Console.Error.WriteLine(DarlingCliCommands.UsageText());
+        return 1;
+
+    case StartupAction.RunKnownVerb:
+    case StartupAction.StartHost:
+    default:
+        /* Fall through to the recognized-verb dispatch (RunKnownVerb) or the host build (StartHost). */
+        break;
+}
+
 /* CLI verb: encrypt a SQL-auth password for darling.json. Reads from stdin (not an argument,
    so the plaintext never lands in shell history) and prints the DPAPI-LocalMachine blob. */
-if (args.Length > 0 && string.Equals(args[0], "--encrypt-password", StringComparison.OrdinalIgnoreCase))
+if (args.Length > 0 && DarlingCliCommands.IsEncryptPasswordVerb(args[0]))
 {
     if (!OperatingSystem.IsWindows())
     {
@@ -132,5 +161,46 @@ builder.Services.AddHostedService<DarlingMcpHostService>();
    darling.json's web.enabled (default OFF), same config-free posture as the worker and MCP host. */
 builder.Services.AddHostedService<DarlingWebHostService>();
 
-builder.Build().Run();
-return 0;
+var host = builder.Build();
+
+/* #1581 single-instance guard: acquire a system-wide named mutex BEFORE running the host (Build() only
+   constructs the DI graph; Run() is what starts the worker and touches Postgres). If another instance
+   already holds it, log and exit non-zero WITHOUT starting — a second instance would fight the first over
+   the bundled PostgreSQL shared-memory segment and the MCP/web ports (the ~7.5h outage). Windows-only: the
+   Global\ namespace and the shared-memory fight are Windows concerns, and the managed-Postgres bootstrap
+   already fail-closes on non-Windows — matching how the codebase gates Windows behavior. The guard is
+   acquired and released on THIS (main) thread, around the blocking host.Run(), honoring the mutex's thread
+   affinity. */
+SingleInstanceGuard? instanceGuard = null;
+if (OperatingSystem.IsWindows())
+{
+    var startupLogger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("SingleInstance");
+    instanceGuard = SingleInstanceGuard.TryAcquire(SingleInstanceGuard.ServiceMutexName);
+    if (!instanceGuard.Owns)
+    {
+        startupLogger.LogCritical(
+            "Another PerformanceMonitor Darling service instance already holds the single-instance lock ({Mutex}) — exiting without starting a second instance (a second instance would fight the first over the bundled PostgreSQL and the MCP/web ports).",
+            SingleInstanceGuard.ServiceMutexName);
+        instanceGuard.Dispose();
+        /* Run() disposes the host on the normal path; we are skipping Run(), so dispose it ourselves. */
+        host.Dispose();
+        return 4;
+    }
+
+    if (instanceGuard.WasAbandoned)
+    {
+        startupLogger.LogWarning(
+            "Acquired the single-instance lock ({Mutex}) left abandoned by a previous instance that exited without a clean shutdown — continuing startup.",
+            SingleInstanceGuard.ServiceMutexName);
+    }
+}
+
+try
+{
+    host.Run();
+    return 0;
+}
+finally
+{
+    instanceGuard?.Dispose();
+}

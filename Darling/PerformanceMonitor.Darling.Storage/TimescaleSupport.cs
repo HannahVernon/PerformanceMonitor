@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -362,4 +363,184 @@ public static class TimescaleSupport
             return false;
         }
     }
+
+    /* ---------------- compression-job self-heal (#1581) ---------------- */
+
+    /// <summary>
+    /// The parameterized re-arm statement (#1581): reschedule a background job to run immediately, which
+    /// un-sticks a job whose <c>next_start</c> has become <c>-infinity</c> (the scheduler will never re-fire
+    /// it otherwise — the field-incident root cause). The job_id is ALWAYS bound as <c>$1</c>, never
+    /// interpolated (a bound integer, but the discipline is uniform with DarlingRetention's parameterized
+    /// paths); <c>now()</c> is SQL, not a value.
+    /// </summary>
+    public const string RearmJobSql = "SELECT alter_job($1, next_start => now())";
+
+    /* The stuck-Running bound floor: a compression run on a single day-chunk of 1-minute-cadence data
+       finishes in seconds-to-minutes, so a run still 'Running' past this floor (when it dominates
+       2x the schedule interval) has hung. Kept generous so a genuinely long first-compression of a
+       large adopted store is not false-flagged; next_start = -infinity (the dominant failure mode) is
+       caught immediately regardless of this. */
+    private static readonly TimeSpan s_stuckRunningFloor = TimeSpan.FromHours(2);
+
+    /// <summary>
+    /// The stuck-<c>Running</c> bound: <c>max(2x the schedule interval, a floor)</c>. A run legitimately in
+    /// progress finishes well within twice its own cadence; crossing this bound means it hung. A missing or
+    /// non-positive schedule interval falls back to the floor. Pure so the predicate pins directly.
+    /// </summary>
+    public static TimeSpan StuckRunningBound(TimeSpan? scheduleInterval)
+    {
+        if (scheduleInterval is TimeSpan interval && interval > TimeSpan.Zero)
+        {
+            var twice = interval + interval;
+            return twice > s_stuckRunningFloor ? twice : s_stuckRunningFloor;
+        }
+
+        return s_stuckRunningFloor;
+    }
+
+    /// <summary>
+    /// The pure stuck-compression-job decision (#1581). A compression policy job is STUCK when either:
+    /// <list type="bullet">
+    /// <item>its <c>next_start</c> is <c>-infinity</c> — the scheduler will NEVER re-fire it (the dead-job
+    /// bug that let uncompressed data grow without bound until the disk filled), or</item>
+    /// <item>it has been in the <c>Running</c> state since a <c>last_run_started_at</c> older than
+    /// <see cref="StuckRunningBound"/> — a run that began long ago and never finished (a hung run).</item>
+    /// </list>
+    /// A job with neither condition is healthy and is NOT flagged. No I/O, so it pins directly with a
+    /// controllable clock. Scoping to compression jobs happens in the query — this decides only "stuck".
+    /// </summary>
+    public static bool IsCompressionJobStuck(
+        bool nextStartIsNegativeInfinity,
+        string? jobStatus,
+        DateTime? lastRunStartedAtUtc,
+        TimeSpan? scheduleInterval,
+        DateTime nowUtc,
+        out string reason)
+    {
+        if (nextStartIsNegativeInfinity)
+        {
+            reason = "next_start is -infinity — the scheduler will never run it again";
+            return true;
+        }
+
+        if (string.Equals(jobStatus, "Running", StringComparison.OrdinalIgnoreCase)
+            && lastRunStartedAtUtc is DateTime startedUtc)
+        {
+            var bound = StuckRunningBound(scheduleInterval);
+            var elapsed = nowUtc - startedUtc;
+            if (elapsed > bound)
+            {
+                reason = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "stuck in the Running state for {0:F0} minutes (over the {1:F0}-minute bound) — the run hung and never finished",
+                    elapsed.TotalMinutes, bound.TotalMinutes);
+                return true;
+            }
+        }
+
+        reason = "";
+        return false;
+    }
+
+    /// <summary>
+    /// Reads every COMPRESSION-policy background job (<c>proc_name</c> is <c>policy_compression</c>, or the
+    /// 2.18+ columnstore rebrand's name — the same tolerant LIKE the compression test uses) and returns the
+    /// ones the pure <see cref="IsCompressionJobStuck"/> predicate flags as stuck. The <c>-infinity</c> test
+    /// runs IN SQL (so it never depends on Npgsql's infinity-to-DateTime conversion setting); the
+    /// stuck-Running bound is computed in C# from the raw fields. Scoped to compression jobs ONLY — retention,
+    /// continuous-aggregate refresh, reorder, and every other job type are untouched. Failure-isolated: a
+    /// store hiccup, or the views being absent (a plain-PostgreSQL store — the caller also gates on the
+    /// extension), yields an empty list and a Debug line, never a throw.
+    /// </summary>
+    public static async Task<IReadOnlyList<StuckCompressionJob>> ReadStuckCompressionJobsAsync(
+        NpgsqlConnection connection, DateTime nowUtc, ILogger? logger, CancellationToken cancellationToken = default)
+    {
+        if (connection is null)
+        {
+            throw new ArgumentNullException(nameof(connection));
+        }
+
+        var stuck = new List<StuckCompressionJob>();
+        try
+        {
+            using var command = new NpgsqlCommand(@"
+SELECT
+    js.job_id,
+    (js.next_start = '-infinity'::timestamptz)  AS next_start_neg_infinity,
+    js.job_status,
+    js.last_run_started_at,
+    EXTRACT(EPOCH FROM j.schedule_interval)     AS schedule_interval_seconds,
+    j.hypertable_name
+FROM timescaledb_information.job_stats AS js
+JOIN timescaledb_information.jobs      AS j USING (job_id)
+WHERE j.proc_name LIKE '%compression%'
+   OR j.proc_name LIKE '%columnstore%'", connection);
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                long jobId = Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
+                bool negInfinity = !reader.IsDBNull(1) && reader.GetBoolean(1);
+                string? jobStatus = reader.IsDBNull(2) ? null : reader.GetString(2);
+                DateTime? lastRunStartedAt = reader.IsDBNull(3)
+                    ? null
+                    : DateTime.SpecifyKind(reader.GetDateTime(3), DateTimeKind.Utc);
+                TimeSpan? scheduleInterval = reader.IsDBNull(4)
+                    ? null
+                    : TimeSpan.FromSeconds(Convert.ToDouble(reader.GetValue(4), CultureInfo.InvariantCulture));
+                string? hypertable = reader.IsDBNull(5) ? null : reader.GetString(5);
+
+                if (IsCompressionJobStuck(negInfinity, jobStatus, lastRunStartedAt, scheduleInterval, nowUtc, out var reason))
+                {
+                    stuck.Add(new StuckCompressionJob(jobId, hypertable, reason));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            /* The views are absent (a plain-PG store or the extension was removed) or the store hiccuped —
+               no signal this check. The caller already gates on the extension; this is belt-and-suspenders. */
+            logger?.LogDebug("Compression-job health check: could not read job stats: {Message}", ex.Message);
+        }
+
+        return stuck;
+    }
+
+    /// <summary>
+    /// Re-arms one stuck background job via the parameterized <see cref="RearmJobSql"/> (job_id BOUND). Returns
+    /// true when <c>alter_job</c> succeeds; false (logged once, no throw) when it fails — most often because the
+    /// store login does not OWN the job (a least-privilege bring-your-own store), which the service cannot fix
+    /// itself. Cancellation propagates; every other failure degrades so a single un-re-armable job can never
+    /// crash the health check or the sweep.
+    /// </summary>
+    public static async Task<bool> TryRearmJobAsync(
+        NpgsqlConnection connection, long jobId, ILogger? logger, CancellationToken cancellationToken = default)
+    {
+        if (connection is null)
+        {
+            throw new ArgumentNullException(nameof(connection));
+        }
+
+        try
+        {
+            using var command = new NpgsqlCommand(RearmJobSql, connection);
+            command.Parameters.AddWithValue(jobId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(
+                "Could not re-arm compression job {JobId} via alter_job (often a permission issue — the store login must own the job): {Message}",
+                jobId, ex.Message);
+            return false;
+        }
+    }
 }
+
+/// <summary>
+/// A COMPRESSION-policy background job that <see cref="TimescaleSupport.ReadStuckCompressionJobsAsync"/> flagged
+/// as stuck (#1581): its immutable <c>job_id</c>, the hypertable it compresses (for a friendlier alert label —
+/// may be null on an odd catalog), and the human-readable reason the pure predicate produced.
+/// </summary>
+public sealed record StuckCompressionJob(long JobId, string? HypertableName, string Reason);
