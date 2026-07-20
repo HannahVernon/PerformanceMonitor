@@ -611,25 +611,30 @@ ORDER BY e.database_name;", connection);
                 // sys.dm_os_sys_info, so a permission-starved Azure SQL DB login still returns
                 // EngineEdition 5 and is correctly rejected below instead of mis-detected as
                 // on-prem (#1535).
-                using var command = new SqlCommand(DetectionQueryText, connection);
-                command.CommandTimeout = ConnectionCheckTimeoutSeconds;
-
-                using var reader = await command.ExecuteReaderAsync();
-                status.IsOnline = true;
-                status.ErrorMessage = null;
-                if (await reader.ReadAsync())
+                // Scope the detection command + reader in their own block so BOTH are disposed before the
+                // best-effort start-time read below opens a second reader on this connection - Dashboard
+                // connection strings do not enable MARS, so an overlapping reader would throw (#1535).
+                using (var command = new SqlCommand(DetectionQueryText, connection))
                 {
-                    if (!reader.IsDBNull(0))
+                    command.CommandTimeout = ConnectionCheckTimeoutSeconds;
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    status.IsOnline = true;
+                    status.ErrorMessage = null;
+                    if (await reader.ReadAsync())
                     {
-                        status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(0));
-                    }
-                    if (!reader.IsDBNull(1))
-                    {
-                        status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(1));
-                    }
-                    if (!reader.IsDBNull(2))
-                    {
-                        status.IsAwsRds = Convert.ToInt32(reader.GetValue(2)) == 1;
+                        if (!reader.IsDBNull(0))
+                        {
+                            status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(0));
+                        }
+                        if (!reader.IsDBNull(1))
+                        {
+                            status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(1));
+                        }
+                        if (!reader.IsDBNull(2))
+                        {
+                            status.IsAwsRds = Convert.ToInt32(reader.GetValue(2)) == 1;
+                        }
                     }
                 }
 
