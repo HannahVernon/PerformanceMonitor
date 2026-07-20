@@ -54,17 +54,21 @@ public sealed class ServerRuntime
 /// </summary>
 public static class DarlingServerConnector
 {
-    /* Verbatim from Lite's ServerManager metadata check. */
+    /* The scalar detection query - verbatim (modulo whitespace) from Lite's ServerManager
+       connectivity check. Deliberately NO FROM sys.dm_os_sys_info: that DMV requires VIEW DATABASE
+       STATE, which an Azure SQL DB monitoring login often lacks, so edition detection must not
+       depend on it (#1535). sqlserver_start_time - the one column that needs the DMV - is not read
+       here (the service never surfaces a start time), so unlike Lite/Dashboard no best-effort
+       start-time read is needed. Columns: 0 sql_version, 1 major_version, 2 utc_offset,
+       3 engine_edition, 4 is_aws_rds, 5 has_msdb_access. */
     public const string DetectionQueryText = @"
 SELECT
-    sqlserver_start_time,
     @@VERSION AS sql_version,
     CONVERT(integer, SERVERPROPERTY('ProductMajorVersion')) AS major_version,
     DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
     CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
     CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds,
-    HAS_DBACCESS(N'msdb') AS has_msdb_access
-FROM sys.dm_os_sys_info";
+    HAS_DBACCESS(N'msdb') AS has_msdb_access";
 
     public static string ResolveConnectionString(MonitoredServer config, ILogger? logger = null)
     {
@@ -104,10 +108,12 @@ FROM sys.dm_os_sys_info";
         bool isAwsRds = false, hasMsdbAccess = true;
         if (await reader.ReadAsync(cancellationToken))
         {
-            majorVersion = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
-            engineEdition = reader.IsDBNull(4) ? 0 : reader.GetInt32(4);
-            isAwsRds = !reader.IsDBNull(5) && reader.GetInt32(5) == 1;
-            hasMsdbAccess = reader.IsDBNull(6) || reader.GetInt32(6) == 1;
+            // Column indices per DetectionQueryText: 1 major_version, 3 engine_edition,
+            // 4 is_aws_rds, 5 has_msdb_access (sqlserver_start_time was dropped in #1535).
+            majorVersion = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+            engineEdition = reader.IsDBNull(3) ? 0 : reader.GetInt32(3);
+            isAwsRds = !reader.IsDBNull(4) && reader.GetInt32(4) == 1;
+            hasMsdbAccess = reader.IsDBNull(5) || reader.GetInt32(5) == 1;
         }
 
         return new ServerRuntime

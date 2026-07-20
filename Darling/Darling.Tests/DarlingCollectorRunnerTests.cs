@@ -39,7 +39,14 @@ public sealed class DarlingCollectorRunnerTests
         Assert.Contains("SERVERPROPERTY('EngineEdition')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
         Assert.Contains("DB_ID('rdsadmin')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
         Assert.Contains("HAS_DBACCESS(N'msdb')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
-        Assert.Contains("FROM sys.dm_os_sys_info", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+
+        // #1535: edition detection must NOT depend on sys.dm_os_sys_info. On Azure SQL DB that DMV
+        // requires VIEW DATABASE STATE; a monitoring login without it made the whole probe throw and
+        // silently mis-detect Azure as on-prem (EngineEdition left 0). The detection query is now
+        // permission-free scalars only - no DMV, and no sqlserver_start_time (its one DMV-bound column,
+        // which the service never surfaced).
+        Assert.DoesNotContain("dm_os_sys_info", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("sqlserver_start_time", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
     }
 
     /// <summary>
