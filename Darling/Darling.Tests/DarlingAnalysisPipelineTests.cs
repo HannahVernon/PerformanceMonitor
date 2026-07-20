@@ -210,7 +210,7 @@ public sealed class DarlingAnalysisPipelineTests
         /* any_value() is standard SQL:2023, in Postgres since 16 (product minimum PG is 17).
            It is deliberate in the plan-regression re-detection and nowhere else — the same
            confinement the fact collector pins for its PlanRegressionSql. */
-        Assert.Contains("any_value(query_plan_hash)", PgDrillDownCollector.RegressedQueriesSql, StringComparison.Ordinal);
+        Assert.Contains("any_value(query_text)", PgDrillDownCollector.RegressedQueriesSql, StringComparison.Ordinal);
         foreach (var sql in PgDrillDownCollector.AllSql)
         {
             if (sql.Contains("any_value", StringComparison.OrdinalIgnoreCase))
