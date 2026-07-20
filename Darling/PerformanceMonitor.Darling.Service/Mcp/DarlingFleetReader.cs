@@ -55,9 +55,12 @@ internal static class DarlingFleetReader
 
     /// <summary>The enabled fleet — the servers the roll-up cards cover, from the registry the worker upserts on
     /// each first connect (the same source <c>DarlingServerResolver</c> resolves against, so every card is
-    /// drillable via <c>/api/read/{tool}?server=</c>). $ none.</summary>
+    /// drillable via <c>/api/read/{tool}?server=</c>). <c>sql_engine_edition</c> is the raw probed
+    /// SERVERPROPERTY('EngineEdition') the worker stamped on connect (5 = Azure SQL DB, 8 = Azure MI, box
+    /// editions otherwise), the reliable per-server platform signal the composer's D4 auto-greying keys on;
+    /// nullable when a server has not yet connected. $ none.</summary>
     public const string FleetServersSql = @"
-SELECT server_id, COALESCE(display_name, server_name) AS display_name, server_name
+SELECT server_id, COALESCE(display_name, server_name) AS display_name, server_name, sql_engine_edition
 FROM servers
 WHERE is_enabled
 ORDER BY server_name";
@@ -290,11 +293,19 @@ GROUP BY server_id, collector_name";
         var overall = ServerHealthClassifier.OverallMetricSeverity(metrics);
         var band = ServerHealthClassifier.ClassifyBand(isOnline, awaitingFirstCollection, hasCollectorErrors, overall);
 
+        /* Per-server platform (design D4): the reliable signal the composer's measure auto-greying matches a
+           measure's appliesTo against — see ClassifyPlatform for the edition mapping and why AWS RDS / msdb are
+           deliberately not surfaced. */
+        var (isAzureSqlDb, isAzureManagedInstance) = ClassifyPlatform(server.EngineEdition);
+
         return new FleetServerCard
         {
             ServerId = server.ServerId,
             DisplayName = server.DisplayName,
             ServerName = server.ServerName,
+            EngineEdition = server.EngineEdition,
+            IsAzureSqlDb = isAzureSqlDb,
+            IsAzureManagedInstance = isAzureManagedInstance,
             Band = band,
             Status = StatusLabel(isOnline, awaitingFirstCollection, hasCollectorErrors),
             IsOnline = isOnline,
@@ -471,6 +482,20 @@ GROUP BY server_id, collector_name";
         _ => awaitingFirstCollection ? "Awaiting first collection" : "Unknown",
     };
 
+    /// <summary>
+    /// Classifies a server's raw SERVERPROPERTY('EngineEdition') into the RELIABLE per-server platform flags the
+    /// composer's D4 measure auto-greying keys on: <c>5</c> = Azure SQL Database, <c>8</c> = Azure Managed
+    /// Instance (the same 5/8 classification <see cref="!:DarlingServerConnector"/> applies at connect). Any other
+    /// edition — a box edition (2/3/4…), or <c>null</c> (a server the worker has not yet connected/probed) — is
+    /// neither, so the composer keeps the measure badge (no signal rather than a wrong one).
+    ///
+    /// <para>AWS RDS and msdb access are deliberately NOT returned: unlike engine edition they are not persisted on
+    /// the <c>servers</c> registry (RDS reports as an ordinary box edition, and <c>HAS_DBACCESS('msdb')</c> is
+    /// probed but never stored), so there is no reliable stored signal to derive them from here.</para>
+    /// </summary>
+    internal static (bool IsAzureSqlDb, bool IsAzureManagedInstance) ClassifyPlatform(int? engineEdition) =>
+        (engineEdition == 5, engineEdition == 8);
+
     /* ─────────────────────────── per-query readers ─────────────────────────── */
 
     private static async Task<List<FleetServerRow>> ReadServersAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
@@ -483,7 +508,8 @@ GROUP BY server_id, collector_name";
             rows.Add(new FleetServerRow(
                 reader.GetInt32(0),
                 reader.IsDBNull(1) ? "" : reader.GetString(1),
-                reader.IsDBNull(2) ? "" : reader.GetString(2)));
+                reader.IsDBNull(2) ? "" : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetInt32(3)));
         }
 
         return rows;
@@ -644,7 +670,7 @@ GROUP BY server_id, collector_name";
 
     /* ─────────────────────────── raw-read carriers (internal) ─────────────────────────── */
 
-    private readonly record struct FleetServerRow(int ServerId, string DisplayName, string ServerName);
+    private readonly record struct FleetServerRow(int ServerId, string DisplayName, string ServerName, int? EngineEdition);
     private readonly record struct CpuRow(double? SqlCpu, double? OtherCpu);
     private readonly record struct MemoryRow(double? MemoryMb, double? BufferPoolMb);
     private readonly record struct MemoryPressureRow(long WaiterCount, long TimeoutCount, long ForcedCount, double? GrantedMemoryMb);
@@ -664,6 +690,20 @@ public sealed class FleetServerCard
     [JsonPropertyName("server_id")] public int ServerId { get; init; }
     [JsonPropertyName("display_name")] public string DisplayName { get; init; } = "";
     [JsonPropertyName("server_name")] public string ServerName { get; init; } = "";
+
+    /// <summary>The raw probed SERVERPROPERTY('EngineEdition') (5 = Azure SQL DB, 8 = Azure Managed Instance, a
+    /// box edition otherwise); null when the server has not yet connected. The reliable per-server platform
+    /// signal the composer's D4 measure auto-greying matches a measure's <c>appliesTo</c> against.</summary>
+    [JsonPropertyName("engine_edition")] public int? EngineEdition { get; init; }
+
+    /// <summary>True when this server is Azure SQL Database (engine edition 5) — reliable, derived from
+    /// <see cref="EngineEdition"/>.</summary>
+    [JsonPropertyName("is_azure_sql_db")] public bool IsAzureSqlDb { get; init; }
+
+    /// <summary>True when this server is Azure SQL Managed Instance (engine edition 8) — reliable, derived from
+    /// <see cref="EngineEdition"/>.</summary>
+    [JsonPropertyName("is_azure_mi")] public bool IsAzureManagedInstance { get; init; }
+
     [JsonPropertyName("band")] public FleetHealthBand Band { get; init; }
     [JsonPropertyName("status")] public string Status { get; init; } = "";
     [JsonPropertyName("is_online")] public bool? IsOnline { get; init; }

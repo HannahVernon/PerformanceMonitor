@@ -95,12 +95,22 @@ export async function renderEditor(main, id) {
   buildEditor(main, { model, editingId, loadedVersion, catalog, fleet });
 }
 
-/* Fleet server options for the `server` param dropdown (value = stored server_name, label = display name). */
-async function loadFleetOptions() {
+/* Fleet server options for the `server` param dropdown (value = stored server_name, label = display name). Each
+   option also carries the per-server platform (/api/fleet's D4 fields) the composed measure picker uses for D4
+   auto-greying: engineEdition (null = not yet probed), isAzureSqlDb (edition 5), isAzureMi (edition 8). The server
+   dropdown reads only value/label, so the extra fields are inert there. Exported so the notebook composer — which
+   greys the same way — shares this one enrichment. */
+export async function loadFleetOptions() {
   const res = await apiGet("/api/fleet");
   if (res.kind !== "data" || !res.data) return [];
   return [...(res.data.cards || [])]
-    .map((c) => ({ value: c.server_name || c.display_name, label: c.display_name }))
+    .map((c) => ({
+      value: c.server_name || c.display_name,
+      label: c.display_name,
+      engineEdition: typeof c.engine_edition === "number" ? c.engine_edition : null,
+      isAzureSqlDb: c.is_azure_sql_db === true,
+      isAzureMi: c.is_azure_mi === true,
+    }))
     .filter((o) => o.value)
     .sort((a, b) => a.label.localeCompare(b.label));
 }
@@ -895,6 +905,7 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
   const body = buildComposedPanelBody(p, {
     catalog,
     getVariables: () => ctx.model.variables,
+    getScopeServer: () => scopeServerPlatform(ctx.model.variables, ctx.fleet),
     previewScope: ctx.previewScope,
     onChange: () => {
       refreshHead();
@@ -928,6 +939,8 @@ function buildComposedPanelEditor(p, index, ctx, kindToggle) {
  * opts:
  *   catalog       — the compose catalog (compose = catalog.compose).
  *   getVariables  — () => the view/notebook's declared template variables (for the filter "$name" hints).
+ *   getScopeServer— () => the concrete fleet card the view's $server resolves to (D4 per-server greying), or null
+ *                   for All / multi / unprobed / unknown; omitted ⇒ never grey (only the Wave-1 badges show).
  *   previewScope  — () => the scope the live preview runs against (whole fleet + default range + variable defaults).
  *   onChange      — () => notify the wrapper a field changed (refresh its head echo + save state); the body owns
  *                   its own config rebuild + debounced preview, so onChange never rebuilds anything itself.
@@ -937,6 +950,7 @@ export function buildComposedPanelBody(p, opts) {
   const catalog = opts.catalog;
   const compose = catalog.compose || {};
   const getVariables = opts.getVariables || (() => []);
+  const getScopeServer = opts.getScopeServer || (() => null);
   const previewScope = opts.previewScope || (() => ({}));
   const onChange = opts.onChange || (() => {});
   const showWidth = opts.showWidth !== false;
@@ -977,14 +991,17 @@ export function buildComposedPanelBody(p, opts) {
   /* ── config sub-builders (fresh nodes each rebuild, read from the model) ── */
 
   function measureBlock(m) {
-    const sel = buildComposedMeasureSelect(compose, currentMeasureKey(p), (key) => {
+    /* D4: the concrete fleet server the view's $server resolves to (or null for All / multi / unprobed / unknown) —
+       read live each rebuild so re-scoping re-greys the picker. */
+    const scopeServer = getScopeServer();
+    const sel = buildComposedMeasureSelect(compose, currentMeasureKey(p), scopeServer, (key) => {
       applyMeasureChoice(p, key, compose);
       onStructural();
     });
     return el("div", {}, [
       sel,
       m ? el("div", { class: "measure-caption", text: measureCaption(m, compose) }) : null,
-      m ? measureAvailabilityNote(m) : null,
+      m ? measureAvailabilityNote(m, scopeServer) : null,
     ]);
   }
 
@@ -1413,9 +1430,9 @@ function measureCaption(m, compose) {
 /* The per-server-type constraints on an appliesTo gate (design D4), shared by measures AND annotation sources (both
    carry the identical appliesTo node — the same BuildAppliesToNode on the server). Returns null when it collects
    everywhere with no msdb dependency (the common case — no badge). `missing` names the platforms it can't collect on;
-   `needsMsdb` flags a SQL-Agent (job) dependency. Purely informational: the measure/source still works where it
-   applies — auto-greying by the view's actual servers needs a per-server type/edition signal the fleet endpoint
-   doesn't expose. */
+   `needsMsdb` flags a SQL-Agent (job) dependency. These drive the always-on informational BADGES; when the view's
+   $server resolves to one concrete server (scopeServerPlatform) the measure picker layers a stronger per-server GREY
+   on top (measureUnavailableOn). AWS RDS + msdb have no reliable per-server signal, so they stay badges only. */
 function availabilityConstraints(a) {
   if (!a) return null;
   const missing = [];
@@ -1451,14 +1468,60 @@ function annotationAvailabilitySummary(a) {
   return availabilitySummary(availabilityConstraints(a && a.appliesTo));
 }
 
-/** The availability badges shown under the measure picker for a constrained measure (design D4), or null. */
-function measureAvailabilityNote(m) {
+/* ── D4 per-server auto-greying ── */
+
+/* The view-scope $server signal: when the view's server-dimension template variable resolves to exactly ONE concrete,
+   platform-probed fleet server, return that enriched fleet option so the measure picker can GREY the measures it
+   can't collect. Returns null for every "no reliable signal" case — no $server variable (or more than one carrying a
+   value), a blank / "All" / multi (comma/semicolon) / $-referencing default, an unknown server name, or a server
+   whose engine edition hasn't been probed (null/0) — so the picker falls back to the always-on Wave-1 badges.
+   `variables` is the view/notebook model's declared template variables; `fleet` is loadFleetOptions' enriched output. */
+export function scopeServerPlatform(variables, fleet) {
+  const serverVars = (variables || []).filter((v) => v && v.dimension === "server" && (v.default || "").trim());
+  if (serverVars.length !== 1) return null;
+  const raw = serverVars[0].default.trim();
+  if (raw.charAt(0) === "$") return null; // references another variable — not a concrete server
+  if (raw.toLowerCase() === "all") return null; // explicit whole-fleet
+  if (/[,;]/.test(raw)) return null; // a multi-server list
+  const card = (fleet || []).find((c) => c.value === raw || c.label === raw);
+  if (!card || !(card.engineEdition > 0)) return null; // unknown, or not-yet-probed (null/0) = no signal
+  return card;
+}
+
+/* The platform label for a probed fleet card, used in the D4 grey reason: the two Azure platforms are named; every
+   box / RDS / on-prem edition collapses to "this server" (no reliable per-server RDS signal to distinguish them). */
+function scopeServerLabel(card) {
+  if (card && card.isAzureSqlDb) return "Azure SQL DB";
+  if (card && card.isAzureMi) return "Azure MI";
+  return "this server";
+}
+
+/* The platform a measure/annotation CANNOT collect on given the scoped fleet card (the D4 grey verdict), or null when
+   it can. Only the three signals /api/fleet reliably exposes drive it — is_azure_sql_db, is_azure_mi, else the
+   box/RDS/on-prem gate (engine_edition non-null and not 5/8, so appliesTo.onPrem); AWS RDS + msdb have no per-server
+   signal so they never grey here (they stay Wave-1 badges). Defensive against an unprobed card (returns null). */
+function measureUnavailableOn(appliesTo, card) {
+  if (!appliesTo || !card || !(card.engineEdition > 0)) return null;
+  const gate = card.isAzureSqlDb ? appliesTo.azureSqlDb : card.isAzureMi ? appliesTo.azureMi : appliesTo.onPrem;
+  return gate === false ? scopeServerLabel(card) : null;
+}
+
+/** The availability line under the measure picker (design D4), or null. Always-on informational badges come from the
+ *  measure's appliesTo; when the view's $server resolves to one concrete server the measure can't collect on, a
+ *  stronger per-server GREY badge REPLACES the generic "Not on <platforms>" one (same fact, server-specific) while
+ *  the orthogonal msdb note stays. `scopeServer` is the resolved fleet card, or null (⇒ Wave-1 badges unchanged). */
+function measureAvailabilityNote(m, scopeServer) {
+  const platform = measureUnavailableOn(m.appliesTo, scopeServer);
   const c = measureAvailabilityConstraints(m);
-  if (!c) return null;
   const badges = [];
-  if (c.missing.length) badges.push(el("span", { class: "measure-badge warn", text: "Not on " + c.missing.join(", ") }));
-  if (c.needsMsdb) badges.push(el("span", { class: "measure-badge", text: "Needs SQL Agent (msdb)" }));
-  return el("div", { class: "measure-badges" }, badges);
+  if (platform) {
+    badges.push(el("span", { class: "measure-badge grey", text: "Not collected on " + platform }));
+    if (c && c.needsMsdb) badges.push(el("span", { class: "measure-badge", text: "Needs SQL Agent (msdb)" }));
+  } else if (c) {
+    if (c.missing.length) badges.push(el("span", { class: "measure-badge warn", text: "Not on " + c.missing.join(", ") }));
+    if (c.needsMsdb) badges.push(el("span", { class: "measure-badge", text: "Needs SQL Agent (msdb)" }));
+  }
+  return badges.length ? el("div", { class: "measure-badges" }, badges) : null;
 }
 
 /** Whether a viz is compatible with a shape ignoring the group-by requirement (table works with any shape). */
@@ -1503,7 +1566,7 @@ function vizModeReason(viz, shape, groupCount) {
   return null;
 }
 
-function buildComposedMeasureSelect(compose, current, onChange) {
+function buildComposedMeasureSelect(compose, current, scopeServer, onChange) {
   const sel = el("select", { class: "editor-select", "aria-label": "Metric" });
   sel.appendChild(el("option", { value: "", text: "— choose a metric —" }));
   const byCat = new Map();
@@ -1515,9 +1578,17 @@ function buildComposedMeasureSelect(compose, current, onChange) {
     const group = el("optgroup", { label: cat });
     for (const m of ms.sort((a, b) => a.displayName.localeCompare(b.displayName))) {
       const suffix = m.kind === "ratio" ? " (ratio)" : "";
+      const caption = measureCaption(m, compose);
+      /* D4: when the view is scoped to one concrete server this measure can't collect on, grey (disable) the option
+         — but keep an already-CHOSEN measure selectable so re-scoping never silently drops the panel's metric (the
+         reason surfaces in the note under the picker). Otherwise fall back to the informational availability title. */
+      const platform = measureUnavailableOn(m.appliesTo, scopeServer);
       const avail = measureAvailabilitySummary(m);
-      const title = avail ? measureCaption(m, compose) + " · " + avail : measureCaption(m, compose);
-      group.appendChild(el("option", { value: m.key, text: m.displayName + suffix, title }));
+      const label = m.displayName + suffix + (platform ? " — not on " + platform : "");
+      const title = platform ? caption + " · not collected on " + platform : avail ? caption + " · " + avail : caption;
+      const opt = el("option", { value: m.key, text: label, title });
+      if (platform && m.key !== current) opt.disabled = true;
+      group.appendChild(opt);
     }
     sel.appendChild(group);
   }
@@ -1607,12 +1678,15 @@ export function buildViewScopeSection(model, catalog, onStructuralChange) {
     v.dimension = dimSel.value;
     dimSel.addEventListener("change", () => {
       v.dimension = dimSel.value;
+      onStructuralChange(); // a var becoming / ceasing to be the $server re-greys the measure pickers (D4)
     });
     const defInp = el("input", { class: "editor-input", type: "text", placeholder: "default (optional)", "aria-label": "variable default" });
     defInp.value = v.default || "";
     defInp.addEventListener("input", () => {
       v.default = defInp.value;
     });
+    // Commit (blur / Enter) re-greys the measure pickers for the new $server default (D4); not per-keystroke.
+    defInp.addEventListener("change", () => onStructuralChange());
     const rm = el("button", { class: "btn small danger icon", type: "button", text: "×", title: "Remove variable", "aria-label": "remove variable" });
     rm.addEventListener("click", () => {
       model.variables.splice(i, 1);

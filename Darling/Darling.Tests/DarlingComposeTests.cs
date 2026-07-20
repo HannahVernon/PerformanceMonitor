@@ -81,7 +81,9 @@ public sealed class DarlingComposeTests
     [Fact]
     public void EveryRatioMeasure_ReferencesRealSameSourceScalars()
     {
-        foreach (var ratio in MeasureCatalog.Measures.Where(m => m.Kind == MeasureKind.Ratio))
+        /* Sum/Avg ratios divide two scalar measures; Weighted ratios instead reference RAW source columns
+           (WeightedValueColumn + WeightColumn), pinned separately by WeightedRatio_Columns_AreRealPayloadColumns. */
+        foreach (var ratio in MeasureCatalog.Measures.Where(m => m.Kind == MeasureKind.Ratio && m.RatioMode != MeasureRatioMode.Weighted))
         {
             var numerator = MeasureCatalog.Measure(ratio.NumeratorKey);
             var denominator = MeasureCatalog.Measure(ratio.DenominatorKey);
@@ -91,6 +93,28 @@ public sealed class DarlingComposeTests
             Assert.Equal(MeasureKind.Scalar, denominator!.Kind);
             Assert.Equal(ratio.SourceTable, numerator.SourceTable);
             Assert.Equal(ratio.SourceTable, denominator.SourceTable);
+        }
+    }
+
+    [Fact]
+    public void WeightedRatio_Columns_AreRealPayloadColumns()
+    {
+        var payload = PayloadColumnsByTable();
+        var weighted = MeasureCatalog.Measures
+            .Where(m => m.Kind == MeasureKind.Ratio && m.RatioMode == MeasureRatioMode.Weighted).ToList();
+        Assert.NotEmpty(weighted);
+        foreach (var ratio in weighted)
+        {
+            var columns = payload[ratio.SourceTable];
+            /* A Weighted ratio's two operands are raw columns of its own source (the pre-aggregated average and
+               its execution weight), so both must be real payload columns — the compiler emits them directly. */
+            Assert.True(ratio.WeightedValueColumn is not null && columns.Contains(ratio.WeightedValueColumn),
+                $"weighted ratio '{ratio.Key}' value column '{ratio.WeightedValueColumn}' is not a payload column of '{ratio.SourceTable}'.");
+            Assert.True(ratio.WeightColumn is not null && columns.Contains(ratio.WeightColumn),
+                $"weighted ratio '{ratio.Key}' weight column '{ratio.WeightColumn}' is not a payload column of '{ratio.SourceTable}'.");
+            /* Weighted ratios do NOT use the numerator/denominator measure operands. */
+            Assert.Null(ratio.NumeratorKey);
+            Assert.Null(ratio.DenominatorKey);
         }
     }
 
@@ -718,6 +742,40 @@ public sealed class DarlingComposeTests
         Assert.Contains("* 100.0", sql, StringComparison.Ordinal);
         /* a gauge ratio never uses the Sum form (gauges are never summable). */
         Assert.DoesNotContain("SUM(", sql, StringComparison.Ordinal);
+    }
+
+    /* ─────────────── L1: Query Store execution-weighted average ratios (Weighted mode) ─────────────── */
+
+    [Theory]
+    [InlineData("qs_avg_duration_us", "avg_duration_us")]
+    [InlineData("qs_avg_cpu_us", "avg_cpu_time_us")]
+    public void Compile_WeightedRatio_IsProductSumOverNullifSumOfWeight(string ratioKey, string valueColumn)
+    {
+        /* The execution-weighted average of a pre-aggregated per-interval average:
+           SUM(value * execution_count) / NULLIF(SUM(execution_count), 0) — not an avg-of-avgs (design §2). */
+        var sql = Compile(ValidPlan($"{{\"source\":\"query_store_stats\",\"ratio\":\"{ratioKey}\",\"timeBucket\":\"hour\",\"viz\":\"line\"}}"));
+        Assert.Contains($"SUM(f.{valueColumn} * f.execution_count)", sql, StringComparison.Ordinal);
+        Assert.Contains("NULLIF(SUM(f.execution_count), 0)", sql, StringComparison.Ordinal);
+        Assert.Contains("collect.query_store_stats", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("config.", sql, StringComparison.Ordinal);
+        /* native µs displayed as the default ms — the same /1000 family conversion the other duration ratios use. */
+        Assert.Contains("/ 1000.0", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WeightedQsRatios_ValidateAsRatios_AndRejectMeasureReference()
+    {
+        foreach (var key in new[] { "qs_avg_duration_us", "qs_avg_cpu_us" })
+        {
+            var plan = ValidPlan($"{{\"source\":\"query_store_stats\",\"ratio\":\"{key}\",\"timeBucket\":\"hour\",\"viz\":\"line\"}}");
+            Assert.Equal(MeasureKind.Ratio, plan.Measure.Kind);
+            Assert.Equal(MeasureRatioMode.Weighted, plan.Measure.RatioMode);
+            Assert.Equal("ms", plan.Unit);
+
+            /* A ratio referenced via 'measure' (with an aggregate) is rejected — it must be referenced as 'ratio'. */
+            var reason = RejectReason($"{{\"source\":\"query_store_stats\",\"measure\":\"{key}\",\"aggregate\":\"sum\",\"viz\":\"table\"}}");
+            Assert.Contains("reference it as 'ratio'", reason, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     /* ─────────────────────────── D3: per-panel thresholds (render-only) ─────────────────────────── */

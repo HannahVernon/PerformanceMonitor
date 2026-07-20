@@ -25,6 +25,8 @@ import { renderMarkdown } from "./markdown.js";
 import {
   buildComposedPanelBody,
   buildViewScopeSection,
+  loadFleetOptions,
+  scopeServerPlatform,
   newComposedPanel,
   composedPanelToDesc,
   descToComposedPanel,
@@ -66,7 +68,9 @@ export async function renderNotebookEditor(main, id, templateKey) {
     return;
   }
 
-  const catalog = await api.getCatalog();
+  /* Fleet options carry the per-server platform for D4 measure auto-greying (loadFleetOptions is shared from the
+     dashboard composer so the enrichment lives in one place). */
+  const [catalog, fleet] = await Promise.all([api.getCatalog(), loadFleetOptions()]);
 
   let model;
   let editingId = null;
@@ -91,7 +95,7 @@ export async function renderNotebookEditor(main, id, templateKey) {
     model = tpl ? notebookToModel(tpl.make()) : blankNotebookModel();
   }
 
-  buildNotebookEditor(main, { model, editingId, loadedVersion, catalog });
+  buildNotebookEditor(main, { model, editingId, loadedVersion, catalog, fleet });
 }
 
 /* ─────────────────────────── model <-> definition ─────────────────────────── */
@@ -392,6 +396,7 @@ function buildPanelCellEditor(cell, index, ctx) {
   const body = buildComposedPanelBody(cell.panel, {
     catalog: ctx.catalog,
     getVariables: () => ctx.model.variables,
+    getScopeServer: () => scopeServerPlatform(ctx.model.variables, ctx.fleet),
     previewScope: ctx.previewScope,
     onChange: () => ctx.refreshSaveState(),
     showWidth: false,

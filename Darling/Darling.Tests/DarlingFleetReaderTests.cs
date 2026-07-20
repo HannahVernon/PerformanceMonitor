@@ -38,6 +38,24 @@ public sealed class DarlingFleetReaderSqlTests
         Assert.Contains("FROM servers", sql, StringComparison.Ordinal);
         Assert.Contains("WHERE is_enabled", sql, StringComparison.Ordinal);
         Assert.Contains("COALESCE(display_name, server_name)", sql, StringComparison.Ordinal);
+        /* The per-server platform signal (D4) rides on the same registry row — no extra round-trip. */
+        Assert.Contains("sql_engine_edition", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(5, true, false)]     // Azure SQL Database
+    [InlineData(8, false, true)]     // Azure SQL Managed Instance
+    [InlineData(3, false, false)]    // box Enterprise
+    [InlineData(2, false, false)]    // box Standard
+    [InlineData(0, false, false)]    // unknown/unprobed
+    [InlineData(null, false, false)] // never connected (null edition)
+    public void ClassifyPlatform_MapsEngineEdition_ToReliableAzureFlags(int? engineEdition, bool expectAzureSqlDb, bool expectAzureMi)
+    {
+        /* The reliable per-server platform the composer's D4 auto-greying keys on: only editions 5/8 are Azure;
+           every other edition (box) and null (no signal) leave both flags false so the composer keeps the badge. */
+        var (isAzureSqlDb, isAzureMi) = DarlingFleetReader.ClassifyPlatform(engineEdition);
+        Assert.Equal(expectAzureSqlDb, isAzureSqlDb);
+        Assert.Equal(expectAzureMi, isAzureMi);
     }
 
     [Fact]
@@ -149,7 +167,8 @@ public sealed class DarlingFleetDtoJsonTests
 
         foreach (var field in new[]
         {
-            "\"server_id\"", "\"display_name\"", "\"server_name\"", "\"band\"", "\"status\"",
+            "\"server_id\"", "\"display_name\"", "\"server_name\"", "\"engine_edition\"",
+            "\"is_azure_sql_db\"", "\"is_azure_mi\"", "\"band\"", "\"status\"",
             "\"is_online\"", "\"last_collection\"", "\"cpu_percent\"", "\"total_cpu_percent\"",
             "\"cpu_severity\"", "\"memory_severity\"", "\"blocking_count\"", "\"blocking_severity\"",
             "\"deadlock_count\"", "\"deadlock_last_seen\"", "\"deadlock_severity\"", "\"threads_severity\"",
@@ -167,6 +186,26 @@ public sealed class DarlingFleetDtoJsonTests
         Assert.Contains("\"last_collection\": \"2026-07-18T03:30:00\"", json, StringComparison.Ordinal);
         Assert.Contains("\"deadlock_last_seen\": \"2026-07-18T03:15:00\"", json, StringComparison.Ordinal);
         Assert.DoesNotContain("\"cpu_severity\": 3", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FleetServerCard_SerializesPerServerPlatform_ForComposerD4Greying()
+    {
+        /* Azure SQL DB card: engine_edition 5, is_azure_sql_db true — the frontend matches this against a
+           measure's appliesTo.azureSqlDb to auto-grey a measure that platform can't collect. */
+        var azure = new FleetServerCard { ServerId = 1, DisplayName = "az-db", ServerName = "az-db", EngineEdition = 5, IsAzureSqlDb = true };
+        var azureJson = JsonSerializer.Serialize(azure, DarlingFleetReader.JsonOptions);
+        Assert.Contains("\"engine_edition\": 5", azureJson, StringComparison.Ordinal);
+        Assert.Contains("\"is_azure_sql_db\": true", azureJson, StringComparison.Ordinal);
+        Assert.Contains("\"is_azure_mi\": false", azureJson, StringComparison.Ordinal);
+
+        /* A server that has not connected: null edition serializes as JSON null and both flags are false, so the
+           frontend has no signal and keeps the measure badge rather than greying on a guess. */
+        var unknown = new FleetServerCard { ServerId = 2, DisplayName = "new", ServerName = "new" };
+        var unknownJson = JsonSerializer.Serialize(unknown, DarlingFleetReader.JsonOptions);
+        Assert.Contains("\"engine_edition\": null", unknownJson, StringComparison.Ordinal);
+        Assert.Contains("\"is_azure_sql_db\": false", unknownJson, StringComparison.Ordinal);
+        Assert.Contains("\"is_azure_mi\": false", unknownJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -264,8 +303,10 @@ public sealed class DarlingFleetReaderLivePostgresTests
             var now = DateTime.UtcNow;
             var at = now.AddMinutes(-5);   // inside the [now-1h, now] card window
 
-            await InsertServerAsync(connection, XeServerId, XeName, ct);
-            await InsertServerAsync(connection, DmvServerId, DmvName, ct);
+            /* Plant representative editions so the read-through card platform can be asserted end-to-end:
+               XE server = Azure SQL Database (engine edition 5), DMV server = box Enterprise (edition 3). */
+            await InsertServerAsync(connection, XeServerId, XeName, 5, ct);
+            await InsertServerAsync(connection, DmvServerId, DmvName, 3, ct);
 
             /* XE server: 2 XE reports + 1 DMV snapshot -> fallback prefers XE (count 2). */
             await InsertBlockedProcessAsync(connection, XeServerId, XeName, at, ct);
@@ -293,10 +334,20 @@ public sealed class DarlingFleetReaderLivePostgresTests
             Assert.Equal(FleetHealthBand.Warning, xe.Band);
             Assert.True(xe.IsOnline);
 
+            /* Per-server platform read through to the card (D4): engine edition 5 -> Azure SQL DB. */
+            Assert.Equal(5, xe.EngineEdition);
+            Assert.True(xe.IsAzureSqlDb);
+            Assert.False(xe.IsAzureManagedInstance);
+
             /* DMV fallback: 3 events + a deadlock -> Critical band. */
             Assert.Equal(3, dmv.BlockingCount);
             Assert.Equal(1, dmv.DeadlockCount);
             Assert.Equal(FleetHealthBand.Critical, dmv.Band);
+
+            /* A box edition (3) is neither Azure flag — the composer keeps the on-prem badges. */
+            Assert.Equal(3, dmv.EngineEdition);
+            Assert.False(dmv.IsAzureSqlDb);
+            Assert.False(dmv.IsAzureManagedInstance);
 
             /* The Critical sentinel outranks the Warning sentinel in the worst-first ordering. */
             var xeScore = ServerHealthClassifier.FleetHealthScore(xe.Band, xe.ToHealthMetrics());
@@ -309,13 +360,14 @@ public sealed class DarlingFleetReaderLivePostgresTests
         }
     }
 
-    private static async Task InsertServerAsync(NpgsqlConnection connection, int serverId, string name, System.Threading.CancellationToken ct)
+    private static async Task InsertServerAsync(NpgsqlConnection connection, int serverId, string name, int engineEdition, System.Threading.CancellationToken ct)
     {
         using var command = new NpgsqlCommand(
-            "INSERT INTO servers (server_id, server_name, display_name, is_enabled) VALUES ($1, $2, $3, TRUE)", connection);
+            "INSERT INTO servers (server_id, server_name, display_name, is_enabled, sql_engine_edition) VALUES ($1, $2, $3, TRUE, $4)", connection);
         command.Parameters.AddWithValue(serverId);
         command.Parameters.AddWithValue(name);
         command.Parameters.AddWithValue(name);
+        command.Parameters.AddWithValue(engineEdition);
         await command.ExecuteNonQueryAsync(ct);
     }
 
