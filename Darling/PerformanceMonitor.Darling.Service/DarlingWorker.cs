@@ -102,6 +102,53 @@ public sealed class DarlingWorker : BackgroundService
     internal const int MaxConcurrentServerSweeps = 4;
 
     /// <summary>
+    /// Seconds an in-flight collection body may go unresolved before the sweep watchdog surfaces it. One
+    /// threshold serves both channels below — what differs is WHICH clock it is measured against.
+    /// </summary>
+    internal const int SweepWatchdogSeconds = 60;
+
+    /// <summary>What (if anything) the in-flight watchdog should surface for one server this sweep.</summary>
+    internal enum SweepEpisodeSignal
+    {
+        /// <summary>Nothing to say — under threshold, or already surfaced once this episode.</summary>
+        None,
+
+        /// <summary>The body is EXECUTING and has not finished: a genuine stall. Warning.</summary>
+        Hang,
+
+        /// <summary>The body has not started — still queued behind the concurrency gate. Capacity, Info.</summary>
+        Queued
+    }
+
+    /// <summary>
+    /// Pure decision for the in-flight sweep watchdog. Split out so the truth table is unit-pinned rather than
+    /// buried in the loop, because getting it wrong is expensive in BOTH directions: attributing gate queue time
+    /// to the hang channel fired ~82 warnings/hour at 24 servers behind the N=4 gate on a healthy fleet (burying
+    /// the real signal), while dropping the queued case entirely would hide genuine capacity pressure — a body
+    /// waiting minutes for a slot IS unserved. So a running body is judged on <paramref name="runningSeconds"/>
+    /// (its own execution clock) and a queued one on <paramref name="episodeSeconds"/> (since launch), each
+    /// latched to fire once per episode.
+    /// </summary>
+    internal static SweepEpisodeSignal ClassifySweepEpisode(
+        double episodeSeconds,
+        bool running,
+        double runningSeconds,
+        bool alreadyWarned,
+        bool alreadyQueuedInfo)
+    {
+        if (running)
+        {
+            return !alreadyWarned && runningSeconds >= SweepWatchdogSeconds
+                ? SweepEpisodeSignal.Hang
+                : SweepEpisodeSignal.None;
+        }
+
+        return !alreadyQueuedInfo && episodeSeconds >= SweepWatchdogSeconds
+            ? SweepEpisodeSignal.Queued
+            : SweepEpisodeSignal.None;
+    }
+
+    /// <summary>
     /// #1581 cold-start launch-spread window (seconds). On a service restart the whole fleet's FIRST sweep bodies
     /// would otherwise launch in a single 15s tick and queue behind the <see cref="MaxConcurrentServerSweeps"/>
     /// gate, so the ones that waited past 60s logged "collection body has not completed after 60s" en masse (the
@@ -322,17 +369,34 @@ public sealed class DarlingWorker : BackgroundService
            snapshot waits its turn. Binary (1,1). */
         public SemaphoreSlim CollectionGate { get; } = new(1, 1);
 
-        /* Fire-and-track sweep bookkeeping (#1553 D2/D2b) — ALL THREE written ONLY by the OUTER sweep thread
+        /* Fire-and-track sweep bookkeeping (#1553 D2/D2b) — these FOUR written ONLY by the OUTER sweep thread
            (the launch loop and the shutdown drain); the per-server body NEVER touches them, so there is no
            cross-thread tear to reason about (the torn-read note that applies to the DateTime schedule fields
            above deliberately does NOT apply here). InFlightSweep is this server's currently-running (or
            last-completed) body Task — the launch loop skips relaunch while it is not completed (INV-2: one body
-           per server) and the shutdown drain awaits it. SweepStartedUtc is stamped at LAUNCH (queue time is part
-           of the episode — a body queued minutes behind the N=4 gate IS unserved), and WarnedThisEpisode gates
-           the one-Warning-per-episode hang log so a long-running body is flagged once, not every sweep. */
+           per server) and the shutdown drain awaits it. SweepStartedUtc is stamped at LAUNCH, so it still
+           measures the whole EPISODE (queue + run): a body queued minutes behind the N=4 gate IS unserved, and
+           that remains true. WarnedThisEpisode gates the one-Warning-per-episode HANG log and
+           QueuedInfoThisEpisode the one-Info-per-episode QUEUED log, so each is surfaced once, not every sweep. */
         public Task? InFlightSweep { get; set; }
         public DateTime SweepStartedUtc { get; set; }
         public bool WarnedThisEpisode { get; set; }
+        public bool QueuedInfoThisEpisode { get; set; }
+
+        /* The ONE piece of sweep bookkeeping the BODY writes — and the single reason it is a FIELD rather than a
+           property: Interlocked needs a ref to a field. UTC ticks stamped by the body the moment it acquires the
+           concurrency gate; 0 while it is still QUEUED behind that gate. Written once per episode by the body
+           (Interlocked.Exchange) and read by the outer launch loop (Interlocked.Read) — a long is not guaranteed
+           atomic on 32-bit, so BOTH sides go through Interlocked rather than assuming it. The existing three
+           fields above keep their outer-thread-only invariant untouched; this is a separate field precisely so
+           that invariant does not have to be weakened.
+
+           Why it exists: the 60s watchdog is a HANG detector — "the field incident was HANGS, not throws" — but
+           measuring from SweepStartedUtc alone counted GATE QUEUE TIME as hang time, so at 24 servers behind the
+           N=4 gate it fired ~82 times/hour on a demonstrably healthy fleet (0 collector errors, data landing) and
+           buried the very signal it exists to raise. Splitting run time out restores it: a body merely waiting
+           its turn is reported as CAPACITY, never as a hang. */
+        public long RunStartedTicks;
 
         /* #1581 cold-start stagger: the earliest UTC this server's FIRST post-startup sweep body may launch —
            the captured startup instant plus a deterministic per-server CadencePhaseOffset capped at
@@ -809,44 +873,73 @@ public sealed class DarlingWorker : BackgroundService
                 {
                     /* Still in flight: do NOT relaunch (INV-2, one body per server). The field incident was
                        HANGS, not throws, and the body's catch-all (D3) only covers throws — so the stall is
-                       surfaced HERE. Queue time counts: SweepStartedUtc was stamped at LAUNCH, so a body queued
-                       for minutes behind the N=4 gate is correctly measured as unserved from launch, not from
-                       the moment it finally began running. */
-                    var stalledForSeconds = (DateTime.UtcNow - server.SweepStartedUtc).TotalSeconds;
-                    _logger.LogDebug(
-                        "[{Server}] collection body still in flight after {Elapsed:F0}s — skipping this sweep",
-                        server.Config.DisplayName, stalledForSeconds);
+                       surfaced HERE. The EPISODE (SweepStartedUtc, stamped at launch) still spans queue + run,
+                       because a body queued behind the gate genuinely is unserved. But the two halves get
+                       DIFFERENT channels: RunStartedTicks is 0 until the body acquires the concurrency gate, so
+                       a body merely waiting its turn is CAPACITY pressure, never a hang. Attributing queue time
+                       to the hang watchdog fired it ~82 times/hour at 24 servers behind the N=4 gate on a
+                       demonstrably healthy fleet, which buried the one signal this warning exists to raise. */
+                    var episodeSeconds = (DateTime.UtcNow - server.SweepStartedUtc).TotalSeconds;
+                    var runStartedTicks = Interlocked.Read(ref server.RunStartedTicks);
+                    var running = runStartedTicks != 0;
+                    var runningSeconds = running
+                        ? (DateTime.UtcNow - new DateTime(runStartedTicks, DateTimeKind.Utc)).TotalSeconds
+                        : 0;
 
-                    /* ONE Warning per episode, the first time the body crosses 60s continuous. The text does
-                       NOT claim slot occupancy — a gate-QUEUED body holds no slot, it is merely unfinished. */
-                    if (!server.WarnedThisEpisode && stalledForSeconds >= 60)
+                    _logger.LogDebug(
+                        "[{Server}] collection body still in flight after {Elapsed:F0}s ({State}) — skipping this sweep",
+                        server.Config.DisplayName,
+                        episodeSeconds,
+                        running ? FormattableString.Invariant($"running {runningSeconds:F0}s") : "queued for a slot");
+
+                    switch (ClassifySweepEpisode(
+                        episodeSeconds, running, runningSeconds, server.WarnedThisEpisode, server.QueuedInfoThisEpisode))
                     {
-                        server.WarnedThisEpisode = true;
-                        _logger.LogWarning(
-                            "[{Server}] collection body has not completed after {Elapsed:F0}s — skipping relaunch",
-                            server.Config.DisplayName, stalledForSeconds);
+                        /* HANG — the body is actually EXECUTING and has not finished. ONE Warning per episode.
+                           This is the channel that must stay quiet on a healthy fleet so a real stall is seen. */
+                        case SweepEpisodeSignal.Hang:
+                            server.WarnedThisEpisode = true;
+                            _logger.LogWarning(
+                                "[{Server}] collection body has not completed after {Elapsed:F0}s of execution — skipping relaunch",
+                                server.Config.DisplayName, runningSeconds);
+                            break;
+
+                        /* CAPACITY — still QUEUED behind the gate, so nothing is wrong with this server: the
+                           fleet is simply wider than MaxConcurrentServerSweeps at this moment. Info, once. */
+                        case SweepEpisodeSignal.Queued:
+                            server.QueuedInfoThisEpisode = true;
+                            _logger.LogInformation(
+                                "[{Server}] collection body has waited {Elapsed:F0}s for a free slot (fleet concurrency limit {Limit}) — queued, not stalled; it has not started yet",
+                                server.Config.DisplayName, episodeSeconds, MaxConcurrentServerSweeps);
+                            break;
                     }
 
                     continue;
                 }
 
-                /* The body is null (never launched) or has completed since the last sweep. If we had WARNED
-                   about a long-running episode, log its resolution with the total elapsed and re-arm before
+                /* The body is null (never launched) or has completed since the last sweep. If we surfaced EITHER
+                   channel for this episode, log its resolution with the total elapsed and re-arm before
                    relaunching — the re-arm happens HERE on observing IsCompleted, never in the body's finally
-                   (which would race this launch loop). A body that finished under the threshold was never
-                   warned, so it simply relaunches. */
-                if (server.WarnedThisEpisode)
+                   (which would race this launch loop). A body that finished under both thresholds was never
+                   surfaced, so it simply relaunches. */
+                if (server.WarnedThisEpisode || server.QueuedInfoThisEpisode)
                 {
                     var ranForSeconds = (DateTime.UtcNow - server.SweepStartedUtc).TotalSeconds;
                     _logger.LogInformation(
-                        "[{Server}] collection body completed after {Elapsed:F0}s", server.Config.DisplayName, ranForSeconds);
+                        "[{Server}] collection body completed after {Elapsed:F0}s (episode, including any queue wait)",
+                        server.Config.DisplayName, ranForSeconds);
                     server.WarnedThisEpisode = false;
+                    server.QueuedInfoThisEpisode = false;
                 }
 
                 /* Stamp the launch time BEFORE launching — time spent QUEUED on the gate is part of this
-                   episode — then fire-and-track: assign the Task to InFlightSweep (so it is observed and the
-                   next sweep + the shutdown drain can see it) but do NOT await it here. */
+                   episode — and clear the run stamp so this episode starts as QUEUED. The reset must precede the
+                   call: ProcessServerSweepAsync runs synchronously up to its gate WaitAsync, so with a free
+                   permit the body may stamp RunStartedTicks before this statement returns, and resetting after
+                   would erase it. Then fire-and-track: assign the Task to InFlightSweep (so it is observed and
+                   the next sweep + the shutdown drain can see it) but do NOT await it here. */
                 server.SweepStartedUtc = DateTime.UtcNow;
+                Interlocked.Exchange(ref server.RunStartedTicks, 0);
                 server.InFlightSweep = ProcessServerSweepAsync(
                     server, engine, runner, planFetcher, notificationService, config, serverSweepGate, stoppingToken);
             }
@@ -963,6 +1056,15 @@ public sealed class DarlingWorker : BackgroundService
            returns having TAKEN a permit — matched by the finally's Release — or THROWS owning nothing (a cancel
            while queued on shutdown), so the finally can never over-release a permit we do not hold. */
         await gate.WaitAsync(stoppingToken);
+
+        /* The permit is held: this body has STOPPED queueing and STARTED running. Stamp the run start so the
+           outer launch loop's watchdog can tell a genuine hang from a body that was merely waiting its turn.
+           This is the ONE sweep-bookkeeping field the body writes, via Interlocked (see RunStartedTicks) — the
+           three outer-thread-only fields are deliberately left alone. Placed before the Retired check so a
+           retired body still reports as "running" for the instant it takes to no-op out, rather than looking
+           permanently queued. */
+        Interlocked.Exchange(ref server.RunStartedTicks, DateTime.UtcNow.Ticks);
+
         try
         {
             /* Retired containment (#1553 D1), the AUTHORITATIVE check: a reconcile-remove may have retired this
