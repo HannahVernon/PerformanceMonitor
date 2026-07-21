@@ -15,6 +15,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 using Npgsql;
+using PerformanceMonitor.Common;
 using PerformanceMonitor.Darling.Service.Mcp;
 using PerformanceMonitor.Darling.Storage;
 using Xunit;
@@ -220,6 +221,8 @@ public sealed class DarlingMcpCustomViewToolsLivePostgresTests
         await using var postgres = NpgsqlDataSource.Create(dataSourceConnectionString);
 
         var name = "cv_mcp_live_" + Guid.NewGuid().ToString("N");
+        var seedServerName = "cv_mcp_seed_" + Guid.NewGuid().ToString("N");
+        var seedServerId = ServerIdHelper.GetDeterministicHashCode(seedServerName);
         try
         {
             /* validate (dry-run) — valid + invalid, no persistence. */
@@ -228,6 +231,18 @@ public sealed class DarlingMcpCustomViewToolsLivePostgresTests
             Assert.False(JsonDocument.Parse(await DarlingMcpCustomViewTools.ValidateCustomView(
                 "{\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"nope\",\"aggregate\":\"sum\",\"viz\":\"table\"}]}"))
                 .RootElement.GetProperty("valid").GetBoolean());
+
+            /* create with an INVALID definition — rejected by ValidateDefinition BEFORE any persistence (the LIVE
+               path, not just the dead-store ungated test): the tool returns 'invalid' AND no row is stored. */
+            Assert.Equal("invalid", DarlingMcpTestData.StatusOf(await DarlingMcpCustomViewTools.CreateCustomView(
+                postgres, name + "_invalid",
+                "{\"panels\":[{\"source\":\"wait_stats\",\"measure\":\"nope\",\"aggregate\":\"sum\",\"viz\":\"table\"}]}")));
+            using (var afterInvalid = JsonDocument.Parse(await DarlingMcpCustomViewTools.ListCustomViews(postgres)))
+            {
+                Assert.False(afterInvalid.RootElement.EnumerateArray()
+                    .Any(v => v.GetProperty("name").GetString() == name + "_invalid"),
+                    "an invalid definition must not persist a row.");
+            }
 
             /* create — returns the stored view at version 1, MCP-stamped. */
             long id;
@@ -271,13 +286,33 @@ public sealed class DarlingMcpCustomViewToolsLivePostgresTests
             Assert.Equal("conflict", DarlingMcpTestData.StatusOf(
                 await DarlingMcpCustomViewTools.CreateCustomView(postgres, name, GoodDashboard)));
 
-            /* run_custom_view_panel — compiles + executes against the real store; {sql, rows, annotations}
-               (rows may be empty on a fresh store — the point is the SQL compiles and runs). */
+            /* Seed collect.wait_stats so run_custom_view_panel returns REAL rows — the panel sums
+               delta_wait_time_ms into hourly buckets over the default 24h window (two rows, one and two hours back).
+               The seed connection carries the explicit collect/config search_path (like the tool data source) so the
+               helper's bare `servers` / `wait_stats` resolve regardless of pool state — a raw `cs` connection can
+               get a stale pre-migration session whose search_path is just `public` (only surfaces in a full run). */
+            await using (var seed = new NpgsqlConnection(dataSourceConnectionString))
+            {
+                await seed.OpenAsync(ct);
+                await DarlingMcpTestData.RegisterServerAsync(seed, seedServerId, seedServerName, ct);
+                await DarlingMcpTestData.ExecAsync(seed, ct,
+                    "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    1L, DarlingMcpTestData.Naive(DateTime.UtcNow.AddHours(-2)), seedServerId, seedServerName, "CXPACKET", 10L, 40000L);
+                await DarlingMcpTestData.ExecAsync(seed, ct,
+                    "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    2L, DarlingMcpTestData.Naive(DateTime.UtcNow.AddHours(-1)), seedServerId, seedServerName, "PAGEIOLATCH_SH", 5L, 60000L);
+            }
+
+            /* run_custom_view_panel — compiles + executes against the real store and returns NON-EMPTY rows for the
+               seeded window, proving the composed panel's DATA flows end-to-end (not just that the SQL runs). */
             using (var run = JsonDocument.Parse(await DarlingMcpCustomViewTools.RunCustomViewPanel(postgres, RunSpec)))
             {
                 Assert.True(run.RootElement.TryGetProperty("sql", out var sql));
                 Assert.Contains("collect.", sql.GetString()!, StringComparison.Ordinal);
-                Assert.Equal(JsonValueKind.Array, run.RootElement.GetProperty("rows").ValueKind);
+                var rows = run.RootElement.GetProperty("rows");
+                Assert.Equal(JsonValueKind.Array, rows.ValueKind);
+                Assert.True(rows.GetArrayLength() >= 1,
+                    "expected the seeded wait_stats rows to produce at least one bucket: " + run.RootElement.GetRawText());
                 Assert.Equal(JsonValueKind.Array, run.RootElement.GetProperty("annotations").ValueKind);
             }
 
@@ -292,11 +327,14 @@ public sealed class DarlingMcpCustomViewToolsLivePostgresTests
         }
         finally
         {
+            /* Separate single-statement commands: Npgsql cannot run a multi-command batch as one parameterized
+               (prepared) statement (42601). Own-scoped by GUID name + seed server id, so nothing else is touched. */
             await using var owner = new NpgsqlConnection(cs);
             await owner.OpenAsync(ct);
-            using var cleanup = new NpgsqlCommand("DELETE FROM config.custom_views WHERE name = $1", owner);
-            cleanup.Parameters.AddWithValue(name);
-            await cleanup.ExecuteNonQueryAsync(ct);
+            await DarlingMcpTestData.ExecAsync(owner, ct,
+                "DELETE FROM config.custom_views WHERE name = $1 OR name = $2", name, name + "_invalid");
+            await DarlingMcpTestData.ExecAsync(owner, ct, "DELETE FROM collect.wait_stats WHERE server_id = $1", seedServerId);
+            await DarlingMcpTestData.ExecAsync(owner, ct, "DELETE FROM collect.servers WHERE server_id = $1", seedServerId);
         }
     }
 }
