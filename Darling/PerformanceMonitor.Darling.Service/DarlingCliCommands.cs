@@ -18,6 +18,7 @@ using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
+using Npgsql;
 using PerformanceMonitor.Darling.Service.Mcp;
 
 namespace PerformanceMonitor.Darling.Service;
@@ -74,6 +75,22 @@ public static class DarlingCliCommands
     public static bool IsConfigureNetworkVerb(string arg) =>
         string.Equals(arg, "--configure-network", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>The verb <see cref="EnableMcpAsync"/> handles — enable the MCP endpoint in the store (+ firewall).</summary>
+    public static bool IsEnableMcpVerb(string arg) =>
+        string.Equals(arg, "--enable-mcp", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The verb <see cref="DisableMcpAsync"/> handles — disable the MCP endpoint in the store (+ firewall).</summary>
+    public static bool IsDisableMcpVerb(string arg) =>
+        string.Equals(arg, "--disable-mcp", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The verb <see cref="EnableWebAsync"/> handles — enable the web-dashboard endpoint in the store (+ firewall).</summary>
+    public static bool IsEnableWebVerb(string arg) =>
+        string.Equals(arg, "--enable-web", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The verb <see cref="DisableWebAsync"/> handles — disable the web-dashboard endpoint in the store (+ firewall).</summary>
+    public static bool IsDisableWebVerb(string arg) =>
+        string.Equals(arg, "--disable-web", StringComparison.OrdinalIgnoreCase);
+
     /// <summary><c>--version</c>/<c>-v</c> — print the product version and exit.</summary>
     public static bool IsVersionVerb(string arg) =>
         string.Equals(arg, "--version", StringComparison.OrdinalIgnoreCase)
@@ -95,7 +112,11 @@ public static class DarlingCliCommands
         IsEncryptPasswordVerb(arg)
         || IsValidateConfigVerb(arg)
         || IsPrintViewerConnectionVerb(arg)
-        || IsConfigureNetworkVerb(arg);
+        || IsConfigureNetworkVerb(arg)
+        || IsEnableMcpVerb(arg)
+        || IsDisableMcpVerb(arg)
+        || IsEnableWebVerb(arg)
+        || IsDisableWebVerb(arg);
 
     /// <summary>
     /// Classifies the exe's command line from its FIRST argument (#1581): no args → run the host; a recognized
@@ -158,7 +179,11 @@ public static class DarlingCliCommands
         "  PerformanceMonitor.Darling.Service.exe --test-connection   Validate darling.json and probe every configured server." + Environment.NewLine +
         "  PerformanceMonitor.Darling.Service.exe --encrypt-password  Encrypt a SQL-auth password for darling.json (reads stdin)." + Environment.NewLine +
         "  PerformanceMonitor.Darling.Service.exe --print-viewer-connection   Print a remote-viewer connection string (managed store)." + Environment.NewLine +
-        "  PerformanceMonitor.Darling.Service.exe --configure-network Interactive LAN-exposure wizard.";
+        "  PerformanceMonitor.Darling.Service.exe --configure-network Interactive LAN-exposure wizard." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --enable-mcp        Enable the MCP endpoint in the store and open its firewall (run elevated)." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --disable-mcp       Disable the MCP endpoint in the store and remove its firewall rule (run elevated)." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --enable-web        Enable the web dashboard in the store and open its firewall (run elevated)." + Environment.NewLine +
+        "  PerformanceMonitor.Darling.Service.exe --disable-web       Disable the web dashboard in the store and remove its firewall rule (run elevated).";
 
     /// <summary>
     /// Loads + validates darling.json, then probes every server. Prints one PASS/FAIL line per server and a
@@ -1128,5 +1153,318 @@ public static class DarlingCliCommands
 
         line = line.Trim();
         return line.Length == 0 ? defaultYes : line.StartsWith("y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /* ================================================================================================
+       --enable-mcp / --disable-mcp / --enable-web / --disable-web: headless endpoint bring-up.
+
+       Two gaps these close on a headless box (no WPF Viewer, and the service runs as a virtual service
+       account that CANNOT modify Windows Firewall, so its best-effort self-reconcile silently fails):
+         (a) ENABLE/DISABLE an endpoint. After the first run mcp.enabled/web.enabled in darling.json are only
+             a SEED; the store (config.config_service.mcp_enabled/web_enabled) is authoritative and is normally
+             toggled only by the Viewer's Settings. These verbs write the store directly — a TARGETED UPDATE
+             whose BEFORE-UPDATE self-bump trigger increments config_version, so the worker hot-reloads within
+             one sweep (no restart). We NEVER set config_version ourselves (the trigger owns it), and never
+             touch paused or the OTHER endpoint's flag.
+         (b) OPEN/CLOSE the endpoint's firewall, but only when its darling.json network block opts into LAN
+             exposure. Elevated -> run the SAME scoped, idempotent-by-DisplayName rule the host reconciles;
+             not elevated -> print the exact elevated command as a handoff (the store toggle already
+             succeeded, so a non-elevated shell is never a failure).
+
+       Managed-mode only (the owner credential + firewall are managed concerns; BYO governs its own
+       config_service + exposure). Windows-only: DPAPI credential decrypt + WindowsPrincipal + firewall — the
+       Program dispatch is OperatingSystem.IsWindows()-guarded, mirroring --print-viewer-connection.
+       ================================================================================================ */
+
+    /// <summary>The CLI's targeted store write that ENABLES the MCP endpoint on the single config_service row
+    /// (id=1). Sets only <c>mcp_enabled</c> + the audit columns; the BEFORE-UPDATE self-bump trigger fires
+    /// <c>config_version</c> (deliberately NOT set here) so the worker hot-reloads. Pure — Darling.Tests pin the shape.</summary>
+    public const string EnableMcpStoreSql =
+        "UPDATE config.config_service SET mcp_enabled = TRUE, updated_at = (now() AT TIME ZONE 'UTC'), updated_by = 'cli' WHERE id = 1";
+
+    /// <summary>The CLI's targeted store write that DISABLES the MCP endpoint (twin of <see cref="EnableMcpStoreSql"/>).</summary>
+    public const string DisableMcpStoreSql =
+        "UPDATE config.config_service SET mcp_enabled = FALSE, updated_at = (now() AT TIME ZONE 'UTC'), updated_by = 'cli' WHERE id = 1";
+
+    /// <summary>The CLI's targeted store write that ENABLES the read-only web dashboard endpoint (twin of <see cref="EnableMcpStoreSql"/>).</summary>
+    public const string EnableWebStoreSql =
+        "UPDATE config.config_service SET web_enabled = TRUE, updated_at = (now() AT TIME ZONE 'UTC'), updated_by = 'cli' WHERE id = 1";
+
+    /// <summary>The CLI's targeted store write that DISABLES the web dashboard endpoint (twin of <see cref="EnableMcpStoreSql"/>).</summary>
+    public const string DisableWebStoreSql =
+        "UPDATE config.config_service SET web_enabled = FALSE, updated_at = (now() AT TIME ZONE 'UTC'), updated_by = 'cli' WHERE id = 1";
+
+    /// <summary>Which optional endpoint a toggle verb targets — selects the store column, firewall rule name,
+    /// darling.json network block, and seed-key note.</summary>
+    private enum EndpointKind
+    {
+        Mcp,
+        Web,
+    }
+
+    /// <summary>The firewall step a toggle verb takes, from the pure (exposed, elevated) inputs (pin-tested via
+    /// <see cref="ClassifyFirewallPlan"/>).</summary>
+    public enum EndpointFirewallPlan
+    {
+        /// <summary>Loopback-only (no LAN-exposure block) — no firewall change is needed.</summary>
+        LoopbackNoAction,
+
+        /// <summary>Exposed + elevated — run the scoped enable/disable command directly.</summary>
+        RunElevated,
+
+        /// <summary>Exposed + NOT elevated — print the exact elevated command for the operator to run by hand.</summary>
+        Handoff,
+    }
+
+    /// <summary>PURE firewall-step decision for a toggle verb (unit-tested): a loopback-only endpoint needs no
+    /// rule; an exposed endpoint runs the rule when elevated, otherwise hands the exact command off. Shared by
+    /// enable and disable alike (disable just runs/hands-off the removal command instead of the open command).</summary>
+    public static EndpointFirewallPlan ClassifyFirewallPlan(bool exposed, bool elevated) =>
+        !exposed ? EndpointFirewallPlan.LoopbackNoAction
+        : elevated ? EndpointFirewallPlan.RunElevated
+        : EndpointFirewallPlan.Handoff;
+
+    /// <summary>
+    /// Enables the embedded MCP endpoint on a headless managed deployment: flips
+    /// <c>config.config_service.mcp_enabled</c> TRUE (the live switch — the worker hot-reloads within one sweep
+    /// via the self-bump trigger, no restart) and, when mcp.network opts into LAN exposure, opens the scoped
+    /// firewall rule if elevated (else prints it as an elevated handoff — the toggle still succeeded). Managed-
+    /// mode only; Windows-only (the caller is <c>OperatingSystem.IsWindows()</c>-guarded, mirroring
+    /// <see cref="PrintViewerConnectionAsync"/>). Returns 0 on a successful toggle; 1 on a load/mode/credential/unseeded error.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static Task<int> EnableMcpAsync(
+        string? configPath, TextWriter output, TextWriter error, CancellationToken cancellationToken) =>
+        ToggleEndpointAsync(EndpointKind.Mcp, enable: true, configPath, output, error, cancellationToken);
+
+    /// <summary>Disables the embedded MCP endpoint (twin of <see cref="EnableMcpAsync"/>): flips
+    /// <c>mcp_enabled</c> FALSE live and, when exposed, best-effort removes the scoped firewall rule (elevated) or
+    /// prints the removal as a handoff. A firewall-removal failure is non-fatal.</summary>
+    [SupportedOSPlatform("windows")]
+    public static Task<int> DisableMcpAsync(
+        string? configPath, TextWriter output, TextWriter error, CancellationToken cancellationToken) =>
+        ToggleEndpointAsync(EndpointKind.Mcp, enable: false, configPath, output, error, cancellationToken);
+
+    /// <summary>Enables the embedded read-only web dashboard endpoint (twin of <see cref="EnableMcpAsync"/> for
+    /// <c>web_enabled</c> + the web firewall rule).</summary>
+    [SupportedOSPlatform("windows")]
+    public static Task<int> EnableWebAsync(
+        string? configPath, TextWriter output, TextWriter error, CancellationToken cancellationToken) =>
+        ToggleEndpointAsync(EndpointKind.Web, enable: true, configPath, output, error, cancellationToken);
+
+    /// <summary>Disables the embedded web dashboard endpoint (twin of <see cref="DisableMcpAsync"/> for
+    /// <c>web_enabled</c> + the web firewall rule).</summary>
+    [SupportedOSPlatform("windows")]
+    public static Task<int> DisableWebAsync(
+        string? configPath, TextWriter output, TextWriter error, CancellationToken cancellationToken) =>
+        ToggleEndpointAsync(EndpointKind.Web, enable: false, configPath, output, error, cancellationToken);
+
+    /// <summary>The shared body of the four endpoint-toggle verbs: load + managed-mode guard + owner-credential
+    /// build (mirroring <see cref="PrintViewerConnectionAsync"/>), a targeted <c>config_service</c> UPDATE (0
+    /// rows = an unseeded store), the live-apply note, the firewall step, and the "darling.json enabled is only
+    /// the seed" UX note. Never touches config_version (the self-bump trigger owns it) or the OTHER endpoint's flag.</summary>
+    [SupportedOSPlatform("windows")]
+    private static async Task<int> ToggleEndpointAsync(
+        EndpointKind endpoint, bool enable, string? configPath, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        DarlingConfig config;
+        try
+        {
+            config = DarlingConfig.Load(configPath);
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Could not load configuration: {ex.Message}");
+            return 1;
+        }
+
+        var verb = VerbName(endpoint, enable);
+        var endpointLabel = endpoint == EndpointKind.Mcp ? "MCP" : "web dashboard";
+        var column = endpoint == EndpointKind.Mcp ? "mcp_enabled" : "web_enabled";
+        var seedKey = endpoint == EndpointKind.Mcp ? "mcp.enabled" : "web.enabled";
+
+        /* Managed-mode guard (mirrors PrintViewerConnectionAsync): the owner credential + firewall reconcile are
+           managed concerns. In BYO the operator's own PostgreSQL holds config_service — toggle it there. */
+        var postgres = config.Postgres;
+        if (postgres is null)
+        {
+            error.WriteLine("postgres section is required.");
+            return 1;
+        }
+
+        if (!postgres.Managed)
+        {
+            error.WriteLine(
+                $"{verb} applies to the managed store only. In bring-your-own mode (postgres.connectionString), the " +
+                $"endpoint enable flags live in YOUR PostgreSQL's config.config_service ({column}) — toggle them there.");
+            return 1;
+        }
+
+        /* The OWNER connection (the service's own superuser credential) — null until the worker's first run has
+           written the DPAPI-protected credential (i.e. the service has never initialized the store). */
+        var connectionString = DarlingManagedPostgres.TryBuildConnectionStringFromStoredCredential(postgres);
+        if (connectionString is null)
+        {
+            error.WriteLine(
+                "The managed store credential does not exist yet — start the PerformanceMonitor Darling service once " +
+                "so its first run initializes the store, then re-run this command.");
+            return 1;
+        }
+
+        /* The TARGETED store write. A DIRECT config_service UPDATE self-bumps config_version via the BEFORE-UPDATE
+           trigger, so the worker hot-reloads within one sweep — we never touch config_version ourselves. */
+        var sql = EndpointToggleSql(endpoint, enable);
+        int rows;
+        try
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new NpgsqlCommand(sql, connection);
+            rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Could not update the control-plane store: {ex.Message}");
+            return 1;
+        }
+
+        if (rows == 0)
+        {
+            error.WriteLine(
+                "The control-plane store is not seeded yet (config.config_service has no id=1 row) — start the " +
+                "PerformanceMonitor Darling service once so it seeds the store, then re-run this command.");
+            return 1;
+        }
+
+        output.WriteLine(
+            $"{endpointLabel} endpoint {(enable ? "ENABLED" : "DISABLED")} in the control-plane store " +
+            $"(config.config_service.{column} = {(enable ? "true" : "false")}).");
+        output.WriteLine(
+            "The running service applies this LIVE within one collection sweep (the write self-bumps the reload " +
+            "beacon) — no restart needed.");
+
+        await ReconcileEndpointFirewallAsync(endpoint, enable, config, output, error, cancellationToken);
+
+        output.WriteLine();
+        output.WriteLine(
+            $"NOTE: '{seedKey}' in darling.json is only the FIRST-RUN seed, not the live switch. After the first run " +
+            $"the store (config.config_service.{column}) is authoritative — which is exactly what this command changed.");
+
+        return 0;
+    }
+
+    /// <summary>The four endpoint-toggle SQL strings, selected by (endpoint, enable) — the routing the public verbs share.</summary>
+    private static string EndpointToggleSql(EndpointKind endpoint, bool enable) => (endpoint, enable) switch
+    {
+        (EndpointKind.Mcp, true) => EnableMcpStoreSql,
+        (EndpointKind.Mcp, false) => DisableMcpStoreSql,
+        (EndpointKind.Web, true) => EnableWebStoreSql,
+        (EndpointKind.Web, false) => DisableWebStoreSql,
+        _ => throw new ArgumentOutOfRangeException(nameof(endpoint)),
+    };
+
+    /// <summary>The verb spelling for a toggle (for error + handoff text).</summary>
+    private static string VerbName(EndpointKind endpoint, bool enable) => (endpoint, enable) switch
+    {
+        (EndpointKind.Mcp, true) => "--enable-mcp",
+        (EndpointKind.Mcp, false) => "--disable-mcp",
+        (EndpointKind.Web, true) => "--enable-web",
+        (EndpointKind.Web, false) => "--disable-web",
+        _ => throw new ArgumentOutOfRangeException(nameof(endpoint)),
+    };
+
+    /// <summary>
+    /// The firewall half of a toggle (defense-in-depth, never the boundary — pg_hba/token + the in-app CIDR
+    /// check are). Only acts when the endpoint's darling.json network block opts into LAN exposure (a non-loopback
+    /// listen, via the shared <see cref="DarlingNetwork.IsExposedListenAddress"/>). Uses the SAME scoped,
+    /// idempotent-by-DisplayName rule name the host's self-reconcile uses
+    /// (<see cref="DarlingMcpHostService.McpFirewallRuleName"/> / <see cref="DarlingWebHostService.WebFirewallRuleName"/>)
+    /// and the SAME pure command builders. Elevated -> runs the rule; otherwise prints the exact elevated command
+    /// — the store toggle already succeeded, so a non-elevated shell is a handoff, never a failure. A firewall
+    /// failure is likewise non-fatal.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static async Task ReconcileEndpointFirewallAsync(
+        EndpointKind endpoint, bool enable, DarlingConfig config, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        var (port, listen, allowFrom, ruleName) = endpoint == EndpointKind.Mcp
+            ? (config.Mcp.Port, config.Mcp.Network?.Listen, config.Mcp.Network?.AllowFrom, DarlingMcpHostService.McpFirewallRuleName(config.Mcp.Port))
+            : (config.Web.Port, config.Web.Network?.Listen, config.Web.Network?.AllowFrom, DarlingWebHostService.WebFirewallRuleName(config.Web.Port));
+
+        var exposed = DarlingNetwork.IsExposedListenAddress(listen);
+        var plan = ClassifyFirewallPlan(exposed, IsElevated());
+
+        output.WriteLine();
+        if (plan == EndpointFirewallPlan.LoopbackNoAction)
+        {
+            output.WriteLine(enable
+                ? "Firewall: this endpoint has no LAN-exposure block, so it binds LOOPBACK ONLY — no firewall change is " +
+                  "needed. To expose it on the LAN, run --configure-network (which writes the listen/allowFrom/token block)."
+                : "Firewall: this endpoint is loopback-only — there is no scoped firewall rule to remove.");
+            return;
+        }
+
+        if (enable && string.IsNullOrWhiteSpace(allowFrom))
+        {
+            /* Non-loopback listen but no allowFrom CIDR: the service itself would fail-close this to loopback, so
+               there is nothing to open. Point at the wizard rather than emit a malformed New-NetFirewallRule. */
+            output.WriteLine(
+                $"Firewall: the network block sets listen '{listen}' but no allowFrom CIDR, so the service will bind " +
+                "loopback-only until it is completed. Run --configure-network to finish the block; not opening the firewall.");
+            return;
+        }
+
+        var command = enable
+            ? DarlingManagedPostgres.BuildFirewallEnableCommand(ruleName, port, allowFrom!)
+            : DarlingManagedPostgres.BuildFirewallDisableCommand(ruleName);
+
+        if (plan == EndpointFirewallPlan.RunElevated)
+        {
+            await RunFirewallCommandAsync(command, ruleName, enable, output, error, cancellationToken);
+            return;
+        }
+
+        /* Handoff (not elevated) — the store toggle already succeeded; print the exact command to run elevated. */
+        output.WriteLine(enable
+            ? "Firewall: this shell is not elevated, so the endpoint was enabled but its firewall rule was NOT opened. " +
+              "Run this in an ELEVATED PowerShell to open the port (scoped to the port + CIDR):"
+            : "Firewall: this shell is not elevated, so the firewall rule was NOT removed. Run this in an ELEVATED PowerShell to close the port:");
+        output.WriteLine("  " + command);
+    }
+
+    /// <summary>Runs a scoped firewall command via the shared PowerShell runner and reports the outcome. NEVER
+    /// throws (except on cancellation) — the store toggle already succeeded, so a firewall failure degrades to a
+    /// printed elevated hand-off, never a non-zero exit.</summary>
+    [SupportedOSPlatform("windows")]
+    private static async Task RunFirewallCommandAsync(
+        string command, string ruleName, bool enable, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var (exitCode, psOutput) = await DarlingManagedPostgres.RunPowerShellAsync(command, cancellationToken);
+            if (exitCode == 0)
+            {
+                output.WriteLine($"Firewall rule '{ruleName}' {(enable ? "opened" : "removed")}.");
+                return;
+            }
+
+            error.WriteLine(
+                $"Firewall rule {(enable ? "open" : "removal")} did not confirm (exit {exitCode}: {psOutput}). " +
+                "Run this in an elevated PowerShell:");
+            error.WriteLine("  " + command);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            error.WriteLine($"Firewall rule {(enable ? "open" : "removal")} failed ({ex.Message}). Run this in an elevated PowerShell:");
+            error.WriteLine("  " + command);
+        }
     }
 }

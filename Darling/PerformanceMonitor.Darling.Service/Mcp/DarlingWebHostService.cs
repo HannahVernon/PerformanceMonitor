@@ -786,8 +786,9 @@ public sealed class DarlingWebHostService : BackgroundService
     }
 
     /// <summary>The scoped web firewall rule name (idempotent by DisplayName), port-specific and distinct from
-    /// the store's and MCP's rules so the endpoints reconcile independently.</summary>
-    private static string WebFirewallRuleName(int port) => $"PerformanceMonitor Darling Web (port {port})";
+    /// the store's and MCP's rules so the endpoints reconcile independently. <c>internal</c> so the headless
+    /// endpoint-toggle CLI verbs (--enable-web/--disable-web) reconcile the SAME rule by DisplayName.</summary>
+    internal static string WebFirewallRuleName(int port) => $"PerformanceMonitor Darling Web (port {port})";
 
     [SupportedOSPlatform("windows")]
     private Task ReconcileWebFirewallAsync(int port, bool enable, string? cidr, CancellationToken cancellationToken)
