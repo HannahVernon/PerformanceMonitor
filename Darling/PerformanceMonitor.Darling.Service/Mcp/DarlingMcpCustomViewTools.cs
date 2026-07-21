@@ -247,6 +247,34 @@ public sealed class DarlingMcpCustomViewTools
         }
     }
 
+    [McpServerTool(Name = "describe_custom_view_catalog"), Description(
+        "Returns the COMPOSE CATALOG — the exact vocabulary a composed (v2) custom-view panel may draw from — so you " +
+        "can build a VALID panel without guessing at names. CALL THIS FIRST before create_custom_view / " +
+        "update_custom_view / validate_custom_view / run_custom_view_panel: the panel's 'source', 'measure'/'ratio', " +
+        "'aggregate', 'unit', 'groupBy'/'filters' dimensions, 'timeBucket', and 'viz' must all come from this " +
+        "catalog (the compiler emits ONLY these identifiers), and the validation errors do not enumerate the legal " +
+        "names, so guessing them is slow. Returns {measures, dimensions, annotationSources, universalDimensions, " +
+        "unitFamilies, aggregates, timeBuckets, filterOps, viz}. Each measure names its 'source' (collector table), " +
+        "its 'key' (use as the panel's 'measure', or as 'ratio' when kind='ratio'), its 'kind' (scalar|ratio), the " +
+        "'validAggregates' and 'allowedDimensions' legal for it, its unit family + default/native unit, and " +
+        "'appliesTo' (which server types — onPrem/azureSqlDb/azureMi/awsRds — can collect it). A panel then names a " +
+        "'source' + 'measure'|'ratio', an 'aggregate' from that measure's validAggregates, a 'unit' from its family, " +
+        "an optional 'timeBucket' (time series) OR 'topN' (ranked, not both), 'groupBy'/'filters' from its " +
+        "allowedDimensions (plus the universal 'server' axis), and a 'viz' coherent with the mode (line/area/" +
+        "stacked for time series; bar/pie for ranked; stat for a single value; table for any). Static reference " +
+        "data — no server or time window needed; it reads no monitored server and no collected data.")]
+    public static Task<string> DescribeCustomViewCatalog()
+    {
+        try
+        {
+            return Task.FromResult(DarlingWebEndpoints.BuildComposeCatalogNode().ToJsonString(McpHelpers.JsonOptions));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(McpHelpers.FormatError("describe_custom_view_catalog", ex));
+        }
+    }
+
     /// <summary>A small <c>{status, message}</c> envelope for a non-data write outcome (conflict / invalid /
     /// not_found / error) — the same shape mute_analysis_finding uses for its status, so an MCP client can branch
     /// on the outcome kind. A successful create/update/get returns the view object itself, not this.</summary>

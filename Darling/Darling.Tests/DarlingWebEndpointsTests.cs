@@ -82,15 +82,15 @@ public sealed class DarlingWebEndpointsTests
     [Fact]
     public void ExcludedToolNames_AreTheNonReadSurfaceTools()
     {
-        /* The six original non-read tools (analyze_server, the mute write, the four analyze_*_plan) PLUS the
-           seven Custom Views MANAGEMENT tools (#1599), which are served by /api/views + /api/compose/run rather
-           than the /api/read/{tool} 1:1 mirror. */
+        /* The six original non-read tools (analyze_server, the mute write, the four analyze_*_plan) PLUS the eight
+           Custom Views tools (#1599 + describe_custom_view_catalog), which are served by /api/views +
+           /api/compose/run + /api/catalog rather than the /api/read/{tool} 1:1 mirror. */
         Assert.Equal(
             new[]
             {
                 "analyze_plan_xml", "analyze_procedure_plan", "analyze_query_plan", "analyze_query_store_plan", "analyze_server",
-                "create_custom_view", "delete_custom_view", "get_custom_view", "list_custom_views", "mute_analysis_finding",
-                "run_custom_view_panel", "update_custom_view", "validate_custom_view",
+                "create_custom_view", "delete_custom_view", "describe_custom_view_catalog", "get_custom_view", "list_custom_views",
+                "mute_analysis_finding", "run_custom_view_panel", "update_custom_view", "validate_custom_view",
             },
             DarlingWebEndpoints.ExcludedToolNames.OrderBy(n => n, StringComparer.Ordinal).ToArray());
     }
