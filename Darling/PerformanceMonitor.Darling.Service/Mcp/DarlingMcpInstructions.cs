@@ -10,9 +10,9 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 
 /// <summary>
 /// Server instructions sent to MCP clients during initialization — Lite's McpInstructions
-/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~85
-/// analysis + plan-analysis + data-read tools (plus the Custom Views + alert-tuning write surfaces)
-/// this headless service exposes (the <see cref="Text"/> body enumerates them).
+/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~87
+/// analysis + plan-analysis + data-read tools (plus the Custom Views + alert-tuning + server-onboarding
+/// write surfaces) this headless service exposes (the <see cref="Text"/> body enumerates them).
 /// </summary>
 internal static class DarlingMcpInstructions
 {
@@ -41,7 +41,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes eighty-five tools. Seventy-four are the same names Performance Monitor Lite and the Dashboard expose: six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty-one diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. The remaining eleven are unique to Darling's central store: eight are the Custom Views tools (seven manage the saved views — the one view-authoring write surface — and `describe_custom_view_catalog` returns the read-only compose vocabulary those authoring tools draw from), and three are alert-tuning write tools (`update_alert_settings` tunes the alert engine's thresholds; `create_mute_rule` / `delete_mute_rule` manage the mute rules) that write only the shared alert configuration in the monitoring store. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes eighty-seven tools. Seventy-four are the same names Performance Monitor Lite and the Dashboard expose: six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty-one diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. The remaining thirteen are unique to Darling's central store: eight are the Custom Views tools (seven manage the saved views — the one view-authoring write surface — and `describe_custom_view_catalog` returns the read-only compose vocabulary those authoring tools draw from), three are alert-tuning write tools (`update_alert_settings` tunes the alert engine's thresholds; `create_mute_rule` / `delete_mute_rule` manage the mute rules) that write only the shared alert configuration in the monitoring store, and two are server-onboarding write tools (`add_servers` bulk-adds monitored servers; `remove_server` removes one) that add or remove rows in the monitoring store's monitored-server registry. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -202,6 +202,17 @@ internal static class DarlingMcpInstructions
         | `update_custom_view` | Validates then updates a view in place under optimistic concurrency (pass the `version` you read); conflict on a stale version or duplicate name | `view_id` (required), `name` (required), `definition` (required), `version` (required), `description` |
         | `delete_custom_view` | Deletes a view by id (permanent) | `view_id` (required) |
         | `run_custom_view_panel` | Compiles + runs a single composed panel and returns `{sql, rows, annotations}` — the composer's live preview, for checking a panel's data before saving | `spec` (required — a JSON object `{panel, variables?, values?, server?, hours?}`) |
+
+        ### Server onboarding (add & remove)
+
+        Two write tools stand up or tear down FLEET monitoring conversationally — the service-side twin of the WPF viewer's Add / Manage Servers dialogs. They write ONLY the monitoring store's monitored-server registry (`config.config_monitored_servers`); neither runs anything on a monitored SQL Server beyond a one-time connection probe, and neither touches the collected performance data. A change is picked up by the running service within one collection sweep (no restart).
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `add_servers` | BULK-adds monitored servers: pass a JSON ARRAY of server objects and each is validated, connection-tested IN the service, and (if new and reachable) saved. Per object: `host` (required), `display_name`, `database` (one DB only, e.g. an Azure SQL Database), `auth` (`Windows`/`SQL`, default `Windows`), `username`+`password` (required for `SQL`), `encrypt_mode` (`Optional`/`Mandatory`/`Strict`, default `Mandatory`), `trust_server_certificate` (default false), `read_only_intent`, `multi_subnet_failover`. Servers are processed in order; a duplicate (case-folded, vs existing or an earlier entry) is `duplicate`, an unreachable server is `connection_failed` (the batch continues), Entra/MFA/Service-Principal/Managed-Identity auth is `invalid` (Windows/SQL only). Returns `{added, skipped, failed, results:[{server, status, detail}]}` | `servers_json` (required — a JSON array of server objects) |
+        | `remove_server` | Removes a monitored server by name (resolved like every `server_name`). Returns `{status:"removed", server}` or `{status:"not_found"}`. Already-collected history is NOT deleted | `server_name` (required) |
+
+        A SQL password is encrypted at rest (DPAPI, the service identity) and is NEVER returned by a read tool. It DOES travel to this endpoint inside `add_servers`' request JSON, so on a LAN deployment reach the endpoint only through the documented TLS reverse proxy.
 
         The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
 

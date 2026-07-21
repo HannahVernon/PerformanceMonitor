@@ -323,6 +323,17 @@ public sealed class DarlingSecuritySplitLiveTests
             await ExecAsync(mcp, "INSERT INTO config.config_mute_rules (id, enabled, created_at_utc) VALUES ('sec-mcp-mute', true, now())", ct);
             await ExecAsync(mcp, "DELETE FROM config.config_mute_rules WHERE id = 'sec-mcp-mute'", ct);
 
+            /* The mcp server-onboarding writes (add_servers / remove_server): full CRUD on config_monitored_servers,
+               proven by a real INSERT/UPDATE/DELETE round-trip as the mcp role (own-scoped sentinel server_id). The
+               INSERT fires trg_bump_monitored_servers -> config_bump_version AS mcp, so it doubles as proof the
+               section-8 config_service beacon column-grant covers THIS write too (no extra config_service grant). */
+            Assert.True(await HasPrivAsync(mcp, "config.config_monitored_servers", "INSERT", ct));
+            Assert.True(await HasPrivAsync(mcp, "config.config_monitored_servers", "UPDATE", ct));
+            Assert.True(await HasPrivAsync(mcp, "config.config_monitored_servers", "DELETE", ct));
+            await ExecAsync(mcp, "INSERT INTO config.config_monitored_servers (server_id, name, host) VALUES (-424242, 'sec-mcp-onboard', 'sec-mcp-onboard-host')", ct);
+            await ExecAsync(mcp, "UPDATE config.config_monitored_servers SET is_enabled = FALSE WHERE server_id = -424242", ct);
+            await ExecAsync(mcp, "DELETE FROM config.config_monitored_servers WHERE server_id = -424242", ct);
+
             /* The load-bearing beacon proof: an UPDATE on config_alert_settings as the mcp role fires the
                statement-level bump trigger, which UPDATEs config_service.config_version AS the mcp role (the
                trigger function is SECURITY INVOKER). Without the column-level config_service beacon grant this
@@ -349,6 +360,7 @@ public sealed class DarlingSecuritySplitLiveTests
             /* Belt-and-suspenders cleanup (the DELETEs above already removed these on the happy path). */
             await ExecAsync(owner, $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
             await ExecAsync(owner, "DELETE FROM config.config_mute_rules WHERE id = 'sec-mcp-mute'", ct);
+            await ExecAsync(owner, "DELETE FROM config.config_monitored_servers WHERE server_id = -424242", ct);
             await DropTestRolesAsync(owner, ct);
         }
     }
@@ -495,7 +507,11 @@ GRANT INSERT, UPDATE, DELETE ON config.custom_views TO {McpRole};
 -- config_service.config_version AS the mcp role). Mirrors DarlingManagedRoles section 8.
 GRANT INSERT, UPDATE, DELETE ON config.config_mute_rules TO {McpRole};
 GRANT UPDATE ON config.config_alert_settings TO {McpRole};
-GRANT UPDATE (config_version, updated_at) ON config.config_service TO {McpRole};";
+GRANT UPDATE (config_version, updated_at) ON config.config_service TO {McpRole};
+-- The mcp server-onboarding writes (add_servers / remove_server): CRUD on the single config_monitored_servers
+-- table. Mirrors DarlingManagedRoles section 9. The beacon is already covered by the config_service column grant
+-- above (a config_monitored_servers write fires the same SECURITY-INVOKER bump trigger).
+GRANT INSERT, UPDATE, DELETE ON config.config_monitored_servers TO {McpRole};";
         await ExecAsync(owner, ddl, ct);
     }
 

@@ -487,7 +487,18 @@ public sealed class DarlingMcpHostService : BackgroundService
                    runner the web viewer's editor uses (no divergent second impl), and run back a composed panel's
                    data for a self-test loop. The mcp role carries the narrow INSERT/UPDATE/DELETE grant on ONLY
                    config.custom_views (mirroring viewer's) — never the config pivot or the secret columns. */
-                .WithGeminiCompatibleTools<DarlingMcpCustomViewTools>();
+                .WithGeminiCompatibleTools<DarlingMcpCustomViewTools>()
+                /* The server-onboarding WRITE tools — add_servers (BULK) / remove_server: an MCP client can stand up
+                   or tear down FLEET monitoring conversationally. The service-side twin of the Viewer's Add / Add-
+                   Multiple dialogs: add_servers validates each entry, probes the connection IN-PROCESS (the service
+                   holds the network path + credentials, so no test_connect command plane is needed), skips
+                   case-folded duplicates via the shared ServerIdHelper identity, DPAPI-encrypts the SQL password
+                   (the service identity, so it round-trips at collection time), and INSERTs config.config_monitored_
+                   servers mirroring StoreConfigProvider.SeedMonitoredServersAsync; remove_server DELETEs by the same
+                   resolver the read tools use. The mcp role carries the narrow INSERT/UPDATE/DELETE grant on ONLY
+                   config.config_monitored_servers (the encrypted_password column stays SELECT-carved) — never the
+                   config pivot or a schema-wide write. */
+                .WithGeminiCompatibleTools<DarlingMcpServerAdminTools>();
 
             _app = builder.Build();
 

@@ -40,9 +40,12 @@ namespace PerformanceMonitor.Darling.Service;
 /// <c>collect</c> + <c>config</c>-minus-the-secret-columns) PLUS a NARROW, enumerated set of writes —
 /// INSERT on <c>collect.analysis_findings</c> and <c>config.analysis_muted</c> (what <c>analyze_server</c>
 /// persists + the <c>mute</c> tool need), INSERT/UPDATE/DELETE on <c>config.custom_views</c> (the
-/// custom-view tools, #1599), and the alert-tuning writes (INSERT/UPDATE/DELETE on
+/// custom-view tools, #1599), the alert-tuning writes (INSERT/UPDATE/DELETE on
 /// <c>config.config_mute_rules</c> + UPDATE on the singleton <c>config.config_alert_settings</c>, plus the
-/// two beacon columns of <c>config.config_service</c> so the settings write's self-bump trigger can fire).
+/// two beacon columns of <c>config.config_service</c> so the settings write's self-bump trigger can fire),
+/// and the server-onboarding writes (INSERT/UPDATE/DELETE on <c>config.config_monitored_servers</c> for the
+/// <c>add_servers</c>/<c>remove_server</c> tools — a single non-secret-KEY table; the credential column stays
+/// SELECT-carved, so <c>mcp</c> can WRITE a password blob but never READ one back).
 /// Deliberately NOT <c>admin</c>: a token-holder reachable over the network must never get the
 /// <c>config_command</c> service-credential pivot or the secret columns. Every write grant is an EXPLICIT
 /// single-table (or single-column) statement with NO <c>ALTER DEFAULT PRIVILEGES</c> (ADP has no per-table
@@ -195,7 +198,7 @@ public static class DarlingManagedRoles
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         logger.LogInformation(
-            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted + write config.custom_views + tune alerting (config_mute_rules, config_alert_settings, config_service reload beacon)) — the Viewer and MCP host no longer connect as the superuser");
+            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted + write config.custom_views + tune alerting (config_mute_rules, config_alert_settings, config_service reload beacon) + onboard servers (config_monitored_servers)) — the Viewer and MCP host no longer connect as the superuser");
     }
 
     /// <summary>
@@ -447,6 +450,18 @@ GRANT INSERT, UPDATE, DELETE ON {config}.custom_views TO {mcp};
 GRANT INSERT, UPDATE, DELETE ON {config}.config_mute_rules TO {mcp};
 GRANT UPDATE ON {config}.config_alert_settings TO {mcp};
 GRANT UPDATE (config_version, updated_at) ON {config}.config_service TO {mcp};
+
+-- 9. Server onboarding (the MCP server-admin write tools): the mcp role's monitored-server writes, mirroring
+--    sections 7/8's model (an EXPLICIT single-table statement, NO ALTER DEFAULT PRIVILEGES). add_servers /
+--    remove_server let a token-holder add or remove monitored servers in the SAME central store the Viewer's
+--    Add / Manage-Servers dialogs write: INSERT/UPDATE/DELETE on config_monitored_servers. Still NARROW -- a
+--    single non-secret-KEY table (the encrypted_password column is SELECT-carved from mcp by the section-6
+--    secret-column ACL above, so mcp can WRITE a credential blob but never READ one back), never the
+--    config_command service-credential pivot or a schema-wide config write. The BEACON is already covered: a
+--    config_monitored_servers write fires trg_bump_monitored_servers -> config_bump_version (SECURITY INVOKER),
+--    which UPDATEs config_service.config_version AS mcp, and section 8 already granted mcp
+--    UPDATE (config_version, updated_at) ON config_service -- so no additional config_service grant is needed here.
+GRANT INSERT, UPDATE, DELETE ON {config}.config_monitored_servers TO {mcp};
 ";
     }
 
