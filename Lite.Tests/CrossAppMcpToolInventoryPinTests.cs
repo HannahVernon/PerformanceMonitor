@@ -61,11 +61,12 @@ public sealed class CrossAppMcpToolInventoryPinTests
            this entry (the ratchet only shrinks). */
         "get_fleet_overview",
 
-        /* #1600: the Custom Views (CV2) management tools — the Darling MCP server's write surface, which
-           CRUD the user-authored dashboards/notebooks in the central Postgres store's config.custom_views
-           (the same views the Darling web viewer's editor builds) and run back a composed panel's data.
-           These are Darling-ONLY by architecture, not a "not ported yet" item: CV2 + config.custom_views are
-           the central-store web feature, and Lite (a single-instance WPF app over local DuckDB) has neither a
+        /* #1600 + #1602: the Custom Views (CV2) tools — the Darling MCP server's write surface (the six that
+           CRUD the user-authored dashboards/notebooks in the central Postgres store's config.custom_views and
+           run back a composed panel's data), plus describe_custom_view_catalog (#1602, read-only), which serves
+           the compose vocabulary those authoring tools draw from so an MCP client composes a valid view without
+           guessing. These are Darling-ONLY by architecture, not a "not ported yet" item: CV2 + config.custom_views
+           are the central-store web feature, and Lite (a single-instance WPF app over local DuckDB) has neither a
            web composer nor that table, so there is no Lite twin to port. */
         "list_custom_views",
         "get_custom_view",
@@ -74,6 +75,7 @@ public sealed class CrossAppMcpToolInventoryPinTests
         "update_custom_view",
         "delete_custom_view",
         "run_custom_view_panel",
+        "describe_custom_view_catalog",
     };
 
     [Fact]
