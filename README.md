@@ -106,7 +106,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 
 ### Lite Collectors
 
-26 collectors run on independent, configurable schedules:
+36 collectors run on independent, configurable schedules (the long-running-query completion trace is opt-in and ships disabled):
 
 | Collector | Default | Source |
 |---|---|---|
@@ -114,6 +114,10 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | blocked_process_report | 1 min | XE ring buffer session |
 | waiting_tasks | 1 min | `sys.dm_os_waiting_tasks` |
 | wait_stats | 1 min | `sys.dm_os_wait_stats` (deltas) |
+| latch_stats | 1 min | `sys.dm_os_latch_stats` (deltas) |
+| spinlock_stats | 1 min | `sys.dm_os_spinlock_stats` (deltas) |
+| cpu_scheduler_stats | 1 min | `sys.dm_os_schedulers` runnable/blocked/queued task counts (not Azure SQL DB) |
+| long_query_completions | 1 min (opt-in, ships off) | dedicated completion-trace XE (`rpc_completed`/`sql_batch_completed` over a duration threshold, plus `attention`) |
 | query_stats | 1 min | `sys.dm_exec_query_stats` (deltas) |
 | procedure_stats | 1 min | `sys.dm_exec_procedure_stats` (deltas) |
 | cpu_utilization | 1 min | `sys.dm_os_ring_buffers` scheduler monitor |
@@ -124,10 +128,16 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | perfmon_stats | 1 min | `sys.dm_os_performance_counters` (deltas) |
 | deadlocks | 1 min | dedicated `PerformanceMonitor_Deadlock` XE session (`xml_deadlock_report`; `database_xml_deadlock_report` on Azure SQL DB) |
 | dmv_blocking_snapshot | 1 min | `sys.dm_os_waiting_tasks` + `sys.dm_exec_*` (always-on blocking fallback when the blocked-process-report XE is unavailable) |
-| session_stats | 1 min | `sys.dm_exec_sessions` active session tracking |
+| session_stats | 5 min | `sys.dm_exec_sessions` active session tracking |
+| session_summary_stats | 5 min | `sys.dm_exec_sessions` top app/host/database summary |
 | memory_clerks | 5 min | `sys.dm_os_memory_clerks` |
 | memory_pressure_events | 5 min | `sys.dm_os_ring_buffers` RING_BUFFER_RESOURCE_MONITOR |
 | query_store | 5 min | Query Store DMVs (per database) |
+| plan_cache_stats | 5 min | `sys.dm_exec_cached_plans` (single-use vs reused plan-cache bloat) |
+| system_health_events | 5 min | `system_health` XE ring buffer (not Azure SQL DB) |
+| default_trace_events | 5 min | default trace via `sys.fn_trace_gettable` |
+| job_history | 5 min | `msdb.dbo.sysjobhistory` retained job-run history (not Azure SQL DB) |
+| agent_status | 5 min | `sys.dm_server_services` + `msdb.dbo.sysjobschedules` (not Azure SQL DB / RDS) |
 | running_jobs | 5 min | `msdb` job history with duration vs avg/p95 |
 | database_size_stats | 1 hour | `sys.master_files` + `FILEPROPERTY` + `dm_os_volume_stats` |
 | server_properties | on connect | `SERVERPROPERTY()` hardware and licensing metadata |
@@ -137,7 +147,7 @@ Data starts flowing within 1–5 minutes. That's it. No installation on your ser
 | database_scoped_config | On connect | Database-scoped configurations |
 | trace_flags | On connect | `DBCC TRACESTATUS` |
 
-Darling runs these same collectors plus additional server-scoped ones (latch stats, spinlock stats, CPU scheduler, plan cache, resource semaphore, and system_health parsing) — see the [Darling collector reference](Darling/README.md).
+Darling runs this same shared collector set across a fleet of servers (latch stats, spinlock stats, CPU scheduler, plan cache, and system_health parsing are now part of the shared catalog above, collected by Lite too) — see the [Darling collector reference](Darling/README.md).
 
 ### Lite Data Storage
 
@@ -155,7 +165,7 @@ All data is stored in `%LOCALAPPDATA%\PerformanceMonitorLite\` — separate from
 | `servers.json` | `%ProgramData%\PerformanceMonitorLite\config\` (machine-wide) | Server connections, shared across all Windows users on the machine. Passwords stay per-user in Windows Credential Manager. Optional **Utility Database** per server for community procs installed outside master. |
 | `settings.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | Retention, MCP server, startup behavior, alert thresholds, SMTP configuration |
 | `collection_schedule.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | Per-collector enable/disable and frequency |
-| `ignored_wait_types.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | 144 benign wait types excluded by default |
+| `ignored_wait_types.json` | `%LOCALAPPDATA%\PerformanceMonitorLite\config\` (per-user) | 124 benign wait types excluded by default |
 
 When a second Windows user on the same machine launches Lite, they see the shared `servers.json` immediately. SQL Auth and Entra MFA passwords are scoped to each user's own Credential Manager, so they'll be prompted once per server; Windows Auth works without any prompt.
 
@@ -189,7 +199,7 @@ Configuration is a single JSON file with no schedule knobs. See the **[Darling o
 | Alerts (tray + email + webhooks) | Yes | Email + webhooks (headless) | Yes |
 | Themes | Dark and light | Dark and light | Dark and light |
 | Portability | Single executable | Portable service + viewer zip | Server-bound |
-| MCP server (LLM integration) | Built-in (55 tools) | On request | Built into Dashboard (66 tools) |
+| MCP server (LLM integration) | Built-in (74 tools) | On request | Built into Dashboard (66 tools) |
 
 ---
 
@@ -213,7 +223,7 @@ The **Lite** app and the **Darling** viewer share the same tab layout (the viewe
 | **FinOps** | Utilization & provisioning analysis, database resource breakdown, storage growth (7d/30d), idle database detection, index analysis via sp_IndexCleanup, per-object table/index size, growth, usage, and locking/contention analysis, application connections, server inventory, cost optimization recommendations, column-level filtering on all grids |
 | **Recommendations** | Prioritized findings drawn from collected metrics, grouped into incidents, each card showing the affected database, the recommendation, the reasoning behind it, and a copyable MCP investigation prompt |
 
-Both feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC). The Darling viewer adds a fleet sidebar and per-server tabs plus latches/spinlocks and system-events tabs; see [Darling/README.md](Darling/README.md). The deprecated Dashboard's six-tab-group layout is documented in [Dashboard/README.md](Dashboard/README.md).
+Both feature auto-refresh, configurable time ranges, chart drill-down to Active Queries, right-click CSV export, system tray integration, dark and light themes, and timezone display options (server time, local time, or UTC). The Darling viewer adds a fleet sidebar and per-server tabs; see [Darling/README.md](Darling/README.md). The deprecated Dashboard's six-tab-group layout is documented in [Dashboard/README.md](Dashboard/README.md).
 
 ---
 
@@ -308,19 +318,19 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 
 ### Available Tools
 
-**Lite** exposes 55 tools; **Darling** exposes the analysis + data-read surface on request; the deprecated **Dashboard** exposes 66 (see [Dashboard/README.md](Dashboard/README.md)). Core tools are shared.
+**Lite** exposes 74 tools; **Darling** exposes the analysis + data-read surface on request; the deprecated **Dashboard** exposes 66 (see [Dashboard/README.md](Dashboard/README.md)). Core tools are shared.
 
 | Category | Tools |
 |---|---|
 | Discovery | `list_servers` |
-| Health | `get_server_summary`, `get_collection_health` |
+| Health | `get_server_summary`, `get_collection_health`, `get_daily_summary` |
 | Alerts | `get_alert_history`, `get_alert_settings`, `get_mute_rules` |
 | Waits | `get_wait_stats`, `get_wait_types`, `get_wait_trend`, `get_waiting_tasks` |
 | Queries | `get_top_queries_by_cpu`, `get_top_procedures_by_cpu`, `get_query_store_top`, `get_query_duration_trend`, `get_query_trend` |
 | Active Queries | `get_active_queries` |
 | CPU | `get_cpu_utilization` |
-| Memory | `get_memory_stats`, `get_memory_trend`, `get_memory_clerks`, `get_memory_grants` |
-| Blocking | `get_deadlocks`, `get_deadlock_detail`, `get_blocked_process_reports`, `get_blocked_process_xml` |
+| Memory | `get_memory_stats`, `get_memory_trend`, `get_memory_clerks`, `get_memory_grants`, `get_resource_semaphore` |
+| Blocking | `get_deadlocks`, `get_deadlock_detail`, `get_blocked_process_reports`, `get_blocked_process_xml`, `get_blocking_trend`, `get_deadlock_trend` |
 | I/O | `get_file_io_stats`, `get_file_io_trend` |
 | TempDB | `get_tempdb_trend` |
 | Perfmon | `get_perfmon_stats`, `get_perfmon_trend` |
@@ -330,10 +340,16 @@ claude mcp add --transport http --scope user sql-monitor http://localhost:5151/
 | Object/Index Stats | `get_table_index_sizes`, `get_index_usage`, `get_object_locking` |
 | Sessions | `get_session_stats` |
 | System Events | `get_memory_pressure_events` |
+| Latches & Spinlocks | `get_latch_stats`, `get_spinlock_stats` |
+| Plan Cache & Scheduler | `get_plan_cache_bloat`, `get_cpu_scheduler_pressure` |
+| Long Queries | `get_long_query_completions` |
+| Default Trace | `get_default_trace_events` |
+| Config Changes | `get_server_config_changes`, `get_database_config_changes`, `get_trace_flag_changes` |
+| Health Parser | `get_health_parser_system_health`, `get_health_parser_severe_errors`, `get_health_parser_io_issues`, `get_health_parser_scheduler_issues`, `get_health_parser_memory_conditions`, `get_health_parser_cpu_tasks`, `get_health_parser_memory_broker`, `get_health_parser_memory_node_oom` |
 | Plan Analysis | `analyze_query_plan`, `analyze_procedure_plan`, `analyze_query_store_plan`, `analyze_plan_xml`, `get_plan_xml` |
 | Diagnostic Analysis | `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding` |
 
-Most tools accept optional `server_name` and `hours_back` parameters. If only one server is configured, `server_name` is auto-resolved. The MCP server binds to `localhost` only and does not accept remote connections. (Darling adds latch/spinlock, plan-cache, CPU-scheduler, health-parser, and windowed-trend tools, and supports an opt-in LAN endpoint — see [Darling/README.md](Darling/README.md).)
+Most tools accept optional `server_name` and `hours_back` parameters. If only one server is configured, `server_name` is auto-resolved. The MCP server binds to `localhost` only and does not accept remote connections. (Darling adds windowed-trend and fleet-overview tools plus agent-driven write tools — Custom Views authoring, alert-settings and mute-rule tuning, and bulk add/remove servers — and supports an opt-in LAN endpoint — see [Darling/README.md](Darling/README.md).)
 
 ---
 
