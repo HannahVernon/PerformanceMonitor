@@ -31,6 +31,41 @@ jobs:
           # match every accumulated change and defeat the filter.
           base: ${{ github.event_name == 'push' && github.event.before || '' }}
           filters: |
+            # A change to a root build file (the solution, restore config, or THIS workflow) can
+            # affect every product, so it forces a full build/test/publish.
+            root:
+              - 'PerformanceMonitor.sln'
+              - 'global.json'
+              - 'nuget.config'
+              - 'NuGet.config'
+              - '.github/workflows/build.yml'
+            # The shared PerformanceMonitor.* core libraries feed Lite, the Full Dashboard, AND
+            # Darling (verified via ProjectReference), so a change here fans out to all three.
+            # NOT the CLI Installer — it references only Installer.Core.
+            core:
+              - 'PerformanceMonitor.Alerting/**'
+              - 'PerformanceMonitor.Analysis/**'
+              - 'PerformanceMonitor.Collectors/**'
+              - 'PerformanceMonitor.Common/**'
+              - 'PerformanceMonitor.Notifications/**'
+              - 'PerformanceMonitor.PlanAnalysis/**'
+              - 'PerformanceMonitor.Ui/**'
+              - '!**/*.md'
+            # Installer.Core is shared by the CLI Installer AND the Full Dashboard's integrated
+            # installer — a change rebuilds both, and nothing else.
+            installer_core:
+              - 'Installer.Core/**'
+              - '!**/*.md'
+            dashboard:
+              - 'Dashboard/**'
+              - 'Dashboard.Tests/**'
+              - '!**/*.md'
+            lite:
+              - 'Lite/**'
+              - 'Lite.Tests/**'
+              - '!**/*.md'
+            # Lite's analysis-heavy test subset — the narrower gate the workflow already used, so
+            # those slow tests run only when Lite analysis code (or shared/root code) changed.
             lite_analysis:
               - 'Lite/Analysis/**'
               - 'Lite/Services/**'
@@ -38,12 +73,16 @@ jobs:
               - 'Lite/Models/**'
               - 'Lite.Tests/**'
               - 'Lite/PerformanceMonitorLite.csproj'
+              - '!**/*.md'
             installer:
               - 'Installer/**'
-              - 'Installer.Core/**'
               - 'Installer.Tests/**'
               - 'install/**'
               - 'upgrades/**'
+              - '!**/*.md'
+            darling:
+              - 'Darling/**'
+              - '!**/*.md'
             # True when any non-documentation file changed. Documentation-only
             # changes (e.g. a CHANGELOG or README edit) skip the build/test/
             # publish steps below — there is nothing to compile. The job still
@@ -72,33 +111,33 @@ jobs:
           dotnet restore Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj --locked-mode
 
       - name: Build Lite.Tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.lite == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet build Lite.Tests/Lite.Tests.csproj -c Release --no-restore
 
       - name: Build Installer.Tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.installer == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet build Installer.Tests/Installer.Tests.csproj -c Release --no-restore
 
       - name: Build Darling
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: |
           dotnet build Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-restore
           dotnet build Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release --no-restore
 
       - name: Run Lite fast tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.lite == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~AnomalyDetectorTests&FullyQualifiedName!~FactCollectorTests&FullyQualifiedName!~FactCollectorMiseryTests&FullyQualifiedName!~BaselineProviderTests&FullyQualifiedName!~InferenceEngineTests&FullyQualifiedName!~ScenarioTests&FullyQualifiedName!~AnalysisServiceTests"
 
       - name: Run Lite analysis-heavy tests
-        if: steps.filter.outputs.lite_analysis == 'true' || github.event_name == 'release'
+        if: steps.filter.outputs.lite_analysis == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName~AnomalyDetectorTests|FullyQualifiedName~FactCollectorTests|FullyQualifiedName~FactCollectorMiseryTests|FullyQualifiedName~BaselineProviderTests|FullyQualifiedName~InferenceEngineTests|FullyQualifiedName~ScenarioTests|FullyQualifiedName~AnalysisServiceTests"
 
       - name: Run Installer tests
-        if: steps.filter.outputs.installer == 'true' || github.event_name == 'release'
+        if: steps.filter.outputs.installer == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Installer.Tests/Installer.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~VersionDetectionTests&FullyQualifiedName!~IdempotencyTests&FullyQualifiedName!~AdversarialTests"
 
       - name: Run Darling tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal
 
       - name: Get version
@@ -110,7 +149,7 @@ jobs:
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
       - name: Publish Dashboard
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.dashboard == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Dashboard/Dashboard.csproj -c Release -o publish/Dashboard
 
       - name: Publish Dashboard (self-contained for Velopack)
@@ -118,7 +157,7 @@ jobs:
         run: dotnet publish Dashboard/Dashboard.csproj -c Release -r win-x64 --self-contained -o publish/Dashboard-velopack
 
       - name: Publish Lite
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.lite == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Lite/PerformanceMonitorLite.csproj -c Release -o publish/Lite
 
       - name: Publish Lite (self-contained for Velopack)
@@ -126,7 +165,7 @@ jobs:
         run: dotnet publish Lite/PerformanceMonitorLite.csproj -c Release -r win-x64 --self-contained -o publish/Lite-velopack
 
       - name: Publish CLI Installer
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.installer == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
 
       # Darling (headless edition): the Windows-service collector and the WPF viewer, published
@@ -135,11 +174,11 @@ jobs:
       # ships as a remote-seat Velopack Setup.exe (#1555) via the self-contained publish below,
       # exactly like Dashboard/Lite.
       - name: Publish Darling Service
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj -c Release -o publish/DarlingService
 
       - name: Publish Darling Viewer
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
 
       - name: Publish Darling Viewer (self-contained for Velopack)
