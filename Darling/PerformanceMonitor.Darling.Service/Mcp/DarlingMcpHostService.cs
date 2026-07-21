@@ -479,7 +479,15 @@ public sealed class DarlingMcpHostService : BackgroundService
                    server_properties) and returns the SIGNIFICANT set via the shared
                    DefaultTraceEventSignificance, the same significant-set gate the viewer's System Events
                    surface uses; config-change events are excluded (the config-snapshot diff tools own them). */
-                .WithGeminiCompatibleTools<DarlingMcpDefaultTraceTools>();
+                .WithGeminiCompatibleTools<DarlingMcpDefaultTraceTools>()
+                /* The Custom Views v2 MANAGEMENT tools (#1563) — the one WRITE surface on this server:
+                   list_custom_views / get_custom_view / validate_custom_view / create_custom_view /
+                   update_custom_view / delete_custom_view / run_custom_view_panel. They CRUD the user-authored
+                   views in config.custom_views through the SAME CustomViewStore + ValidateDefinition + compose
+                   runner the web viewer's editor uses (no divergent second impl), and run back a composed panel's
+                   data for a self-test loop. The mcp role carries the narrow INSERT/UPDATE/DELETE grant on ONLY
+                   config.custom_views (mirroring viewer's) — never the config pivot or the secret columns. */
+                .WithGeminiCompatibleTools<DarlingMcpCustomViewTools>();
 
             _app = builder.Build();
 
