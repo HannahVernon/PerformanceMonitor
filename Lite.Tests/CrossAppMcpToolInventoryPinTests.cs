@@ -60,6 +60,20 @@ public sealed class CrossAppMcpToolInventoryPinTests
            in #1573 alongside unifying Lite's own card banding onto that classifier; port it, then remove
            this entry (the ratchet only shrinks). */
         "get_fleet_overview",
+
+        /* #1600: the Custom Views (CV2) management tools — the Darling MCP server's write surface, which
+           CRUD the user-authored dashboards/notebooks in the central Postgres store's config.custom_views
+           (the same views the Darling web viewer's editor builds) and run back a composed panel's data.
+           These are Darling-ONLY by architecture, not a "not ported yet" item: CV2 + config.custom_views are
+           the central-store web feature, and Lite (a single-instance WPF app over local DuckDB) has neither a
+           web composer nor that table, so there is no Lite twin to port. */
+        "list_custom_views",
+        "get_custom_view",
+        "validate_custom_view",
+        "create_custom_view",
+        "update_custom_view",
+        "delete_custom_view",
+        "run_custom_view_panel",
     };
 
     [Fact]
