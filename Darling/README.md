@@ -609,6 +609,19 @@ PerformanceMonitor.Darling.Service.exe --configure-network
 
 It shows the current exposure (read from the service's own resolvers), then walks you through the **store**, **MCP**, or **both** (or a **disable** that removes exposure). Every answer is validated **by delegation to the exact checks the running service fail-closes on**, so the wizard can never write a config the service would refuse — it re-prompts with the resolver's own reason. It generates the MCP bearer token for you (DPAPI-protected; the plaintext is printed once, so save it then), edits `darling.json` **in place preserving every comment** behind a timestamped `darling.json.bak-<timestamp>` backup, prints the scoped firewall command(s) and the `--print-viewer-connection` handoff, and offers to restart the service to apply. `install-darling.ps1 -Network` runs it automatically right after the install reaches Running. The manual field reference below documents exactly what it writes.
 
+### Headless enable/disable + firewall (`--enable-mcp` / `--enable-web`)
+
+On a box with no Viewer, two things are otherwise awkward: the `enabled` flags in the `mcp` / `web` blocks below are only a **first-run seed** — after the first run the store (`config.config_service.mcp_enabled` / `web_enabled`) is authoritative and is normally flipped only from the Viewer's Settings — and the service account (`NT SERVICE\PerformanceMonitor Darling`) **cannot open the firewall itself**. Four verbs, run on the **service host**, close both in one elevated action:
+
+```
+PerformanceMonitor.Darling.Service.exe --enable-mcp
+PerformanceMonitor.Darling.Service.exe --disable-mcp
+PerformanceMonitor.Darling.Service.exe --enable-web
+PerformanceMonitor.Darling.Service.exe --disable-web
+```
+
+Each flips only its endpoint's **live store flag** with a targeted `config_service` write; the service **hot-reloads within one collection sweep — no restart.** If that endpoint's `network` block opts into LAN exposure (a non-loopback `listen`), the verb also reconciles the **same scoped, idempotent-by-name firewall rule the service would**: **run elevated**, it opens (or, on `--disable-*`, removes) the rule; **run non-elevated**, the store toggle still succeeds and it prints the exact elevated firewall command to run by hand (a loopback-only endpoint needs no rule and says so). Managed-mode only, Windows only. So the headless bring-up is: write the `network` block (the wizard above or the manual reference below), then `--enable-mcp` / `--enable-web` from an **elevated** shell.
+
 ### Store endpoint (viewer over the LAN)
 
 Add a `network` block to `postgres` (managed mode):
