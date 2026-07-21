@@ -304,6 +304,29 @@ public sealed class DarlingManagedRolesTests
     }
 
     [Fact]
+    public void BuildProvisioningSql_McpRole_GrantsMonitoredServersWrite_Narrowly()
+    {
+        var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");
+
+        /* The MCP server-onboarding write tools (add_servers / remove_server): full CRUD on the single
+           config_monitored_servers table — an EXPLICIT single-table statement, its own 'TO mcp' line. */
+        Assert.Contains("GRANT INSERT, UPDATE, DELETE ON config.config_monitored_servers TO mcp;", sql, StringComparison.Ordinal);
+
+        /* Still NARROW: no schema-wide config write for mcp, and NO ALTER DEFAULT PRIVILEGES names mcp (either
+           would broaden it to all of config). No NEW config_service grant — section 8's beacon column-grant
+           already covers the monitored-servers bump trigger. */
+        Assert.DoesNotContain("INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO mcp", sql, StringComparison.Ordinal);
+        foreach (var adpLine in sql.Split('\n').Where(l => l.Contains("ALTER DEFAULT PRIVILEGES", StringComparison.Ordinal)))
+        {
+            Assert.DoesNotContain("mcp", adpLine, StringComparison.Ordinal);
+        }
+
+        /* The credential column stays SELECT-carved from mcp (section 6) — mcp WRITEs a password blob but never
+           READs one back — so config_monitored_servers still appears in the mcp REVOKE/GRANT-column carve. */
+        Assert.Contains("REVOKE SELECT ON config.config_monitored_servers FROM mcp;", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildProvisioningSql_McpRole_CarvesSecretColumns_LikeViewer()
     {
         var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");

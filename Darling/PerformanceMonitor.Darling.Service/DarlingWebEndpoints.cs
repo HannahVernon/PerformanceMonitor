@@ -57,7 +57,8 @@ public static class DarlingWebEndpoints
     /// richer web endpoints (<c>/api/views</c> CRUD + <c>/api/compose/run</c> + the <c>/api/catalog</c> compose
     /// vocabulary that <c>describe_custom_view_catalog</c> mirrors), not a <c>/api/read/{tool}</c> query-string mirror;
     /// and the alert-tuning tools (<c>update_alert_settings</c> / <c>create_mute_rule</c> / <c>delete_mute_rule</c>)
-    /// WRITE the alert config, so — like <c>mute_analysis_finding</c> — they have no read endpoint.</summary>
+    /// WRITE the alert config, and the server-onboarding tools (<c>add_servers</c> / <c>remove_server</c>) WRITE the
+    /// monitored-server registry, so — like <c>mute_analysis_finding</c> — they have no read endpoint.</summary>
     public static readonly IReadOnlySet<string> ExcludedToolNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "analyze_server",
@@ -77,6 +78,8 @@ public static class DarlingWebEndpoints
         "update_alert_settings",
         "create_mute_rule",
         "delete_mute_rule",
+        "add_servers",
+        "remove_server",
     };
 
     /// <summary>The window (hours) the fleet card blocking / deadlock counts default to — the WPF Overview's window.</summary>
