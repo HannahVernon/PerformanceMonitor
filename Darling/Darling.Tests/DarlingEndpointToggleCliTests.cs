@@ -1,0 +1,224 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Darling.Service;
+using PerformanceMonitor.Darling.Service.Mcp;
+using PerformanceMonitor.Darling.Storage;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// The headless endpoint-toggle CLI verbs (--enable-mcp / --disable-mcp / --enable-web / --disable-web). The pure
+/// tests pin the four targeted store-write SQL strings (only the endpoint's own <c>*_enabled</c> flag + the audit
+/// columns; NEVER <c>config_version</c> — the BEFORE-UPDATE self-bump trigger owns it — never <c>paused</c>, never
+/// the OTHER endpoint's flag), the verb recognition + the allow-list/classify wiring, the pure firewall-step
+/// classifier, and the shared scoped firewall rule names the CLI and the two hosts reconcile in common. The single
+/// live test (gated on DARLING_TEST_PG) proves the enable/disable store-writes flip the flag AND self-bump
+/// <c>config_version</c>, transaction-rolled-back so it never clobbers a shared dev store's singleton config row.
+/// </summary>
+public sealed class DarlingEndpointToggleCliTests
+{
+    /* ---------------- pure: the four targeted store-write SQL strings ---------------- */
+
+    [Fact]
+    public void EnableMcpSql_SetsMcpEnabledTrue_ByCli_OnTheSingleRow_TouchingNothingElse()
+    {
+        var sql = DarlingCliCommands.EnableMcpStoreSql;
+        Assert.Contains("UPDATE config.config_service", sql, StringComparison.Ordinal);
+        Assert.Contains("mcp_enabled = TRUE", sql, StringComparison.Ordinal);
+        Assert.Contains("updated_by = 'cli'", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE id = 1", sql, StringComparison.Ordinal);
+        /* The self-bump trigger owns config_version; paused is a command; the other endpoint's flag is untouched. */
+        Assert.DoesNotContain("config_version", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("paused", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("web_enabled", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DisableMcpSql_SetsMcpEnabledFalse_ByCli_OnTheSingleRow_TouchingNothingElse()
+    {
+        var sql = DarlingCliCommands.DisableMcpStoreSql;
+        Assert.Contains("UPDATE config.config_service", sql, StringComparison.Ordinal);
+        Assert.Contains("mcp_enabled = FALSE", sql, StringComparison.Ordinal);
+        Assert.Contains("updated_by = 'cli'", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE id = 1", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("config_version", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("paused", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("web_enabled", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnableWebSql_SetsWebEnabledTrue_ByCli_OnTheSingleRow_TouchingNothingElse()
+    {
+        var sql = DarlingCliCommands.EnableWebStoreSql;
+        Assert.Contains("UPDATE config.config_service", sql, StringComparison.Ordinal);
+        Assert.Contains("web_enabled = TRUE", sql, StringComparison.Ordinal);
+        Assert.Contains("updated_by = 'cli'", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE id = 1", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("config_version", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("paused", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("mcp_enabled", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DisableWebSql_SetsWebEnabledFalse_ByCli_OnTheSingleRow_TouchingNothingElse()
+    {
+        var sql = DarlingCliCommands.DisableWebStoreSql;
+        Assert.Contains("UPDATE config.config_service", sql, StringComparison.Ordinal);
+        Assert.Contains("web_enabled = FALSE", sql, StringComparison.Ordinal);
+        Assert.Contains("updated_by = 'cli'", sql, StringComparison.Ordinal);
+        Assert.Contains("WHERE id = 1", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("config_version", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("paused", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("mcp_enabled", sql, StringComparison.Ordinal);
+    }
+
+    /* ---------------- pure: verb recognition + the allow-list / classify wiring ---------------- */
+
+    [Theory]
+    [InlineData("--enable-mcp")]
+    [InlineData("--disable-mcp")]
+    [InlineData("--enable-web")]
+    [InlineData("--disable-web")]
+    [InlineData("--ENABLE-MCP")]
+    [InlineData("--Disable-Web")]
+    public void IsKnownVerb_RecognizesEndpointToggleVerbs_CaseInsensitively(string arg)
+    {
+        Assert.True(DarlingCliCommands.IsKnownVerb(arg));
+        Assert.Equal(StartupAction.RunKnownVerb, DarlingCliCommands.ClassifyStartupArgs(new[] { arg }));
+    }
+
+    [Theory]
+    [InlineData("--enable-mcpx")]
+    [InlineData("--enable")]
+    [InlineData("--mcp")]
+    [InlineData("enable-mcp")]
+    [InlineData("--frobnicate")]
+    public void IsKnownVerb_RejectsBogusVerbs_WhichClassifyAsUnknownOption(string arg)
+    {
+        Assert.False(DarlingCliCommands.IsKnownVerb(arg));
+        Assert.Equal(StartupAction.UnknownOption, DarlingCliCommands.ClassifyStartupArgs(new[] { arg }));
+    }
+
+    [Fact]
+    public void EachEndpointVerbPredicate_IsExclusive_AndCaseInsensitive()
+    {
+        Assert.True(DarlingCliCommands.IsEnableMcpVerb("--enable-mcp"));
+        Assert.True(DarlingCliCommands.IsEnableMcpVerb("--ENABLE-MCP"));
+        Assert.False(DarlingCliCommands.IsEnableMcpVerb("--disable-mcp"));
+        Assert.False(DarlingCliCommands.IsEnableMcpVerb("--enable-web"));
+
+        Assert.True(DarlingCliCommands.IsDisableMcpVerb("--disable-mcp"));
+        Assert.False(DarlingCliCommands.IsDisableMcpVerb("--enable-mcp"));
+
+        Assert.True(DarlingCliCommands.IsEnableWebVerb("--enable-web"));
+        Assert.False(DarlingCliCommands.IsEnableWebVerb("--disable-web"));
+
+        Assert.True(DarlingCliCommands.IsDisableWebVerb("--disable-web"));
+        Assert.False(DarlingCliCommands.IsDisableWebVerb("--enable-web"));
+    }
+
+    [Fact]
+    public void UsageText_DocumentsTheFourEndpointVerbs()
+    {
+        var usage = DarlingCliCommands.UsageText();
+        Assert.Contains("--enable-mcp", usage, StringComparison.Ordinal);
+        Assert.Contains("--disable-mcp", usage, StringComparison.Ordinal);
+        Assert.Contains("--enable-web", usage, StringComparison.Ordinal);
+        Assert.Contains("--disable-web", usage, StringComparison.Ordinal);
+    }
+
+    /* ---------------- pure: the firewall-step classifier ---------------- */
+
+    [Theory]
+    [InlineData(false, false, DarlingCliCommands.EndpointFirewallPlan.LoopbackNoAction)]
+    [InlineData(false, true, DarlingCliCommands.EndpointFirewallPlan.LoopbackNoAction)]
+    [InlineData(true, true, DarlingCliCommands.EndpointFirewallPlan.RunElevated)]
+    [InlineData(true, false, DarlingCliCommands.EndpointFirewallPlan.Handoff)]
+    public void ClassifyFirewallPlan_MapsExposedAndElevatedToTheStep(
+        bool exposed, bool elevated, DarlingCliCommands.EndpointFirewallPlan expected)
+        => Assert.Equal(expected, DarlingCliCommands.ClassifyFirewallPlan(exposed, elevated));
+
+    /* ---------------- pure: the shared scoped firewall rule names (CLI + host reconcile the SAME DisplayName) ---------------- */
+
+    [Fact]
+    public void FirewallRuleNames_MatchTheDocumentedScopedDisplayNames()
+    {
+        /* The CLI toggle verbs open/close these by DisplayName; the hosts self-reconcile the SAME names, so an
+           enable followed by a service restart is idempotent (no duplicate rule). Pin the exact strings. */
+        Assert.Equal("PerformanceMonitor Darling MCP (port 5152)", DarlingMcpHostService.McpFirewallRuleName(5152));
+        Assert.Equal("PerformanceMonitor Darling Web (port 5153)", DarlingWebHostService.WebFirewallRuleName(5153));
+    }
+
+    /* ---------------- live (DARLING_TEST_PG): enable/disable flip the flag AND self-bump, rolled back ---------------- */
+
+    [Fact]
+    public async Task EnableThenDisableMcp_FlipsFlagAndSelfBumpsConfigVersion_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a throwaway Postgres connection string to run the endpoint-toggle store-write test.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+
+        /* Everything inside a transaction that ROLLS BACK — the shared dev store's real singleton config row is
+           never mutated. Names are schema-qualified so resolution is search_path-independent. */
+        await using var tx = await connection.BeginTransactionAsync(ct);
+
+        /* Seed the id=1 row, then force a known baseline (mcp OFF, web ON) so the assertions are deterministic
+           regardless of any pre-existing row in a shared store. */
+        await ExecAsync(connection, tx,
+            "INSERT INTO config.config_service (id, updated_at) VALUES (1, now() AT TIME ZONE 'UTC') ON CONFLICT (id) DO NOTHING", ct);
+        await ExecAsync(connection, tx,
+            "UPDATE config.config_service SET mcp_enabled = FALSE, web_enabled = TRUE WHERE id = 1", ct);
+        var v0 = await ConfigVersionAsync(connection, tx, ct);
+
+        /* ENABLE: the CLI's exact enable-mcp store-write — mcp_enabled flips TRUE and config_version self-bumps;
+           web_enabled is left untouched (the toggle is single-flag). */
+        await ExecAsync(connection, tx, DarlingCliCommands.EnableMcpStoreSql, ct);
+        Assert.True(await BoolAsync(connection, tx, "SELECT mcp_enabled FROM config.config_service WHERE id = 1", ct));
+        Assert.True(await BoolAsync(connection, tx, "SELECT web_enabled FROM config.config_service WHERE id = 1", ct),
+            "the mcp toggle must not touch web_enabled");
+        var v1 = await ConfigVersionAsync(connection, tx, ct);
+        Assert.True(v1 > v0, "enable-mcp must self-bump config_version");
+
+        /* DISABLE: mcp_enabled flips FALSE and config_version self-bumps again. */
+        await ExecAsync(connection, tx, DarlingCliCommands.DisableMcpStoreSql, ct);
+        Assert.False(await BoolAsync(connection, tx, "SELECT mcp_enabled FROM config.config_service WHERE id = 1", ct));
+        var v2 = await ConfigVersionAsync(connection, tx, ct);
+        Assert.True(v2 > v1, "disable-mcp must self-bump config_version");
+
+        await tx.RollbackAsync(ct);
+    }
+
+    private static async Task<long> ConfigVersionAsync(NpgsqlConnection connection, NpgsqlTransaction tx, CancellationToken ct)
+        => Convert.ToInt64(await ScalarAsync(connection, tx, "SELECT config_version FROM config.config_service WHERE id = 1", ct));
+
+    private static async Task<bool> BoolAsync(NpgsqlConnection connection, NpgsqlTransaction tx, string sql, CancellationToken ct)
+        => Convert.ToBoolean(await ScalarAsync(connection, tx, sql, ct));
+
+    private static async Task ExecAsync(NpgsqlConnection connection, NpgsqlTransaction tx, string sql, CancellationToken ct)
+    {
+        using var command = new NpgsqlCommand(sql, connection, tx);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<object?> ScalarAsync(NpgsqlConnection connection, NpgsqlTransaction tx, string sql, CancellationToken ct)
+    {
+        using var command = new NpgsqlCommand(sql, connection, tx);
+        return await command.ExecuteScalarAsync(ct);
+    }
+}

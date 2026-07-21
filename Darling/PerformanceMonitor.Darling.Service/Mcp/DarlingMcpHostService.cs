@@ -754,8 +754,9 @@ public sealed class DarlingMcpHostService : BackgroundService
        --------------------------------------------------------------------------------------------------- */
 
     /// <summary>The scoped MCP firewall rule name (idempotent by DisplayName), port-specific and distinct
-    /// from the store's rule so the two endpoints reconcile independently.</summary>
-    private static string McpFirewallRuleName(int port) => $"PerformanceMonitor Darling MCP (port {port})";
+    /// from the store's rule so the two endpoints reconcile independently. <c>internal</c> so the headless
+    /// endpoint-toggle CLI verbs (--enable-mcp/--disable-mcp) reconcile the SAME rule by DisplayName.</summary>
+    internal static string McpFirewallRuleName(int port) => $"PerformanceMonitor Darling MCP (port {port})";
 
     [SupportedOSPlatform("windows")]
     private Task ReconcileMcpFirewallAsync(int port, bool enable, string? cidr, CancellationToken cancellationToken)
