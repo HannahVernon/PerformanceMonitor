@@ -278,6 +278,32 @@ public sealed class DarlingManagedRolesTests
     }
 
     [Fact]
+    public void BuildProvisioningSql_McpRole_GrantsAlertTuningWrites_NarrowlyWithBeaconColumns()
+    {
+        var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");
+
+        /* The MCP alert-tuning write tools: full CRUD on the mute rules, and UPDATE-only on the SINGLETON
+           alert-settings row (never INSERT/DELETE — the row is a fixed singleton the service seeds). */
+        Assert.Contains("GRANT INSERT, UPDATE, DELETE ON config.config_mute_rules TO mcp;", sql, StringComparison.Ordinal);
+        Assert.Contains("GRANT UPDATE ON config.config_alert_settings TO mcp;", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("INSERT, UPDATE, DELETE ON config.config_alert_settings", sql, StringComparison.Ordinal);
+
+        /* The beacon caveat: a config_alert_settings write fires the SECURITY INVOKER bump trigger, which UPDATEs
+           config_service — so mcp needs a COLUMN-level UPDATE on JUST the two beacon columns (never paused /
+           capture_plans / mcp_enabled / mcp_port, and never a table-wide config_service UPDATE). */
+        Assert.Contains("GRANT UPDATE (config_version, updated_at) ON config.config_service TO mcp;", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("GRANT UPDATE ON config.config_service TO mcp", sql, StringComparison.Ordinal);
+
+        /* Still NARROW: no schema-wide config write for mcp, and NO ALTER DEFAULT PRIVILEGES names mcp (either
+           would broaden it to all of config). */
+        Assert.DoesNotContain("INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO mcp", sql, StringComparison.Ordinal);
+        foreach (var adpLine in sql.Split('\n').Where(l => l.Contains("ALTER DEFAULT PRIVILEGES", StringComparison.Ordinal)))
+        {
+            Assert.DoesNotContain("mcp", adpLine, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void BuildProvisioningSql_McpRole_CarvesSecretColumns_LikeViewer()
     {
         var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");
