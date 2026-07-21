@@ -128,7 +128,6 @@ namespace PerformanceMonitorDashboard.Services
             try
             {
                 await using var tc = await OpenThrottledConnectionAsync();
-                var connection = tc.Connection;
                 return true;
             }
             catch (Exception ex)

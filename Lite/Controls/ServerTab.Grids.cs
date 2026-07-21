@@ -190,7 +190,9 @@ public partial class ServerTab : UserControl
         {
             var hoursBack = GetHoursBack();
             var (fromDate, toDate) = GetCurrentViewDates();
-            var history = await Task.Run(() => _dataService.GetQueryStoreHistoryAsync(_serverId, row.DatabaseName, row.QueryId, row.PlanId, hoursBack, fromDate, toDate));
+            var allPlans = await Task.Run(() => _dataService.GetQueryStoreHistoryAsync(_serverId, row.DatabaseName, row.QueryId, hoursBack, fromDate, toDate));
+            // The overlay traces the SELECTED row's plan; the history query is query-scoped now.
+            var history = allPlans.Where(h => h.PlanId == row.PlanId).ToList();
 
             // Query Store values are already per-interval averages, not cumulative
             Func<QueryStoreHistoryRow, double> selector = _queryStoreSlicerMetric switch

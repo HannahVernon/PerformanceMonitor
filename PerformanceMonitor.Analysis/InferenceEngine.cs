@@ -45,6 +45,12 @@ public class InferenceEngine
         "CONFIG_CTFP",
         "CONFIG_MAX_MEMORY_MB",
         "CONFIG_MIN_MAX_MEMORY_NARROW",
+        // batch-2b: priority boost / lightweight pooling enabled — Dashboard WARNINGs. Score the
+        // WARNING band (0.9, FactScorer) and root a standalone card here so a rare, clearly-wrong
+        // scheduling setting surfaces on a quiet, healthy server (redundant with the 0.5 incident
+        // threshold at 0.9, but keeps every CONFIG_* fact in one rooting set).
+        "CONFIG_PRIORITY_BOOST",
+        "CONFIG_LIGHTWEIGHT_POOLING",
         // WS5: server-health advisories (advise-only). Each scores its 0.4 advisory base only when
         // bad (FactScorer) and roots its own standalone card here, bypassing the 0.5 incident
         // threshold — a standing server-health gap should surface on a quiet, healthy server.
@@ -55,6 +61,12 @@ public class InferenceEngine
         // missing indexes and actionable plan warnings each root their own standalone advisory card.
         "MISSING_INDEX",
         "PLAN_WARNING",
+        // Tier-2: plan-cache single-use bloat is a STANDING cache-composition state (not a momentary
+        // incident), so it roots its own standalone advisory card at any positive severity — it should
+        // surface on a quiet, healthy server the same way a standing misconfig does. The FactScorer only
+        // scores it at >= 0.5 (MEDIUM+) behind a size guard, so this is belt-and-suspenders with the 0.5
+        // incident threshold, and keeps the standing-state key in the same rooting set as the others.
+        "PLAN_CACHE_BLOAT",
     };
 
     private readonly RelationshipGraph _graph;
@@ -276,7 +288,8 @@ public class InferenceEngine
         for (var i = 0; i < incidentStories.Count; i++)
             foreach (var key in incidentStories[i].Path)
                 foreach (var edge in _graph.GetActiveEdges(NormalizeKey(key), factsByKey))
-                    if (owner.TryGetValue(NormalizeKey(edge.Destination), out var j) && j != i)
+                    if (owner.TryGetValue(NormalizeKey(edge.Destination), out var j) && j != i
+                        && CanUnionAcrossDatabase(incidentStories[i], incidentStories[j]))
                         Union(i, j);
 
         var components = new Dictionary<int, List<AnalysisStory>>();
@@ -288,6 +301,22 @@ public class InferenceEngine
             list.Add(incidentStories[i]);
         }
         return components.Values.ToList();
+    }
+
+    /// <summary>
+    /// Guards the incident union against merging two DB-scoped findings from DIFFERENT databases
+    /// (correlate-and-focus DB-awareness — vetted option i). A server-scoped story (no DatabaseName)
+    /// bridges freely, so a server-wide symptom (CPU, waits) still correlates with a db-scoped cause;
+    /// only two stories that EACH name a database, and name DIFFERENT ones, are held apart. This is
+    /// the structural fix that stops a db1 finding and a db2 finding from being fingerprinted into one
+    /// cross-database incident (the anomaly-fold reconciler is DB-aware for the same reason). It does
+    /// not over-fragment same-database incidents: same-DB and server-scoped pairs still union.
+    /// </summary>
+    private static bool CanUnionAcrossDatabase(AnalysisStory a, AnalysisStory b)
+    {
+        if (string.IsNullOrEmpty(a.DatabaseName) || string.IsNullOrEmpty(b.DatabaseName))
+            return true;
+        return string.Equals(a.DatabaseName, b.DatabaseName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

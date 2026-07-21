@@ -49,9 +49,15 @@ public partial class ServerTab : UserControl
     // MainTabControl_SelectionChanged skips its refresh and doesn't clobber the filtered snapshot
     // the drill-down loads next (async race).
     private bool _suppressActiveQueriesAutoRefresh;
-    private readonly Dictionary<ScottPlot.WPF.WpfPlot, ScottPlot.IPanel?> _legendPanels = new();
+    private readonly ChartRenderHelper _chartHelper = new();
     private List<SelectableItem> _waitTypeItems = new();
     private List<SelectableItem> _perfmonCounterItems = new();
+    /* #1319: per-server global database filter (display-only). Empty set = "All" (unfiltered). */
+    private readonly HashSet<string> _selectedDatabases = new(StringComparer.OrdinalIgnoreCase);
+    private List<SelectableItem> _databaseFilterItems = new();
+    private bool _isUpdatingDatabaseFilterSelection;
+    /// <summary>The database filter as a reader argument: null (= All, unfiltered) when nothing is selected.</summary>
+    private IReadOnlyList<string>? SelectedDatabaseFilter => _selectedDatabases.Count == 0 ? null : _selectedDatabases.ToList();
     private ChartHoverHelper? _waitStatsHover;
     private ChartHoverHelper? _perfmonHover;
     private ChartHoverHelper? _cpuHover;
@@ -89,8 +95,6 @@ public partial class ServerTab : UserControl
     private bool _isUpdatingMemoryClerkSelection;
 
     /* Column filtering */
-    private Popup? _filterPopup;
-    private ColumnFilterPopup? _filterPopupContent;
     private readonly Dictionary<DataGrid, IDataGridFilterManager> _filterManagers = new();
     private DataGridFilterManager<QuerySnapshotRow>? _querySnapshotsFilterMgr;
     private DataGridFilterManager<QueryStatsRow>? _queryStatsFilterMgr;
@@ -99,18 +103,38 @@ public partial class ServerTab : UserControl
     private DataGridFilterManager<BlockedProcessReportRow>? _blockedProcessFilterMgr;
     private DataGridFilterManager<DeadlockProcessDetail>? _deadlockFilterMgr;
     private DataGridFilterManager<RunningJobRow>? _runningJobsFilterMgr;
+    private DataGridFilterManager<LongQueryCompletionRow>? _longQueryFilterMgr;
     private DataGridFilterManager<ServerConfigRow>? _serverConfigFilterMgr;
     private DataGridFilterManager<DatabaseConfigRow>? _databaseConfigFilterMgr;
     private DataGridFilterManager<DatabaseScopedConfigRow>? _dbScopedConfigFilterMgr;
     private DataGridFilterManager<TraceFlagRow>? _traceFlagsFilterMgr;
     private DataGridFilterManager<CollectorHealthRow>? _collectionHealthFilterMgr;
     private DataGridFilterManager<CollectionLogRow>? _collectionLogFilterMgr;
-    private DateTime? _dailySummaryDate; // null = today
+    private DataGridFilterManager<LatchStatsSnapshotRow>? _latchStatsFilterMgr;
+    private DataGridFilterManager<SpinlockStatsSnapshotRow>? _spinlockStatsFilterMgr;
+    /* System Events tab: one filter manager per grid category (the two chart sub-tabs have no grid). */
+    private DataGridFilterManager<SchedulerIssueRow>? _seSchedulerFilterMgr;
+    private DataGridFilterManager<SevereErrorRow>? _seSevereErrorFilterMgr;
+    private DataGridFilterManager<MemoryConditionsRow>? _seMemoryConditionsFilterMgr;
+    private DataGridFilterManager<MemoryBrokerRow>? _seMemoryBrokerFilterMgr;
+    private DataGridFilterManager<MemoryNodeOomRow>? _seMemoryNodeOomFilterMgr;
+    private DataGridFilterManager<SignificantWaitRow>? _seSignificantWaitsFilterMgr;
+    private DataGridFilterManager<CpuTasksRow>? _seCpuTasksFilterMgr;
+    private DataGridFilterManager<IoIssuesRow>? _seIoIssuesFilterMgr;
+    private DataGridFilterManager<DefaultTraceEventRow>? _seDefaultTraceFilterMgr;
+    /* Configuration Changes tab: one filter manager per sub-tab grid. */
+    private DataGridFilterManager<ServerConfigChangeRow>? _serverConfigChangesFilterMgr;
+    private DataGridFilterManager<DatabaseConfigChangeRow>? _databaseConfigChangesFilterMgr;
+    private DataGridFilterManager<TraceFlagChangeRow>? _traceFlagChangesFilterMgr;
     private CancellationTokenSource? _actualPlanCts;
 
     public int UtcOffsetMinutes { get; }
     private readonly bool _hasMsdbAccess;
     private readonly bool _isAzureSqlDatabase;
+    /* Live probe of the opt-in long-query completion collector's enabled flag (#1496), so the Long
+       Queries tab shows an explicit "trace is OFF" empty-state banner when it is disabled — read fresh
+       each refresh so toggling it in the schedule editor updates the banner without reopening the tab. */
+    private readonly Func<bool> _isLongQueryTraceEnabled;
 
     /// <summary>
     /// Raised after each data refresh with alert counts for tab badge display.
@@ -118,13 +142,19 @@ public partial class ServerTab : UserControl
     public event Action<int, int, DateTime?>? AlertCountsChanged; /* blockingCount, deadlockCount, latestEventTimeUtc */
     public event Action<int>? ApplyTimeRangeRequested; /* selectedIndex */
     public event Func<Task>? ManualRefreshRequested;
+    public event Action<ServerConnection>? PersistServerRequested; /* #1319: persist ViewFilterDatabases via ServerManager */
 
-    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false)
+    public ServerTab(ServerConnection server, DuckDbInitializer duckDb, CredentialResolver credentialResolver, int utcOffsetMinutes = 0, bool hasMsdbAccess = true, bool isAzureSqlDatabase = false, Func<bool>? isLongQueryTraceEnabled = null)
     {
         InitializeComponent();
         SetupBarCellMaxes();
 
         _server = server;
+        /* Default to "enabled" when no probe is supplied so the empty-state banner never falsely claims
+           the trace is off; MainWindow always wires the live schedule probe. */
+        _isLongQueryTraceEnabled = isLongQueryTraceEnabled ?? (() => true);
+        foreach (var db in _server.ViewFilterDatabases)
+            _selectedDatabases.Add(db);
         _dataService = new LocalDataService(duckDb);
         _serverId = RemoteCollectorService.GetDeterministicHashCode(RemoteCollectorService.GetServerNameForStorage(server));
         _credentialResolver = credentialResolver;
@@ -196,7 +226,10 @@ public partial class ServerTab : UserControl
         foreach (var grid in new DataGrid[] { QuerySnapshotsGrid, QueryStatsGrid, ProcedureStatsGrid,
             QueryStoreGrid, BlockedProcessReportGrid, DeadlockGrid, RunningJobsGrid,
             ServerConfigGrid, DatabaseConfigGrid, DatabaseScopedConfigGrid, TraceFlagsGrid,
-            CollectionHealthGrid, CollectionLogGrid })
+            CollectionHealthGrid, CollectionLogGrid, LatchStatsGrid, SpinlockStatsGrid,
+            SchedulerIssuesGrid, SevereErrorsGrid, MemoryConditionsGrid,
+            MemoryBrokerGrid, MemoryNodeOomGrid, SignificantWaitsGrid, CpuTasksGrid, IoIssuesGrid,
+            DefaultTraceGrid, ServerConfigChangesGrid, DatabaseConfigChangesGrid, TraceFlagChangesGrid })
         {
             grid.CopyingRowClipboardContent += DataGridClipboardBehavior.FixHeaderCopy;
         }
@@ -257,6 +290,23 @@ public partial class ServerTab : UserControl
         _currentWaitsDurationHover = new ChartHoverHelper(CurrentWaitsDurationChart, "ms");
         _currentWaitsBlockedHover = new ChartHoverHelper(CurrentWaitsBlockedChart, "sessions");
 
+        /* Latch/spinlock charts: theme + hover up front (own partial, mirrors Darling's tab file) */
+        InitializeLatchSpinlockCharts();
+
+        /* CPU Scheduler / Plan Cache / Session Stats charts: theme + hover up front (own partials,
+           mirror Darling's tab files) so they don't flash white before the tabs' first load. */
+        InitializeCpuSchedulerChart();
+        InitializePlanCacheChart();
+        InitializeSessionStatsChart();
+
+        /* System Events Corruption/Contention counter charts: theme + hover up front (own partial,
+           mirrors Darling's SystemHealthCharts). */
+        InitializeSystemHealthCharts();
+
+        /* Blocking Stats severity charts: theme + hover up front (own partial, mirrors Darling's
+           Blocking Stats sub-tab) so the four charts don't flash white before the sub-tab's first load. */
+        InitializeBlockingStatsCharts();
+
         /* Query heatmap hover popup */
         _heatmapPopupText = new TextBlock
         {
@@ -282,7 +332,7 @@ public partial class ServerTab : UserControl
             }
         };
         /* Heatmap mouse events wired up in XAML */
-        var heatmapMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(QueryHeatmapChart, "Query_Heatmap");
+        var heatmapMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(QueryHeatmapChart, "Query_Heatmap", revertAction: RevertChartAxes);
         var heatmapDrillDown = new MenuItem { Header = "Show Active Queries at This Time" };
         heatmapMenu.Items.Insert(0, heatmapDrillDown);
         heatmapMenu.Items.Insert(1, new Separator());
@@ -315,51 +365,55 @@ public partial class ServerTab : UserControl
         };
 
         /* Chart context menus (right-click save/export) */
-        var waitStatsMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(WaitStatsChart, "Wait_Stats");
+        var waitStatsMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(WaitStatsChart, "Wait_Stats", revertAction: RevertChartAxes);
         AddWaitDrillDownMenuItem(WaitStatsChart, waitStatsMenu);
-        Helpers.ContextMenuHelper.SetupChartContextMenu(QueryDurationTrendChart, "Query_Duration_Trends");
-        Helpers.ContextMenuHelper.SetupChartContextMenu(ProcDurationTrendChart, "Procedure_Duration_Trends");
-        Helpers.ContextMenuHelper.SetupChartContextMenu(QueryStoreDurationTrendChart, "QueryStore_Duration_Trends");
-        Helpers.ContextMenuHelper.SetupChartContextMenu(ExecutionCountTrendChart, "Execution_Count_Trends");
-        var cpuMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CpuChart, "CPU_Usage");
-        AddChartDrillDownMenuItem(CpuChart, cpuMenu, _cpuHover, "Show Active Queries at This Time", OnCpuDrillDown);
-        var memoryMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryChart, "Memory_Usage");
-        AddChartDrillDownMenuItem(MemoryChart, memoryMenu, _memoryHover, "Show Active Queries at This Time", OnMemoryDrillDown);
-        var memoryClerksMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryClerksChart, "Memory_Clerks");
+        var queryDurationTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(QueryDurationTrendChart, "Query_Duration_Trends", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(QueryDurationTrendChart, queryDurationTrendMenu, _queryDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var procDurationTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(ProcDurationTrendChart, "Procedure_Duration_Trends", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(ProcDurationTrendChart, procDurationTrendMenu, _procDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var queryStoreDurationTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(QueryStoreDurationTrendChart, "QueryStore_Duration_Trends", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(QueryStoreDurationTrendChart, queryStoreDurationTrendMenu, _queryStoreDurationTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var executionCountTrendMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(ExecutionCountTrendChart, "Execution_Count_Trends", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(ExecutionCountTrendChart, executionCountTrendMenu, _executionCountTrendHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var cpuMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CpuChart, "CPU_Usage", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(CpuChart, cpuMenu, _cpuHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var memoryMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryChart, "Memory_Usage", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(MemoryChart, memoryMenu, _memoryHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var memoryClerksMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryClerksChart, "Memory_Clerks", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(MemoryClerksChart, memoryClerksMenu, _memoryClerksHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var memoryGrantSizingMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryGrantSizingChart, "Memory_Grant_Sizing");
+        var memoryGrantSizingMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryGrantSizingChart, "Memory_Grant_Sizing", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(MemoryGrantSizingChart, memoryGrantSizingMenu, _memoryGrantSizingHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var memoryGrantActivityMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryGrantActivityChart, "Memory_Grant_Activity");
+        var memoryGrantActivityMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryGrantActivityChart, "Memory_Grant_Activity", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(MemoryGrantActivityChart, memoryGrantActivityMenu, _memoryGrantActivityHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var memoryPressureEventsMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryPressureEventsChart, "Memory_Pressure_Events");
+        var memoryPressureEventsMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(MemoryPressureEventsChart, "Memory_Pressure_Events", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(MemoryPressureEventsChart, memoryPressureEventsMenu, _memoryPressureEventsHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var fileIoReadMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoReadChart, "File_IO_Read_Latency");
+        var fileIoReadMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoReadChart, "File_IO_Read_Latency", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(FileIoReadChart, fileIoReadMenu, _fileIoReadHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var fileIoWriteMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteChart, "File_IO_Write_Latency");
+        var fileIoWriteMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteChart, "File_IO_Write_Latency", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(FileIoWriteChart, fileIoWriteMenu, _fileIoWriteHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var fileIoReadThroughputMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoReadThroughputChart, "File_IO_Read_Throughput");
+        var fileIoReadThroughputMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoReadThroughputChart, "File_IO_Read_Throughput", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(FileIoReadThroughputChart, fileIoReadThroughputMenu, _fileIoReadThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var fileIoWriteThroughputMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteThroughputChart, "File_IO_Write_Throughput");
+        var fileIoWriteThroughputMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(FileIoWriteThroughputChart, "File_IO_Write_Throughput", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(FileIoWriteThroughputChart, fileIoWriteThroughputMenu, _fileIoWriteThroughputHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var tempDbMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbChart, "TempDB_Stats");
-        AddChartDrillDownMenuItem(TempDbChart, tempDbMenu, _tempDbHover, "Show Active Queries at This Time", OnTempDbDrillDown);
-        var tempDbSizeMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbSizeChart, "TempDB_Allocated_Size");
+        var tempDbMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbChart, "TempDB_Stats", revertAction: RevertChartAxes);
+        AddChartDrillDownMenuItem(TempDbChart, tempDbMenu, _tempDbHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
+        var tempDbSizeMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbSizeChart, "TempDB_Allocated_Size", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(TempDbSizeChart, tempDbSizeMenu, _tempDbSizeHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var tempDbFileIoMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbFileIoChart, "TempDB_File_IO");
+        var tempDbFileIoMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(TempDbFileIoChart, "TempDB_File_IO", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(TempDbFileIoChart, tempDbFileIoMenu, _tempDbFileIoHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var lockWaitMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(LockWaitTrendChart, "Lock_Wait_Trends");
+        var lockWaitMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(LockWaitTrendChart, "Lock_Wait_Trends", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(LockWaitTrendChart, lockWaitMenu, _lockWaitTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
-        var blockingMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(BlockingTrendChart, "Blocking_Trends");
+        var blockingMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(BlockingTrendChart, "Blocking_Trends", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(BlockingTrendChart, blockingMenu, _blockingTrendHover, "Show Blocking at This Time", OnBlockingDrillDown);
-        var deadlockMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(DeadlockTrendChart, "Deadlock_Trends");
+        var deadlockMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(DeadlockTrendChart, "Deadlock_Trends", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(DeadlockTrendChart, deadlockMenu, _deadlockTrendHover, "Show Deadlocks at This Time", OnDeadlockDrillDown);
-        var currentWaitsDurationMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CurrentWaitsDurationChart, "Current_Waits_Duration");
+        var currentWaitsDurationMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CurrentWaitsDurationChart, "Current_Waits_Duration", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(CurrentWaitsDurationChart, currentWaitsDurationMenu, _currentWaitsDurationHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var currentWaitsBlockedMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CurrentWaitsBlockedChart, "Current_Waits_Blocked");
+        var currentWaitsBlockedMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(CurrentWaitsBlockedChart, "Current_Waits_Blocked", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(CurrentWaitsBlockedChart, currentWaitsBlockedMenu, _currentWaitsBlockedHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        var perfmonMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(PerfmonChart, "Perfmon_Counters");
+        var perfmonMenu = Helpers.ContextMenuHelper.SetupChartContextMenu(PerfmonChart, "Perfmon_Counters", revertAction: RevertChartAxes);
         AddChartDrillDownMenuItem(PerfmonChart, perfmonMenu, _perfmonHover, "Show Active Queries at This Time", OnActiveQueriesDrillDown);
-        Helpers.ContextMenuHelper.SetupChartContextMenu(CollectorDurationChart, "Collector_Duration");
+        Helpers.ContextMenuHelper.SetupChartContextMenu(CollectorDurationChart, "Collector_Duration", revertAction: RevertChartAxes);
 
         /* Subscribe for the life of the tab. Do NOT unsubscribe on Unloaded — a TabControl fires
            Unloaded when you switch to another tab, which would permanently detach this handler so
@@ -415,7 +469,8 @@ public partial class ServerTab : UserControl
         if (!IsLoaded || _dataService == null) return;
         if (_isRefreshing) return;
         if (e.Source != MainTabControl && e.Source != QueriesSubTabControl
-            && e.Source != MemorySubTabControl && e.Source != BlockingSubTabControl) return;
+            && e.Source != MemorySubTabControl && e.Source != BlockingSubTabControl
+            && e.Source != SystemEventsSubTabControl && e.Source != ConfigChangesSubTabControl) return;
 
         UpdateCompareDropdownState();
 
@@ -441,41 +496,6 @@ public partial class ServerTab : UserControl
             : $"TabNav-tab{MainTabControl.SelectedIndex}";
         using var _navTimer = Helpers.MethodProfiler.StartTiming(navContext);
         await RefreshVisibleTabAsync(hoursBack, fromDate, toDate, subTabOnly: true);
-    }
-
-    private void DailySummaryToday_Click(object sender, RoutedEventArgs e)
-    {
-        _dailySummaryDate = null;
-        DailySummaryDatePicker.SelectedDate = null;
-        DailySummaryTodayButton.FontWeight = FontWeights.Bold;
-        DailySummaryIndicator.Text = "Showing: Today (UTC)";
-        DailySummaryRefresh_Click(sender, e);
-    }
-
-    private void DailySummaryDate_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (DailySummaryDatePicker.SelectedDate.HasValue)
-        {
-            _dailySummaryDate = DailySummaryDatePicker.SelectedDate.Value.Date;
-            DailySummaryTodayButton.FontWeight = FontWeights.Normal;
-            DailySummaryIndicator.Text = $"Showing: {_dailySummaryDate.Value:MMM d, yyyy}";
-        }
-    }
-
-    private async void DailySummaryRefresh_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var result = await Task.Run(() => _dataService.GetDailySummaryAsync(_serverId, _dailySummaryDate));
-            DailySummaryGrid.ItemsSource = result != null
-                ? new List<DailySummaryRow> { result } : null;
-            DailySummaryNoData.Visibility = result == null
-                ? Visibility.Visible : Visibility.Collapsed;
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("DailySummary", $"Error refreshing: {ex.Message}");
-        }
     }
 
     private async void LiveSnapshot_Click(object sender, RoutedEventArgs e)
@@ -608,5 +628,11 @@ public partial class ServerTab : UserControl
         _memoryPressureEventsHover?.Dispose();
         _currentWaitsDurationHover?.Dispose();
         _currentWaitsBlockedHover?.Dispose();
+        DisposeLatchSpinlockHelpers();
+        DisposeCpuSchedulerHelpers();
+        DisposePlanCacheHelpers();
+        DisposeSessionStatsHelpers();
+        DisposeSystemHealthChartHelpers();
+        DisposeBlockingStatsHelpers();
     }
 }

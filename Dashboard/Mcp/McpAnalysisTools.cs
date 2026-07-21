@@ -32,9 +32,8 @@ public sealed class McpAnalysisTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of data to analyze. Default 4.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -134,9 +133,8 @@ public sealed class McpAnalysisTools
         [Description("Filter to a specific source category. Omit for all.")] string? source = null,
         [Description("Minimum severity to include. Default 0.")] double min_severity = 0)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -206,9 +204,8 @@ public sealed class McpAnalysisTools
         [Description("Hours back for the comparison period. Default 4.")] int hours_back = 4,
         [Description("Hours back for the baseline period start. Default 28.")] int baseline_hours_back = 28)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -281,9 +278,8 @@ public sealed class McpAnalysisTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -352,9 +348,8 @@ public sealed class McpAnalysisTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of finding history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -423,9 +418,8 @@ public sealed class McpAnalysisTools
         [Description("Server name.")] string? server_name = null,
         [Description("Optional reason for muting.")] string? reason = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -445,47 +439,237 @@ public sealed class McpAnalysisTools
 
 /// <summary>
 /// Maps fact keys to recommended MCP tools for further investigation.
-/// Shared between Lite and Dashboard — same recommendations.
+/// Used by analyze_server to tell the AI client what to call next. Lite keeps its own
+/// copy (PerformanceMonitorLite.Mcp) because the two apps expose different MCP tool
+/// sets, so the recommendations are app-specific -- NOT a shared/duplicated list.
 /// </summary>
 internal static class ToolRecommendations
 {
     private static readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<ToolRecommendation>> ByFactKey = new()
     {
-        ["SOS_SCHEDULER_YIELD"] = [new("get_cpu_utilization", "Check CPU usage over time"), new("get_top_queries_by_cpu", "Find CPU-expensive queries")],
-        ["CXPACKET"] = [new("get_top_queries_by_cpu", "Find parallel queries", new() { ["parallel_only"] = "true" }), new("audit_config", "Check CTFP and MAXDOP")],
-        ["THREADPOOL"] = [new("get_top_queries_by_cpu", "Find resource-consuming queries"), new("get_blocking", "Check if blocking is holding threads")],
-        ["PAGEIOLATCH_SH"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
-        ["PAGEIOLATCH_EX"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool"), new("get_tempdb_trend", "Check whether tempdb I/O is driving EX-mode waits")],
-        ["RESOURCE_SEMAPHORE"] = [new("get_resource_semaphore", "Check memory grants")],
-        ["WRITELOG"] = [new("get_file_io_stats", "Check log file latency"), new("get_perfmon_trend", "Check Transactions/sec commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })],
-        ["LCK"] = [new("get_blocking", "Get blocking details"), new("get_deadlocks", "Check for deadlocks")],
-        ["LCK_M_S"] = [new("get_blocking", "Get reader/writer blocking details")],
-        ["SCH_M"] = [new("get_blocking", "Check if DDL is causing blocking"), new("get_running_jobs", "See if maintenance jobs are taking schema-modification locks")],
-        ["BLOCKING_EVENTS"] = [new("get_blocking", "Get detailed blocking reports"), new("get_deadlocks", "Check for deadlocks")],
-        ["DEADLOCKS"] = [new("get_deadlocks", "Get deadlock events"), new("get_deadlock_detail", "Get full deadlock XML")],
-        ["CPU_SQL_PERCENT"] = [new("get_cpu_utilization", "See CPU trend"), new("get_top_queries_by_cpu", "Find CPU queries")],
-        ["CPU_SPIKE"] = [new("get_cpu_utilization", "See when spike occurred"), new("get_top_queries_by_cpu", "Find queries that drove the spike")],
-        ["IO_READ_LATENCY_MS"] = [new("get_file_io_stats", "Check per-file latency"), new("get_memory_stats", "Check buffer pool")],
-        ["IO_WRITE_LATENCY_MS"] = [new("get_file_io_stats", "Check per-file latency")],
-        ["TEMPDB_USAGE"] = [new("get_tempdb_trend", "Track TempDB usage")],
-        ["MEMORY_GRANT_PENDING"] = [new("get_resource_semaphore", "Check memory grants")],
-        ["QUERY_SPILLS"] = [new("get_top_queries_by_cpu", "Find queries with spills")],
-        ["QUERY_HIGH_DOP"] = [new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" })],
-        ["PARAMETER_SENSITIVITY"] = [new("get_top_queries_by_cpu", "Find the sensitive query and see its cached parameters"), new("analyze_query_plan", "Examine the plan for operators driving the runtime variance"), new("get_query_trend", "Confirm the bimodal duration pattern over time"), new("get_resource_semaphore", "Check whether bad-parameter executions blow up memory grants")],
-        ["PLAN_REGRESSION"] = [new("analyze_query_store_plan", "Compare the regressed plan against the prior plan"), new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"), new("get_query_store_top", "Pull the full Query Store entry and forced-plan history before forcing")],
-        ["DB_CONFIG"] = [new("audit_config", "Check configuration")],
-        ["FILE_AUTOGROWTH_PERCENT"] = [new("get_database_sizes", "See per-file sizes and autogrowth settings"), new("get_file_io_stats", "Check per-file growth/latency")],
-        ["DISK_SPACE"] = [new("get_file_io_stats", "Check per-file sizes")],
-        ["LATCH_EX"] = [new("get_latch_stats", "Check latch contention"), new("get_tempdb_trend", "Check TempDB")],
-        ["BAD_ACTOR"] = [new("get_top_queries_by_cpu", "See full query stats"), new("analyze_query_plan", "Analyze the execution plan")],
-        ["ANOMALY_CPU"] = [new("get_cpu_utilization", "See CPU trend"), new("get_active_queries", "Find what ran during spike")],
-        ["ANOMALY_WAIT"] = [new("get_wait_stats", "See wait breakdown"), new("compare_analysis", "Compare current vs baseline")],
-        ["ANOMALY_BLOCKING"] = [new("get_blocking", "Get blocking details"), new("get_deadlocks", "Get deadlock events")],
-        ["ANOMALY_IO"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
-        ["ANOMALY_SESSION_SPIKE"] = [new("get_session_stats", "See which application is driving the session-count spike"), new("get_active_queries", "Find what those sessions were doing at the spike")],
-        ["ANOMALY_QUERY_DURATION"] = [new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"), new("analyze_query_plan", "Examine the plan for the queries that slowed down"), new("get_query_trend", "Track the regressed query across executions")],
-        ["ANOMALY_MEMORY_PRESSURE"] = [new("get_memory_stats", "See current memory allocation"), new("get_memory_clerks", "Find which clerks are growing"), new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"), new("get_resource_semaphore", "Check whether query grants are competing with buffer pool")],
-        ["ANOMALY_BATCH_REQUESTS"] = [new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }), new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"), new("get_active_queries", "See what's actually running at the elevated rate")]
+        ["SOS_SCHEDULER_YIELD"] =
+        [
+            new("get_cpu_utilization", "Check SQL Server vs other-process CPU usage over time"),
+            new("get_top_queries_by_cpu", "Find the most CPU-expensive queries"),
+            new("get_perfmon_trend", "Check batch requests/sec for throughput context", new() { ["counter_name"] = "Batch Requests/sec" })
+        ],
+        ["CXPACKET"] =
+        [
+            new("get_top_queries_by_cpu", "Find parallel queries consuming CPU", new() { ["parallel_only"] = "true" }),
+            new("get_wait_trend", "Track the parallelism wait trend over time", new() { ["wait_type"] = "CXPACKET" }),
+            new("audit_config", "Check CTFP and MAXDOP settings")
+        ],
+        ["THREADPOOL"] =
+        [
+            new("get_cpu_scheduler_pressure", "Check runnable-queue depth and worker-thread exhaustion"),
+            new("get_top_queries_by_cpu", "Find queries consuming the most resources"),
+            new("get_blocking", "Check whether blocking is holding worker threads")
+        ],
+        ["PAGEIOLATCH_SH"] =
+        [
+            new("get_file_io_stats", "Check I/O latency per database file"),
+            new("get_file_io_trend", "Track I/O latency over time"),
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_resource_semaphore", "Check for memory grant pressure competing with the buffer pool")
+        ],
+        ["PAGEIOLATCH_EX"] =
+        [
+            new("get_file_io_stats", "Check I/O latency per database file"),
+            new("get_file_io_trend", "Track I/O latency over time"),
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_tempdb_trend", "Check whether tempdb I/O is driving the EX-mode waits")
+        ],
+        ["RESOURCE_SEMAPHORE"] =
+        [
+            new("get_resource_semaphore", "Check granted vs available workspace memory and waiter counts"),
+            new("get_memory_stats", "Check overall memory allocation"),
+            new("get_top_queries_by_cpu", "Find queries requesting large memory grants")
+        ],
+        ["WRITELOG"] =
+        [
+            new("get_file_io_stats", "Check transaction log file latency"),
+            new("get_file_io_trend", "Track log I/O latency over time"),
+            new("get_perfmon_trend", "Check Transactions/sec to see the commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })
+        ],
+        ["LCK"] =
+        [
+            new("get_blocking", "Get detailed blocking event reports"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time"),
+            new("get_active_queries", "See currently running sessions with their lock/wait detail")
+        ],
+        ["LCK_M_S"] =
+        [
+            new("get_blocking", "Get reader/writer blocking details"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time")
+        ],
+        ["LCK_M_IS"] =
+        [
+            new("get_blocking", "Get reader/writer blocking details"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time")
+        ],
+        ["BLOCKING_EVENTS"] =
+        [
+            new("get_blocking", "Get detailed blocking reports with full query text"),
+            new("get_blocking_deadlock_stats", "Track blocking event frequency over time"),
+            new("get_deadlocks", "Check whether blocking is escalating to deadlocks")
+        ],
+        ["DEADLOCKS"] =
+        [
+            new("get_deadlocks", "Get recent deadlock events with victim info"),
+            new("get_deadlock_detail", "Get the full deadlock graph XML for deep analysis"),
+            new("get_blocking_deadlock_stats", "Track deadlock frequency over time")
+        ],
+        ["SCH_M"] =
+        [
+            new("get_active_queries", "See what's waiting on schema-modification locks"),
+            new("get_blocking", "Check whether DDL operations are causing blocking"),
+            new("get_running_jobs", "See whether maintenance jobs (index rebuilds, stats updates) are taking schema-modification locks")
+        ],
+        ["CPU_SQL_PERCENT"] =
+        [
+            new("get_cpu_utilization", "See the CPU trend over time"),
+            new("get_top_queries_by_cpu", "Find queries consuming the most CPU"),
+            new("get_perfmon_trend", "Check batch requests/sec for throughput context", new() { ["counter_name"] = "Batch Requests/sec" })
+        ],
+        ["CPU_SPIKE"] =
+        [
+            new("get_cpu_utilization", "See the CPU trend to identify when the spike occurred"),
+            new("get_top_queries_by_cpu", "Find the queries that drove the CPU spike"),
+            new("get_active_queries", "Find what was actually running during the spike")
+        ],
+        ["IO_READ_LATENCY_MS"] =
+        [
+            new("get_file_io_stats", "Check per-file read latency"),
+            new("get_file_io_trend", "Track read latency over time"),
+            new("get_memory_stats", "Check whether the buffer pool is undersized")
+        ],
+        ["IO_WRITE_LATENCY_MS"] =
+        [
+            new("get_file_io_stats", "Check per-file write latency"),
+            new("get_file_io_trend", "Track write latency over time")
+        ],
+        ["TEMPDB_USAGE"] =
+        [
+            new("get_tempdb_trend", "Track TempDB usage over time"),
+            new("get_top_queries_by_cpu", "Find queries that may be spilling to TempDB")
+        ],
+        ["MEMORY_GRANT_PENDING"] =
+        [
+            new("get_resource_semaphore", "Check active vs pending memory grants and waiter counts"),
+            new("get_memory_stats", "Check overall memory allocation"),
+            new("get_top_queries_by_cpu", "Find queries requesting large grants")
+        ],
+        ["QUERY_SPILLS"] =
+        [
+            new("get_top_queries_by_cpu", "Find queries with spills"),
+            new("get_resource_semaphore", "Check memory grant pressure"),
+            new("get_tempdb_trend", "Check the TempDB impact from spills")
+        ],
+        ["QUERY_HIGH_DOP"] =
+        [
+            new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" }),
+            new("audit_config", "Check CTFP and MAXDOP settings")
+        ],
+        ["PARAMETER_SENSITIVITY"] =
+        [
+            new("get_top_queries_by_cpu", "Find the sensitive query in the plan cache and see its current cached parameters"),
+            new("analyze_query_plan", "Examine the plan for the operators driving the runtime variance (seek vs scan, grant size, join type)"),
+            new("get_query_trend", "Confirm the bimodal duration pattern across executions over time"),
+            new("get_resource_semaphore", "Check whether the bad-parameter executions are also blowing up memory grants")
+        ],
+        ["PLAN_REGRESSION"] =
+        [
+            new("analyze_query_store_plan", "Compare the regressed plan against the prior plan to see what the optimizer changed"),
+            new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
+            new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
+        ],
+        ["LATCH_EX"] =
+        [
+            new("get_latch_stats", "Check latch contention by class (ACCESS_METHODS_DATASET_PARENT / FGCB_ADD_REMOVE point at TempDB allocation contention)"),
+            new("get_tempdb_trend", "Check TempDB for allocation contention"),
+            new("get_wait_trend", "Track the latch contention trend", new() { ["wait_type"] = "LATCH_EX" })
+        ],
+        ["LATCH_SH"] =
+        [
+            new("get_latch_stats", "Check latch contention by class"),
+            new("get_tempdb_trend", "Check TempDB for allocation contention"),
+            new("get_wait_trend", "Track the latch contention trend", new() { ["wait_type"] = "LATCH_SH" })
+        ],
+        ["DB_CONFIG"] =
+        [
+            new("audit_config", "Check server-level configuration against best practices"),
+            new("get_blocking", "Check whether RCSI-off databases are seeing blocking")
+        ],
+        ["FILE_AUTOGROWTH_PERCENT"] =
+        [
+            new("get_database_sizes", "See per-file sizes and autogrowth settings"),
+            new("get_file_io_stats", "Check per-file growth and latency")
+        ],
+        ["RUNNING_JOBS"] =
+        [
+            new("get_running_jobs", "See currently running jobs with duration vs historical average and p95"),
+            new("get_cpu_utilization", "Check whether long-running jobs are consuming CPU")
+        ],
+        ["DISK_SPACE"] =
+        [
+            new("get_database_sizes", "See per-file sizes and underlying volume free space"),
+            new("get_tempdb_trend", "Check TempDB growth on the volume")
+        ],
+        ["BAD_ACTOR"] =
+        [
+            new("get_top_queries_by_cpu", "See full query stats for this query"),
+            new("analyze_query_plan", "Analyze the execution plan for optimization opportunities"),
+            new("get_query_trend", "Track this query's performance over time")
+        ],
+        ["ANOMALY_CPU"] =
+        [
+            new("get_cpu_utilization", "See the CPU trend to identify when the spike occurred"),
+            new("get_active_queries", "Find what queries were running during the spike"),
+            new("get_top_queries_by_cpu", "Find the most CPU-expensive queries in the period")
+        ],
+        ["ANOMALY_WAIT"] =
+        [
+            new("get_wait_stats", "See the full wait stats breakdown"),
+            new("get_wait_trend", "Track the anomalous wait type over time"),
+            new("compare_analysis", "Compare current vs baseline to see what changed")
+        ],
+        ["ANOMALY_BLOCKING"] =
+        [
+            new("get_blocking", "Get detailed blocking event reports"),
+            new("get_deadlocks", "Get recent deadlock events"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time")
+        ],
+        ["ANOMALY_IO"] =
+        [
+            new("get_file_io_stats", "Check per-file I/O latency"),
+            new("get_file_io_trend", "Track I/O latency over time"),
+            new("get_memory_stats", "Check whether the buffer pool is undersized")
+        ],
+        ["ANOMALY_SESSION_SPIKE"] =
+        [
+            new("get_session_stats", "See which application is driving the session-count spike"),
+            new("get_active_queries", "Find what those sessions were doing at the spike"),
+            new("get_cpu_scheduler_pressure", "Check whether the new sessions are exhausting worker threads")
+        ],
+        ["ANOMALY_QUERY_DURATION"] =
+        [
+            new("get_query_trend", "Confirm the duration shift across the analysis window"),
+            new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"),
+            new("analyze_query_plan", "Examine the plan for the queries that slowed down")
+        ],
+        ["ANOMALY_MEMORY_PRESSURE"] =
+        [
+            new("get_memory_stats", "See current memory allocation and target vs total"),
+            new("get_memory_clerks", "Find which clerks are growing"),
+            new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"),
+            new("get_resource_semaphore", "Check whether query grants are competing with the buffer pool")
+        ],
+        ["ANOMALY_BATCH_REQUESTS"] =
+        [
+            new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }),
+            new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"),
+            new("get_active_queries", "See what's actually running at the elevated rate")
+        ]
     };
 
     public static System.Collections.Generic.List<object> GetForStoryPath(string storyPath)

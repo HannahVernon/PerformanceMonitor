@@ -11,9 +11,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Alerting;
 using PerformanceMonitor.Analysis;
 using PerformanceMonitor.Ui;
 using PerformanceMonitor.Common;
+using static PerformanceMonitor.Common.DeadlockGraphProcessParser;
 
 namespace PerformanceMonitorLite.Services;
 
@@ -69,12 +71,13 @@ LIMIT 50";
     /// The metric column is determined by the caller's sort preference.
     /// </summary>
     public async Task<List<TimeSliceBucket>> GetActiveQuerySlicerDataAsync(
-        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -88,13 +91,15 @@ SELECT
 FROM v_query_snapshots
 WHERE server_id = $1
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 GROUP BY date_trunc('hour', collection_time)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
@@ -119,13 +124,14 @@ ORDER BY bucket";
     /// <summary>
     /// Gets query snapshots (currently running queries) for a server.
     /// </summary>
-    public async Task<List<QuerySnapshotRow>> GetLatestQuerySnapshotsAsync(int serverId, int hoursBack = 4, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<QuerySnapshotRow>> GetLatestQuerySnapshotsAsync(int serverId, int hoursBack = 4, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetLatestQuerySnapshotsAsync", "v_query_snapshots latest");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -154,17 +160,20 @@ SELECT
     host_name,
     program_name,
     open_transaction_count,
-    percent_complete
+    percent_complete,
+    query_hash
 FROM v_query_snapshots
 WHERE server_id = $1
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 AND   query_text NOT LIKE 'WAITFOR%'
 ORDER BY collection_time DESC, cpu_time_ms DESC";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QuerySnapshotRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -197,7 +206,8 @@ ORDER BY collection_time DESC, cpu_time_ms DESC";
                 HostName = reader.IsDBNull(22) ? "" : reader.GetString(22),
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
-                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25))
+                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26)
             });
         }
 
@@ -254,12 +264,13 @@ SELECT
     /// <summary>
     /// Gets recent blocked process reports from the XE-based collector.
     /// </summary>
-    public async Task<List<BlockedProcessReportRow>> GetRecentBlockedProcessReportsAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<BlockedProcessReportRow>> GetRecentBlockedProcessReportsAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -303,13 +314,15 @@ SELECT
 FROM v_blocked_process_reports
 WHERE server_id = $1
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 ORDER BY event_time DESC
 LIMIT 200";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<BlockedProcessReportRow>();
         using (var reader = await command.ExecuteReaderAsync())
@@ -361,7 +374,7 @@ LIMIT 200";
 
         // Always-on DMV blocking snapshot: surface its rows in the grid too, so the block-chain viewer is
         // reachable when the blocked-process-report XE captured nothing (AWS RDS). Same connection/lock.
-        await AppendDmvBlockedProcessGridRowsAsync(connection.CreateCommand, items, serverId, startTime, endTime);
+        await AppendDmvBlockedProcessGridRowsAsync(connection.CreateCommand, items, serverId, startTime, endTime, databaseNames);
 
         return items;
     }
@@ -373,10 +386,11 @@ LIMIT 200";
     /// can't be opened). v_dmv_blocking_snapshots is created by DuckDbInitializer, so it always exists.
     /// </summary>
     private static async Task AppendDmvBlockedProcessGridRowsAsync(
-        Func<DuckDBCommand> createCommand, List<BlockedProcessReportRow> items, int serverId, DateTime startTime, DateTime endTime)
+        Func<DuckDBCommand> createCommand, List<BlockedProcessReportRow> items, int serverId, DateTime startTime, DateTime endTime, IReadOnlyList<string>? databaseNames = null)
     {
         const int gridCap = 200;
         var dmvItems = new List<BlockedProcessReportRow>();
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
         using (var command = createCommand())
         {
             command.CommandText = @"
@@ -386,14 +400,17 @@ SELECT
     wait_time_ms, lock_mode, blocking_status, contentious_object,
     blocked_sql_text, blocking_sql_text,
     blocked_login_name, blocked_host_name, blocked_client_app,
-    blocked_last_tran_started, blocking_last_tran_started, monitor_loop
+    blocked_last_tran_started, blocking_last_tran_started, monitor_loop,
+    blocking_login_name, blocking_host_name, blocking_client_app
 FROM v_dmv_blocking_snapshots
-WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3" + dbClause + @"
 ORDER BY event_time DESC
 LIMIT 200";
             command.Parameters.Add(new DuckDBParameter { Value = serverId });
             command.Parameters.Add(new DuckDBParameter { Value = startTime });
             command.Parameters.Add(new DuckDBParameter { Value = endTime });
+            foreach (var db in dbValues)
+                command.Parameters.Add(new DuckDBParameter { Value = db });
 
             using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
@@ -419,32 +436,19 @@ LIMIT 200";
                     BlockedLastTranStarted = reader.IsDBNull(16) ? null : reader.GetDateTime(16),
                     BlockingLastTranStarted = reader.IsDBNull(17) ? null : reader.GetDateTime(17),
                     MonitorLoop = reader.IsDBNull(18) ? (int?)null : reader.GetInt32(18),
-                    Source = "DMV snapshot"
+                    /* Blocking-side identity — the DMV snapshot is the only blocking source on AWS RDS / when the
+                       BPR threshold is unset, so surface it here too (the XE path already sets these). */
+                    BlockingLoginName = reader.IsDBNull(19) ? "" : reader.GetString(19),
+                    BlockingHostName = reader.IsDBNull(20) ? "" : reader.GetString(20),
+                    BlockingClientApp = reader.IsDBNull(21) ? "" : reader.GetString(21),
+                    Source = BlockedProcessAlertRow.DmvSnapshotSource
                 });
             }
         }
 
-        if (dmvItems.Count == 0) return;
-
-        // Dedup: keep all BPR rows; add a DMV row only if no BPR row covers the same (blocked, blocker)
-        // SPID within the same minute. BPR is preferred (richer report XML).
-        var seen = new HashSet<(int, int, long)>();
-        foreach (var b in items)
-            if (b.EventTime.HasValue)
-                seen.Add((b.BlockedSpid, b.BlockingSpid, b.EventTime.Value.Ticks / TimeSpan.TicksPerMinute));
-
-        foreach (var d in dmvItems)
-        {
-            var key = (d.BlockedSpid, d.BlockingSpid, (d.EventTime?.Ticks ?? 0) / TimeSpan.TicksPerMinute);
-            if (seen.Add(key))
-                items.Add(d);
-        }
-
-        // Re-cap to the grid's LIMIT, newest first. OrderByDescending is stable, so BPR rows (added
-        // first) win ties over DMV rows at the same event time — matching the Dashboard grid.
-        var merged = items.OrderByDescending(i => i.EventTime ?? DateTime.MinValue).Take(gridCap).ToList();
-        items.Clear();
-        items.AddRange(merged);
+        /* Dedup + re-cap moved verbatim to the shared BlockedProcessReportMerge (Phase-5 slice B)
+           so the Darling Postgres adapter reproduces EXACTLY these XE-preferred fallback semantics. */
+        BlockedProcessReportMerge.AppendDmvFallbackRows(items, dmvItems, gridCap);
     }
 
     /// <summary>
@@ -496,11 +500,12 @@ LIMIT 5000";
     /// Gets hourly-bucketed metrics from blocked process reports for the time-range slicer.
     /// </summary>
     public async Task<List<TimeSliceBucket>> GetBlockingSlicerDataAsync(
-        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         /* BPR buckets, falling back to the always-on DMV snapshot only when BPR has no buckets in the
            window (AWS RDS) — so a server with both sources never double-counts. */
@@ -514,7 +519,7 @@ WITH bpr AS (
         COUNT(DISTINCT blocked_spid) AS distinct_blocked,
         COUNT(DISTINCT database_name) AS distinct_databases
     FROM v_blocked_process_reports
-    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3" + dbClause + @"
     GROUP BY date_trunc('hour', collection_time)
 ),
 dmv AS (
@@ -526,7 +531,7 @@ dmv AS (
         COUNT(DISTINCT blocked_spid) AS distinct_blocked,
         COUNT(DISTINCT database_name) AS distinct_databases
     FROM v_dmv_blocking_snapshots
-    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3" + dbClause + @"
     GROUP BY date_trunc('hour', collection_time)
 )
 SELECT bucket, event_count, total_wait_sec, distinct_blockers, distinct_blocked, distinct_databases FROM bpr
@@ -538,6 +543,8 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
@@ -605,12 +612,13 @@ ORDER BY bucket";
     /// Uses blocked_process_reports from Extended Events for more reliable detection.
     /// Falls back to blocking_snapshots if no XE data available.
     /// </summary>
-    public async Task<List<TrendPoint>> GetBlockingTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<TrendPoint>> GetBlockingTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         /* Use blocked_process_reports from XE session - more reliable than point-in-time snapshots
            Group by event_time (when blocking actually occurred) rather than collection_time */
@@ -620,13 +628,13 @@ ORDER BY bucket";
 WITH bpr AS (
     SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
     FROM v_blocked_process_reports
-    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3" + dbClause + @"
     GROUP BY DATE_TRUNC('minute', event_time)
 ),
 dmv AS (
     SELECT DATE_TRUNC('minute', event_time) AS bucket, COUNT(*) AS incident_count
     FROM v_dmv_blocking_snapshots
-    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3
+    WHERE server_id = $1 AND event_time >= $2 AND event_time <= $3" + dbClause + @"
     GROUP BY DATE_TRUNC('minute', event_time)
 )
 SELECT bucket, incident_count FROM bpr
@@ -637,6 +645,8 @@ ORDER BY bucket";
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<TrendPoint>();
         using var reader = await command.ExecuteReaderAsync();
@@ -711,7 +721,7 @@ WITH raw AS
         collection_time,
         wait_type,
         delta_wait_time_ms,
-        date_diff('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   wait_type LIKE 'LCK%'
@@ -721,7 +731,7 @@ WITH raw AS
 SELECT
     collection_time,
     wait_type,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
 FROM raw
 WHERE delta_wait_time_ms >= 0
 ORDER BY collection_time, wait_type";
@@ -758,260 +768,56 @@ public class TrendPoint
     public int Count { get; set; }
 }
 
-public class DeadlockRow
+/// <summary>
+/// Lite's deadlock grid row. The alert-consumed members (victim process/SQL, graph XML, the parsed
+/// <c>ProcessSummary</c>) live on the shared <see cref="DeadlockAlertRow"/> base (Phase-5 slice B)
+/// so store reads flow into the shared alert builders without a mapping copy; only the
+/// grid-display extras stay here.
+/// </summary>
+public class DeadlockRow : DeadlockAlertRow
 {
     public DateTime CollectionTime { get; set; }
     public DateTime? DeadlockTime { get; set; }
-    public string VictimProcessId { get; set; } = "";
-    public string VictimSqlText { get; set; } = "";
-    public string DeadlockGraphXml { get; set; } = "";
-    public bool HasDeadlockXml => !string.IsNullOrEmpty(DeadlockGraphXml);
-
-    /// <summary>
-    /// Parses the deadlock graph XML and returns a summary of all processes involved.
-    /// </summary>
-    public string ProcessSummary
-    {
-        get
-        {
-            if (string.IsNullOrEmpty(DeadlockGraphXml))
-            {
-                return "";
-            }
-
-            try
-            {
-                var doc = System.Xml.Linq.XElement.Parse(DeadlockGraphXml);
-                var processes = doc.Descendants("process");
-                var summaries = new System.Collections.Generic.List<string>();
-
-                foreach (var proc in processes)
-                {
-                    var id = proc.Attribute("id")?.Value ?? "?";
-                    var spid = proc.Attribute("spid")?.Value ?? "?";
-                    var db = proc.Attribute("currentdb")?.Value ?? "";
-                    var isVictim = string.Equals(id, VictimProcessId, StringComparison.OrdinalIgnoreCase);
-                    summaries.Add($"SPID {spid}{(isVictim ? " (victim)" : "")}");
-                }
-
-                return string.Join(" vs ", summaries);
-            }
-            catch
-            {
-                return "";
-            }
-        }
-    }
 }
 
-public class DeadlockProcessDetail
+/// <summary>
+/// Lite's Deadlocks-grid row — one parsed process per deadlock graph. The raw parsed fields and the
+/// sp_BlitzLock-style graph walk now live once on the shared <see cref="DeadlockProcessInfo"/> /
+/// <see cref="DeadlockGraphProcessParser"/> (Common); only Lite's per-server display getters
+/// (<see cref="ServerTimeHelper"/>) stay here.
+/// </summary>
+public class DeadlockProcessDetail : DeadlockProcessInfo
 {
-    public DateTime? DeadlockTime { get; set; }
-    public bool IsVictim { get; set; }
-    public string ProcessId { get; set; } = "";
-    public int Spid { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public string SqlText { get; set; } = "";
-    public string WaitResource { get; set; } = "";
-    public long WaitTime { get; set; }
-    public string LockMode { get; set; } = "";
-    public string IsolationLevel { get; set; } = "";
-    public long LogUsed { get; set; }
-    public int TransactionCount { get; set; }
-    public string ClientApp { get; set; } = "";
-    public string HostName { get; set; } = "";
-    public string LoginName { get; set; } = "";
-    public string Status { get; set; } = "";
-    public string DeadlockGraphXml { get; set; } = "";
-    public bool HasDeadlockXml => !string.IsNullOrEmpty(DeadlockGraphXml);
-
-    /* New fields from sp_BlitzLock analysis */
-    public string DeadlockType { get; set; } = "";
-    public string ObjectNames { get; set; } = "";
-    public string ProcName { get; set; } = "";
-    public string OwnerMode { get; set; } = "";
-    public string WaiterMode { get; set; } = "";
-    public string TransactionName { get; set; } = "";
-    public int Priority { get; set; }
-    public DateTime? LastTranStarted { get; set; }
-    public DateTime? LastBatchStarted { get; set; }
-    public DateTime? LastBatchCompleted { get; set; }
-
     public string DeadlockTimeLocal => ServerTimeHelper.FormatServerTime(DeadlockTime);
     public string VictimDisplay => IsVictim ? "Victim" : "";
     public string WaitTimeFormatted => WaitTime > 0 ? $"{WaitTime:N0} ms" : "";
     public string LastTranStartedLocal => ServerTimeHelper.FormatServerTime(LastTranStarted);
 
     /// <summary>
-    /// Parses a list of DeadlockRow into per-process detail rows.
+    /// Parses a list of <see cref="DeadlockRow"/> into per-process detail rows via the shared
+    /// <see cref="DeadlockGraphProcessParser"/> (the sp_BlitzLock-style graph walk, de-duplicated with the
+    /// Darling viewer). Lite never captures a victim plan, so the plan input is always null.
     /// </summary>
     public static List<DeadlockProcessDetail> ParseFromRows(List<DeadlockRow> rows)
-    {
-        var details = new List<DeadlockProcessDetail>();
-        foreach (var row in rows)
-        {
-            if (string.IsNullOrEmpty(row.DeadlockGraphXml))
-                continue;
-
-            try
-            {
-                var doc = System.Xml.Linq.XElement.Parse(row.DeadlockGraphXml);
-
-                /* Detect parallel deadlock */
-                var resourceList = doc.Descendants("resource-list").FirstOrDefault();
-                var isParallel = resourceList != null &&
-                    (resourceList.Elements("exchangeEvent").Any() || resourceList.Elements("SyncPoint").Any());
-                var deadlockType = isParallel ? "Parallel" : "Regular";
-
-                /* Get victim IDs from victim-list */
-                var victimIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var vp in doc.Descendants("victimProcess"))
-                {
-                    var id = vp.Attribute("id")?.Value;
-                    if (id != null) victimIds.Add(id);
-                }
-
-                /* Parse lock resources to build per-process owner/waiter modes and object names */
-                var processOwnerModes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-                var processWaiterModes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-                var processObjectNames = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-
-                if (resourceList != null)
-                {
-                    var lockTypes = new[] { "objectlock", "pagelock", "keylock", "ridlock", "rowgrouplock" };
-                    foreach (var lockType in lockTypes)
-                    {
-                        foreach (var lockNode in resourceList.Elements(lockType))
-                        {
-                            var objectName = lockNode.Attribute("objectname")?.Value ?? "";
-
-                            /* Parse owners */
-                            foreach (var owner in lockNode.Descendants("owner"))
-                            {
-                                var ownerId = owner.Attribute("id")?.Value ?? "";
-                                var ownerMode = owner.Attribute("mode")?.Value ?? "";
-                                if (!string.IsNullOrEmpty(ownerId) && !string.IsNullOrEmpty(ownerMode))
-                                {
-                                    if (!processOwnerModes.ContainsKey(ownerId))
-                                        processOwnerModes[ownerId] = new HashSet<string>();
-                                    processOwnerModes[ownerId].Add(ownerMode);
-                                }
-                                if (!string.IsNullOrEmpty(ownerId) && !string.IsNullOrEmpty(objectName))
-                                {
-                                    if (!processObjectNames.ContainsKey(ownerId))
-                                        processObjectNames[ownerId] = new HashSet<string>();
-                                    processObjectNames[ownerId].Add(objectName);
-                                }
-                            }
-
-                            /* Parse waiters */
-                            foreach (var waiter in lockNode.Descendants("waiter"))
-                            {
-                                var waiterId = waiter.Attribute("id")?.Value ?? "";
-                                var waiterMode = waiter.Attribute("mode")?.Value ?? "";
-                                if (!string.IsNullOrEmpty(waiterId) && !string.IsNullOrEmpty(waiterMode))
-                                {
-                                    if (!processWaiterModes.ContainsKey(waiterId))
-                                        processWaiterModes[waiterId] = new HashSet<string>();
-                                    processWaiterModes[waiterId].Add(waiterMode);
-                                }
-                                if (!string.IsNullOrEmpty(waiterId) && !string.IsNullOrEmpty(objectName))
-                                {
-                                    if (!processObjectNames.ContainsKey(waiterId))
-                                        processObjectNames[waiterId] = new HashSet<string>();
-                                    processObjectNames[waiterId].Add(objectName);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                /* Parse each process */
-                foreach (var proc in doc.Descendants("process"))
-                {
-                    var id = proc.Attribute("id")?.Value ?? "";
-
-                    /* Get proc name from execution stack */
-                    var procName = "";
-                    foreach (var frame in proc.Descendants("frame"))
-                    {
-                        var frameProcName = frame.Attribute("procname")?.Value ?? "";
-                        if (!string.IsNullOrEmpty(frameProcName) && frameProcName != "adhoc" && frameProcName != "unknown")
-                        {
-                            procName = frameProcName;
-                            break;
-                        }
-                    }
-
-                    details.Add(new DeadlockProcessDetail
-                    {
-                        DeadlockTime = row.DeadlockTime,
-                        ProcessId = id,
-                        IsVictim = victimIds.Contains(id),
-                        Spid = int.TryParse(proc.Attribute("spid")?.Value, out var spid) ? spid : 0,
-                        DatabaseName = proc.Attribute("currentdbname")?.Value ?? "",
-                        SqlText = proc.Element("inputbuf")?.Value?.Trim() ?? "",
-                        WaitResource = proc.Attribute("waitresource")?.Value ?? "",
-                        WaitTime = long.TryParse(proc.Attribute("waittime")?.Value, out var wt) ? wt : 0,
-                        LockMode = proc.Attribute("lockMode")?.Value ?? "",
-                        IsolationLevel = proc.Attribute("isolationlevel")?.Value ?? "",
-                        LogUsed = long.TryParse(proc.Attribute("logused")?.Value, out var lu) ? lu : 0,
-                        TransactionCount = int.TryParse(proc.Attribute("trancount")?.Value, out var tc) ? tc : 0,
-                        ClientApp = proc.Attribute("clientapp")?.Value ?? "",
-                        HostName = proc.Attribute("hostname")?.Value ?? "",
-                        LoginName = proc.Attribute("loginname")?.Value ?? "",
-                        Status = proc.Attribute("status")?.Value ?? "",
-                        DeadlockGraphXml = row.DeadlockGraphXml,
-                        DeadlockType = deadlockType,
-                        ProcName = procName,
-                        TransactionName = proc.Attribute("transactionname")?.Value ?? "",
-                        Priority = int.TryParse(proc.Attribute("priority")?.Value, out var pri) ? pri : 0,
-                        LastTranStarted = DateTime.TryParse(proc.Attribute("lasttranstarted")?.Value, out var lts) ? lts : null,
-                        LastBatchStarted = DateTime.TryParse(proc.Attribute("lastbatchstarted")?.Value, out var lbs) ? lbs : null,
-                        LastBatchCompleted = DateTime.TryParse(proc.Attribute("lastbatchcompleted")?.Value, out var lbc) ? lbc : null,
-                        OwnerMode = processOwnerModes.TryGetValue(id, out var om) ? string.Join(", ", om) : "",
-                        WaiterMode = processWaiterModes.TryGetValue(id, out var wm) ? string.Join(", ", wm) : "",
-                        ObjectNames = processObjectNames.TryGetValue(id, out var on) ? string.Join(", ", on) : ""
-                    });
-                }
-            }
-            catch
-            {
-                /* If XML parsing fails, add a single fallback row */
-                details.Add(new DeadlockProcessDetail
-                {
-                    DeadlockTime = row.DeadlockTime,
-                    SqlText = row.VictimSqlText,
-                    IsVictim = true,
-                    DeadlockGraphXml = row.DeadlockGraphXml
-                });
-            }
-        }
-        return details;
-    }
+        => DeadlockGraphProcessParser.Parse<DeadlockProcessDetail>(
+            rows.Select(r => new DeadlockGraphInput(r.DeadlockGraphXml, r.DeadlockTime, r.VictimSqlText, null))).ToList();
 }
 
-public class BlockedProcessReportRow
+/// <summary>
+/// Lite's blocked-process grid row. The alert-consumed members (event time, database, SPID pair,
+/// wait/lock, the query pair, report XML, contentious object, Source) live on the shared
+/// <see cref="BlockedProcessAlertRow"/> base (Phase-5 slice B) so store reads flow into the shared
+/// alert builders and the XE→DMV fallback merge without a mapping copy; only the grid-display
+/// extras stay here.
+/// </summary>
+public class BlockedProcessReportRow : BlockedProcessAlertRow
 {
     public DateTime CollectionTime { get; set; }
-    public DateTime? EventTime { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public int BlockedSpid { get; set; }
     public int BlockedEcid { get; set; }
-    public int BlockingSpid { get; set; }
     public int BlockingEcid { get; set; }
     public int? MonitorLoop { get; set; }
 
-    /// <summary>
-    /// Where this row came from: the blocked-process-report XE ("blocked-process-report") or the always-on
-    /// DMV snapshot fallback ("DMV snapshot"). Surfaced as a grid badge so a row captured when the
-    /// blocked-process threshold was unset (e.g. AWS RDS) is distinguishable.
-    /// </summary>
-    public string Source { get; set; } = "blocked-process-report";
-
-    public long WaitTimeMs { get; set; }
     public string WaitResource { get; set; } = "";
-    public string LockMode { get; set; } = "";
     public string BlockedStatus { get; set; } = "";
     public string BlockedIsolationLevel { get; set; } = "";
     public long BlockedLogUsed { get; set; }
@@ -1019,15 +825,11 @@ public class BlockedProcessReportRow
     public string BlockedClientApp { get; set; } = "";
     public string BlockedHostName { get; set; } = "";
     public string BlockedLoginName { get; set; } = "";
-    public string BlockedSqlText { get; set; } = "";
     public string BlockingStatus { get; set; } = "";
     public string BlockingIsolationLevel { get; set; } = "";
     public string BlockingClientApp { get; set; } = "";
     public string BlockingHostName { get; set; } = "";
     public string BlockingLoginName { get; set; } = "";
-    public string BlockingSqlText { get; set; } = "";
-    public string BlockedProcessReportXml { get; set; } = "";
-    public string ContentiousObject { get; set; } = "";
     public string BlockedTransactionName { get; set; } = "";
     public string BlockingTransactionName { get; set; } = "";
     public DateTime? BlockedLastTranStarted { get; set; }
@@ -1041,7 +843,6 @@ public class BlockedProcessReportRow
 
     public string EventTimeLocal => ServerTimeHelper.FormatServerTime(EventTime);
     public string WaitTimeFormatted => WaitTimeMs < 1000 ? $"{WaitTimeMs} ms" : $"{WaitTimeMs / 1000.0:F1} sec";
-    public bool HasReportXml => !string.IsNullOrEmpty(BlockedProcessReportXml);
     public bool IsLongBlock => WaitTimeMs > 30000;
     public string BlockedLastTranStartedLocal => ServerTimeHelper.FormatServerTime(BlockedLastTranStarted);
     public string BlockedLastBatchStartedLocal => ServerTimeHelper.FormatServerTime(BlockedLastBatchStarted);
@@ -1050,6 +851,11 @@ public class BlockedProcessReportRow
 
 public class QuerySnapshotRow
 {
+    /// <summary>Gates "Get Actual Plan (re-run)" in the query grids' plan menu — the re-run executes this row's
+    /// query text (ServerTab.Plans.cs). Row types the re-run handler has no case for simply omit this property,
+    /// so the menu item's binding falls back to Collapsed and the verb is hidden rather than silently no-op.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText);
+
     public int SessionId { get; set; }
     public string DatabaseName { get; set; } = "";
     public string ElapsedTimeFormatted { get; set; } = "";
@@ -1076,11 +882,27 @@ public class QuerySnapshotRow
     public string ProgramName { get; set; } = "";
     public int OpenTransactionCount { get; set; }
     public decimal PercentComplete { get; set; }
+    public string QueryHash { get; set; } = "";
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
     public bool HasLiveQueryPlan => !string.IsNullOrEmpty(LiveQueryPlan);
     public string CollectionTimeLocal => CollectionTime == DateTime.MinValue ? "" : ServerTimeHelper.FormatServerTime(CollectionTime);
 
+    // Sessions this session is blocking at the same collection_time (SQL-derived in the
+    // snapshot queries; Chain mode overwrites it with the chain walker's transitive count)
+    public int BlockedSessionCount { get; set; }
+
+    // Wait-drilldown triage columns collected from dm_exec_query_memory_grants,
+    // session/task tempdb space usage, and dm_tran_* (schema v34)
+    public double RequestedMemoryMb { get; set; }
+    public double UsedMemoryMb { get; set; }
+    public double MaxUsedMemoryMb { get; set; }
+    public double TempdbCurrentMb { get; set; }
+    public double TempdbAllocationsMb { get; set; }
+    public double TranLogUsedMb { get; set; }
+    public DateTime? TranStartTime { get; set; }
+    public int RequestId { get; set; }
+    public string TranStartTimeLocal => ServerTimeHelper.FormatServerTime(TranStartTime);
+
     // Chain mode — set by WaitDrillDownWindow when showing head blockers
-    public int ChainBlockedCount { get; set; }
     public string ChainBlockingPath { get; set; } = "";
 }

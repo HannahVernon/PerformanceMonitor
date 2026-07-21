@@ -180,10 +180,30 @@ public static class FactCollectorHelpers
     }
 
     /// <summary>
+    /// Maps a raw wait type to the FAMILY key its regular fact is grouped under, mirroring
+    /// <see cref="GroupParallelismWaits"/> (all CX* → CXPACKET) and <see cref="GroupGeneralLockWaits"/> /
+    /// <see cref="IsGeneralLockWait"/> (general lock modes → LCK; LCK_M_S / LCK_M_IS, range locks, and
+    /// schema locks keep their own key). Every other wait type maps to itself. This is the single
+    /// source of truth <see cref="AnomalyIncidentReconciler"/> uses to fold an ANOMALY_WAIT_PROFILE
+    /// into the regular wait finding that shares its dominant driver's family, so the family decision
+    /// can never drift from how the collector actually grouped the waits.
+    /// </summary>
+    public static string WaitFamilyKey(string waitType)
+    {
+        if (string.IsNullOrEmpty(waitType))
+            return waitType ?? string.Empty;
+        if (waitType.StartsWith("CX", StringComparison.Ordinal))
+            return "CXPACKET";
+        if (IsGeneralLockWait(waitType))
+            return "LCK";
+        return waitType;
+    }
+
+    /// <summary>
     /// Returns true for general lock waits that should be grouped into "LCK".
     /// Excludes reader locks (S, IS), range locks (RS_*, RIn_*, RX_*), and schema locks.
     /// </summary>
-    private static bool IsGeneralLockWait(string waitType)
+    public static bool IsGeneralLockWait(string waitType)
     {
         if (!waitType.StartsWith("LCK_M_", StringComparison.OrdinalIgnoreCase)) return false;
 

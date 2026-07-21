@@ -22,9 +22,8 @@ public sealed class McpPlanTools
         [Description("The query_hash value from get_top_queries_by_cpu.")] string query_hash,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -52,9 +51,8 @@ public sealed class McpPlanTools
         [Description("The plan_handle value from get_top_procedures_by_cpu.")] string plan_handle,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -82,9 +80,8 @@ public sealed class McpPlanTools
         [Description("The plan_id from get_query_store_top.")] long plan_id,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -144,9 +141,8 @@ public sealed class McpPlanTools
         [Description("The query_hash value from get_top_queries_by_cpu.")] string query_hash,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {

@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 
 namespace PerformanceMonitorLite.Database;
 
@@ -97,7 +98,7 @@ public class DuckDbInitializer
     /// <summary>
     /// Current schema version. Increment this when schema changes require table rebuilds.
     /// </summary>
-    internal const int CurrentSchemaVersion = 32;
+    internal const int CurrentSchemaVersion = 47;
 
     private readonly string _archivePath;
 
@@ -109,19 +110,35 @@ public class DuckDbInitializer
     }
 
     /* Tables that have parquet archives — views are created to UNION hot data with archived parquet files.
-       IMPORTANT: Must match ArchiveService.ArchivableTables — every archived table needs an archive view. */
-    private static readonly string[] ArchivableTables =
-    [
-        "wait_stats", "query_stats", "procedure_stats", "query_store_stats",
-        "query_snapshots", "cpu_utilization_stats", "file_io_stats", "memory_stats",
-        "memory_clerks", "memory_pressure_events", "tempdb_stats", "perfmon_stats",
-        "deadlocks", "blocked_process_reports", "memory_grant_stats", "waiting_tasks",
-        "dmv_blocking_snapshots",
-        "running_jobs", "database_size_stats", "index_object_stats", "server_properties",
-        "session_stats", "server_config", "database_config",
-        "database_scoped_config", "trace_flags", "config_alert_log",
-        "collection_log"
-    ];
+       Catalog-driven: every collector table (from CollectorCatalog) plus the two non-collector time-series
+       tables (config_alert_log, collection_log). Adding a collector to the catalog gives it an archive view
+       for free — no hand-maintained list to keep in sync. Mirrors ArchiveService.ArchivableTables (same set,
+       same derivation); a test pins the two against each other and against the catalog. */
+    internal static readonly string[] ArchivableTables =
+        CollectorCatalog.All.Select(c => c.TargetTable)
+            .Concat(["config_alert_log", "collection_log"])
+            .ToArray();
+
+    /* Archive views for these tables must DEDUP the hot∪parquet union on a server-side natural key.
+       The 512MB emergency reset (ArchiveService.ArchiveAllAndResetAsync) archives all hot data to parquet
+       AND wipes collection_log, so the next cycle re-collects recent history into the hot store while the
+       parquet tier still holds it — the plain UNION ALL would then show each re-collected event twice.
+       The local surrogate prefix id (job_history_id / default_trace_event_id) is a per-process counter
+       (CollectionIdGenerator), so it is NOT stable across re-collection and cannot be the key — only the
+       SQL-Server-side identity is. Other archivable tables can't double up this way (normal archival keeps
+       hot and parquet disjoint, and their rows aren't re-collected after a reset), so they keep the plain
+       union. Value = the PARTITION BY column list for the QUALIFY ROW_NUMBER dedup. */
+    private static readonly IReadOnlyDictionary<string, string> ArchiveViewDedupKeys =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            /* sysjobhistory.instance_id: a unique monotonic IDENTITY per server that survives
+               sp_purge_jobhistory — JobHistoryCollector's exact-and-complete dedup watermark. */
+            ["job_history"] = "server_id, instance_id",
+            /* The default trace's EventSequence is unique within a trace; pairing it with event_time
+               (the StartTime watermark) keeps events distinct across the server restarts that reset
+               EventSequence, and groups identical re-collected rows (NULLs included) for dedup. */
+            ["default_trace_events"] = "server_id, event_time, event_sequence",
+        };
 
     /// <summary>
     /// Gets the connection string for the DuckDB database.
@@ -192,6 +209,15 @@ public class DuckDbInitializer
             if (existingVersion < CurrentSchemaVersion)
             {
                 await SetSchemaVersionAsync(connection, CurrentSchemaVersion);
+            }
+
+            /* Table count on the init connection — makes a failed reset (schema not persisting to the
+               file for the next connection to see) diagnosable from the log alone. */
+            using (var tableCountCmd = connection.CreateCommand())
+            {
+                tableCountCmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main'";
+                var tableCount = Convert.ToInt64(await tableCountCmd.ExecuteScalarAsync());
+                _logger?.LogInformation("Schema initialization created {Count} tables", tableCount);
             }
 
             _logger?.LogInformation("Database initialization complete. Schema version: {Version}", CurrentSchemaVersion);
@@ -449,10 +475,20 @@ public class DuckDbInitializer
             /* v5: Added database_scoped_config and trace_flags tables
                    for database-scoped configuration and active trace flag collection. */
             _logger?.LogInformation("Running migration to v5: adding database_scoped_config and trace_flags tables");
-            await ExecuteNonQueryAsync(connection, Schema.CreateDatabaseScopedConfigTable);
-            await ExecuteNonQueryAsync(connection, Schema.CreateDatabaseScopedConfigIndex);
-            await ExecuteNonQueryAsync(connection, Schema.CreateTraceFlagsTable);
-            await ExecuteNonQueryAsync(connection, Schema.CreateTraceFlagsIndex);
+            /* Generated from the catalog (same source as GetAllTableStatements, which also recreates these
+               with IF NOT EXISTS immediately after migrations); byte-equivalent to the former hand-written
+               Schema constants this migration used before the schema was made catalog-driven. The index is
+               null-checked (both collectors have one today) rather than asserted, mirroring the generator. */
+            foreach (ICollectorSchemaInfo collector in new[]
+                { (ICollectorSchemaInfo)DatabaseScopedConfigCollector.Instance, TraceFlagsCollector.Instance })
+            {
+                await ExecuteNonQueryAsync(connection, DuckDbSchemaGenerator.CreateTable(collector));
+                var collectorIndex = DuckDbSchemaGenerator.CreateIndex(collector);
+                if (collectorIndex is not null)
+                {
+                    await ExecuteNonQueryAsync(connection, collectorIndex);
+                }
+            }
         }
 
         if (fromVersion < 6)
@@ -809,6 +845,262 @@ public class DuckDbInitializer
                 _logger?.LogWarning("Migration to v32 encountered an error (non-fatal): {Error}", ex.Message);
             }
         }
+
+        if (fromVersion < 33)
+        {
+            /* v33: procedure_stats gains delta_spills, and query_stats gains plan_generation_num +
+               sample_interval_seconds. All appended at the end to keep the positional appenders aligned; the
+               v_ views (SELECT *) surface them; old parquet reads back NULL (union BY NAME). The collectors now
+               write these columns, so an un-migrated DB would mis-align — these ALTERs are required.
+               - procedure_stats.delta_spills: spill-delta parity with query_stats (proc Total/Avg Spills now
+                 reflect per-window work, not summed cumulative DMV totals).
+               - query_stats.plan_generation_num: plan-stability signal.
+               - query_stats.sample_interval_seconds: lets the display derive worker_time_per_second (CPU-ms/sec). */
+            _logger?.LogInformation("Running migration to v33: proc delta_spills + query_stats signal columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS delta_spills BIGINT");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_stats ADD COLUMN IF NOT EXISTS plan_generation_num BIGINT");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_stats ADD COLUMN IF NOT EXISTS sample_interval_seconds INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v33 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 34)
+        {
+            /* v34: query_snapshots gains the wait-drilldown triage columns Dashboard collects via
+               sp_WhoIsActive — memory-grant requested/used/max-used (MB), tempdb current/allocations
+               (MB), transaction log used (MB) + transaction start time, and request_id. All appended
+               at the end to keep the positional appender aligned; the v_ view (SELECT *) surfaces
+               them and old parquet reads back NULL (union BY NAME). The snapshot collector writes
+               these columns, so an un-migrated DB would mis-align — these ALTERs are required. */
+            _logger?.LogInformation("Running migration to v34: query_snapshots memory-grant/tempdb/transaction columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS requested_memory_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS used_memory_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS max_used_memory_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_current_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tempdb_allocations_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_log_used_mb DOUBLE PRECISION");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS tran_start_time TIMESTAMP");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_snapshots ADD COLUMN IF NOT EXISTS request_id INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v34 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 35)
+        {
+            /* v35: deferred execution-plan capture (#1262) — procedure_stats.query_plan_xml,
+               blocked_process_reports.blocked_query_plan_xml + blocking_query_plan_xml, and
+               deadlocks.victim_query_plan_xml. All appended at the end to keep the positional appenders
+               aligned; the v_ views (SELECT *) surface them and old parquet reads back NULL (union BY
+               NAME). The collectors now write these columns unconditionally — always NULL on Lite, which
+               never sets CapturePlanXml (Darling-only) — so an un-migrated DB would mis-align on the next
+               append; these ALTERs are required. */
+            _logger?.LogInformation("Running migration to v35: procedure/blocked-process/deadlock plan columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE procedure_stats ADD COLUMN IF NOT EXISTS query_plan_xml VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocked_query_plan_xml VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE blocked_process_reports ADD COLUMN IF NOT EXISTS blocking_query_plan_xml VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS victim_query_plan_xml VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v35 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 36)
+        {
+            /* v36: server_properties gains sqlserver_start_time / host_os_version / ag_replica_role — the
+               three fields the shared ServerPropertiesCollector now SELECTs (previously read only from a
+               live query in the FinOps Server Inventory). All appended at the end to keep the positional
+               appender aligned; the collector writes them unconditionally, so an un-migrated DB would
+               mis-align on the next append — these ALTERs are required. */
+            _logger?.LogInformation("Running migration to v36: server_properties start-time / host-OS / AG-role columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS sqlserver_start_time TIMESTAMP");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS host_os_version VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS ag_replica_role VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v36 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 37)
+        {
+            /* v37: added latch_stats (sys.dm_os_latch_stats) and spinlock_stats
+                    (sys.dm_os_spinlock_stats) shared collectors for Dashboard->Darling collection
+                    parity. New tables only — created by GetAllTableStatements() below; the v_ views
+                    come from CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v37: adding latch_stats and spinlock_stats tables");
+        }
+
+        if (fromVersion < 38)
+        {
+            /* v38: added cpu_scheduler_stats (sys.dm_os_schedulers + workload groups + NUMA nodes +
+                    OS memory) and plan_cache_stats (sys.dm_exec_cached_plans) shared collectors for
+                    Dashboard->Darling collection parity. New tables only — created by
+                    GetAllTableStatements() below; the v_ views come from CreateArchiveViewsAsync via
+                    ArchivableTables. */
+            _logger?.LogInformation("Running migration to v38: adding cpu_scheduler_stats and plan_cache_stats tables");
+        }
+
+        if (fromVersion < 39)
+        {
+            /* v39: added session_summary_stats (server-wide session SUMMARY from sys.dm_exec_sessions
+                    + sys.dm_exec_requests: total/running/sleeping/background/dormant sessions, idle
+                    sessions over 30 min, memory-wait count, top application/host) — the Dashboard->
+                    Darling connection-leak / idle parity collector. Distinct from the per-application
+                    session_stats table. New table only — created by GetAllTableStatements() below; the
+                    v_ view comes from CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v39: adding session_summary_stats table");
+        }
+
+        if (fromVersion < 40)
+        {
+            /* v40: added system_health_events (Stage 1 raw system_health Extended Events capture —
+                    one row per event, raw XML only, no shredding) for Dashboard->Darling health-parser
+                    parity. New table only — created by GetAllTableStatements() below; the v_ view comes
+                    from CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v40: adding system_health_events table");
+        }
+
+        if (fromVersion < 41)
+        {
+            /* v41: index_object_stats gains the per-index DEFINITION metadata monitor-side
+                    UNUSED/DUPLICATE analysis needs (FinOps Index Analysis, Stage 1): the ordered
+                    key_columns / included_columns lists (sp_IndexCleanup's delimited representation),
+                    filter_definition, the uniqueness/constraint/FK discriminators + is_disabled, and
+                    the reconstruct-a-CREATE options (data_compression_desc, optimize_for_sequential_key,
+                    fill_factor, is_padded, allow_page_locks, allow_row_locks). All appended at the end
+                    to keep the positional appender aligned; the collector now writes them, so an
+                    un-migrated DB would mis-align on the next append — these ALTERs are required. The
+                    v_ view (SELECT *) surfaces them and old parquet reads back NULL (union BY NAME). */
+            _logger?.LogInformation("Running migration to v41: adding index_object_stats index-definition columns");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS key_columns VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS included_columns VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS filter_definition VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_unique_constraint BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_foreign_key_reference BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS data_compression_desc VARCHAR");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS optimize_for_sequential_key BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS fill_factor SMALLINT");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_padded BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_page_locks BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS allow_row_locks BOOLEAN");
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE index_object_stats ADD COLUMN IF NOT EXISTS is_indexed_view BOOLEAN");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v41 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 42)
+        {
+            /* v42: server_properties gains utc_offset_minutes — the monitored server's UTC offset the
+                    shared collector now writes (DATEDIFF(MINUTE, GETUTCDATE(), GETDATE())). Appended at
+                    the end to keep the positional appender aligned; the collector now writes it, so an
+                    un-migrated DB would mis-align on the next append — this ALTER is required. Nullable
+                    (DuckDB has no ADD COLUMN NOT NULL); the offset is a stored fact, not a delta. */
+            _logger?.LogInformation("Running migration to v42: adding utc_offset_minutes column to server_properties");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE server_properties ADD COLUMN IF NOT EXISTS utc_offset_minutes INTEGER");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v42 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 43)
+        {
+            /* v43: added default_trace_events (built-in Default Trace read via sys.fn_trace_gettable —
+                    file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits,
+                    Server Memory Change) for Dashboard->shared parity. New table only — created by
+                    GetAllTableStatements() below; the v_ view comes from CreateArchiveViewsAsync via
+                    ArchivableTables. */
+            _logger?.LogInformation("Running migration to v43: adding default_trace_events table");
+        }
+
+        if (fromVersion < 44)
+        {
+            /* v44: added job_history (retained SQL Agent job-run history from msdb.dbo.sysjobhistory —
+                    every step row + the job-outcome row, deduped on the monotonic instance_id high-water
+                    mark, 365-day retention) for the fleet-wide Job History tab (issue #1433). New table
+                    only — created by GetAllTableStatements() below; the v_ view comes from
+                    CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v44: adding job_history table");
+        }
+
+        if (fromVersion < 45)
+        {
+            /* v45: added agent_status (SQL Agent service Running/Stopped from sys.dm_server_services +
+                    next scheduled run from msdb.dbo.sysjobschedules) — the current-state snapshot behind the
+                    Job History tab header and the "Agent Not Running" alert (issue #1433 Phase 2). New table
+                    only — created by GetAllTableStatements() below; the v_ view comes from
+                    CreateArchiveViewsAsync via ArchivableTables. */
+            _logger?.LogInformation("Running migration to v45: adding agent_status table");
+        }
+
+        if (fromVersion < 46)
+        {
+            /* v46: deadlocks.database_name — the victim process's currentdbname, keying the Azure SQL DB
+                    per-database watermark (#1535: capture is now one database-scoped session per monitored
+                    database). Appended at the end to keep the positional appender aligned; the collector
+                    writes it unconditionally (null when the graph carries no currentdbname), so an
+                    un-migrated DB would mis-align on the next append — this ALTER is required. The v_ view
+                    (SELECT *) is rebuilt every startup and picks it up; old parquet reads back NULL (union
+                    BY NAME). blocked_process_reports already had database_name. */
+            _logger?.LogInformation("Running migration to v46: deadlocks database_name column");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE deadlocks ADD COLUMN IF NOT EXISTS database_name VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v46 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
+
+        if (fromVersion < 47)
+        {
+            /* v47: query_store_stats.replica_role — the replica role SQL Server 2022+ attributed each
+                    runtime-stats row to (sys.query_store_replicas.replica_name). With "Query Store for
+                    secondary replicas" on, an AG has ONE shared Query Store living on the primary, so the
+                    primary's rows silently blend in secondary workload unless split by replica. Appended at
+                    the end to keep the positional appender aligned; the collector writes it unconditionally
+                    (NULL pre-2022, and NULL on a 2022 standalone whose sys.query_store_replicas is empty),
+                    so an un-migrated DB would mis-align on the next append — this ALTER is required. The v_
+                    view (SELECT *) is rebuilt every startup and picks it up; old parquet reads back NULL
+                    (union BY NAME). */
+            _logger?.LogInformation("Running migration to v47: query_store_stats replica_role column");
+            try
+            {
+                await ExecuteNonQueryAsync(connection, "ALTER TABLE query_store_stats ADD COLUMN IF NOT EXISTS replica_role VARCHAR");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("Migration to v47 encountered an error (non-fatal): {Error}", ex.Message);
+            }
+        }
     }
 
     /// <summary>
@@ -883,6 +1175,18 @@ public class DuckDbInitializer
         using var connection = CreateConnection();
         await connection.OpenAsync();
 
+        /* This fresh connection must see every table InitializeAsync just created. If it sees none,
+           the reset left an empty database — surface it loudly rather than only failing per-table below. */
+        using (var tableCountCmd = connection.CreateCommand())
+        {
+            tableCountCmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main'";
+            var tableCount = Convert.ToInt64(await tableCountCmd.ExecuteScalarAsync());
+            if (tableCount == 0)
+                _logger?.LogError("Archive-view refresh opened a database with no tables — the reset did not persist the schema; collectors will fail until restart");
+            else
+                _logger?.LogInformation("Archive-view refresh sees {Count} tables", tableCount);
+        }
+
         foreach (var table in ArchivableTables)
         {
             try
@@ -907,6 +1211,22 @@ WHERE NOT EXISTS (
     AND   d.server_id  = p.server_id
     AND   d.metric_name = p.metric_name
 )";
+                    }
+                    else if (ArchiveViewDedupKeys.TryGetValue(table, out var dedupKey))
+                    {
+                        /* Dedup the hot∪parquet union on the server-side natural key so a logical event that was
+                           re-collected after the 512MB emergency reset (still present in parquet) appears exactly
+                           once. QUALIFY keeps the newest-collected copy — the re-collected hot row outranks its
+                           archived parquet twin (identical content either way). */
+                        viewSql = $@"CREATE OR REPLACE VIEW v_{table} AS
+SELECT *
+FROM
+(
+    SELECT * FROM {table}
+    UNION ALL BY NAME
+    SELECT * FROM read_parquet('{globPath}', union_by_name=true)
+)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY {dedupKey} ORDER BY collection_time DESC) = 1";
                     }
                     else
                     {
@@ -1000,27 +1320,6 @@ WHERE NOT EXISTS (
     }
 
     /// <summary>
-    /// Runs a manual WAL checkpoint. Call this between collection cycles
-    /// to flush the WAL during idle time instead of during collector writes.
-    /// </summary>
-    public async Task CheckpointAsync()
-    {
-        using var writeLock = AcquireWriteLock();
-        try
-        {
-            using var connection = CreateConnection();
-            await connection.OpenAsync();
-            using var command = connection.CreateCommand();
-            command.CommandText = "CHECKPOINT";
-            await command.ExecuteNonQueryAsync();
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogDebug(ex, "Manual checkpoint failed (non-critical)");
-        }
-    }
-
-    /// <summary>
     /// Executes a non-query SQL statement.
     /// </summary>
     private async Task ExecuteNonQueryAsync(DuckDBConnection connection, string sql)
@@ -1041,7 +1340,7 @@ WHERE NOT EXISTS (
     /// <summary>
     /// Checks if the database file exists.
     /// </summary>
-    public bool DatabaseExists()
+    private bool DatabaseExists()
     {
         return File.Exists(_databasePath);
     }

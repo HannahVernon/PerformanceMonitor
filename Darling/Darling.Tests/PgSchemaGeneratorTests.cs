@@ -1,0 +1,505 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Linq;
+using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Darling.Storage;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins Darling's generated Postgres schema against the collector definitions: the catalog covers
+/// every collector, the type map mirrors Lite's DuckDB types (per-column numeric(p,s) included),
+/// the prefix names vary exactly where Lite's schema varies (deadlock_id / blocked_report_id /
+/// system_health_event_id / config_id+capture_time / running_jobs' no-id), and the index shapes
+/// mirror Lite's columns.
+/// </summary>
+public sealed class PgSchemaGeneratorTests
+{
+    [Fact]
+    public void Catalog_CoversAllCollectors_WithUniqueTablesAndNames()
+    {
+        /* 35 through agent_status + long_query_completions (#1496 long-query trace) = 36. */
+        Assert.Equal(36, CollectorCatalog.All.Count);
+        Assert.Equal(36, CollectorCatalog.All.Select(s => s.TargetTable).Distinct().Count());
+        Assert.Equal(36, CollectorCatalog.All.Select(s => s.Name).Distinct().Count());
+    }
+
+    [Fact]
+    public void Catalog_PrefixNames_MirrorLiteSchemaExceptions()
+    {
+        var byTable = CollectorCatalog.All.ToDictionary(s => s.TargetTable);
+
+        Assert.Equal("deadlock_id", byTable["deadlocks"].PrefixIdColumnName);
+        Assert.Equal("blocked_report_id", byTable["blocked_process_reports"].PrefixIdColumnName);
+        Assert.Equal("system_health_event_id", byTable["system_health_events"].PrefixIdColumnName);
+        foreach (var config in new[] { "server_config", "database_config", "database_scoped_config", "trace_flags" })
+        {
+            Assert.Equal("config_id", byTable[config].PrefixIdColumnName);
+            Assert.Equal("capture_time", byTable[config].PrefixTimeColumnName);
+        }
+        Assert.False(byTable["running_jobs"].IncludesCollectionId);
+        Assert.Equal("collection_id", byTable["wait_stats"].PrefixIdColumnName);
+        Assert.Equal("collection_time", byTable["wait_stats"].PrefixTimeColumnName);
+    }
+
+    [Fact]
+    public void Catalog_EveryDecimalColumn_DeclaresPrecision()
+    {
+        var undeclared = CollectorCatalog.All
+            .SelectMany(s => s.PayloadColumns.Select(c => (s.TargetTable, Column: c)))
+            .Where(x => x.Column.Type == CollectorColumnType.Decimal && x.Column.Precision <= 0)
+            .Select(x => $"{x.TargetTable}.{x.Column.Name}")
+            .ToArray();
+
+        Assert.Empty(undeclared);
+    }
+
+    [Fact]
+    public void TypeFor_MapsEveryColumnType()
+    {
+        Assert.Equal("bigint", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.BigInt)));
+        Assert.Equal("integer", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Integer)));
+        Assert.Equal("smallint", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.SmallInt)));
+        Assert.Equal("text", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Varchar)));
+        Assert.Equal("timestamp", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Timestamp)));
+        Assert.Equal("double precision", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Double)));
+        Assert.Equal("numeric(18,2)", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Decimal, 18, 2)));
+        Assert.Equal("numeric(5,2)", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Decimal, 5, 2)));
+        Assert.Equal("boolean", PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Boolean)));
+        Assert.Throws<InvalidOperationException>(
+            () => PgSchemaGenerator.TypeFor(new CollectorColumn("c", CollectorColumnType.Decimal)));
+    }
+
+    [Fact]
+    public void CreateTable_Deadlocks_FullDdlPinned()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(DeadlocksCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS deadlocks (\n" +
+            "    deadlock_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    deadlock_time timestamp,\n" +
+            "    victim_process_id text,\n" +
+            "    victim_sql_text text,\n" +
+            "    deadlock_graph_xml text,\n" +
+            "    victim_query_plan_xml text,\n" +
+            "    database_name text\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_RunningJobs_HasNoIdColumn()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(RunningJobsCollector.Instance);
+
+        Assert.StartsWith("CREATE TABLE IF NOT EXISTS running_jobs (\n    collection_time timestamp NOT NULL,", ddl, StringComparison.Ordinal);
+        Assert.DoesNotContain("collection_id", ddl, StringComparison.Ordinal);
+        Assert.Contains("percent_of_average numeric(10,1)", ddl, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateTable_ServerConfig_UsesConfigIdAndCaptureTime()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(ServerConfigCollector.Instance);
+
+        Assert.StartsWith(
+            "CREATE TABLE IF NOT EXISTS server_config (\n" +
+            "    config_id bigint NOT NULL,\n" +
+            "    capture_time timestamp NOT NULL,",
+            ddl, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateTable_QuerySnapshots_MirrorsPerColumnNumericPrecision()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(QuerySnapshotsCollector.Instance);
+
+        Assert.Contains("granted_query_memory_gb numeric(18,2)", ddl, StringComparison.Ordinal);
+        Assert.Contains("percent_complete numeric(5,2)", ddl, StringComparison.Ordinal);
+        Assert.Contains("is_cdc_capture boolean", ddl, StringComparison.Ordinal);
+        Assert.Contains("requested_memory_mb double precision", ddl, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateTable_LatchStats_MirrorsDeltaColumns()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(LatchStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS latch_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    latch_class text,\n" +
+            "    waiting_requests_count bigint,\n" +
+            "    wait_time_ms bigint,\n" +
+            "    max_wait_time_ms bigint,\n" +
+            "    delta_waiting_requests_count bigint,\n" +
+            "    delta_wait_time_ms bigint,\n" +
+            "    delta_max_wait_time_ms bigint\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_SpinlockStats_MapsSpinsPerCollisionToDoublePrecision()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(SpinlockStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS spinlock_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    spinlock_name text,\n" +
+            "    collisions bigint,\n" +
+            "    spins bigint,\n" +
+            "    spins_per_collision double precision,\n" +
+            "    sleep_time bigint,\n" +
+            "    backoffs bigint,\n" +
+            "    delta_collisions bigint,\n" +
+            "    delta_spins bigint,\n" +
+            "    delta_sleep_time bigint,\n" +
+            "    delta_backoffs bigint\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_CpuSchedulerStats_MapsWarningsToBoolean_AndAveragesToNumeric()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(CpuSchedulerStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS cpu_scheduler_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    max_workers_count integer,\n" +
+            "    scheduler_count integer,\n" +
+            "    cpu_count integer,\n" +
+            "    total_runnable_tasks_count integer,\n" +
+            "    total_work_queue_count bigint,\n" +
+            "    total_current_workers_count integer,\n" +
+            "    avg_runnable_tasks_count numeric(38,2),\n" +
+            "    total_active_request_count integer,\n" +
+            "    total_queued_request_count integer,\n" +
+            "    total_blocked_task_count integer,\n" +
+            "    total_active_parallel_thread_count bigint,\n" +
+            "    runnable_request_count integer,\n" +
+            "    total_request_count integer,\n" +
+            "    runnable_percent numeric(38,2),\n" +
+            "    worker_thread_exhaustion_warning boolean,\n" +
+            "    runnable_tasks_warning boolean,\n" +
+            "    blocked_tasks_warning boolean,\n" +
+            "    queued_requests_warning boolean,\n" +
+            "    total_physical_memory_kb bigint,\n" +
+            "    available_physical_memory_kb bigint,\n" +
+            "    system_memory_state_desc text,\n" +
+            "    physical_memory_pressure_warning boolean,\n" +
+            "    total_node_count integer,\n" +
+            "    nodes_online_count integer,\n" +
+            "    offline_cpu_count integer,\n" +
+            "    offline_cpu_warning boolean\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_PlanCacheStats_MapsAvgUseCountToNumeric_AndOldestPlanToTimestamp()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(PlanCacheStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS plan_cache_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    cacheobjtype text,\n" +
+            "    objtype text,\n" +
+            "    total_plans integer,\n" +
+            "    total_size_mb integer,\n" +
+            "    single_use_plans integer,\n" +
+            "    single_use_size_mb integer,\n" +
+            "    multi_use_plans integer,\n" +
+            "    multi_use_size_mb integer,\n" +
+            "    avg_use_count numeric(38,2),\n" +
+            "    avg_size_kb integer,\n" +
+            "    oldest_plan_create_time timestamp\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_SessionSummaryStats_MapsCountsToInteger_AndTopColumns()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(SessionSummaryStatsCollector.Instance);
+
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS session_summary_stats (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    total_sessions integer,\n" +
+            "    running_sessions integer,\n" +
+            "    sleeping_sessions integer,\n" +
+            "    background_sessions integer,\n" +
+            "    dormant_sessions integer,\n" +
+            "    idle_sessions_over_30min integer,\n" +
+            "    sessions_waiting_for_memory integer,\n" +
+            "    databases_with_connections integer,\n" +
+            "    top_application_name text,\n" +
+            "    top_application_connections integer,\n" +
+            "    top_host_name text,\n" +
+            "    top_host_connections integer\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_SystemHealthEvents_UsesSystemHealthEventIdPrefix_AndTextXml()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(SystemHealthEventsCollector.Instance);
+
+        /* Stage 1 raw-capture shape: the system_health_event_id bigint prefix (mirroring Lite's
+           DuckDB PRIMARY KEY column), then event_time / event_type / event_xml — the XML lands as
+           text (no shredding here; Stage 2 owns the parse). */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS system_health_events (\n" +
+            "    system_health_event_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    event_time timestamp,\n" +
+            "    event_type text,\n" +
+            "    event_xml text\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_DefaultTraceEvents_UsesDefaultTraceEventIdPrefix_AndMirrorsPayloadOrder()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(DefaultTraceEventsCollector.Instance);
+
+        /* The default_trace_event_id bigint prefix (mirroring Lite's DuckDB PRIMARY KEY column), then the
+           curated Default Trace payload in emission order. This generated V1 shape MUST equal the hardcoded
+           V21 upgrade migration body (minus the collect. qualification) so a fresh store (V1) and an upgraded
+           store (V21) land an identical table for the positional binary COPY. */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS default_trace_events (\n" +
+            "    default_trace_event_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    event_time timestamp,\n" +
+            "    event_name text,\n" +
+            "    event_class integer,\n" +
+            "    spid integer,\n" +
+            "    database_name text,\n" +
+            "    database_id integer,\n" +
+            "    login_name text,\n" +
+            "    host_name text,\n" +
+            "    application_name text,\n" +
+            "    object_name text,\n" +
+            "    filename text,\n" +
+            "    integer_data bigint,\n" +
+            "    integer_data_2 bigint,\n" +
+            "    text_data text,\n" +
+            "    session_login_name text,\n" +
+            "    error_number integer,\n" +
+            "    severity integer,\n" +
+            "    state integer,\n" +
+            "    event_sequence bigint,\n" +
+            "    duration_us bigint,\n" +
+            "    end_time timestamp\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_JobHistory_UsesJobHistoryIdPrefix_AndMirrorsPayloadOrder()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(JobHistoryCollector.Instance);
+
+        /* The job_history_id bigint prefix (mirroring Lite's DuckDB PRIMARY KEY column), then the retained
+           sysjobhistory payload in emission order (instance_id dedup key first). This generated V1 shape MUST
+           equal the hardcoded V24 upgrade migration body (minus the collect. qualification) so a fresh store
+           (V1) and an upgraded store (V24) land an identical table for the positional binary COPY (#1433). */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS job_history (\n" +
+            "    job_history_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    instance_id bigint,\n" +
+            "    job_id text,\n" +
+            "    job_name text,\n" +
+            "    job_enabled boolean,\n" +
+            "    category_name text,\n" +
+            "    step_id integer,\n" +
+            "    step_name text,\n" +
+            "    run_status integer,\n" +
+            "    run_status_desc text,\n" +
+            "    run_datetime timestamp,\n" +
+            "    run_duration_seconds bigint,\n" +
+            "    retries_attempted integer,\n" +
+            "    message text\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void CreateTable_AgentStatus_MirrorsPayloadOrder()
+    {
+        var ddl = PgSchemaGenerator.CreateTable(AgentStatusCollector.Instance);
+
+        /* Agent status snapshot (collection_id prefix), matching the V25 upgrade migration body (#1433 Phase 2). */
+        Assert.Equal(
+            "CREATE TABLE IF NOT EXISTS agent_status (\n" +
+            "    collection_id bigint NOT NULL,\n" +
+            "    collection_time timestamp NOT NULL,\n" +
+            "    server_id integer NOT NULL,\n" +
+            "    server_name text NOT NULL,\n" +
+            "    agent_running boolean,\n" +
+            "    agent_status_desc text,\n" +
+            "    agent_startup_desc text,\n" +
+            "    next_scheduled_run timestamp\n" +
+            ");",
+            ddl);
+    }
+
+    [Fact]
+    public void Migrations_JobHistoryAndAgentStatus_MatchGeneratedFreshShape()
+    {
+        /* The additive V24/V25 upgrade bodies MUST be the collect.-qualified twin of the fresh (V1
+           GenerateFullSchema) table, or a fresh store and an upgraded store would drift and the positional
+           binary COPY would mis-bind. Pin each migration's CREATE TABLE against the generator's output. */
+        /* Normalize line endings: CreateTable emits '\n'; the verbatim-string V##Sql consts carry the
+           source file's CRLF, so compare on a common newline. */
+        static string Lf(string s) => s.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        static string CollectQualified(ICollectorSchemaInfo schema)
+        {
+            var fresh = Lf(PgSchemaGenerator.CreateTable(schema));
+            return fresh.Replace(
+                $"CREATE TABLE IF NOT EXISTS {schema.TargetTable} (",
+                $"CREATE TABLE IF NOT EXISTS collect.{schema.TargetTable} (",
+                StringComparison.Ordinal);
+        }
+
+        var v24 = Lf(PgMigrations.Scripts.Single(m => m.Version == 24).Sql);
+        var v25 = Lf(PgMigrations.Scripts.Single(m => m.Version == 25).Sql);
+
+        Assert.Contains(CollectQualified(JobHistoryCollector.Instance), v24, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_job_history_time ON collect.job_history(server_id, collection_time);", v24, StringComparison.Ordinal);
+        Assert.Contains(CollectQualified(AgentStatusCollector.Instance), v25, StringComparison.Ordinal);
+        Assert.Contains("CREATE INDEX IF NOT EXISTS idx_agent_status_time ON collect.agent_status(server_id, collection_time);", v25, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateIndex_MirrorsLiteIndexColumns()
+    {
+        Assert.Equal(
+            "CREATE INDEX IF NOT EXISTS idx_wait_stats_time ON wait_stats(server_id, collection_time);",
+            PgSchemaGenerator.CreateIndex(WaitStatsCollector.Instance));
+        Assert.Equal(
+            "CREATE INDEX IF NOT EXISTS idx_trace_flags_time ON trace_flags(server_id, capture_time);",
+            PgSchemaGenerator.CreateIndex(TraceFlagsCollector.Instance));
+        Assert.Equal(
+            "CREATE INDEX IF NOT EXISTS idx_memory_pressure_events_time ON memory_pressure_events(server_id, sample_time);",
+            PgSchemaGenerator.CreateIndex(MemoryPressureEventsCollector.Instance));
+        Assert.Equal(
+            "CREATE INDEX IF NOT EXISTS idx_index_object_stats_object ON index_object_stats(server_id, database_name, object_id, index_id, collection_time);",
+            PgSchemaGenerator.CreateIndex(IndexObjectStatsCollector.Instance));
+        Assert.Null(PgSchemaGenerator.CreateIndex(ServerConfigCollector.Instance));
+        Assert.Null(PgSchemaGenerator.CreateIndex(DatabaseConfigCollector.Instance));
+    }
+
+    [Fact]
+    public void GenerateFullSchema_EmitsEveryTableAndIndex()
+    {
+        var script = PgSchemaGenerator.GenerateFullSchema();
+
+        var tableCount = CollectorCatalog.All.Count(s => script.Contains($"CREATE TABLE IF NOT EXISTS {s.TargetTable} (", StringComparison.Ordinal));
+        Assert.Equal(36, tableCount);
+
+        /* 36 tables minus the two index-less config tables (server_config, database_config) = 34 indexes. */
+        var indexCount = script.Split("CREATE INDEX IF NOT EXISTS").Length - 1;
+        Assert.Equal(34, indexCount);
+
+        /* The precision guard can never regress silently. */
+        Assert.DoesNotContain("numeric(0,0)", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenerateV8Move_CreatesSchemas_AndMovesEveryCatalogTableToCollect()
+    {
+        var v8 = PgSchemaGenerator.GenerateV8Move();
+
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS collect AUTHORIZATION darling;", v8, StringComparison.Ordinal);
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS config AUTHORIZATION darling;", v8, StringComparison.Ordinal);
+
+        /* Every collector table moves to collect — catalog-driven, so a new collector moves for free. */
+        foreach (var schema in CollectorCatalog.All)
+        {
+            Assert.Contains($"ALTER TABLE IF EXISTS public.{schema.TargetTable} SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void GenerateV8Move_MovesMetadataAndViewsToCollect_AndConfigTablesToConfig()
+    {
+        var v8 = PgSchemaGenerator.GenerateV8Move();
+
+        foreach (var table in PgSchemaGenerator.CollectMetadataTables)
+        {
+            Assert.Contains($"ALTER TABLE IF EXISTS public.{table} SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(24, PgSchemaGenerator.CollectViews.Count);
+        foreach (var view in PgSchemaGenerator.CollectViews)
+        {
+            Assert.Contains($"ALTER VIEW IF EXISTS public.{view} SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        }
+
+        /* Exactly the operator-writable coordination tables go to config — the admin write surface. */
+        Assert.Equal(
+            new[] { "config_alert_log", "config_edge_trigger_watermarks", "config_mute_rules", "analysis_muted" },
+            PgSchemaGenerator.ConfigTables);
+        foreach (var table in PgSchemaGenerator.ConfigTables)
+        {
+            Assert.Contains($"ALTER TABLE IF EXISTS public.{table} SET SCHEMA config;", v8, StringComparison.Ordinal);
+        }
+
+        /* analysis_findings is service-written / viewer-read-only -> collect, not config (fork #1). */
+        Assert.Contains("ALTER TABLE IF EXISTS public.analysis_findings SET SCHEMA collect;", v8, StringComparison.Ordinal);
+        Assert.DoesNotContain("public.analysis_findings SET SCHEMA config;", v8, StringComparison.Ordinal);
+
+        /* The ALTER DATABASE search_path default is NOT baked into V8 — it is best-effort in MigrateAsync. */
+        Assert.DoesNotContain("ALTER DATABASE", v8, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SearchPath_ListsCollectConfigPublicInOrder()
+    {
+        Assert.Equal("collect, config, public", PgSchemaGenerator.SearchPath);
+    }
+}

@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>PerformanceMonitor.Darling.Service</RootNamespace>
+    <AssemblyName>PerformanceMonitor.Darling.Service</AssemblyName>
+    <Version>3.2.0</Version>
+    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+    <FileVersion>3.2.0.0</FileVersion>
+    <Company>Darling Data, LLC</Company>
+    <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <NoWarn>CA1849;CA2007;CA1508;CA1822;CA1805;CA1510;CA1816;CA1861;CA1845;CA2201;CA1848;CA1852;CA1305;CA1860;CA1707;CA1507;CA1806;CA2254</NoWarn>
+    <WarningsAsErrors>CS4014</WarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <!-- Restrictive ACLs on the DPAPI credential files (the data dir parent, the *.dpapi files, the
+         transient init pwfile). Windows-only, like every credential surface here; the extension
+         methods (GetAccessControl/SetAccessControl/SetOwner) live in this package on a net10.0
+         (non-windows) TFM, which the service keeps so bring-your-own mode still runs cross-platform. -->
+    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
+    <!-- AN4: the analysis MCP tools over Streamable HTTP — Lite's exact MCP stack/version.
+         The AspNetCore package brings the Microsoft.AspNetCore.App framework reference
+         (Kestrel/WebApplication) transitively, same as it does for Lite. -->
+    <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\PerformanceMonitor.Alerting\PerformanceMonitor.Alerting.csproj" />
+    <ProjectReference Include="..\..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
+    <ProjectReference Include="..\..\PerformanceMonitor.Collectors\PerformanceMonitor.Collectors.csproj" />
+    <!-- AN3: the analysis pipeline (DarlingAnalysisService/PgPlanFetcher). Dependency points
+         service → analysis only; the analysis library never references the service. -->
+    <ProjectReference Include="..\PerformanceMonitor.Darling.Analysis\PerformanceMonitor.Darling.Analysis.csproj" />
+    <!-- The plan-analysis MCP tools run the SHARED ShowPlanParser/PlanAnalyzer and serialize via
+         McpPlanAnalysisFormatter (the same projection both apps' McpPlanTools call). Referenced
+         directly (it also flows transitively through Darling.Analysis) since it is a direct dependency. -->
+    <ProjectReference Include="..\..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="darling.sample.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- #1562: the web dashboard's static assets (Builder 3 owns wwwroot/). Copied beside the binary so the
+         web host's content/web root (pinned to AppContext.BaseDirectory) finds them under a Windows service. -->
+    <Content Include="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The install/uninstall scripts ride the publish output to the ZIP ROOT (beside the exe), so both
+         the release and nightly zips carry them with no packaging-workflow changes - same delivery
+         mechanism as darling.sample.json. -->
+    <None Include="..\tools\install-darling.ps1" Link="install-darling.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tools\uninstall-darling.ps1" Link="uninstall-darling.ps1" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Darling.Tests" />
+  </ItemGroup>
+</Project>

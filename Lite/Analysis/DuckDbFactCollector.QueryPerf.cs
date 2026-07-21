@@ -133,8 +133,8 @@ WITH latest AS
 SELECT
     min_worker_time,
     max_worker_time,
-    max_worker_time::DOUBLE / NULLIF(min_worker_time, 0) AS worker_ratio,
-    max_grant_kb::DOUBLE / NULLIF(min_grant_kb, 0) AS grant_ratio,
+    max_worker_time::DOUBLE PRECISION / NULLIF(min_worker_time, 0) AS worker_ratio,
+    max_grant_kb::DOUBLE PRECISION / NULLIF(min_grant_kb, 0) AS grant_ratio,
     CASE WHEN max_spills > 0 AND min_spills = 0 THEN 1 ELSE 0 END AS spill_divergence
 FROM latest
 WHERE rn = 1
@@ -142,7 +142,7 @@ AND   min_worker_time >= 10000
 AND   max_worker_time >= 250000
 AND   execution_count >= 20
 AND   creation_time <= $2
-AND   max_worker_time::DOUBLE / NULLIF(min_worker_time, 0) >= 10
+AND   max_worker_time::DOUBLE PRECISION / NULLIF(min_worker_time, 0) >= 10
 ORDER BY worker_ratio DESC
 LIMIT 20";
 
@@ -247,8 +247,8 @@ plan_agg AS
         plan_id,
         any_value(query_plan_hash) AS query_plan_hash,
         SUM(execution_count) AS execs,
-        SUM(avg_cpu_time_us * execution_count) / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
-        SUM(avg_duration_us * execution_count) / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
+        SUM(avg_cpu_time_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS cpu_per_exec,
+        SUM(avg_duration_us * execution_count)::DOUBLE PRECISION / NULLIF(SUM(execution_count), 0) AS dur_per_exec,
         MAX(last_execution_time) AS last_exec,
         bool_or(is_forced_plan) AS is_forced_plan,
         MAX(force_failure_count) AS force_failure_count

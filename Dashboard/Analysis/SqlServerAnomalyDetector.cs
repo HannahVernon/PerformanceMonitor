@@ -33,14 +33,47 @@ public class SqlServerAnomalyDetector
     private const double DefaultDeviationThreshold = 2.0;
 
     /// <summary>
-    /// Default ratio threshold for rate-based anomaly detection (wait stats).
+    /// Default ratio threshold for the wait-profile detector (peak window all-types ms/sec ÷ baseline
+    /// mean). On the HONEST per-second scale now, so far below the old 5.0 that assumed a ~240x-inflated
+    /// input; matches the FactScorer WaitProfileRatioFloor. CALIBRATE ON THE SQL2025/HAMMERDB BOX.
     /// </summary>
-    private const double DefaultRatioThreshold = 5.0;
+    private const double DefaultRatioThreshold = 4.0;
 
     /// <summary>
     /// Default ratio threshold for event-based anomaly detection (blocking/deadlocks).
     /// </summary>
     private const double DefaultEventRatioThreshold = 3.0;
+
+    // #1486 absolute-magnitude floors (the z-path sanity ceiling) so a z-score against a thin
+    // baseline can't surface a trivial value; sigma display cap so a variance-collapsed baseline
+    // can't render millions-of-sigma.
+    private const double CpuFloorPct = 50.0;                // %
+    private const double ReadLatencyFloorMs = 10.0;         // ms
+    private const double BatchRequestFloor = 500.0;         // requests/sec
+    private const double SessionCountFloor = 50.0;          // connections
+    private const double QueryDurationFloorUs = 1_000_000;  // total elapsed us = 1 second
+    private const double MemoryPressureFloorPct = 90.0;     // total/target %
+    private const double WriteLatencyFloorMs = 20.0;        // ms, was 5
+    private const double SigmaDisplayCap = 25.0;
+
+    // Low-quality-baseline ABSOLUTE-FALLBACK bars: when the baseline is too thin to trust a z-score
+    // (BaselineBucket.IsTrustworthy false), the detector fires on these instead of going silent.
+    // Each is deliberately HIGHER than the matching #1486 magnitude floor above (the interaction
+    // trap: a young store fires only on the higher bar, never on both-AND-ed into blindness).
+    private const double CpuFallbackPct = 90.0;                 // %
+    private const double MemoryPressureFallbackPct = 95.0;      // total/target %
+    private const double BatchRequestFallback = 5000.0;        // requests/sec
+    private const double SessionCountFallback = 500.0;         // connections
+    private const double QueryDurationFallbackUs = 5_000_000;  // total elapsed us = 5 seconds
+    private const double IoLatencyFallbackMs = 50.0;           // ms (read and write)
+
+    // Wait-profile detector (DetectWaitAnomalies → one ANOMALY_WAIT_PROFILE): the current window's
+    // all-types wait ms/sec (PEAK across collections, matching the z-detectors) is compared to the
+    // WaitMsPerSec baseline. DefaultRatioThreshold and the FactScorer wait slope are on the HONEST
+    // per-second scale now (the old 5×/20× was calibrated to a ~240×-inflated per-hour-vs-per-interval
+    // input) — a sensible starting point; CALIBRATE ON THE SQL2025/HAMMERDB BOX.
+    private const double WaitProfileFallbackMsPerSec = 250.0;  // untrustworthy-baseline absolute bar
+    private const double NoBaselineRatio = 100.0;             // scoring sentinel for a first-occurrence (is_new)
 
     /// <summary>
     /// Per-metric deviation thresholds. Metrics not listed use DefaultDeviationThreshold.
@@ -399,8 +432,9 @@ SELECT
                 SqlServerMetricNames.Cpu, context.TimeRangeStart);
 
             if (baseline.SampleCount == 0) return;
+            // No effectiveStdDev<=0 early return — an untrustworthy/zero-dispersion baseline falls
+            // back to the absolute bar (below) rather than going silent.
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -433,8 +467,10 @@ AND   collection_time < @windowEnd;";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakCpu - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.Cpu) || peakCpu < 50) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakCpu,
+                GetDeviationThreshold(SqlServerMetricNames.Cpu), CpuFloorPct, CpuFallbackPct, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -442,7 +478,9 @@ AND   collection_time < @windowEnd;";
                 ["avg_cpu_in_window"] = avgCpu,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples,
                 ["confidence"] = 1.0,
@@ -466,84 +504,120 @@ AND   collection_time < @windowEnd;";
     }
 
     /// <summary>
-    /// Detects wait stat anomalies — total wait time significantly above
-    /// baseline rate for this time bucket. Uses ratio-based scoring.
+    /// Detects a shift in the wait PROFILE — the whole-server all-types wait rate (ms/sec) running
+    /// significantly above its time-bucketed baseline — and emits ONE ANOMALY_WAIT_PROFILE fact with
+    /// the top wait types as contrib_&lt;TYPE&gt; metadata. Replaces the old per-type
+    /// ANOMALY_WAIT_&lt;type&gt; facts, which compared a per-hour per-type value to a per-interval
+    /// all-types baseline (a ~240x unit inflation) and missed a minority-but-real wait. Comparing
+    /// all-types-vs-all-types on the honest per-second scale fixes units, aggregation, and the
+    /// per-type cascade together.
     /// </summary>
     private async Task DetectWaitAnomalies(AnalysisContext context, List<Fact> anomalies)
     {
         try
         {
             var baseline = await _baselineProvider.GetBaselineAsync(
-                SqlServerMetricNames.WaitStats, context.TimeRangeStart);
-
-            if (baseline.SampleCount == 0) return;
+                SqlServerMetricNames.WaitMsPerSec, context.TimeRangeStart);
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
 
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
+            // Current window: all-types wait ms/sec per collection (interval via LAG, never an assumed
+            // cadence — mirrors the WaitMsPerSec baseline), then PEAK across collections.
+            double peakRate;
+            double totalWaitMs;
+            long collectionCount;
+            using (var rateCmd = connection.CreateCommand())
+            {
+                rateCmd.CommandText = @"
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-SELECT TOP 10
+;WITH per_collection AS (
+    SELECT collection_time,
+           CAST(SUM(wait_time_ms_delta) AS FLOAT) AS total_wait_ms,
+           DATEDIFF(SECOND, LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_sec
+    FROM collect.wait_stats
+    WHERE collection_time >= @windowStart AND collection_time < @windowEnd
+    AND   wait_time_ms_delta >= 0
+    GROUP BY collection_time
+)
+SELECT MAX(CASE WHEN interval_sec > 0 THEN total_wait_ms / interval_sec ELSE 0 END) AS peak_ms_per_sec,
+       SUM(total_wait_ms) AS total_wait_ms,
+       SUM(CASE WHEN interval_sec IS NOT NULL THEN 1 ELSE 0 END) AS sample_count
+FROM per_collection;";
+                rateCmd.Parameters.Add(new SqlParameter("@windowStart", context.TimeRangeStart));
+                rateCmd.Parameters.Add(new SqlParameter("@windowEnd", context.TimeRangeEnd));
+
+                using var rateReader = await rateCmd.ExecuteReaderAsync();
+                if (!await rateReader.ReadAsync()) return;
+                peakRate = rateReader.IsDBNull(0) ? 0.0 : Convert.ToDouble(rateReader.GetValue(0));
+                totalWaitMs = rateReader.IsDBNull(1) ? 0.0 : Convert.ToDouble(rateReader.GetValue(1));
+                collectionCount = rateReader.IsDBNull(2) ? 0L : Convert.ToInt64(rateReader.GetValue(2));
+            }
+
+            if (collectionCount == 0) return; // no rated collection in the window
+
+            // Trustworthy baseline → honest per-second ratio; else fall back to the absolute peak-rate
+            // bar (NOT silence) so a genuinely heavy profile still surfaces on a young store (is_new).
+            bool isNew;
+            double ratio;
+            if (baseline.IsTrustworthy && baseline.Mean > 0)
+            {
+                isNew = false;
+                ratio = peakRate / baseline.Mean;
+            }
+            else
+            {
+                isNew = true;
+                ratio = peakRate >= WaitProfileFallbackMsPerSec ? NoBaselineRatio : 0;
+            }
+
+            if (ratio < DefaultRatioThreshold) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["current_ms_per_sec"] = peakRate,
+                ["baseline_mean"] = baseline.Mean,
+                ["total_wait_ms"] = totalWaitMs,
+                ["ratio"] = ratio,
+                ["is_new"] = isNew ? 1 : 0
+            };
+            AddBaselineContext(metadata, baseline);
+
+            // Top 6 contributors — named in the metadata KEY (a Dictionary<string,double> can't hold
+            // the type name in the value), value = the type's total wait ms in the window.
+            using (var contribCmd = connection.CreateCommand())
+            {
+                contribCmd.CommandText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT TOP 6
     wait_type,
     CAST(SUM(wait_time_ms_delta) AS BIGINT) AS total_ms
 FROM collect.wait_stats
-WHERE collection_time >= @windowStart AND collection_time <= @windowEnd
+WHERE collection_time >= @windowStart AND collection_time < @windowEnd
 AND   wait_time_ms_delta > 0
 GROUP BY wait_type
-HAVING SUM(wait_time_ms_delta) > 10000
 ORDER BY total_ms DESC;";
+                contribCmd.Parameters.Add(new SqlParameter("@windowStart", context.TimeRangeStart));
+                contribCmd.Parameters.Add(new SqlParameter("@windowEnd", context.TimeRangeEnd));
 
-            cmd.Parameters.Add(new SqlParameter("@windowStart", context.TimeRangeStart));
-            cmd.Parameters.Add(new SqlParameter("@windowEnd", context.TimeRangeEnd));
-
-            var currentHours = (context.TimeRangeEnd - context.TimeRangeStart).TotalHours;
-            if (currentHours <= 0) currentHours = 1;
-
-            var baselineRate = baseline.SampleCount > 0 ? baseline.Mean : 0;
-
-            using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
-            {
-                var waitType = reader.GetString(0);
-                var currentMs = Convert.ToInt64(reader.GetValue(1));
-                var currentRate = currentMs / currentHours;
-
-                double ratio;
-                string anomalyType;
-
-                if (baselineRate <= 0 || baseline.SampleCount == 0)
+                using var contribReader = await contribCmd.ExecuteReaderAsync();
+                while (await contribReader.ReadAsync())
                 {
-                    ratio = currentMs > 60_000 ? 100.0 : 0;
-                    anomalyType = "new";
+                    var waitType = contribReader.GetString(0);
+                    metadata[$"contrib_{waitType}"] = Convert.ToDouble(contribReader.GetValue(1));
                 }
-                else
-                {
-                    ratio = currentRate / baselineRate;
-                    anomalyType = "spike";
-                }
-
-                if (ratio < DefaultRatioThreshold) continue;
-
-                var metadata = new Dictionary<string, double>
-                {
-                    ["current_ms"] = currentMs,
-                    ["baseline_mean"] = baseline.Mean,
-                    ["ratio"] = ratio,
-                    ["is_new"] = anomalyType == "new" ? 1 : 0
-                };
-                AddBaselineContext(metadata, baseline);
-
-                anomalies.Add(new Fact
-                {
-                    Source = "anomaly",
-                    Key = $"ANOMALY_WAIT_{waitType}",
-                    Value = currentMs,
-                    ServerId = context.ServerId,
-                    Metadata = metadata
-                });
             }
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_WAIT_PROFILE",
+                Value = totalWaitMs,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
         }
         catch (Exception ex)
         {
@@ -595,18 +669,26 @@ SELECT
             var currentBlockingPerHour = currentBlocking / windowHours;
             var currentDeadlocksPerHour = currentDeadlocks / windowHours;
 
-            // Baseline mean = events per hour for this hour+dow bucket
+            // Baseline mean = events per hour for this hour+dow bucket. Gate on IsTrustworthy (not just
+            // SampleCount>0): a thin/zero-history baseline falls back to the absolute event count rather
+            // than an inflated ratio. is_new marks that fallback so the composer renders it honestly as
+            // a first occurrence — never the dishonest "spiked to 100×" the sentinel used to render.
+            var blockingTrust = blockingBaseline.IsTrustworthy;
+            var deadlockTrust = deadlockBaseline.IsTrustworthy;
             var baselineBlockingRate = blockingBaseline.SampleCount > 0 ? blockingBaseline.Mean : 0;
             var baselineDeadlockRate = deadlockBaseline.SampleCount > 0 ? deadlockBaseline.Mean : 0;
 
-            // Blocking spike: at least 5 events in the window AND per-hour rate >= 3x baseline (or no baseline)
-            if (currentBlocking >= 5 && (baselineBlockingRate <= 0 || currentBlockingPerHour / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
+            // Blocking spike: at least 5 events in the window AND (trustworthy → per-hour rate >= 3x
+            // baseline; untrustworthy → fire on the count alone).
+            if (currentBlocking >= 5 && (!blockingTrust || currentBlockingPerHour / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
             {
+                var isNew = !blockingTrust;
                 var metadata = new Dictionary<string, double>
                 {
                     ["current_count"] = currentBlocking,
                     ["baseline_rate"] = baselineBlockingRate,
-                    ["ratio"] = baselineBlockingRate > 0 ? currentBlockingPerHour / baselineBlockingRate : 100.0
+                    ["ratio"] = isNew ? NoBaselineRatio : currentBlockingPerHour / baselineBlockingRate,
+                    ["is_new"] = isNew ? 1 : 0
                 };
                 AddBaselineContext(metadata, blockingBaseline);
 
@@ -620,14 +702,17 @@ SELECT
                 });
             }
 
-            // Deadlock spike: at least 3 events in the window AND per-hour rate >= 3x baseline (or no baseline)
-            if (currentDeadlocks >= 3 && (baselineDeadlockRate <= 0 || currentDeadlocksPerHour / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
+            // Deadlock spike: at least 3 events in the window AND (trustworthy → per-hour rate >= 3x
+            // baseline; untrustworthy → fire on the count alone).
+            if (currentDeadlocks >= 3 && (!deadlockTrust || currentDeadlocksPerHour / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
             {
+                var isNew = !deadlockTrust;
                 var metadata = new Dictionary<string, double>
                 {
                     ["current_count"] = currentDeadlocks,
                     ["baseline_rate"] = baselineDeadlockRate,
-                    ["ratio"] = baselineDeadlockRate > 0 ? currentDeadlocksPerHour / baselineDeadlockRate : 100.0
+                    ["ratio"] = isNew ? NoBaselineRatio : currentDeadlocksPerHour / baselineDeadlockRate,
+                    ["is_new"] = isNew ? 1 : 0
                 };
                 AddBaselineContext(metadata, deadlockBaseline);
 
@@ -659,7 +744,6 @@ SELECT
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -687,57 +771,59 @@ AND   (num_of_reads_delta > 0 OR num_of_writes_delta > 0);";
             var ioThreshold = GetDeviationThreshold(SqlServerMetricNames.IoLatency);
 
             // Read latency anomaly
-            if (currentReadLat > 10)
+            var readDecision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, currentReadLat,
+                ioThreshold, ReadLatencyFloorMs, IoLatencyFallbackMs, SigmaDisplayCap);
+            if (readDecision.Fire)
             {
-                var readDeviation = (currentReadLat - baseline.Mean) / effectiveStdDev;
-                if (readDeviation >= ioThreshold)
+                var metadata = new Dictionary<string, double>
                 {
-                    var metadata = new Dictionary<string, double>
-                    {
-                        ["current_latency_ms"] = currentReadLat,
-                        ["baseline_mean_ms"] = baseline.Mean,
-                        ["baseline_stddev_ms"] = effectiveStdDev,
-                        ["deviation_sigma"] = readDeviation,
-                        ["baseline_samples"] = baseline.SampleCount
-                    };
-                    AddBaselineContext(metadata, baseline);
+                    ["current_latency_ms"] = currentReadLat,
+                    ["baseline_mean_ms"] = baseline.Mean,
+                    ["baseline_stddev_ms"] = effectiveStdDev,
+                    ["deviation_sigma"] = readDecision.Sigma,
+                    ["baseline_low_quality"] = readDecision.LowQualityBaseline ? 1 : 0,
+                    ["fallback_exceedance"] = readDecision.FallbackExceedance,
+                    ["baseline_samples"] = baseline.SampleCount
+                };
+                AddBaselineContext(metadata, baseline);
 
-                    anomalies.Add(new Fact
-                    {
-                        Source = "anomaly",
-                        Key = "ANOMALY_READ_LATENCY",
-                        Value = currentReadLat,
-                        ServerId = context.ServerId,
-                        Metadata = metadata
-                    });
-                }
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = "ANOMALY_READ_LATENCY",
+                    Value = currentReadLat,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
             }
 
             // Write latency anomaly
-            if (currentWriteLat > 5)
+            var writeDecision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, currentWriteLat,
+                ioThreshold, WriteLatencyFloorMs, IoLatencyFallbackMs, SigmaDisplayCap);
+            if (writeDecision.Fire)
             {
-                var writeDeviation = (currentWriteLat - baseline.Mean) / effectiveStdDev;
-                if (writeDeviation >= ioThreshold)
+                var metadata = new Dictionary<string, double>
                 {
-                    var metadata = new Dictionary<string, double>
-                    {
-                        ["current_latency_ms"] = currentWriteLat,
-                        ["baseline_mean_ms"] = baseline.Mean,
-                        ["baseline_stddev_ms"] = effectiveStdDev,
-                        ["deviation_sigma"] = writeDeviation,
-                        ["baseline_samples"] = baseline.SampleCount
-                    };
-                    AddBaselineContext(metadata, baseline);
+                    ["current_latency_ms"] = currentWriteLat,
+                    ["baseline_mean_ms"] = baseline.Mean,
+                    ["baseline_stddev_ms"] = effectiveStdDev,
+                    ["deviation_sigma"] = writeDecision.Sigma,
+                    ["baseline_low_quality"] = writeDecision.LowQualityBaseline ? 1 : 0,
+                    ["fallback_exceedance"] = writeDecision.FallbackExceedance,
+                    ["baseline_samples"] = baseline.SampleCount
+                };
+                AddBaselineContext(metadata, baseline);
 
-                    anomalies.Add(new Fact
-                    {
-                        Source = "anomaly",
-                        Key = "ANOMALY_WRITE_LATENCY",
-                        Value = currentWriteLat,
-                        ServerId = context.ServerId,
-                        Metadata = metadata
-                    });
-                }
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = "ANOMALY_WRITE_LATENCY",
+                    Value = currentWriteLat,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
             }
         }
         catch (Exception ex)
@@ -758,7 +844,6 @@ AND   (num_of_reads_delta > 0 OR num_of_writes_delta > 0);";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -788,8 +873,10 @@ AND   cntr_value_delta >= 0;";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakBatch - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.BatchRequests)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakBatch,
+                GetDeviationThreshold(SqlServerMetricNames.BatchRequests), BatchRequestFloor, BatchRequestFallback, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -797,7 +884,9 @@ AND   cntr_value_delta >= 0;";
                 ["avg_batch_requests"] = avgBatch,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -830,7 +919,6 @@ AND   cntr_value_delta >= 0;";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -863,8 +951,10 @@ FROM per_collection;";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakConnections - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.SessionCount)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakConnections,
+                GetDeviationThreshold(SqlServerMetricNames.SessionCount), SessionCountFloor, SessionCountFallback, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -872,7 +962,9 @@ FROM per_collection;";
                 ["avg_connections"] = avgConnections,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -906,7 +998,6 @@ FROM per_collection;";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -941,8 +1032,10 @@ FROM per_collection;";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakElapsed - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.QueryDuration)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakElapsed,
+                GetDeviationThreshold(SqlServerMetricNames.QueryDuration), QueryDurationFloorUs, QueryDurationFallbackUs, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -950,7 +1043,9 @@ FROM per_collection;";
                 ["avg_total_elapsed_us"] = avgElapsed,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -985,7 +1080,6 @@ FROM per_collection;";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -1014,8 +1108,10 @@ AND   committed_target_memory_mb > 0;";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakPressure - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(SqlServerMetricNames.Memory)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakPressure,
+                GetDeviationThreshold(SqlServerMetricNames.Memory), MemoryPressureFloorPct, MemoryPressureFallbackPct, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -1023,7 +1119,9 @@ AND   committed_target_memory_mb > 0;";
                 ["avg_memory_pressure_pct"] = avgPressure,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };

@@ -39,7 +39,7 @@ WITH boundaries AS (
     SELECT
         MAX(collection_time) AS latest_time,
         MIN(collection_time) AS earliest_time,
-        date_diff('day', MIN(collection_time), MAX(collection_time)) AS days_of_data
+        CAST(MAX(collection_time) AS DATE) - CAST(MIN(collection_time) AS DATE) AS days_of_data
     FROM v_index_object_stats
     WHERE server_id = $1
 ),
@@ -84,7 +84,7 @@ SELECT
     l.current_reserved_mb - COALESCE(p7.reserved_mb, o.reserved_mb, l.current_reserved_mb) AS growth_7d_mb,
     l.current_reserved_mb - COALESCE(p30.reserved_mb, p7.reserved_mb, o.reserved_mb, l.current_reserved_mb) AS growth_30d_mb,
     CASE WHEN b.days_of_data >= 1
-         THEN (l.current_reserved_mb - COALESCE(o.reserved_mb, l.current_reserved_mb)) / CAST(b.days_of_data AS DOUBLE)
+         THEN (l.current_reserved_mb - COALESCE(o.reserved_mb, l.current_reserved_mb)) / CAST(b.days_of_data AS DOUBLE PRECISION)
          ELSE 0 END AS daily_growth_rate_mb,
     CASE WHEN COALESCE(p30.reserved_mb, p7.reserved_mb, o.reserved_mb) > 0
          THEN (l.current_reserved_mb - COALESCE(p30.reserved_mb, p7.reserved_mb, o.reserved_mb)) * 100.0

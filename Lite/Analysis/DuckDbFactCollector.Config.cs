@@ -41,7 +41,9 @@ WITH latest AS (
         'max degree of parallelism',
         'max server memory (MB)',
         'min server memory (MB)',
-        'max worker threads'
+        'max worker threads',
+        'priority boost',
+        'lightweight pooling'
     )
 )
 SELECT configuration_name, value_in_use
@@ -72,6 +74,8 @@ WHERE rn = 1";
                     "max server memory (MB)" => "CONFIG_MAX_MEMORY_MB",
                     "min server memory (MB)" => "CONFIG_MIN_MEMORY_MB",
                     "max worker threads" => "CONFIG_MAX_WORKER_THREADS",
+                    "priority boost" => "CONFIG_PRIORITY_BOOST",
+                    "lightweight pooling" => "CONFIG_LIGHTWEIGHT_POOLING",
                     _ => null
                 };
 

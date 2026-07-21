@@ -1,0 +1,798 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Common;
+
+namespace PerformanceMonitor.Darling.Service.Mcp;
+
+/// <summary>
+/// The Fleet-wide NOC roll-up read (#1562) — the enriched per-server Overview CARD and the cross-server rollup
+/// lifted out of the WPF-only <c>ViewerDataService.Overview.cs</c> / <c>.Fleet.cs</c> into a service-side reader
+/// so the SAME reads power the web dashboard's <c>/api/fleet</c>, the <c>get_fleet_overview</c> MCP tool, and
+/// (via the shared <see cref="ServerHealthClassifier"/> banding) the WPF viewer. STORED reads only, no live
+/// monitored-server hit.
+///
+/// <para><b>Scale lens (the plan's R6).</b> The WPF Overview fans out N servers x ~8 per-server reads on every
+/// refresh; that does not scale to a 500-server central store. Because Darling keys every row by
+/// <c>server_id</c> in ONE Postgres database, this reader instead runs a BOUNDED set of cross-server aggregates
+/// (one <c>DISTINCT ON (server_id)</c> latest-snapshot read per metric, one <c>GROUP BY server_id</c> windowed
+/// count per incident source, one cross-server collection-health aggregate) — a fixed ~9 round-trips regardless
+/// of fleet size — then assembles the per-server cards in C#.</para>
+///
+/// <para><b>Banding lives once.</b> Every band (per-metric severity, the card's overall band, collection
+/// freshness, the fleet band + worst-first score) comes from <see cref="ServerHealthClassifier"/> in
+/// PerformanceMonitor.Common — the SAME classifier the WPF cards use — so the thresholds are defined in exactly
+/// one place. The fleet blocking / deadlock totals are the SUM of the per-server card counts (each already
+/// applying Lite's per-server XE-preferred / DMV-fallback rule), so the totals reconcile with the cards by
+/// construction; no separate totals query is needed.</para>
+/// </summary>
+internal static class DarlingFleetReader
+{
+    /// <summary>Shared serializer options for the fleet DTOs — snake_case field names come from the DTOs'
+    /// <c>[JsonPropertyName]</c> attributes, enum bands serialize as their string names, and the output is
+    /// indented (matching the MCP tool convention). ONE options object so the web endpoint and the MCP tool
+    /// serialize the identical shape.</summary>
+    public static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    /* ─────────────────────────── cross-server SQL (public for dialect pinning) ─────────────────────────── */
+
+    /// <summary>The enabled fleet — the servers the roll-up cards cover, from the registry the worker upserts on
+    /// each first connect (the same source <c>DarlingServerResolver</c> resolves against, so every card is
+    /// drillable via <c>/api/read/{tool}?server=</c>). <c>sql_engine_edition</c> is the raw probed
+    /// SERVERPROPERTY('EngineEdition') the worker stamped on connect (5 = Azure SQL DB, 8 = Azure MI, box
+    /// editions otherwise), the reliable per-server platform signal the composer's D4 auto-greying keys on;
+    /// nullable when a server has not yet connected. $ none.</summary>
+    public const string FleetServersSql = @"
+SELECT server_id, COALESCE(display_name, server_name) AS display_name, server_name, sql_engine_edition
+FROM servers
+WHERE is_enabled
+ORDER BY server_name";
+
+    /// <summary>Latest SQL + other-process CPU per server (newest ring-buffer sample). $ none.</summary>
+    public const string FleetCpuSql = @"
+SELECT DISTINCT ON (server_id)
+    server_id,
+    sqlserver_cpu_utilization,
+    other_process_cpu_utilization
+FROM v_cpu_utilization_stats
+ORDER BY server_id, sample_time DESC";
+
+    /// <summary>Latest total server memory + buffer pool (MB) per server. $ none.</summary>
+    public const string FleetMemorySql = @"
+SELECT DISTINCT ON (server_id)
+    server_id,
+    CAST(total_server_memory_mb AS double precision),
+    CAST(buffer_pool_mb AS double precision)
+FROM v_memory_stats
+ORDER BY server_id, collection_time DESC";
+
+    /// <summary>Latest resource-semaphore pressure per server — grant waiters / timeout + forced-grant deltas /
+    /// granted MB, summed across every pool at each server's newest grant-snapshot instant. $ none.</summary>
+    public const string FleetMemoryPressureSql = @"
+SELECT
+    m.server_id,
+    CAST(COALESCE(SUM(m.waiter_count), 0) AS bigint),
+    CAST(COALESCE(SUM(m.timeout_error_count_delta), 0) AS bigint),
+    CAST(COALESCE(SUM(m.forced_grant_count_delta), 0) AS bigint),
+    CAST(COALESCE(SUM(m.granted_memory_mb), 0) AS double precision)
+FROM v_memory_grant_stats m
+JOIN
+(
+    SELECT server_id, MAX(collection_time) AS max_collection_time
+    FROM v_memory_grant_stats
+    GROUP BY server_id
+) latest
+    ON m.server_id = latest.server_id
+    AND m.collection_time = latest.max_collection_time
+GROUP BY m.server_id";
+
+    /// <summary>Latest worker-thread pressure per server (newest cpu_scheduler_stats snapshot). $ none.</summary>
+    public const string FleetThreadsSql = @"
+SELECT DISTINCT ON (server_id)
+    server_id,
+    max_workers_count,
+    total_current_workers_count,
+    total_runnable_tasks_count,
+    total_work_queue_count
+FROM v_cpu_scheduler_stats
+ORDER BY server_id, collection_time DESC";
+
+    /// <summary>Blocking in the window per server from BOTH sources — XE blocked-process reports and the always-on
+    /// DMV snapshot, each counted per <c>server_id</c> with its worst wait, lined up by a FULL OUTER JOIN so a
+    /// server present in only one source still appears. The caller applies Lite's XE-preferred / DMV-fallback per
+    /// server. $1 window start, $2 window end (both naive UTC).</summary>
+    public const string FleetBlockingSql = @"
+SELECT
+    COALESCE(xe.server_id, dmv.server_id) AS server_id,
+    COALESCE(xe.cnt, 0) AS xe_count,
+    COALESCE(xe.max_wait, 0) AS xe_max_wait,
+    COALESCE(dmv.cnt, 0) AS dmv_count,
+    COALESCE(dmv.max_wait, 0) AS dmv_max_wait
+FROM
+(
+    SELECT server_id, COUNT(*) AS cnt, MAX(wait_time_ms) AS max_wait
+    FROM v_blocked_process_reports
+    WHERE event_time >= $1
+    AND   event_time <= $2
+    GROUP BY server_id
+) AS xe
+FULL OUTER JOIN
+(
+    SELECT server_id, COUNT(*) AS cnt, MAX(wait_time_ms) AS max_wait
+    FROM v_dmv_blocking_snapshots
+    WHERE event_time >= $1
+    AND   event_time <= $2
+    GROUP BY server_id
+) AS dmv ON xe.server_id = dmv.server_id";
+
+    /// <summary>Deadlocks in the window per server — count and newest deadlock instant (for each card's
+    /// "last seen" detail). $1 window start, $2 window end (both naive UTC).</summary>
+    public const string FleetDeadlockSql = @"
+SELECT server_id, COUNT(*) AS cnt, MAX(deadlock_time) AS last_seen
+FROM v_deadlocks
+WHERE deadlock_time >= $1
+AND   deadlock_time <= $2
+GROUP BY server_id";
+
+    /// <summary>Newest collection time per server — drives each card's freshness status. $ none.</summary>
+    public const string FleetLastCollectionSql = @"
+SELECT server_id, MAX(collection_time) AS last_collection_time
+FROM v_collection_log
+GROUP BY server_id";
+
+    /// <summary>Cross-server per-collector 7-day health aggregate — one row per (server, collector) pair carrying
+    /// the columns the shared <c>CollectorHealth.HealthStatus</c> banding needs, so the caller counts each
+    /// server's FAILING collectors exactly as the per-server Collection Health tab does. $1 window start (the
+    /// trailing 7 days, naive UTC).</summary>
+    public const string FleetCollectionHealthSql = @"
+SELECT
+    server_id,
+    collector_name,
+    COUNT(*) AS total_runs,
+    SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS success_count,
+    SUM(CASE WHEN status = 'ERROR' THEN 1 ELSE 0 END) AS error_count,
+    MAX(CASE WHEN status IN ('SUCCESS', 'SKIPPED') THEN collection_time END) AS last_success_time,
+    SUM(CASE WHEN status = 'PERMISSIONS' THEN 1 ELSE 0 END) AS permission_denied_count
+FROM v_collection_log
+WHERE collection_time >= $1
+GROUP BY server_id, collector_name";
+
+    /// <summary>The default depth of the worst-first "Needs attention" ranking.</summary>
+    public const int DefaultWorstCount = 5;
+
+    /* ─────────────────────────── the read ─────────────────────────── */
+
+    /// <summary>
+    /// Rolls the whole enabled fleet up in a bounded set of cross-server reads: the pre-banded per-server cards,
+    /// the band counts, the cross-server blocking / deadlock totals (summed from the cards), and the worst-first
+    /// ranking. <paramref name="windowStartUtc"/>..<paramref name="windowEndUtc"/> bound the blocking / deadlock
+    /// counts (the caller passes the same window the cards imply); <paramref name="nowUtc"/> is the freshness
+    /// reference (defaults to <see cref="DateTime.UtcNow"/>).
+    /// </summary>
+    public static async Task<FleetOverviewResult> GetFleetOverviewAsync(
+        NpgsqlDataSource postgres,
+        DateTime windowStartUtc,
+        DateTime windowEndUtc,
+        DateTime? nowUtc = null,
+        int worstCount = DefaultWorstCount,
+        CancellationToken cancellationToken = default)
+    {
+        var now = nowUtc ?? DateTime.UtcNow;
+
+        var servers = await ReadServersAsync(postgres, cancellationToken);
+
+        var cpu = await ReadCpuAsync(postgres, cancellationToken);
+        var memory = await ReadMemoryAsync(postgres, cancellationToken);
+        var memoryPressure = await ReadMemoryPressureAsync(postgres, cancellationToken);
+        var threads = await ReadThreadsAsync(postgres, cancellationToken);
+        var blocking = await ReadBlockingAsync(postgres, windowStartUtc, windowEndUtc, cancellationToken);
+        var deadlocks = await ReadDeadlocksAsync(postgres, windowStartUtc, windowEndUtc, cancellationToken);
+        var lastCollection = await ReadLastCollectionAsync(postgres, cancellationToken);
+        var failingCollectors = await ReadFailingCollectorCountsAsync(postgres, now, cancellationToken);
+
+        var cards = new List<FleetServerCard>(servers.Count);
+        foreach (var server in servers)
+        {
+            cpu.TryGetValue(server.ServerId, out var c);
+            memory.TryGetValue(server.ServerId, out var m);
+            memoryPressure.TryGetValue(server.ServerId, out var mp);
+            threads.TryGetValue(server.ServerId, out var t);
+            blocking.TryGetValue(server.ServerId, out var b);
+            deadlocks.TryGetValue(server.ServerId, out var deadlock);
+            lastCollection.TryGetValue(server.ServerId, out var lastColl);
+            failingCollectors.TryGetValue(server.ServerId, out var collectors);
+
+            cards.Add(BuildCard(server, c, m, mp, t, b, deadlock, lastColl, collectors, now));
+        }
+
+        return BuildRollup(cards, now, windowStartUtc, windowEndUtc, worstCount);
+    }
+
+    /// <summary>Builds one pre-banded card from a server's raw cross-server reads (pure — the reduction the WPF
+    /// <c>ServerSummaryItem</c> does, minus the brushes, over the shared classifier).</summary>
+    private static FleetServerCard BuildCard(
+        FleetServerRow server,
+        CpuRow cpu,
+        MemoryRow memory,
+        MemoryPressureRow pressure,
+        ThreadsRow threads,
+        BlockingRow blocking,
+        DeadlockRow deadlock,
+        DateTime? lastCollection,
+        CollectorCounts collectors,
+        DateTime now)
+    {
+        var deadlockCount = deadlock.Count;
+
+        /* Lite's XE-preferred / DMV-fallback, per server: XE when it has any row this window, else the DMV
+           snapshot — both count and worst-wait come from whichever source wins. */
+        var blockingCount = blocking.XeCount > 0 ? blocking.XeCount : blocking.DmvCount;
+        var maxBlockingWaitMs = blocking.XeCount > 0 ? blocking.XeMaxWait : blocking.DmvMaxWait;
+
+        var cpuPercent = cpu.SqlCpu;
+        var otherCpu = cpu.OtherCpu;
+        var totalCpu = cpuPercent.HasValue ? cpuPercent.Value + (otherCpu ?? 0) : (double?)null;
+        var cpuForAlert = totalCpu ?? cpuPercent;
+
+        var availableThreads = threads.TotalThreads.HasValue
+            ? threads.TotalThreads.Value - (threads.CurrentWorkers ?? 0)
+            : (int?)null;
+
+        var hasMemoryPressure = pressure.WaiterCount > 0 || pressure.TimeoutCount > 0 || pressure.ForcedCount > 0;
+        var maxBlockedSeconds = maxBlockingWaitMs / 1000.0;
+
+        var metrics = new ServerHealthMetrics
+        {
+            CpuPercentForAlert = cpuForAlert,
+            HasMemoryPressure = hasMemoryPressure,
+            BlockingCount = blockingCount,
+            MaxBlockedSeconds = maxBlockedSeconds,
+            DeadlockCount = deadlockCount,
+            TotalThreads = threads.TotalThreads,
+            AvailableThreads = availableThreads,
+            ThreadsWaitingForCpu = threads.RunnableTasks,
+            RequestsWaitingForThreads = threads.WorkQueue,
+            FailedCollectorCount = collectors.Failing,
+        };
+
+        /* Freshness -> the card's connection state, exactly as the WPF card's ApplyFreshness. */
+        var freshness = ServerHealthClassifier.ClassifyFreshness(lastCollection, now);
+        bool? isOnline;
+        bool awaitingFirstCollection;
+        bool hasCollectorErrors;
+        if (freshness == ServerFreshness.NeverCollected)
+        {
+            isOnline = null;
+            awaitingFirstCollection = true;
+            hasCollectorErrors = false;
+        }
+        else
+        {
+            isOnline = freshness != ServerFreshness.Offline;
+            awaitingFirstCollection = false;
+            hasCollectorErrors = freshness == ServerFreshness.Stale;
+        }
+
+        var overall = ServerHealthClassifier.OverallMetricSeverity(metrics);
+        var band = ServerHealthClassifier.ClassifyBand(isOnline, awaitingFirstCollection, hasCollectorErrors, overall);
+
+        /* Per-server platform (design D4): the reliable signal the composer's measure auto-greying matches a
+           measure's appliesTo against — see ClassifyPlatform for the edition mapping and why AWS RDS / msdb are
+           deliberately not surfaced. */
+        var (isAzureSqlDb, isAzureManagedInstance) = ClassifyPlatform(server.EngineEdition);
+
+        return new FleetServerCard
+        {
+            ServerId = server.ServerId,
+            DisplayName = server.DisplayName,
+            ServerName = server.ServerName,
+            EngineEdition = server.EngineEdition,
+            IsAzureSqlDb = isAzureSqlDb,
+            IsAzureManagedInstance = isAzureManagedInstance,
+            Band = band,
+            Status = StatusLabel(isOnline, awaitingFirstCollection, hasCollectorErrors),
+            IsOnline = isOnline,
+            AwaitingFirstCollection = awaitingFirstCollection,
+            HasCollectorErrors = hasCollectorErrors,
+            LastCollectionTime = lastCollection,
+            CpuPercent = cpuPercent,
+            OtherProcessCpuPercent = otherCpu,
+            TotalCpuPercent = totalCpu,
+            CpuSeverity = ServerHealthClassifier.CpuSeverity(cpuForAlert),
+            MemoryMb = memory.MemoryMb,
+            BufferPoolMb = memory.BufferPoolMb,
+            GrantedMemoryMb = pressure.GrantedMemoryMb,
+            MemoryWaiterCount = pressure.WaiterCount,
+            MemoryTimeoutCount = pressure.TimeoutCount,
+            MemoryForcedCount = pressure.ForcedCount,
+            HasMemoryPressure = hasMemoryPressure,
+            MemorySeverity = ServerHealthClassifier.MemorySeverity(hasMemoryPressure),
+            BlockingCount = blockingCount,
+            MaxBlockingWaitMs = maxBlockingWaitMs,
+            BlockingSeverity = ServerHealthClassifier.BlockingSeverity(blockingCount, maxBlockedSeconds),
+            DeadlockCount = deadlockCount,
+            DeadlockLastSeen = deadlock.LastSeen,
+            DeadlockSeverity = ServerHealthClassifier.DeadlockSeverity(deadlockCount),
+            TotalThreads = threads.TotalThreads,
+            CurrentWorkers = threads.CurrentWorkers,
+            AvailableThreads = availableThreads,
+            ThreadsWaitingForCpu = threads.RunnableTasks,
+            RequestsWaitingForThreads = threads.WorkQueue,
+            ThreadsSeverity = ServerHealthClassifier.ThreadsSeverity(threads.TotalThreads, availableThreads, threads.RunnableTasks, threads.WorkQueue),
+            HealthyCollectorCount = collectors.Healthy,
+            FailedCollectorCount = collectors.Failing,
+            CollectorSeverity = ServerHealthClassifier.CollectorSeverity(collectors.Failing),
+            OverallMetricSeverity = overall,
+        };
+    }
+
+    /// <summary>Reduces the pre-banded cards to the fleet rollup — band counts, cross-server totals (summed from
+    /// the cards), and the worst-first ranking. Pure so the reduction is unit-testable without a store.</summary>
+    public static FleetOverviewResult BuildRollup(
+        IReadOnlyList<FleetServerCard> cards,
+        DateTime now,
+        DateTime windowStartUtc,
+        DateTime windowEndUtc,
+        int worstCount = DefaultWorstCount)
+    {
+        var healthy = 0;
+        var warning = 0;
+        var critical = 0;
+        var offline = 0;
+        var failures = 0;
+        long totalBlocking = 0;
+        long totalDeadlocks = 0;
+
+        foreach (var card in cards)
+        {
+            switch (card.Band)
+            {
+                case FleetHealthBand.Offline: offline++; break;
+                case FleetHealthBand.Critical: critical++; break;
+                case FleetHealthBand.Warning: warning++; break;
+                default: healthy++; break;
+            }
+
+            if (card.FailedCollectorCount > 0)
+            {
+                failures++;
+            }
+
+            totalBlocking += card.BlockingCount;
+            totalDeadlocks += card.DeadlockCount;
+        }
+
+        var problems = cards
+            .Where(c => c.Band != FleetHealthBand.Healthy)
+            .OrderByDescending(c => ServerHealthClassifier.FleetHealthScore(c.Band, c.ToHealthMetrics()))
+            .ThenBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var worst = problems
+            .Take(worstCount)
+            .Select(c => new FleetRankedServer
+            {
+                ServerId = c.ServerId,
+                DisplayName = c.DisplayName,
+                Band = c.Band,
+                Score = ServerHealthClassifier.FleetHealthScore(c.Band, c.ToHealthMetrics()),
+                Reason = BuildReason(c),
+            })
+            .ToList();
+
+        return new FleetOverviewResult
+        {
+            /* Emit every instant as naive UTC (Kind=Unspecified) so the JSON carries no zone suffix — the
+               house rule is localize-only-in-the-browser (#1562 R5). */
+            GeneratedAt = DateTime.SpecifyKind(now, DateTimeKind.Unspecified),
+            WindowStart = DateTime.SpecifyKind(windowStartUtc, DateTimeKind.Unspecified),
+            WindowEnd = DateTime.SpecifyKind(windowEndUtc, DateTimeKind.Unspecified),
+            TotalServers = cards.Count,
+            HealthyCount = healthy,
+            WarningCount = warning,
+            CriticalCount = critical,
+            OfflineCount = offline,
+            ServersWithCollectionFailures = failures,
+            TotalBlockingEvents = totalBlocking,
+            TotalDeadlocks = totalDeadlocks,
+            WorstServers = worst,
+            AdditionalProblemCount = Math.Max(0, problems.Count - worst.Count),
+            Cards = cards,
+        };
+    }
+
+    /// <summary>A short "why it needs attention" line for a ranked server, from the card's own banded metrics —
+    /// mirrors the WPF <c>FleetRollup.BuildReason</c> content over the pre-banded card.</summary>
+    private static string BuildReason(FleetServerCard c)
+    {
+        if (c.IsOnline == false)
+        {
+            return "Offline - no recent collection";
+        }
+
+        if (c.AwaitingFirstCollection)
+        {
+            return "Awaiting first collection";
+        }
+
+        var parts = new List<string>();
+
+        if (c.CpuSeverity >= HealthSeverity.Warning && c.TotalCpuPercent.HasValue)
+        {
+            parts.Add($"CPU {c.TotalCpuPercent.Value:F0}%");
+        }
+
+        if (c.ThreadsSeverity >= HealthSeverity.Warning)
+        {
+            parts.Add(c.RequestsWaitingForThreads > 0
+                ? $"Threads {c.RequestsWaitingForThreads} starved"
+                : "Threads low");
+        }
+
+        if (c.MemorySeverity >= HealthSeverity.Warning && c.HasMemoryPressure)
+        {
+            parts.Add($"Memory {c.MemoryWaiterCount} grant waiter{(c.MemoryWaiterCount == 1 ? "" : "s")}");
+        }
+
+        if (c.BlockingSeverity >= HealthSeverity.Warning && c.BlockingCount > 0)
+        {
+            parts.Add($"Blocking {c.BlockingCount}");
+        }
+
+        if (c.DeadlockSeverity >= HealthSeverity.Warning && c.DeadlockCount > 0)
+        {
+            parts.Add($"Deadlocks {c.DeadlockCount}");
+        }
+
+        if (c.CollectorSeverity >= HealthSeverity.Warning)
+        {
+            parts.Add($"{c.FailedCollectorCount} collector{(c.FailedCollectorCount == 1 ? "" : "s")} failing");
+        }
+
+        if (c.HasCollectorErrors)
+        {
+            parts.Add("collection stale");
+        }
+
+        return parts.Count > 0 ? string.Join(", ", parts) : "Needs attention";
+    }
+
+    private static string StatusLabel(bool? isOnline, bool awaitingFirstCollection, bool hasCollectorErrors) => isOnline switch
+    {
+        true when hasCollectorErrors => "Warning",
+        true => "Online",
+        false => "Offline",
+        _ => awaitingFirstCollection ? "Awaiting first collection" : "Unknown",
+    };
+
+    /// <summary>
+    /// Classifies a server's raw SERVERPROPERTY('EngineEdition') into the RELIABLE per-server platform flags the
+    /// composer's D4 measure auto-greying keys on: <c>5</c> = Azure SQL Database, <c>8</c> = Azure Managed
+    /// Instance (the same 5/8 classification <see cref="!:DarlingServerConnector"/> applies at connect). Any other
+    /// edition — a box edition (2/3/4…), or <c>null</c> (a server the worker has not yet connected/probed) — is
+    /// neither, so the composer keeps the measure badge (no signal rather than a wrong one).
+    ///
+    /// <para>AWS RDS and msdb access are deliberately NOT returned: unlike engine edition they are not persisted on
+    /// the <c>servers</c> registry (RDS reports as an ordinary box edition, and <c>HAS_DBACCESS('msdb')</c> is
+    /// probed but never stored), so there is no reliable stored signal to derive them from here.</para>
+    /// </summary>
+    internal static (bool IsAzureSqlDb, bool IsAzureManagedInstance) ClassifyPlatform(int? engineEdition) =>
+        (engineEdition == 5, engineEdition == 8);
+
+    /* ─────────────────────────── per-query readers ─────────────────────────── */
+
+    private static async Task<List<FleetServerRow>> ReadServersAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
+    {
+        var rows = new List<FleetServerRow>();
+        await using var command = postgres.CreateCommand(FleetServersSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new FleetServerRow(
+                reader.GetInt32(0),
+                reader.IsDBNull(1) ? "" : reader.GetString(1),
+                reader.IsDBNull(2) ? "" : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetInt32(3)));
+        }
+
+        return rows;
+    }
+
+    private static async Task<Dictionary<int, CpuRow>> ReadCpuAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, CpuRow>();
+        await using var command = postgres.CreateCommand(FleetCpuSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            map[reader.GetInt32(0)] = new CpuRow(
+                reader.IsDBNull(1) ? null : Convert.ToDouble(reader.GetValue(1)),
+                reader.IsDBNull(2) ? null : Convert.ToDouble(reader.GetValue(2)));
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<int, MemoryRow>> ReadMemoryAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, MemoryRow>();
+        await using var command = postgres.CreateCommand(FleetMemorySql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            map[reader.GetInt32(0)] = new MemoryRow(
+                reader.IsDBNull(1) ? null : Convert.ToDouble(reader.GetValue(1)),
+                reader.IsDBNull(2) ? null : Convert.ToDouble(reader.GetValue(2)));
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<int, MemoryPressureRow>> ReadMemoryPressureAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, MemoryPressureRow>();
+        await using var command = postgres.CreateCommand(FleetMemoryPressureSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            map[reader.GetInt32(0)] = new MemoryPressureRow(
+                reader.IsDBNull(1) ? 0 : Convert.ToInt64(reader.GetValue(1)),
+                reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+                reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
+                reader.IsDBNull(4) ? null : Convert.ToDouble(reader.GetValue(4)));
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<int, ThreadsRow>> ReadThreadsAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, ThreadsRow>();
+        await using var command = postgres.CreateCommand(FleetThreadsSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            map[reader.GetInt32(0)] = new ThreadsRow(
+                reader.IsDBNull(1) ? null : Convert.ToInt32(reader.GetValue(1)),
+                reader.IsDBNull(2) ? null : Convert.ToInt32(reader.GetValue(2)),
+                reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3)),
+                reader.IsDBNull(4) ? 0 : Convert.ToInt64(reader.GetValue(4)));
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<int, BlockingRow>> ReadBlockingAsync(
+        NpgsqlDataSource postgres, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, BlockingRow>();
+        await using var command = postgres.CreateCommand(FleetBlockingSql);
+        AddTimestamp(command, startUtc);
+        AddTimestamp(command, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            map[reader.GetInt32(0)] = new BlockingRow(
+                reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1)),
+                reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+                reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3)),
+                reader.IsDBNull(4) ? 0 : Convert.ToInt64(reader.GetValue(4)));
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<int, DeadlockRow>> ReadDeadlocksAsync(
+        NpgsqlDataSource postgres, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, DeadlockRow>();
+        await using var command = postgres.CreateCommand(FleetDeadlockSql);
+        AddTimestamp(command, startUtc);
+        AddTimestamp(command, endUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            map[reader.GetInt32(0)] = new DeadlockRow(
+                reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1)),
+                reader.IsDBNull(2) ? null : reader.GetDateTime(2));
+        }
+
+        return map;
+    }
+
+    private static async Task<Dictionary<int, DateTime>> ReadLastCollectionAsync(NpgsqlDataSource postgres, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<int, DateTime>();
+        await using var command = postgres.CreateCommand(FleetLastCollectionSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!reader.IsDBNull(1))
+            {
+                map[reader.GetInt32(0)] = reader.GetDateTime(1);
+            }
+        }
+
+        return map;
+    }
+
+    /// <summary>Reads the cross-server 7-day collector health and counts each server's HEALTHY / FAILING
+    /// collectors through the shared <see cref="CollectorHealth.HealthStatus"/> banding.</summary>
+    private static async Task<Dictionary<int, CollectorCounts>> ReadFailingCollectorCountsAsync(
+        NpgsqlDataSource postgres, DateTime now, CancellationToken cancellationToken)
+    {
+        var counts = new Dictionary<int, CollectorCounts>();
+        await using var command = postgres.CreateCommand(FleetCollectionHealthSql);
+        AddTimestamp(command, DateTime.SpecifyKind(now.AddDays(-7), DateTimeKind.Unspecified));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var serverId = reader.GetInt32(0);
+            var health = new CollectorHealth
+            {
+                CollectorName = reader.GetString(1),
+                TotalRuns = reader.IsDBNull(2) ? 0 : Convert.ToInt64(reader.GetValue(2)),
+                SuccessCount = reader.IsDBNull(3) ? 0 : Convert.ToInt64(reader.GetValue(3)),
+                ErrorCount = reader.IsDBNull(4) ? 0 : Convert.ToInt64(reader.GetValue(4)),
+                LastSuccessTime = reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                PermissionDeniedCount = reader.IsDBNull(6) ? 0 : Convert.ToInt64(reader.GetValue(6)),
+            };
+
+            counts.TryGetValue(serverId, out var existing);
+            var status = health.HealthStatus;
+            counts[serverId] = new CollectorCounts(
+                existing.Healthy + (status == "HEALTHY" ? 1 : 0),
+                existing.Failing + (status == "FAILING" ? 1 : 0));
+        }
+
+        return counts;
+    }
+
+    private static void AddTimestamp(NpgsqlCommand command, DateTime value) =>
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.SpecifyKind(value, DateTimeKind.Unspecified) });
+
+    /* ─────────────────────────── raw-read carriers (internal) ─────────────────────────── */
+
+    private readonly record struct FleetServerRow(int ServerId, string DisplayName, string ServerName, int? EngineEdition);
+    private readonly record struct CpuRow(double? SqlCpu, double? OtherCpu);
+    private readonly record struct MemoryRow(double? MemoryMb, double? BufferPoolMb);
+    private readonly record struct MemoryPressureRow(long WaiterCount, long TimeoutCount, long ForcedCount, double? GrantedMemoryMb);
+    private readonly record struct ThreadsRow(int? TotalThreads, int? CurrentWorkers, int RunnableTasks, long WorkQueue);
+    private readonly record struct BlockingRow(int XeCount, long XeMaxWait, int DmvCount, long DmvMaxWait);
+    private readonly record struct DeadlockRow(int Count, DateTime? LastSeen);
+    private readonly record struct CollectorCounts(int Healthy, int Failing);
+}
+
+/// <summary>
+/// One pre-banded Overview card in the fleet roll-up — every band already computed by the shared
+/// <see cref="ServerHealthClassifier"/>, every instant a naive-UTC value the browser localizes. Serialized with
+/// snake_case field names for both <c>/api/fleet</c> and the <c>get_fleet_overview</c> MCP tool.
+/// </summary>
+public sealed class FleetServerCard
+{
+    [JsonPropertyName("server_id")] public int ServerId { get; init; }
+    [JsonPropertyName("display_name")] public string DisplayName { get; init; } = "";
+    [JsonPropertyName("server_name")] public string ServerName { get; init; } = "";
+
+    /// <summary>The raw probed SERVERPROPERTY('EngineEdition') (5 = Azure SQL DB, 8 = Azure Managed Instance, a
+    /// box edition otherwise); null when the server has not yet connected. The reliable per-server platform
+    /// signal the composer's D4 measure auto-greying matches a measure's <c>appliesTo</c> against.</summary>
+    [JsonPropertyName("engine_edition")] public int? EngineEdition { get; init; }
+
+    /// <summary>True when this server is Azure SQL Database (engine edition 5) — reliable, derived from
+    /// <see cref="EngineEdition"/>.</summary>
+    [JsonPropertyName("is_azure_sql_db")] public bool IsAzureSqlDb { get; init; }
+
+    /// <summary>True when this server is Azure SQL Managed Instance (engine edition 8) — reliable, derived from
+    /// <see cref="EngineEdition"/>.</summary>
+    [JsonPropertyName("is_azure_mi")] public bool IsAzureManagedInstance { get; init; }
+
+    [JsonPropertyName("band")] public FleetHealthBand Band { get; init; }
+    [JsonPropertyName("status")] public string Status { get; init; } = "";
+    [JsonPropertyName("is_online")] public bool? IsOnline { get; init; }
+    [JsonPropertyName("awaiting_first_collection")] public bool AwaitingFirstCollection { get; init; }
+    [JsonPropertyName("has_collector_errors")] public bool HasCollectorErrors { get; init; }
+    [JsonPropertyName("last_collection")] public DateTime? LastCollectionTime { get; init; }
+
+    [JsonPropertyName("cpu_percent")] public double? CpuPercent { get; init; }
+    [JsonPropertyName("other_process_cpu_percent")] public double? OtherProcessCpuPercent { get; init; }
+    [JsonPropertyName("total_cpu_percent")] public double? TotalCpuPercent { get; init; }
+    [JsonPropertyName("cpu_severity")] public HealthSeverity CpuSeverity { get; init; }
+
+    [JsonPropertyName("memory_mb")] public double? MemoryMb { get; init; }
+    [JsonPropertyName("buffer_pool_mb")] public double? BufferPoolMb { get; init; }
+    [JsonPropertyName("granted_memory_mb")] public double? GrantedMemoryMb { get; init; }
+    [JsonPropertyName("memory_waiter_count")] public long MemoryWaiterCount { get; init; }
+    [JsonPropertyName("memory_timeout_count")] public long MemoryTimeoutCount { get; init; }
+    [JsonPropertyName("memory_forced_count")] public long MemoryForcedCount { get; init; }
+    [JsonPropertyName("has_memory_pressure")] public bool HasMemoryPressure { get; init; }
+    [JsonPropertyName("memory_severity")] public HealthSeverity MemorySeverity { get; init; }
+
+    [JsonPropertyName("blocking_count")] public int BlockingCount { get; init; }
+    [JsonPropertyName("max_blocking_wait_ms")] public long MaxBlockingWaitMs { get; init; }
+    [JsonPropertyName("blocking_severity")] public HealthSeverity BlockingSeverity { get; init; }
+
+    [JsonPropertyName("deadlock_count")] public int DeadlockCount { get; init; }
+    [JsonPropertyName("deadlock_last_seen")] public DateTime? DeadlockLastSeen { get; init; }
+    [JsonPropertyName("deadlock_severity")] public HealthSeverity DeadlockSeverity { get; init; }
+
+    [JsonPropertyName("total_threads")] public int? TotalThreads { get; init; }
+    [JsonPropertyName("current_workers")] public int? CurrentWorkers { get; init; }
+    [JsonPropertyName("available_threads")] public int? AvailableThreads { get; init; }
+    [JsonPropertyName("threads_waiting_for_cpu")] public int ThreadsWaitingForCpu { get; init; }
+    [JsonPropertyName("requests_waiting_for_threads")] public long RequestsWaitingForThreads { get; init; }
+    [JsonPropertyName("threads_severity")] public HealthSeverity ThreadsSeverity { get; init; }
+
+    [JsonPropertyName("healthy_collector_count")] public int HealthyCollectorCount { get; init; }
+    [JsonPropertyName("failed_collector_count")] public int FailedCollectorCount { get; init; }
+    [JsonPropertyName("collector_severity")] public HealthSeverity CollectorSeverity { get; init; }
+
+    [JsonPropertyName("overall_metric_severity")] public HealthSeverity OverallMetricSeverity { get; init; }
+
+    /// <summary>The card's raw per-metric inputs, for re-scoring in the rollup (not serialized).</summary>
+    [JsonIgnore]
+    public ServerHealthMetrics ToHealthMetricsValue => ToHealthMetrics();
+
+    internal ServerHealthMetrics ToHealthMetrics() => new()
+    {
+        CpuPercentForAlert = TotalCpuPercent ?? CpuPercent,
+        HasMemoryPressure = HasMemoryPressure,
+        BlockingCount = BlockingCount,
+        MaxBlockedSeconds = MaxBlockingWaitMs / 1000.0,
+        DeadlockCount = DeadlockCount,
+        TotalThreads = TotalThreads,
+        AvailableThreads = AvailableThreads,
+        ThreadsWaitingForCpu = ThreadsWaitingForCpu,
+        RequestsWaitingForThreads = RequestsWaitingForThreads,
+        FailedCollectorCount = FailedCollectorCount,
+    };
+}
+
+/// <summary>One entry in the fleet's worst-first "Needs attention" ranking.</summary>
+public sealed class FleetRankedServer
+{
+    [JsonPropertyName("server_id")] public int ServerId { get; init; }
+    [JsonPropertyName("display_name")] public string DisplayName { get; init; } = "";
+    [JsonPropertyName("band")] public FleetHealthBand Band { get; init; }
+    [JsonPropertyName("band_label")] public string BandLabel => ServerHealthClassifier.BandLabel(Band);
+    [JsonPropertyName("score")] public long Score { get; init; }
+    [JsonPropertyName("reason")] public string Reason { get; init; } = "";
+}
+
+/// <summary>The full fleet roll-up payload — the pre-banded per-server cards, the band counts, the cross-server
+/// totals, and the worst-first ranking. The web dashboard's <c>/api/fleet</c> body and the
+/// <c>get_fleet_overview</c> MCP tool's serialized result.</summary>
+public sealed class FleetOverviewResult
+{
+    [JsonPropertyName("generated_at")] public DateTime GeneratedAt { get; init; }
+    [JsonPropertyName("window_start")] public DateTime WindowStart { get; init; }
+    [JsonPropertyName("window_end")] public DateTime WindowEnd { get; init; }
+    [JsonPropertyName("total_servers")] public int TotalServers { get; init; }
+    [JsonPropertyName("healthy_count")] public int HealthyCount { get; init; }
+    [JsonPropertyName("warning_count")] public int WarningCount { get; init; }
+    [JsonPropertyName("critical_count")] public int CriticalCount { get; init; }
+    [JsonPropertyName("offline_count")] public int OfflineCount { get; init; }
+    [JsonPropertyName("servers_with_collection_failures")] public int ServersWithCollectionFailures { get; init; }
+    [JsonPropertyName("total_blocking_events")] public long TotalBlockingEvents { get; init; }
+    [JsonPropertyName("total_deadlocks")] public long TotalDeadlocks { get; init; }
+    [JsonPropertyName("additional_problem_count")] public int AdditionalProblemCount { get; init; }
+    [JsonPropertyName("worst_servers")] public IReadOnlyList<FleetRankedServer> WorstServers { get; init; } = Array.Empty<FleetRankedServer>();
+    [JsonPropertyName("cards")] public IReadOnlyList<FleetServerCard> Cards { get; init; } = Array.Empty<FleetServerCard>();
+}

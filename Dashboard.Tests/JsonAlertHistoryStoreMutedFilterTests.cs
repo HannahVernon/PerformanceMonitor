@@ -98,7 +98,7 @@ public class JsonAlertHistoryStoreMutedFilterTests
         // Cleared/Resolved, so those "Restored" rows would have slipped into the badge count.
         await RecordAsync(store, srv, "Deadlocks Detected", muted: false);
         await Task.Delay(10, TestContext.Current.CancellationToken);
-        foreach (var resolved in new[] { "Blocking Cleared", "CPU Resolved", "Capture Restored", "TempDB Space Resolved", "Server Restored" })
+        foreach (var resolved in new[] { "Blocking Cleared", "CPU Resolved", "Capture Restored", "tempdb Space Resolved", "Server Restored" })
             await RecordAsync(store, srv, resolved, muted: false);
 
         // Default includes resolution rows for audit (history grid / MCP); a small limit fills with them.

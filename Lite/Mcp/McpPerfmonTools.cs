@@ -17,11 +17,8 @@ public sealed class McpPerfmonTools
         [Description("Filter to a specific counter name, e.g. 'Batch Requests/sec'.")] string? counter_name = null,
         [Description("Filter to a specific instance name, e.g. a database name.")] string? instance_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -65,11 +62,8 @@ public sealed class McpPerfmonTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {

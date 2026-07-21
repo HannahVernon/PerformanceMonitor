@@ -38,8 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserSystemHealthAsync(_systemHealthHoursBack, _systemHealthFromDate, _systemHealthToDate);
-                _systemHealthUnfilteredData = data;
-                // SystemHealthDataGrid removed - chart only per todo.md #18
                 LoadCorruptionEventsCharts(data, _systemHealthHoursBack, _systemHealthFromDate, _systemHealthToDate);
                 LoadContentionEventsCharts(data, _systemHealthHoursBack, _systemHealthFromDate, _systemHealthToDate);
             }
@@ -350,22 +348,6 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.LockChartVerticalAxis(CpuComparisonChart);
             CpuComparisonChart.Refresh();
         }
-        private void SystemHealthFilter_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not Button button || button.Tag is not string columnName) return;
-
-            ShowFilterPopup(button, columnName, "SystemHealth", _systemHealthFilters,
-                args => { },  // Handled in FilterPopup_FilterApplied
-                () => { });   // Handled in FilterPopup_FilterCleared
-        }
-
-        // ApplySystemHealthFilters removed - grid removed per todo.md #18
-
-        // UpdateSystemHealthFilterButtonStyles removed - grid removed per todo.md #18
-
-        // SystemHealthFilterTextBox_TextChanged removed - grid removed per todo.md #18
-
-        // SystemHealthNumericFilterTextBox_TextChanged removed - grid removed per todo.md #18
 
         #endregion
     }

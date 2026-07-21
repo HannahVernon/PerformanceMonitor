@@ -34,6 +34,7 @@
                 <TextBlock Text="Server Name/Address:" FontWeight="Bold" Margin="0,0,0,4"
                            Foreground="{DynamicResource ForegroundBrush}"/>
                 <TextBox x:Name="ServerNameTextBox" Margin="0,0,0,12"
+                         TextChanged="ServerNameTextBox_TextChanged"
                          ToolTip="e.g., localhost, server.domain.com, 192.168.1.100, server\instance"/>
 
                 <!-- Display Name -->
@@ -59,6 +60,16 @@
                                  Foreground="{DynamicResource ForegroundBrush}"
                                  Checked="AuthType_Changed"
                                  ToolTip="Interactive authentication with MFA for Azure SQL Database."/>
+                    <RadioButton x:Name="ServicePrincipalAuthRadio" Content="Azure — Service Principal"
+                                 GroupName="Auth"
+                                 Foreground="{DynamicResource ForegroundBrush}"
+                                 Checked="AuthType_Changed" Margin="0,4,0,0"
+                                 ToolTip="Non-interactive Azure SQL auth using an Entra app registration (client id + secret)."/>
+                    <RadioButton x:Name="ManagedIdentityAuthRadio" Content="Azure — Managed Identity"
+                                 GroupName="Auth"
+                                 Foreground="{DynamicResource ForegroundBrush}"
+                                 Checked="AuthType_Changed" Margin="0,4,0,0"
+                                 ToolTip="Non-interactive Azure SQL auth using the managed identity of the Azure resource running the Dashboard."/>
                 </StackPanel>
 
                 <!-- SQL Authentication Fields -->
@@ -78,6 +89,31 @@
                                Foreground="{DynamicResource ForegroundBrush}"/>
                     <TextBox x:Name="EntraMfaUsernameBox"
                              ToolTip="Optional: Pre-populate the authentication dialog with this email address"/>
+                </StackPanel>
+
+                <!-- Azure Service Principal Fields -->
+                <StackPanel x:Name="ServicePrincipalPanel" Visibility="Collapsed" Margin="0,0,0,12">
+                    <TextBlock Text="Application (Client) ID:" Margin="0,0,0,4"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="ServicePrincipalClientIdBox" Margin="0,0,0,8"
+                             ToolTip="The Application (client) ID of the Entra app registration / service principal."/>
+                    <TextBlock Text="Client Secret:" Margin="0,0,0,4"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <PasswordBox x:Name="ServicePrincipalSecretBox" Margin="0,0,0,4"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"
+                               Text="The client secret is stored securely in Windows Credential Manager, never in servers.json."/>
+                </StackPanel>
+
+                <!-- Azure Managed Identity Fields -->
+                <StackPanel x:Name="ManagedIdentityPanel" Visibility="Collapsed" Margin="0,0,0,12">
+                    <TextBlock Text="User-Assigned Identity Client ID (optional):" Margin="0,0,0,4"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="ManagedIdentityClientIdBox" Margin="0,0,0,4"
+                             ToolTip="Leave blank for the system-assigned identity. Set to a client id to use a specific user-assigned identity."/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"
+                               Text="Leave blank for the system-assigned identity. Managed Identity only works when the Dashboard runs on an Azure resource that has a managed identity assigned."/>
                 </StackPanel>
 
                 <!-- Connection Options -->
@@ -183,6 +219,12 @@
                     <StackPanel Margin="16,8,0,0">
                         <CheckBox x:Name="CleanInstallCheckBox"
                                   Content="Perform clean install (drops existing database)"
+                                  Checked="CleanInstallCheckBox_Checked"
+                                  Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="RepairCheckBox"
+                                  Content="Repair: reinstall objects, skip upgrade scripts"
+                                  Checked="RepairCheckBox_Checked"
+                                  ToolTip="Use when an upgrade fails because a table or object is missing or damaged. Reinstalls the schema objects without running migrations and without dropping the database. The pending upgrade still needs to run afterwards."
                                   Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,4"/>
                         <CheckBox x:Name="ResetScheduleCheckBox"
                                   Content="Reset collection schedule to defaults"

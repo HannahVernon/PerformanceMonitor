@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 
@@ -50,6 +51,12 @@ public static class FactAdvice
 
         if (factKey.StartsWith("BAD_ACTOR_", StringComparison.OrdinalIgnoreCase))
             return _byKey.GetValueOrDefault("BAD_ACTOR");
+
+        // ANOMALY_WAIT_PROFILE is the one all-types wait-profile fact (change 1). It prefix-matches
+        // ANOMALY_WAIT_ below, so special-case it FIRST — the generic per-type composer would render
+        // "Anomalous spike in PROFILE" otherwise.
+        if (factKey.Equals("ANOMALY_WAIT_PROFILE", StringComparison.OrdinalIgnoreCase))
+            return _byKey.GetValueOrDefault("ANOMALY_WAIT_PROFILE");
 
         if (factKey.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
         {
@@ -166,7 +173,7 @@ public static class FactAdvice
             "QUERY_SPILLS" => ComposeQuerySpills(factsByKey),
             // Simple wait-type blocks: each states its own wait totals, with a clean concept + fix.
             "RESOURCE_SEMAPHORE" or "RESOURCE_SEMAPHORE_QUERY_COMPILE" or "WRITELOG"
-                or "LATCH_EX" or "LATCH_SH" or "LCK_M_S" or "LCK_M_IS"
+                or "LATCH_EX" or "LATCH_SH" or "PAGELATCH_UP" or "LCK_M_S" or "LCK_M_IS"
                 => ComposeWaitByKey(rootFactKey, factsByKey),
             // Query-level: state the cost-swing ratio / regression factor / tempdb driver the engine
             // measured, and permute on the discriminating flag (forced-plan-failing, dominant consumer).
@@ -195,6 +202,7 @@ public static class FactAdvice
             "ANOMALY_SESSION_SPIKE" => ComposeAnomaly(factsByKey, "ANOMALY_SESSION_SPIKE", "peak_connections", "Connection count", Num, "Far more sessions connected than this hour-of-week normally sees — often a connection-pool leak or a retry storm."),
             "ANOMALY_QUERY_DURATION" => ComposeAnomaly(factsByKey, "ANOMALY_QUERY_DURATION", "peak_total_elapsed_us", "Total query duration", Micros, "Queries ran far longer in aggregate than this hour-of-week normally does."),
             "ANOMALY_MEMORY_PRESSURE" => ComposeAnomalyMemoryPressure(factsByKey),
+            "ANOMALY_WAIT_PROFILE" => ComposeAnomalyWaitProfile(factsByKey),
             "ANOMALY_BLOCKING_SPIKE" => ComposeAnomalyRatio(factsByKey, "ANOMALY_BLOCKING_SPIKE", "blocking event"),
             "ANOMALY_DEADLOCK_SPIKE" => ComposeAnomalyRatio(factsByKey, "ANOMALY_DEADLOCK_SPIKE", "deadlock"),
             "ANOMALY_OBJECT_GROWTH" => ComposeAnomalyObjectGrowth(factsByKey),
@@ -913,6 +921,10 @@ public static class FactAdvice
             "Shared latch contention — LATCH_SH",
             "LATCH_SH is shared-latch contention on in-memory structures, and it frequently accompanies heavy parallelism or specific internal hotspots rather than user row contention.",
             "Narrow it by the latch sub-type — common drivers are heavy concurrent reads of the same pages or parallelism overhead. Reducing unnecessary parallelism (cost threshold for parallelism, MAXDOP) often relieves the parallelism-driven cases."),
+        "PAGELATCH_UP" => ComposeSimpleWait(facts, key, "Tempdb allocation page-latch waits",
+            "Tempdb allocation contention — PFS/GAM/SGAM page latches (PAGELATCH_UP)",
+            "PAGELATCH_UP is contention on tempdb's allocation bitmap pages (PFS/GAM/SGAM): sessions that rapidly create and drop temp tables, or spill sorts and hashes to tempdb, all latch the same small set of allocation pages in each data file. It is an in-memory latch — not disk I/O (that is PAGEIOLATCH) and not row locks — and it is the classic 'too few tempdb data files for the core count' signal.",
+            "Add tempdb data files so allocations spread across more bitmap pages — one per logical core up to 8, all the same size, with equal autogrowth (the source recommendation is add tempdb files / TF 1118). Confirm MIXED_PAGE_ALLOCATION is OFF (the default since 2016; TF 1118 is the pre-2016 equivalent forcing uniform extents). Then cut the churn that drives it: reduce how many temp objects the hot procedures create, and right-size the queries spilling to tempdb (accurate statistics give adequate grants) so fewer sessions hit the allocation pages at once."),
         "LCK_M_S" => ComposeSimpleWait(facts, key, "Shared-lock waits",
             "Readers are blocked waiting for shared locks — LCK_M_S",
             "LCK_M_S is time spent waiting to acquire a shared (read) lock, which under the default READ COMMITTED means a reader is blocked behind a writer's exclusive lock.",
@@ -1263,31 +1275,46 @@ public static class FactAdvice
         var internalObj = FactMeta(facts, "TEMPDB_USAGE", "max_internal_object_mb") ?? 0;
         var version = FactMeta(facts, "TEMPDB_USAGE", "max_version_store_mb") ?? 0;
 
+        // report.tempdb_pressure keys pressure_level PURELY on the absolute version-store size and checks
+        // it FIRST in the recommendation CASE (install/47:1429-1443): a version store over the > 1000 MB
+        // MEDIUM bar is a specific, actionable problem (a long-running RCSI/snapshot transaction pinning
+        // row versions) regardless of what else is bigger — and it is exactly what the
+        // ScoreTempDbVersionStore arm fires on. So when the version store clears that bar make it the
+        // driver even if another consumer is nominally larger; otherwise chase the largest consumer.
+        var versionStorePressure = version > 1000;
         string driverName, fix;
         double driverMb;
-        if (version >= user && version >= internalObj && version > 0)
+        bool driverIsLargest;
+        if (versionStorePressure || (version >= user && version >= internalObj && version > 0))
         {
             driverName = "the version store";
             driverMb = version;
+            driverIsLargest = version >= user && version >= internalObj;
             fix = "The version store grows with long-running transactions under RCSI or snapshot isolation (and with heavy triggers) — find and shorten the oldest open transaction; tempdb cannot reclaim its versions until that transaction ends.";
         }
         else if (internalObj >= user && internalObj > 0)
         {
             driverName = "internal objects (sort and hash spills)";
             driverMb = internalObj;
+            driverIsLargest = true;
             fix = "Internal objects are sorts and hash spills — fix the queries spilling to tempdb by getting them adequate memory grants and accurate statistics so the work stays in memory, which usually means correcting bad cardinality estimates.";
         }
         else
         {
             driverName = "user objects (#temp tables and table variables)";
             driverMb = user;
+            driverIsLargest = true;
             fix = "User objects are #temp tables and table variables — find the sessions materializing large temp objects and reduce what they stage, or index them so they hold fewer rows.";
         }
 
         return fallback with
         {
-            Headline = $"tempdb reserved up to {reserved.Value:N0} MB — {driverName} was the largest consumer",
-            Investigation = $"tempdb reserved up to {reserved.Value:N0} MB this window, with {driverName} the largest consumer at {driverMb:N0} MB. That identifies which of the three tempdb consumers to chase.",
+            Headline = driverIsLargest
+                ? $"tempdb reserved up to {reserved.Value:N0} MB — {driverName} was the largest consumer"
+                : $"tempdb reserved up to {reserved.Value:N0} MB — the version store reached {driverMb:N0} MB",
+            Investigation = driverIsLargest
+                ? $"tempdb reserved up to {reserved.Value:N0} MB this window, with {driverName} the largest consumer at {driverMb:N0} MB. That identifies which of the three tempdb consumers to chase."
+                : $"tempdb reserved up to {reserved.Value:N0} MB this window; the version store reached {driverMb:N0} MB — over the 1 GB pressure bar — so it is the signal to chase even though it is not the largest of the three consumers.",
             Remediation = fix
         };
     }
@@ -1340,6 +1367,27 @@ public static class FactAdvice
         if (current is null || ratio is null)
             return fallback;
 
+        // is_new = the baseline was too thin to trust a ratio (the detector fell back to the absolute
+        // count). Render it as a first occurrence — never the dishonest "spiked to 100×" the sentinel
+        // ratio would otherwise print.
+        var isNew = (FactMeta(facts, key, "is_new") ?? 0) >= 1;
+        if (isNew)
+        {
+            var invNew =
+                $"{Plural(current.Value, noun)} this window — a first occurrence, with no established baseline for this " +
+                "hour-of-week yet to compare against. Treat it as a new event, not a proven regression: check whether it " +
+                "coincides with a workload change, a deploy, or a one-off before treating it as chronic.";
+            var remNew =
+                $"If it recurs or sustains, it will cross the standard {noun} threshold and surface as a first-class finding " +
+                "with its chain or graph detail on a later window; treat it then. A one-time event that matches a known cause needs only awareness.";
+            return fallback with
+            {
+                Headline = $"{Plural(current.Value, noun)} this window — first occurrence, no baseline yet",
+                Investigation = invNew,
+                Remediation = remNew
+            };
+        }
+
         var baseRate = FactMeta(facts, key, "baseline_rate");
         var inv = new StringBuilder($"{Plural(current.Value, noun)} this window — about {ratio.Value:0.#}× the normal rate for this hour-of-week");
         if (baseRate is not null)
@@ -1354,6 +1402,68 @@ public static class FactAdvice
         {
             Headline = $"{noun} rate spiked to {ratio.Value:0.#}× its baseline for this time of week",
             Investigation = inv.ToString(),
+            Remediation = rem
+        };
+    }
+
+    /// <summary>
+    /// ANOMALY_WAIT_PROFILE composed (change 1): the whole-server wait rate shifted above its baseline.
+    /// Names the top contributing wait types (from the contrib_&lt;TYPE&gt; metadata keys — the type
+    /// name lives in the KEY since the metadata dictionary values are doubles), and states the current
+    /// vs baseline per-second rate. When is_new (thin baseline), renders it as a first occurrence.
+    /// </summary>
+    private static AdviceBlock ComposeAnomalyWaitProfile(IReadOnlyDictionary<string, Fact> facts)
+    {
+        var fallback = _byKey["ANOMALY_WAIT_PROFILE"];
+        if (!facts.TryGetValue("ANOMALY_WAIT_PROFILE", out var f))
+            return fallback;
+
+        // Top contributors: metadata keys "contrib_<TYPE>" → value = the type's total wait ms; name
+        // them in descending order.
+        var contributors = f.Metadata
+            .Where(kvp => kvp.Key.StartsWith("contrib_", StringComparison.Ordinal))
+            .OrderByDescending(kvp => kvp.Value)
+            .Select(kvp => kvp.Key.Substring("contrib_".Length))
+            .ToList();
+        var topList = contributors.Count == 0
+            ? "the collected wait types"
+            : string.Join(", ", contributors.Take(3));
+
+        var isNew = (f.Metadata.GetValueOrDefault("is_new")) >= 1;
+        var current = f.Metadata.GetValueOrDefault("current_ms_per_sec");
+        var mean = f.Metadata.GetValueOrDefault("baseline_mean");
+        var ratio = f.Metadata.GetValueOrDefault("ratio");
+
+        string inv;
+        string headline;
+        if (isNew)
+        {
+            headline = "The server's wait profile is heavy, with no baseline yet to compare against";
+            inv =
+                $"The all-types wait rate peaked at about {current:0.#} ms/sec this window, led by {topList}. There is no " +
+                "established wait-rate baseline for this hour-of-week yet, so this is flagged on its absolute level, not a " +
+                "proven deviation — treat it as a first look at where the server spends its wait time, and check whether it " +
+                "lines up with a workload change or a one-off job.";
+        }
+        else
+        {
+            headline = $"The server's wait profile shifted to about {ratio:0.#}× its baseline for this time of week";
+            inv =
+                $"The all-types wait rate peaked at about {current:0.#} ms/sec this window — roughly {ratio:0.#}× the " +
+                $"{mean:0.#} ms/sec normal for this hour-of-week — led by {topList}. This is a shift in the overall wait " +
+                "profile, not necessarily a sustained problem: check whether it coincides with a workload change, a deploy, " +
+                "or a one-off event before treating it as chronic.";
+        }
+
+        var rem =
+            "Open the Wait Stats tab and zoom to this window to see which of the named types drove the shift, then chase " +
+            "the dominant one with its normal playbook. If the elevated profile persists across windows, the threshold-based " +
+            "finding for the leading wait type will fire and the standard advice applies.";
+
+        return fallback with
+        {
+            Headline = headline,
+            Investigation = inv,
             Remediation = rem
         };
     }
@@ -1389,6 +1499,13 @@ public static class FactAdvice
         Add("page_verify_not_checksum_count", "page verify not set to CHECKSUM");
         Add("auto_create_stats_off_count", "auto-create statistics off");
         Add("auto_update_stats_off_count", "auto-update statistics off");
+        // Query Store off = user DBs (database_count) minus those with it on (query_store_on_count);
+        // the QS-off scorer arm (INFO, install/50:83) roots off the same two counts.
+        var qsOff = f.Metadata.TryGetValue("database_count", out var dbc) && dbc > 0
+                 && f.Metadata.TryGetValue("query_store_on_count", out var qOn)
+                    ? (long)(dbc - qOn) : 0L;
+        if (qsOff > 0)
+            items.Add($"{qsOff:N0} with Query Store off");
         if (items.Count == 0)
             return fallback;
 
@@ -1398,6 +1515,11 @@ public static class FactAdvice
             "indexes and churns I/O re-growing what it shrank), AUTO_CLOSE off, page verify set to CHECKSUM so " +
             "corruption is detected, auto-create and auto-update statistics on, and RCSI on where the blocking " +
             "is readers-versus-writers. The Database Configuration view lists exactly which databases each applies to.";
+        if (qsOff > 0)
+            rem +=
+                " Where Query Store is off, enable it (ALTER DATABASE <db> SET QUERY_STORE = ON; then " +
+                "OPERATION_MODE = READ_WRITE) so query performance history is captured for troubleshooting " +
+                "and plan-regression detection.";
 
         return fallback with
         {
@@ -1865,6 +1987,14 @@ public static class FactAdvice
             Remediation:
                 "If a plan regression co-fired, force the historically faster plan as the fast fix. If parameter sensitivity co-fired, do NOT force a plan — that locks in the wrong plan for the other parameter values; use OPTION (RECOMPILE) on the affected statement, or branch the procedure by parameter value. For an ad-hoc reporting spike matching neither, Resource Governor or moving the report off-peak is the durable fix.");
 
+        t["RUNNABLE_TASKS"] = new AdviceBlock(
+            Headline:
+                "Runnable-task queue is backed up — tasks are ready to run but waiting for a CPU scheduler",
+            Investigation:
+                "Every runnable task is a query that has everything it needs EXCEPT a free scheduler — the CPUs are the bottleneck, not I/O or locks. The count is the latest cpu_scheduler_stats snapshot's total across all schedulers (the runnable_tasks_warning flag trips when the queue reaches roughly one task per core). Open the CPU tab and the Wait Stats tab: SOS_SCHEDULER_YIELD co-elevation confirms scheduler starvation, and a THREADPOOL wait means it has escalated to worker-thread exhaustion. Cross-check the top CPU-consuming queries for the window.",
+            Remediation:
+                "CPU pressure — tune the CPU-heavy queries first (almost always cheaper than adding cores); the top consumers for the window are attached. Excessive parallelism is a frequent driver: if CXPACKET or high-DOP queries co-fired, lower MAXDOP / raise the Cost Threshold for Parallelism so small queries stop going parallel and monopolizing schedulers. If the queries are already tuned and the queue stays deep, the box is genuinely under-provisioned for the load — add CPU.");
+
         // ─────────────────────────────────────────────────────────────────
         // Memory pressure
         // ─────────────────────────────────────────────────────────────────
@@ -1885,6 +2015,22 @@ public static class FactAdvice
             Remediation:
                 "For tempdb-driven PAGEIOLATCH_EX, fix the spilling queries — update statistics with FULLSCAN to correct the cardinality estimates that produced too-small grants, or rewrite the operator that spills. For modification-workload pressure, batch large operations into smaller chunks so the buffer pool can flush between batches. If the storage itself is slow (write latency consistently above 10 ms on data, 2 ms on log), no amount of query tuning will recover it — the storage is the bottleneck and needs hardware-side investigation.");
 
+        t["CONFIG_PRIORITY_BOOST"] = new AdviceBlock(
+            Headline:
+                "Priority boost is enabled — SQL Server threads run at above-normal Windows scheduling priority, which can starve OS-critical threads",
+            Investigation:
+                "`sp_configure 'priority boost'` raises the Windows scheduling priority of SQL Server's threads above normal. Microsoft recommends against it for essentially all servers: it can starve OS threads (network, disk, cluster heartbeat), destabilize the instance, and cause connectivity or failover problems — with no reliable throughput gain. It is almost always a leftover from bad tuning advice rather than a deliberate, measured choice.",
+            Remediation:
+                "Disable it: `EXECUTE sp_configure 'priority boost', 0; RECONFIGURE;` — the change takes effect after a SQL Server service restart. There is effectively no workload for which priority boost is the right fix.");
+
+        t["CONFIG_LIGHTWEIGHT_POOLING"] = new AdviceBlock(
+            Headline:
+                "Lightweight pooling (fiber mode) is enabled — it breaks OLEDB and other in-process components and is not recommended",
+            Investigation:
+                "`sp_configure 'lightweight pooling'` (fiber mode) switches SQL Server to fiber-based scheduling. It disables features that assume thread-based scheduling — most OLEDB providers (linked servers, some CLR, extended stored procedures) fail or misbehave — and its narrow high-end NUMA / context-switch benefit almost never applies. Microsoft recommends leaving it off for essentially all workloads.",
+            Remediation:
+                "Disable it: `EXECUTE sp_configure 'lightweight pooling', 0; RECONFIGURE;` — takes effect after a service restart. Only consider re-enabling it under a specific, measured high-end OLTP/NUMA scenario with vendor guidance, and never with linked servers / OLEDB in use.");
+
         t["RESOURCE_SEMAPHORE"] = new AdviceBlock(
             Headline:
                 "RESOURCE_SEMAPHORE waits — queries are queueing for memory grants because the workspace pool is exhausted",
@@ -1892,6 +2038,14 @@ public static class FactAdvice
                 "Memory grants are reserved up front for sorts, hashes, and parallel operators. When the workspace pool fills, large queries queue behind it and small ones can starve. Open the Memory Grants sub-tab under Memory to see grant pressure over the analysis window, and the Memory Pressure Events sub-tab for the corresponding ring-buffer notifications. If MEMORY_GRANT_PENDING co-fired, its live waiter count and per-snapshot granted-vs-used memory are attached.",
             Remediation:
                 "The usual cause is over-granting: a query gets a grant much larger than it actually uses because cardinality estimation was wrong. Pull the offending queries' plans and compare the operator-level row estimates against actuals; update statistics with FULLSCAN on the affected tables, or add filtered indexes if a subset of the data drives the bad estimate. Per-query stopgap: `OPTION (MAX_GRANT_PERCENT = X)` caps a single offender's grant without affecting others. Resource Governor workload-group caps are the durable answer if one workload chronically starves the others.");
+
+        t["MEMORY_CLERKS"] = new AdviceBlock(
+            Headline:
+                "The TokenAndPermUserStore security cache has grown large — it can cause memory pressure and CPU spent on cache lookups",
+            Investigation:
+                "TokenAndPermUserStore caches security tokens for permission checks. Under lots of ad-hoc queries, dynamic SQL, or frequent security-context switching (EXECUTE AS, cross-database ownership chaining) it can balloon into gigabytes, crowding out useful plans and making every permission check walk a huge cache. The USERSTORE_TOKENPERM clerk size for this server is attached; the Memory → Memory Clerks view shows it alongside the other top clerks.",
+            Remediation:
+                "Clear it during a maintenance window with DBCC FREESYSTEMCACHE('TokenAndPermUserStore') for immediate relief. For a durable fix, cut the churn that grows it: parameterize ad-hoc queries so plans and security tokens are reused, and reduce security-context switching (EXECUTE AS, cross-database ownership chaining). If the growth recurs, investigate what is generating the volume of distinct security contexts.");
 
         t["RESOURCE_SEMAPHORE_QUERY_COMPILE"] = new AdviceBlock(
             Headline:
@@ -1908,6 +2062,22 @@ public static class FactAdvice
                 "This finding carries the live waiter count, plus the granted-vs-used memory and any timeouts or forced grants for the snapshots where waiters were present. One sustained waiter is concerning, five is critical, forced grants or timeouts are emergency. Open the Memory Grants sub-tab under Memory for the trend over the window. RESOURCE_SEMAPHORE co-elevation confirms pool exhaustion is the cause; QUERY_SPILLS co-elevation means queries are running with grants smaller than they needed and spilling to tempdb.",
             Remediation:
                 "Same playbook as RESOURCE_SEMAPHORE: the offenders are over-granting because of bad cardinality estimates. Pull the heavy queries' plans and find where the estimate diverged from actuals; update statistics with FULLSCAN, add the right indexes, and the grants shrink. `OPTION (MAX_GRANT_PERCENT = X)` is a per-query stopgap that caps the worst offender without affecting others.");
+
+        t["PLAN_CACHE_BLOAT"] = new AdviceBlock(
+            Headline:
+                "Single-use plans are bloating the plan cache — a large share of cached plans have been used exactly once, wasting the memory that holds them",
+            Investigation:
+                "The finding carries the single-use plan count and size against the totals for the latest snapshot; a single-use ratio above 20% is flagged, above 50% is severe. Each single-use plan is a query that compiled, ran once, and will almost certainly never be reused — most often unparameterized ad-hoc SQL or dynamic SQL that embeds literal values, so every distinct value produces its own one-shot plan. That memory is stolen from the buffer pool and from plans that WOULD be reused. Open Memory → Plan Cache to see the single-use vs. multi-use composition and the trend; RESOURCE_SEMAPHORE_QUERY_COMPILE or high SQL Compilations/sec co-firing confirms the same churn is also costing CPU on constant recompilation.",
+            Remediation:
+                "The low-risk first step is `optimize for ad hoc workloads` at the server level — SQL then caches only a small stub for a plan's first execution and the full plan only if it is reused, which collapses single-use bloat without changing plan choice. The durable fix is to stop generating the churn: parameterize the offending ad-hoc/dynamic SQL in the application so one plan serves every parameter value. Where the app cannot be changed, `ALTER DATABASE ... SET PARAMETERIZATION FORCED` makes the optimizer parameterize more aggressively — test it on a workload copy first, because forced parameterization can change plan selection for other queries. (Sourced from the Dashboard's report.plan_cache_bloat recommendation, install/47:1493.)");
+
+        t["MEMORY_PRESSURE_EVENTS"] = new AdviceBlock(
+            Headline:
+                "SQL Server signalled physical-memory pressure — the resource monitor logged RESOURCE_MEMPHYSICAL_LOW notifications in the window",
+            Investigation:
+                "These come from the RING_BUFFER_RESOURCE_MONITOR ring buffer: when the OS or SQL Server itself flags low available physical memory, the resource monitor raises an indicator (0-1 normal, 2 medium, 3+ severe) and SQL responds by trimming caches — evicting buffer-pool pages and plan cache to free memory. The finding carries the count of pressure events and the peak process/system indicators for the window. That cache trimming shows up downstream as more physical reads (PAGEIOLATCH_SH) and more recompiles as evicted plans are rebuilt, so check the Memory tab and the Wait Stats tab around the event times for that fallout.",
+            Remediation:
+                "Confirm whether the pressure is SQL's or the box's: check `max server memory` against physical RAM and what else runs on the host. If `max server memory` is unset or too high, SQL can starve the OS and other processes into signalling system-wide low memory — cap it leaving headroom for the OS (and for other instances/services on the box). If `max server memory` is already conservative and the system indicator is what fired, an external consumer (another instance, an app, a runaway agent) is taking the memory — find and constrain it. If the server is genuinely short of memory for its workload after those checks, add RAM.");
 
         // ─────────────────────────────────────────────────────────────────
         // Blocking / lock contention
@@ -2037,6 +2207,14 @@ public static class FactAdvice
                 "Less common than EX, but shows up when many parallel readers hit the same small set of pages — root pages of busy indexes, single-page tables that everyone reads. Open the Latch Stats sub-tab under Resource Metrics for the breakdown by latch class. PAGE class points at the buffer pool; ACCESS_METHODS_HOBT_VIRTUAL_ROOT is the famously hot root-page latch on heavily-read indexes. CXPACKET co-elevation means parallel operations are amplifying the contention.",
             Remediation:
                 "Architectural problem, not a configuration one. If a single hot page is being thrashed by small lookups, partition the index so the hot data spans multiple pages, denormalize the lookup into a wider structure, or cache at the application layer. There's no `sp_configure` setting that fixes this — the schema or workload has to change. If the contention is on a queue-table or status-flag pattern that everyone polls, switching that hot pattern to a service broker queue or an event-driven design is usually the durable answer.");
+
+        t["PAGELATCH_UP"] = new AdviceBlock(
+            Headline:
+                "Tempdb allocation contention — PFS/GAM/SGAM page-latch waits (PAGELATCH_UP)",
+            Investigation:
+                "PAGELATCH_UP waits are contention on tempdb's allocation bitmap pages (PFS/GAM/SGAM). Sessions that rapidly create and drop temp tables, or spill sorts and hashes to tempdb, all latch the same small set of allocation pages in each data file — the classic 'too few tempdb data files for the core count' signal. It is an in-memory latch, distinct from PAGEIOLATCH (disk reads) and from row locks. Open the TempDB tab and the Latch Stats sub-tab under Resource Metrics to confirm the allocation shape.",
+            Remediation:
+                "Add tempdb data files so allocations spread across more bitmap pages — one per logical core up to 8, all the same size, with equal autogrowth (the source recommendation is add tempdb files / TF 1118). Confirm MIXED_PAGE_ALLOCATION is OFF (the default since 2016; TF 1118 is the pre-2016 equivalent that forces uniform extents). Then cut the churn that drives it: reduce how many temp objects the hot procedures create, and right-size the queries spilling to tempdb (accurate statistics give adequate grants) so fewer sessions hit the allocation pages at once.");
 
         // ─────────────────────────────────────────────────────────────────
         // TempDB
@@ -2298,6 +2476,14 @@ public static class FactAdvice
                 "This anomaly compares the ratio of `Total Server Memory` to `Target Server Memory` (the two memory counters the collectors store) against its hour-of-week baseline. A spike usually means the OS forced SQL's target down under external memory pressure, or the buffer pool grew unusually fast. Open Memory → Overview to see total vs. target and the buffer pool across the window, and Memory → Memory Clerks to see where the bytes went. If MEMORY_GRANT_PENDING co-fired, grant pressure is part of the story. QUERY_SPILLS co-elevation means queries are running with grants too small and spilling to tempdb.",
             Remediation:
                 "Match the fix to the shape. If total server memory dropped below target, the OS is reclaiming memory from SQL — check whether `max server memory` is capped too low and whether another process on the host is the aggressor; on a dedicated box, Lock Pages in Memory (the CONFIG_LPIM_DISABLED finding) prevents the paging. If the buffer pool grew fast and grants are pending, an offender is consuming a too-large grant from a bad cardinality estimate — its plan shows the estimate-vs-actual divergence, and FULLSCAN statistics or a filtered index fixes it. Anomalies that resolve on their own are typically one-time reporting queries; sustained ones become standard RESOURCE_SEMAPHORE or memory-grant findings on the next window.");
+
+        t["ANOMALY_WAIT_PROFILE"] = new AdviceBlock(
+            Headline:
+                "The server's wait profile shifted — its overall wait rate is anomalously elevated vs. baseline for this time bucket",
+            Investigation:
+                "This anomaly compares the whole-server all-types wait rate (ms of wait per second) against its hour-of-week baseline, rather than any single wait type — so a shift driven by a minority-but-real wait (RESOURCE_SEMAPHORE, a lock mode, ASYNC_NETWORK_IO) surfaces even while CXPACKET or SOS dominate the raw totals. The named contributors are the wait types that made up most of the window's wait time. Open the Wait Stats tab and zoom to the window to see the full breakdown and each type's trajectory.",
+            Remediation:
+                "Chase the leading contributor with its normal playbook — the profile shift only tells you the server spent unusually long waiting this window, not what to do about it. If the elevated profile persists across analysis windows, the threshold-based finding for the dominant wait type fires and the standard advice for that wait applies.");
 
         t["ANOMALY_OBJECT_GROWTH"] = new AdviceBlock(
             Headline:

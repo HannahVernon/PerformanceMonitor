@@ -178,34 +178,3 @@ public class AnalysisMuted
     public DateTime MutedDate { get; set; }
     public string? Reason { get; set; }
 }
-
-/// <summary>
-/// A user-configured exclusion filter. Maps to the analysis_exclusions table.
-/// </summary>
-public class AnalysisExclusion
-{
-    public long ExclusionId { get; set; }
-    public string ExclusionType { get; set; } = string.Empty;
-    public string ExclusionValue { get; set; } = string.Empty;
-    public int? ServerId { get; set; }
-    public string? DatabaseName { get; set; }
-    public bool IsEnabled { get; set; } = true;
-    public DateTime CreatedDate { get; set; }
-    public string? Description { get; set; }
-}
-
-/// <summary>
-/// A severity threshold value. Maps to the analysis_thresholds table.
-/// </summary>
-public class AnalysisThreshold
-{
-    public long ThresholdId { get; set; }
-    public string Category { get; set; } = string.Empty;
-    public string FactKey { get; set; } = string.Empty;
-    public string ThresholdType { get; set; } = string.Empty;
-    public double ThresholdValue { get; set; }
-    public int? ServerId { get; set; }
-    public string? DatabaseName { get; set; }
-    public bool IsEnabled { get; set; } = true;
-    public DateTime ModifiedDate { get; set; }
-}

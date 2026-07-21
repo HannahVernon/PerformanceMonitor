@@ -11,18 +11,15 @@ namespace PerformanceMonitorLite.Mcp;
 [McpServerToolType]
 public sealed class McpAnalysisTools
 {
-    [McpServerTool(Name = "analyze_server"), Description("Runs the diagnostic inference engine against a server's collected data. Scores wait stats, blocking, memory, config, and other facts, then traverses a relationship graph to build evidence-backed stories about what's wrong and why. Anomaly detection compares the analysis window against 30-day time-bucketed baselines (hour-of-day x day-of-week) to identify deviations that are unusual for this specific time slot, not just unusual overall. Returns structured findings with severity scores, evidence chains, baseline context for anomalies, and recommended next tools to call.")]
+    [McpServerTool(Name = "analyze_server"), Description("Runs the diagnostic inference engine against a server's collected data. Scores wait stats, blocking, memory, config, and other facts, then traverses a relationship graph to build evidence-backed stories about what's wrong and why. Anomaly detection compares the analysis window against 30-day time-bucketed baselines (hour-of-day x day-of-week) to identify deviations that are unusual for this specific time slot, not just unusual overall. Returns structured findings with severity scores, evidence chains, baseline context for anomalies, and recommended next tools to call. A remediable finding also carries remediation_command: the full copy-paste T-SQL remediation (identical to the viewer card), including a two-sided risk-disclosure comment header on destructive changes; it is advisory only and never executed.")]
     public static async Task<string> AnalyzeServer(
         AnalysisService analysisService,
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of data to analyze. Default 4. Longer windows give more stable results but may miss recent spikes.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -94,13 +91,22 @@ public sealed class McpAnalysisTools
                             remediation = advice.Remediation
                         },
                         suggested_remediation_sql = advice?.RemediationTsql,
+                        // The FULL copy-paste remediation command — the SAME text the viewer cards
+                        // render — from the PERSISTED RemediationAction via the shared renderer (all
+                        // seven shapes + the two-sided risk-disclosure comment header on the destructive
+                        // ones). ADDITIVE alongside suggested_remediation_sql (the older 3-shape,
+                        // drill-down-sourced advice-block SQL): this covers all seven shapes and also
+                        // renders on get_analysis_findings, where the drill-down is gone. Null when the
+                        // finding has no remediable action. PRODUCE ONLY — advisory text; the read-only
+                        // MCP never executes it.
+                        remediation_command = FactRemediation.RenderCopyPasteCommand(f.Remediation),
                         // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
                         // remediation, read-only (Lite has no Apply path; its RCSI fields
                         // are null/0 so the inaction side shows the weak-case baseline).
                         destructive_risk_disclosure = advice?.Risks is null ? null : new
                         {
-                            risks_of_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfChanging, r => r.Text)),
-                            risks_of_not_changing = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(advice.Risks.RisksOfNotChanging, r => r.Text))
+                            risks_of_changing = advice.Risks.RisksOfChanging.Select(r => r.Text).ToArray(),
+                            risks_of_not_changing = advice.Risks.RisksOfNotChanging.Select(r => r.Text).ToArray()
                         }
                     };
                 })
@@ -121,11 +127,8 @@ public sealed class McpAnalysisTools
         [Description("Filter to a specific source category: waits, blocking, config, memory. Omit for all.")] string? source = null,
         [Description("Minimum severity to include. Default 0 (all facts). Use 0.5 to see only significant facts.")] double min_severity = 0)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -196,11 +199,8 @@ public sealed class McpAnalysisTools
         [Description("Hours back for the comparison (recent) period. Default 4.")] int hours_back = 4,
         [Description("Hours back for the baseline period start, measured from now. Default 28 (yesterday same time). The baseline period will be the same duration as the comparison period.")] int baseline_hours_back = 28)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -287,11 +287,8 @@ public sealed class McpAnalysisTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -503,18 +500,15 @@ public sealed class McpAnalysisTools
         }
     }
 
-    [McpServerTool(Name = "get_analysis_findings"), Description("Gets persisted findings from previous analysis runs without running a new analysis. Use this to review historical findings or check if anything has changed since the last analysis.")]
+    [McpServerTool(Name = "get_analysis_findings"), Description("Gets persisted findings from previous analysis runs without running a new analysis. Use this to review historical findings or check if anything has changed since the last analysis. A remediable finding carries remediation_command: the full copy-paste T-SQL remediation (identical to the viewer card), rendered from the finding's persisted action and including a two-sided risk-disclosure comment header on destructive changes; it is advisory only and never executed.")]
     public static async Task<string> GetAnalysisFindings(
         AnalysisService analysisService,
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of finding history to retrieve. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -552,9 +546,12 @@ public sealed class McpAnalysisTools
                     // The prose IS value-stated: GetComposedForFinding reads the
                     // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
                     // StoryText at analysis time, falling back to the static block.
-                    // suggested_remediation_sql is intentionally omitted: it
-                    // would always be null here. The operator re-runs
-                    // analyze_server when they need the copy-paste T-SQL.
+                    // suggested_remediation_sql STAYS omitted here: it is built from
+                    // the drill-down (gone on read-back), so it would always be null.
+                    // The FULL copy-paste command below is rendered from the PERSISTED
+                    // RemediationAction instead — which DOES survive read-back — so a
+                    // triaging agent gets the same runnable command a human sees on the
+                    // card without re-running analyze_server.
                     var advice = FactAdvice.GetComposedForFinding(f);
                     return new
                     {
@@ -582,7 +579,12 @@ public sealed class McpAnalysisTools
                             headline = advice.Headline,
                             investigation = advice.Investigation,
                             remediation = advice.Remediation
-                        }
+                        },
+                        // The SAME copy-paste remediation command the viewer cards render, from the
+                        // persisted action via the shared renderer (all seven shapes + the two-sided
+                        // risk-disclosure comment header on the destructive ones). Null when the finding
+                        // has no remediable action. PRODUCE ONLY — the read-only MCP never executes it.
+                        remediation_command = FactRemediation.RenderCopyPasteCommand(f.Remediation)
                     };
                 })
             }, McpHelpers.JsonOptions);
@@ -606,11 +608,8 @@ public sealed class McpAnalysisTools
             int? serverId = null;
             if (server_name != null)
             {
-                var resolved = ServerResolver.Resolve(serverManager, server_name);
-                if (resolved == null)
-                {
-                    return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-                }
+                var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+                if (error != null) return error;
                 serverId = resolved.Value.ServerId;
             }
 

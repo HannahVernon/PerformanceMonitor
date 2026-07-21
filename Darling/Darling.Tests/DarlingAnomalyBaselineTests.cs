@@ -1,0 +1,461 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Analysis.Baselines;
+using PerformanceMonitor.Darling.Analysis;
+using PerformanceMonitor.Darling.Storage;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins the Phase-5 analysis slice AN2b — PgAnomalyDetector + PgBaselineProvider, Lite's
+/// anomaly pipeline ported onto the V4 passthrough views. Ungated: the method surfaces match
+/// Lite's classes name-for-name (expected-name lists — the twin assemblies aren't referenced);
+/// every SQL string is PG dialect (no QUALIFY anywhere, no bare now()/CURRENT_TIMESTAMP, no
+/// N'' literals, $N positional parameters); and the four QUALIFY rewrites carry the DuckDB
+/// original's row-selection semantics — window function computed in a CTE over the
+/// pre-exclusion rowset, the exclusion predicate applied in the OUTER where — pinned
+/// structurally per site with the equivalence argument written out. Gated on DARLING_TEST_PG:
+/// migrate, plant an hour×dow wait_stats history containing a counter-reset (restart) row plus
+/// a genuine-idle zero row, and prove against live Postgres that BOTH rewritten wait baselines
+/// (wait_stats and wait_ms_per_sec) exclude exactly the poisoned sample — sample count AND
+/// mean — then plant an anomalous current window and watch the ported detector emit ONE
+/// ANOMALY_WAIT_PROFILE fact (change 1) via the thin-baseline is_new fallback, with the planted
+/// wait type named as a contrib_&lt;TYPE&gt; contributor.
+/// </summary>
+[Collection("live-postgres")]
+public sealed class DarlingAnomalyBaselineTests
+{
+    /// <summary>Distinctive fake id — a real server_id is a storage-name hash, never this.</summary>
+    private const int TestServerId = -626262;
+    private const string TestServerName = "anomaly-baseline-e2e";
+    private const string TestWaitType = "AN2B_TEST_WAIT";
+
+    /// <summary>
+    /// Lite's nine detector methods (Lite/Analysis/AnomalyDetector.cs) — the port must carry
+    /// every one, same names, plus the HasBaselineDataAsync gate.
+    /// </summary>
+    private static readonly string[] LiteDetectorMethods =
+    {
+        "DetectCpuAnomalies",
+        "DetectWaitAnomalies",
+        "DetectBlockingAnomalies",
+        "DetectIoAnomalies",
+        "DetectBatchRequestAnomalies",
+        "DetectSessionAnomalies",
+        "DetectQueryDurationAnomalies",
+        "DetectMemoryAnomalies",
+        "DetectObjectStatsAnomalies"
+    };
+
+    /// <summary>
+    /// Lite's eleven baseline metrics (Lite/Analysis/BaselineProvider.cs GetBaselineQuery) —
+    /// the port must serve a query for every one.
+    /// </summary>
+    private static readonly string[] AllMetricNames =
+    {
+        MetricNames.Cpu,
+        MetricNames.BatchRequests,
+        MetricNames.WaitStats,
+        MetricNames.SessionCount,
+        MetricNames.QueryDuration,
+        MetricNames.IoLatency,
+        MetricNames.Blocking,
+        MetricNames.Deadlock,
+        MetricNames.Memory,
+        MetricNames.WaitMsPerSec,
+        MetricNames.BlockingPerMinute
+    };
+
+    private static readonly string[] AllDetectorSql =
+    {
+        PgAnomalyDetector.HasBaselineDataSql,
+        PgAnomalyDetector.CpuWindowSql,
+        PgAnomalyDetector.WaitRateWindowSql,
+        PgAnomalyDetector.WaitContribWindowSql,
+        PgAnomalyDetector.BlockingWindowSql,
+        PgAnomalyDetector.IoWindowSql,
+        PgAnomalyDetector.BatchRequestWindowSql,
+        PgAnomalyDetector.SessionWindowSql,
+        PgAnomalyDetector.QueryDurationWindowSql,
+        PgAnomalyDetector.MemoryWindowSql,
+        PgAnomalyDetector.ObjectGrowthSql,
+        PgAnomalyDetector.ObjectContentionSql
+    };
+
+    private static IEnumerable<string> AllAnalysisSql =>
+        AllDetectorSql.Concat(AllMetricNames.Select(m => PgBaselineProvider.GetBaselineQuery(m)!));
+
+    [Fact]
+    public void IoLatencyBaseline_CastsRatioToDoublePrecision_NotNumeric()
+    {
+        /* The stall/reads ratio must be DOUBLE PRECISION, not numeric (`* 1.0`): STDDEV_SAMP of a
+           spurious-large ratio yields a numeric that overflows System.Decimal when Npgsql materializes
+           the aggregate, silently failing the io_latency baseline (found live via the error monitor). */
+        var sql = PgBaselineProvider.GetBaselineQuery(MetricNames.IoLatency)!;
+        Assert.Contains("delta_stall_read_ms::DOUBLE PRECISION", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("delta_stall_read_ms * 1.0", sql, StringComparison.Ordinal);
+    }
+
+    /* ---------------- ungated: method-surface pins vs Lite ---------------- */
+
+    [Fact]
+    public void AnomalyDetector_CarriesLitesMethodSurface_NineDetectorsPlusBaselineGate()
+    {
+        var privateMethods = typeof(PgAnomalyDetector)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Select(m => m.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var detector in LiteDetectorMethods)
+        {
+            Assert.Contains(detector, privateMethods);
+        }
+        Assert.Contains("HasBaselineDataAsync", privateMethods);
+
+        /* Lite's public surface: the orchestration entry point + the threshold override. */
+        Assert.NotNull(typeof(PgAnomalyDetector).GetMethod("DetectAnomaliesAsync"));
+        Assert.NotNull(typeof(PgAnomalyDetector).GetMethod("SetDeviationThreshold"));
+    }
+
+    [Fact]
+    public void BaselineProvider_CarriesLitesSurface_AndAllElevenMetricQueries()
+    {
+        /* Lite's public surface: bucket lookup with tier collapse + the test cache hooks. */
+        Assert.NotNull(typeof(PgBaselineProvider).GetMethod("GetBaselineAsync"));
+        Assert.NotNull(typeof(PgBaselineProvider).GetMethod("InvalidateCache"));
+        Assert.NotNull(typeof(PgBaselineProvider).GetMethod("ClearCache"));
+        Assert.NotNull(typeof(PgBaselineProvider).GetProperty("CacheTtl"));
+
+        /* All eleven of Lite's metrics are served; an unknown metric is null (Lite's contract). */
+        foreach (var metric in AllMetricNames)
+        {
+            Assert.NotNull(PgBaselineProvider.GetBaselineQuery(metric));
+        }
+        Assert.Null(PgBaselineProvider.GetBaselineQuery("no_such_metric"));
+    }
+
+    [Fact]
+    public void BaselineBucket_EffectiveStdDev_KeepsLitesFloorSemantics()
+    {
+        /* Zero activity (mean 0, stddev 0) → 0, callers skip scoring. */
+        Assert.Equal(0.0, BaselineBucket.Empty.EffectiveStdDev);
+
+        /* Flat-but-nonzero baseline → the proportional 1% floor prevents divide-by-zero. */
+        var flatBusy = new BaselineBucket { Mean = 200, StdDev = 0 };
+        Assert.Equal(2.0, flatBusy.EffectiveStdDev);
+
+        /* Real spread wins over the floor. */
+        var spread = new BaselineBucket { Mean = 200, StdDev = 50 };
+        Assert.Equal(50.0, spread.EffectiveStdDev);
+    }
+
+    /* ---------------- ungated: SQL hygiene across the whole slice ---------------- */
+
+    [Fact]
+    public void AllAnalysisSql_PgDialect_NoQualify_NoBareNow_PositionalParams()
+    {
+        foreach (var sql in AllAnalysisSql)
+        {
+            var lower = sql.ToLowerInvariant();
+
+            /* Postgres has no QUALIFY — every DuckDB QUALIFY must have been rewritten. */
+            Assert.DoesNotContain("qualify", lower);
+
+            /* Bare now()/CURRENT_TIMESTAMP is timestamptz — the naive-UTC columns would
+               compare in the server's time zone. Every "now" must be a bound parameter. */
+            Assert.DoesNotContain("now(", lower);
+            Assert.DoesNotContain("current_timestamp", lower);
+
+            /* Postgres has no N'' literals and no @named parameters — $N positional only. */
+            Assert.DoesNotContain("N'", sql);
+            Assert.DoesNotContain("@", sql);
+            Assert.Contains("$1", sql);
+        }
+    }
+
+    /* ---------------- ungated: the four QUALIFY rewrites, semantics pinned ----------------
+
+       DuckDB evaluates QUALIFY AFTER window functions: LAG runs over every row that survived
+       WHERE / GROUP BY (including rows the QUALIFY predicate itself is about to drop), and
+       only then does the predicate prune. Postgres has no QUALIFY, so each site is rewritten
+       as window-function-in-a-CTE + the identical predicate in an OUTER where. That shape is
+       equivalent BECAUSE the window is still computed over the full pre-exclusion rowset —
+       the outer WHERE cannot change what LAG saw. The failure modes a wrong rewrite invites:
+       (a) putting the predicate inside the windowed CTE's WHERE (filters BEFORE the window —
+           LAG would skip excluded rows, chaining exclusions through consecutive zeros), or
+       (b) recomputing LAG after a first exclusion pass — same wrong chaining.
+       Each pin below asserts the window function appears inside a CTE/subselect and the
+       exclusion predicate appears only AFTER that CTE is selected FROM — the structural
+       guarantee of window-before-filter. The live gated test then proves the row selection
+       on real data (poisoned row out, genuine idle zero kept).                                */
+
+    [Fact]
+    public void BatchRequestsRewrite_LagInCte_ExclusionInOuterWhere_OnlyFirstZeroAfterHighPriorDrops()
+    {
+        /* Original (DuckDB): subselect WHERE server/window/counter/delta>=0 with
+           QUALIFY NOT (delta_cntr_value = 0 AND COALESCE(LAG(delta_cntr_value) OVER
+           (ORDER BY collection_time), 0) > 1000), aggregated by hour+dow outside.
+           Rewrite: the SAME LAG over the SAME WHERE-filtered rowset inside the `windowed`
+           CTE; the SAME predicate on the outer SELECT that aggregates FROM windowed. A zero
+           sample right after a >1000 sample (restart signature) is dropped; a zero after a
+           zero has prior_delta = 0 and SURVIVES (genuine idle). */
+        var sql = PgBaselineProvider.GetBaselineQuery(MetricNames.BatchRequests)!;
+
+        Assert.DoesNotContain("QUALIFY", sql, StringComparison.OrdinalIgnoreCase);
+
+        var lagAt = sql.IndexOf("COALESCE(LAG(delta_cntr_value) OVER (ORDER BY collection_time), 0) AS prior_delta", StringComparison.Ordinal);
+        var fromCteAt = sql.IndexOf("FROM windowed", StringComparison.Ordinal);
+        var exclusionAt = sql.IndexOf("WHERE NOT (delta_cntr_value = 0 AND prior_delta > 1000)", StringComparison.Ordinal);
+
+        Assert.True(lagAt >= 0, "the restart LAG must be computed in the windowed CTE");
+        Assert.True(fromCteAt > lagAt, "the aggregate must select FROM the windowed CTE");
+        Assert.True(exclusionAt > fromCteAt, "the exclusion must filter OUTSIDE the CTE — after the window is computed");
+
+        /* The pre-window row filter is unchanged from Lite. */
+        Assert.Contains("counter_name = 'Batch Requests/sec'", sql, StringComparison.Ordinal);
+        Assert.Contains("delta_cntr_value >= 0", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WaitStatsRewrite_GroupThenLagInCte_ExclusionInOuterWhere_RestartTotalDropsIdleZeroSurvives()
+    {
+        /* Original (DuckDB): per_collection groups SUM(delta_wait_time_ms) per collection_time
+           and applies QUALIFY NOT (total_wait_ms = 0 AND COALESCE(LAG(total_wait_ms) OVER
+           (ORDER BY collection_time), 0) > 10000) directly on the grouped CTE — the window
+           runs over the GROUPED rows, pre-exclusion. Rewrite: grouping (per_collection) and
+           windowing (with_lag) split into successive CTEs so LAG still sees every grouped row
+           — a dropped row still serves as its successor's LAG value — and the identical
+           predicate moves to the outer WHERE. Only the first 0-total right after a >10000ms
+           collection is excluded; consecutive zeros survive (their prior is 0). */
+        var sql = PgBaselineProvider.GetBaselineQuery(MetricNames.WaitStats)!;
+
+        Assert.DoesNotContain("QUALIFY", sql, StringComparison.OrdinalIgnoreCase);
+
+        var groupAt = sql.IndexOf("GROUP BY collection_time", StringComparison.Ordinal);
+        var lagAt = sql.IndexOf("COALESCE(LAG(total_wait_ms) OVER (ORDER BY collection_time), 0) AS prior_total_wait_ms", StringComparison.Ordinal);
+        var fromCteAt = sql.IndexOf("FROM with_lag", StringComparison.Ordinal);
+        var exclusionAt = sql.IndexOf("WHERE NOT (total_wait_ms = 0 AND prior_total_wait_ms > 10000)", StringComparison.Ordinal);
+
+        Assert.True(groupAt >= 0 && lagAt > groupAt, "LAG must run over the GROUPED per-collection totals (DuckDB's QUALIFY-after-GROUP-BY order)");
+        Assert.True(fromCteAt > lagAt, "the aggregate must select FROM the with_lag CTE");
+        Assert.True(exclusionAt > fromCteAt, "the exclusion must filter OUTSIDE the windowed CTE");
+    }
+
+    [Fact]
+    public void QueryDurationRewrite_GroupThenLagInCte_ExclusionInOuterWhere_SameShapeAsWaitStats()
+    {
+        /* Original (DuckDB): identical shape to the wait-stats site — per_collection groups
+           SUM(delta_elapsed_time) (only rows with delta_execution_count > 0 and non-negative
+           elapsed), QUALIFY NOT (total_elapsed = 0 AND COALESCE(LAG(total_elapsed) OVER
+           (ORDER BY collection_time), 0) > 100000). Rewrite: same group → window-CTE → outer
+           WHERE split; same argument — the plan-cache restart zero right after a >100000us
+           collection drops, idle zeros survive. */
+        var sql = PgBaselineProvider.GetBaselineQuery(MetricNames.QueryDuration)!;
+
+        Assert.DoesNotContain("QUALIFY", sql, StringComparison.OrdinalIgnoreCase);
+
+        var groupAt = sql.IndexOf("GROUP BY collection_time", StringComparison.Ordinal);
+        var lagAt = sql.IndexOf("COALESCE(LAG(total_elapsed) OVER (ORDER BY collection_time), 0) AS prior_total_elapsed", StringComparison.Ordinal);
+        var fromCteAt = sql.IndexOf("FROM with_lag", StringComparison.Ordinal);
+        var exclusionAt = sql.IndexOf("WHERE NOT (total_elapsed = 0 AND prior_total_elapsed > 100000)", StringComparison.Ordinal);
+
+        Assert.True(groupAt >= 0 && lagAt > groupAt, "LAG must run over the GROUPED per-collection totals");
+        Assert.True(fromCteAt > lagAt, "the aggregate must select FROM the with_lag CTE");
+        Assert.True(exclusionAt > fromCteAt, "the exclusion must filter OUTSIDE the windowed CTE");
+
+        /* Lite's pre-aggregation row filters are unchanged. */
+        Assert.Contains("delta_execution_count > 0", sql, StringComparison.Ordinal);
+        Assert.Contains("delta_elapsed_time >= 0", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WaitMsPerSecRewrite_RateFilterBeforeLagCte_ExclusionInOuterWhere_FirstRowDropPreserved()
+    {
+        /* Original (DuckDB): with_rate selects the per-collection ms/sec rate WHERE
+           interval_sec IS NOT NULL (dropping the window's FIRST collection, whose LAG-based
+           interval is NULL) and then QUALIFYs NOT (ms_per_sec = 0 AND COALESCE(LAG(ms_per_sec)
+           OVER (ORDER BY collection_time), 0) > 100). DuckDB runs that WHERE BEFORE the
+           QUALIFY window — the restart LAG is computed over only the rated rows. The rewrite
+           must keep BOTH orderings: (1) the IS NOT NULL filter stays in with_rate, and the
+           restart LAG moves to a LATER CTE (with_lag) over with_rate's output — window over
+           the post-WHERE rowset, exactly DuckDB's; (2) the exclusion predicate applies OUTSIDE
+           with_lag, after the window — so a 0-rate right after a >100 ms/sec sample drops and
+           an idle zero after a zero survives. The per_collection interval computation
+           (LAG(collection_time) over the GROUPED rows) is standard SQL in both engines and
+           carries over verbatim — it never had a QUALIFY. */
+        var sql = PgBaselineProvider.GetBaselineQuery(MetricNames.WaitMsPerSec)!;
+
+        Assert.DoesNotContain("QUALIFY", sql, StringComparison.OrdinalIgnoreCase);
+
+        /* The Lite-verbatim interval spine survives. */
+        Assert.Contains("LAG(collection_time) OVER (ORDER BY collection_time)", sql, StringComparison.Ordinal);
+
+        var rateFilterAt = sql.IndexOf("WHERE interval_sec IS NOT NULL", StringComparison.Ordinal);
+        var lagAt = sql.IndexOf("COALESCE(LAG(ms_per_sec) OVER (ORDER BY collection_time), 0) AS prior_ms_per_sec", StringComparison.Ordinal);
+        var fromCteAt = sql.IndexOf("FROM with_lag", StringComparison.Ordinal);
+        var exclusionAt = sql.IndexOf("WHERE NOT (ms_per_sec = 0 AND prior_ms_per_sec > 100)", StringComparison.Ordinal);
+
+        Assert.True(rateFilterAt >= 0 && lagAt > rateFilterAt, "the IS NOT NULL filter must precede the restart LAG (DuckDB's WHERE-before-QUALIFY order)");
+        Assert.True(fromCteAt > lagAt, "the aggregate must select FROM the with_lag CTE");
+        Assert.True(exclusionAt > fromCteAt, "the exclusion must filter OUTSIDE the windowed CTE");
+    }
+
+    /* ---------------- gated: live restart-exclusion + detector proof ---------------- */
+
+    [Fact]
+    public async Task EndToEnd_RestartExclusionBaselines_AndWaitSpikeDetector_AgainstDevPostgres()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(connectionString),
+            "Set DARLING_TEST_PG to a Postgres connection string to run the live anomaly/baseline test.");
+
+        var ct = TestContext.Current.CancellationToken;
+
+        using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await PgMigrations.MigrateAsync(connection, ct);
+
+        /* Clear leftovers from an earlier aborted run so the assertions below are deterministic. */
+        await DeleteTestRowsAsync(connection);
+
+        await using var postgres = NpgsqlDataSource.Create(connectionString!);
+
+        try
+        {
+            /* ---- plant the hour×dow history: one bucket (Monday 10:00 UTC), 12 collections
+                    at 5-minute spacing, one wait type, 60000ms of wait per collection — except
+                    c6 (index 5): 0ms, the COUNTER-RESET row (restart signature: a zero total
+                    right after a busy 60000ms collection), and c7 (index 6): 0ms, a GENUINE
+                    IDLE zero (zero after zero — must SURVIVE the exclusion).
+
+                    Expected row selection, hand-checked against the DuckDB originals:
+                    - wait_stats baseline (rewrite 2): 12 grouped totals; only c6 drops
+                      (prior 60000 > 10000). 11 samples, mean = 10*60000/11 = 54545.45.
+                      Wrong rewrites give 12 samples/mean 50000 (no exclusion) or 10 samples/
+                      mean 60000 (idle zero wrongly dropped via filtered/recomputed LAG).
+                    - wait_ms_per_sec baseline (rewrite 4): the first collection has no prior
+                      (interval NULL) and is dropped by IS NOT NULL, leaving 11 rated rows at
+                      200 ms/sec (60000/300s) except c6=0, c7=0; only c6 drops (prior 200 >
+                      100). 10 samples, mean = 9*200/10 = 180. Wrong rewrites give 11/163.6
+                      or 9/200.                                                              */
+            var day = DateTime.UtcNow.Date.AddDays(-8);
+            while (day.DayOfWeek != DayOfWeek.Monday) day = day.AddDays(-1);
+            /* Monday 10:00 UTC, 8-14 days back — inside every 30-day window used below.
+               Kind-Unspecified: naive-UTC storage, see PgCollectorRowWriter. */
+            var historyStart = DateTime.SpecifyKind(day.AddHours(10), DateTimeKind.Unspecified);
+
+            for (var i = 0; i < 12; i++)
+            {
+                var delta = (i == 5 || i == 6) ? 0L : 60000L;
+                await InsertAsync(connection,
+                    "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    (long)(i + 1), historyStart.AddMinutes(5 * i), TestServerId, TestServerName,
+                    TestWaitType, 10L, delta);
+            }
+
+            /* The FOLLOWING Monday 10:00 UTC — same (hour, dow) bucket, 1-7 days back, still
+               in the past. Both baseline reads and the detector window anchor here. */
+            var analysisTime = historyStart.AddDays(7);
+
+            var provider = new PgBaselineProvider(postgres);
+
+            /* ---- rewrite 4 proven live: the poisoned rate sample is excluded, the genuine
+                    idle zero is kept. Tier Full also proves EXTRACT(HOUR/DOW) agreed with the
+                    C# (Hour, DayOfWeek) bucket lookup — a DOW mismatch would miss the bucket. */
+            var rateBaseline = await provider.GetBaselineAsync(TestServerId, MetricNames.WaitMsPerSec, analysisTime);
+            Assert.Equal(10L, rateBaseline.SampleCount);
+            Assert.Equal(180.0, rateBaseline.Mean, 0.001);
+            Assert.Equal(BaselineTier.Full, rateBaseline.Tier);
+            Assert.Equal(10, rateBaseline.HourOfDay);
+            Assert.Equal((int)DayOfWeek.Monday, rateBaseline.DayOfWeek);
+
+            /* ---- rewrite 2 proven live: same dataset, per-collection totals. */
+            var waitBaseline = await provider.GetBaselineAsync(TestServerId, MetricNames.WaitStats, analysisTime);
+            Assert.Equal(11L, waitBaseline.SampleCount);
+            Assert.Equal(600000.0 / 11.0, waitBaseline.Mean, 0.01);
+            Assert.Equal(BaselineTier.Full, waitBaseline.Tier);
+
+            /* ---- plant the anomalous current window: a heavy wait profile one week after the
+                    history. The history is ONE distinct Monday, so under the change-2 quality gate the
+                    WaitMsPerSec baseline (Full tier) is UNtrustworthy (Full needs >= 3 distinct days),
+                    and change 1's wait detector falls back to the absolute peak-rate bar (is_new)
+                    rather than a ratio. Three 5-minute-spaced collections at 200000ms each: the first
+                    is dropped (no prior in-window interval), the second and third rate at
+                    200000/300s ≈ 666.7 ms/sec — past the 250 ms/sec WaitProfileFallbackMsPerSec bar. */
+            await InsertAsync(connection,
+                "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                100L, analysisTime.AddMinutes(5), TestServerId, TestServerName, TestWaitType, 50L, 200000L);
+            await InsertAsync(connection,
+                "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                101L, analysisTime.AddMinutes(10), TestServerId, TestServerName, TestWaitType, 50L, 200000L);
+            await InsertAsync(connection,
+                "INSERT INTO wait_stats (collection_id, collection_time, server_id, server_name, wait_type, delta_waiting_tasks, delta_wait_time_ms) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                102L, analysisTime.AddMinutes(15), TestServerId, TestServerName, TestWaitType, 50L, 200000L);
+
+            var detector = new PgAnomalyDetector(postgres, provider);
+            var context = new AnalysisContext
+            {
+                ServerId = TestServerId,
+                ServerName = TestServerName,
+                TimeRangeStart = analysisTime,
+                TimeRangeEnd = analysisTime.AddMinutes(30),
+                ServerUtcOffset = TimeSpan.Zero
+            };
+
+            /* Full public-surface run: the HasBaselineData gate passes on the planted waits, every
+               other detector no-ops on its empty tables, and the wait detector emits exactly one
+               ANOMALY_WAIT_PROFILE fact with the top wait type named as contrib_<TYPE>. */
+            var anomalies = await detector.DetectAnomaliesAsync(context);
+
+            var fact = Assert.Single(anomalies);
+            Assert.Equal("ANOMALY_WAIT_PROFILE", fact.Key);
+            Assert.Equal("anomaly", fact.Source);
+            Assert.Equal(TestServerId, fact.ServerId);
+            Assert.Equal(600000.0, fact.Value);               // total all-types wait ms in the window
+            Assert.Equal(1.0, fact.Metadata["is_new"]);       // thin baseline → absolute-bar fallback
+            Assert.Equal(100.0, fact.Metadata["ratio"]);      // NoBaselineRatio sentinel (is_new)
+            Assert.True(fact.Metadata.ContainsKey($"contrib_{TestWaitType}"), "the planted wait type must be named as a contributor");
+            Assert.Equal(600000.0, fact.Metadata[$"contrib_{TestWaitType}"]);
+            /* The Full-tier baseline still resolved (10 samples ≥ collapse threshold) — only its
+               DISTINCT-day count (1) disqualifies it from being trusted; its bucket coordinates carry through. */
+            Assert.Equal((double)BaselineTier.Full, fact.Metadata["baseline_tier"]);
+            Assert.Equal(10.0, fact.Metadata["baseline_hour"]);
+            Assert.Equal((double)DayOfWeek.Monday, fact.Metadata["baseline_dow"]);
+        }
+        finally
+        {
+            await DeleteTestRowsAsync(connection);
+        }
+    }
+
+    private static async Task InsertAsync(NpgsqlConnection connection, string sql, params object[] values)
+    {
+        using var command = new NpgsqlCommand(sql, connection);
+        foreach (var value in values)
+        {
+            command.Parameters.AddWithValue(value);
+        }
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
+    private static async Task DeleteTestRowsAsync(NpgsqlConnection connection)
+    {
+        using var cleanup = new NpgsqlCommand(
+            $"DELETE FROM wait_stats WHERE server_id = {TestServerId};", connection);
+        await cleanup.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+}

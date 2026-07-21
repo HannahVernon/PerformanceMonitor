@@ -29,63 +29,9 @@ public abstract class ScriptProvider
         => new EmbeddedResourceScriptProvider(assembly ?? typeof(ScriptProvider).Assembly);
 
     /// <summary>
-    /// Auto-discover: search filesystem starting from CWD and executable directory,
-    /// walking up to 5 parent directories. Falls back to embedded resources.
-    /// </summary>
-    /// <param name="log">Optional logging callback for diagnostics.</param>
-    public static ScriptProvider AutoDiscover(Action<string>? log = null)
-    {
-        var startDirs = new[] { Directory.GetCurrentDirectory(), AppDomain.CurrentDomain.BaseDirectory }
-            .Distinct()
-            .ToList();
-
-        log?.Invoke($"AutoDiscover: searching from [{string.Join(", ", startDirs)}]");
-
-        foreach (string startDir in startDirs)
-        {
-            DirectoryInfo? searchDir = new DirectoryInfo(startDir);
-            for (int i = 0; i < 6 && searchDir != null; i++)
-            {
-                string installFolder = Path.Combine(searchDir.FullName, "install");
-                if (Directory.Exists(installFolder))
-                {
-                    var sqlFiles = Directory.GetFiles(installFolder, "*.sql")
-                        .Where(f => Patterns.SqlFilePattern().IsMatch(Path.GetFileName(f)))
-                        .ToList();
-                    if (sqlFiles.Count > 0)
-                    {
-                        log?.Invoke($"AutoDiscover: found {sqlFiles.Count} scripts in {installFolder}");
-                        return new FileSystemScriptProvider(searchDir.FullName);
-                    }
-                }
-
-                var rootFiles = Directory.GetFiles(searchDir.FullName, "*.sql")
-                    .Where(f => Patterns.SqlFilePattern().IsMatch(Path.GetFileName(f)))
-                    .ToList();
-                if (rootFiles.Count > 0)
-                {
-                    log?.Invoke($"AutoDiscover: found {rootFiles.Count} scripts in {searchDir.FullName}");
-                    return new FileSystemScriptProvider(searchDir.FullName);
-                }
-
-                log?.Invoke($"AutoDiscover: no scripts in {searchDir.FullName}, trying parent");
-                searchDir = searchDir.Parent;
-            }
-        }
-
-        log?.Invoke("AutoDiscover: no filesystem scripts found, falling back to embedded resources");
-        return FromEmbeddedResources();
-    }
-
-    /// <summary>
     /// Returns the filtered, sorted list of install scripts (excludes 00_/97_/99_).
     /// </summary>
     public abstract List<ScriptFile> GetInstallFiles();
-
-    /// <summary>
-    /// Reads the content of an install script.
-    /// </summary>
-    public abstract string ReadScript(ScriptFile file);
 
     /// <summary>
     /// Reads the content of an install script asynchronously.
@@ -134,21 +80,21 @@ public abstract class ScriptProvider
     /// <summary>
     /// Core upgrade-discovery logic shared by both providers.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Thrown when a version is present but has no parseable numeric core. An empty result means
+    /// "no upgrades needed", which must never be the answer to "I could not read the version you gave me".
+    /// </exception>
     protected static List<UpgradeInfo> FilterUpgrades(
         IEnumerable<UpgradeInfo> candidates,
         string? currentVersion,
         string targetVersion)
     {
-        if (currentVersion == null)
+        /* No recorded version at all means a fresh install: there is nothing to upgrade from. */
+        if (string.IsNullOrWhiteSpace(currentVersion))
             return [];
 
-        if (!Version.TryParse(currentVersion, out var currentRaw))
-            return [];
-        var current = new Version(currentRaw.Major, currentRaw.Minor, currentRaw.Build);
-
-        if (!Version.TryParse(targetVersion, out var targetRaw))
-            return [];
-        var target = new Version(targetRaw.Major, targetRaw.Minor, targetRaw.Build);
+        var current = ParseVersionCore(currentVersion, nameof(currentVersion));
+        var target = ParseVersionCore(targetVersion, nameof(targetVersion));
 
         return candidates
             .Where(x => x.FromVersion != null && x.ToVersion != null)
@@ -156,6 +102,50 @@ public abstract class ScriptProvider
             .Where(x => x.ToVersion <= target)
             .OrderBy(x => x.FromVersion)
             .ToList();
+    }
+
+    /// <summary>
+    /// Parses a version to its three-part numeric core, stripping any SemVer build (<c>+sha</c>) or
+    /// pre-release (<c>-rc1</c>) suffix. Returns null when there is no parseable core, rather than
+    /// throwing — for callers that need to *decide* something about a version rather than use it.
+    /// Mirrors <c>SingleInstanceDecision.ParseProductVersion</c>, re-stated here to keep
+    /// Installer.Core dependency-free.
+    /// </summary>
+    public static Version? TryParseVersionCore(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version))
+            return null;
+
+        string core = version.Trim();
+
+        int plus = core.IndexOf('+', StringComparison.Ordinal);
+        if (plus >= 0)
+            core = core[..plus];
+
+        int dash = core.IndexOf('-', StringComparison.Ordinal);
+        if (dash >= 0)
+            core = core[..dash];
+
+        if (!Version.TryParse(core, out var parsed))
+            return null;
+
+        /* TryParse leaves Build at -1 for a two-part version like "3.1", which the Version ctor rejects. */
+        return new Version(parsed.Major, parsed.Minor, Math.Max(parsed.Build, 0));
+    }
+
+    private static Version ParseVersionCore(string version, string paramName)
+    {
+        /*
+        A version that is present but has no numeric core is a caller bug -- a status string like
+        "Unreachable" reaching us instead of a version. Returning an empty list would run zero
+        migrations and report zero failures, and the caller would then stamp installation_history as
+        SUCCESS at the target version. Version detection only reads the most recent SUCCESS row, so
+        every skipped hop would be stranded permanently. Fail loudly instead.
+        */
+        return TryParseVersionCore(version)
+            ?? throw new ArgumentException(
+                $"'{version}' is not a valid version. Upgrade discovery needs a version, not a status string.",
+                paramName);
     }
 
     /// <summary>
@@ -223,9 +213,6 @@ internal sealed class FileSystemScriptProvider : ScriptProvider
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
     }
-
-    public override string ReadScript(ScriptFile file) =>
-        File.ReadAllText(file.Identifier);
 
     public override Task<string> ReadScriptAsync(ScriptFile file, CancellationToken cancellationToken = default) =>
         File.ReadAllTextAsync(file.Identifier, cancellationToken);
@@ -316,9 +303,6 @@ internal sealed class EmbeddedResourceScriptProvider : ScriptProvider
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
     }
-
-    public override string ReadScript(ScriptFile file) =>
-        ReadResource(file.Identifier);
 
     public override Task<string> ReadScriptAsync(ScriptFile file, CancellationToken cancellationToken = default) =>
         Task.FromResult(ReadResource(file.Identifier));

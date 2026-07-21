@@ -20,6 +20,9 @@ using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.FileSaveHelper;
+using static PerformanceMonitor.Ui.DataGridHelpers;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -265,7 +268,7 @@ public partial class ServerTab : UserControl
 
         string? planXml = null;
         string? queryText = null;
-        string label = "Estimated Plan";
+        string label = "Stored Plan";
 
         switch (grid.CurrentItem)
         {
@@ -285,8 +288,10 @@ public partial class ServerTab : UserControl
                     planXml = await FetchPlanByHash(stats.QueryHash);
                 break;
             case QueryStatsHistoryRow hist:
-                planXml = hist.QueryPlan;
                 label = "Est Plan - History";
+                // History rows no longer carry per-row plan XML — fetch on demand by hash
+                if (!string.IsNullOrEmpty(hist.QueryHash))
+                    planXml = await FetchPlanByHash(hist.QueryHash);
                 break;
             case ProcedureStatsRow proc:
                 label = $"Est Plan - {proc.FullName}";
@@ -409,12 +414,29 @@ public partial class ServerTab : UserControl
             return;
         }
 
+        /* Data-modification gate: detect from the estimated plan XML (fail-safe to "modifying" when the plan
+           can't be analyzed) and flag it PROMINENTLY — distinct from the normal warning — since re-executing an
+           INSERT/UPDATE/DELETE/MERGE RE-APPLIES those writes to the database. FLAG, don't refuse: the operator
+           decides with eyes open. */
+        var modification = QueryModificationDetector.Detect(planXml, queryText);
+        var modificationWarning = QueryModificationDetector.BuildConsentWarning(modification, databaseName);
+
+        var prompt = new StringBuilder();
+        if (modificationWarning.Length > 0)
+        {
+            prompt.AppendLine(modificationWarning);
+            prompt.AppendLine("──────────────────────────────────────────");
+            prompt.AppendLine();
+        }
+        prompt.AppendLine($"You are about to execute this query against {_server.ServerName} in database [{databaseName ?? "default"}].");
+        prompt.AppendLine();
+        prompt.AppendLine("Make sure you understand what the query does before proceeding.");
+        prompt.AppendLine("The query will execute with SET STATISTICS XML ON to capture the actual plan.");
+        prompt.AppendLine("All data results will be discarded.");
+
         var result = MessageBox.Show(
-            $"You are about to execute this query against {_server.ServerName} in database [{databaseName ?? "default"}].\n\n" +
-            "Make sure you understand what the query does before proceeding.\n" +
-            "The query will execute with SET STATISTICS XML ON to capture the actual plan.\n" +
-            "All data results will be discarded.",
-            "Get Actual Plan",
+            prompt.ToString(),
+            modification.ModifiesData ? "Get Actual Plan (re-run) — DATA WILL BE MODIFIED" : "Get Actual Plan (re-run)",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
 
@@ -437,7 +459,8 @@ public partial class ServerTab : UserControl
                 isolationLevel,
                 isAzureSqlDb: false,
                 timeoutSeconds: 0,
-                _actualPlanCts.Token);
+                _actualPlanCts.Token,
+                productName: "SQL Server Performance Monitor Lite");
 
             if (!string.IsNullOrEmpty(actualPlanXml))
             {
@@ -691,70 +714,15 @@ public partial class ServerTab : UserControl
         }
     }
 
-    private void SavePlanFile(string planXml, string defaultName)
-    {
-        var dialog = new SaveFileDialog
-        {
-            Filter = "SQL Plan files (*.sqlplan)|*.sqlplan|All files (*.*)|*.*",
-            DefaultExt = ".sqlplan",
-            FileName = $"{defaultName}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, planXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save plan: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private void DownloadDeadlockXml_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.DataContext is not DeadlockProcessDetail row || string.IsNullOrEmpty(row.DeadlockGraphXml)) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            DefaultExt = ".xml",
-            FileName = $"deadlock_{row.DeadlockTime:yyyyMMdd_HHmmss}.xml"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, row.DeadlockGraphXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save deadlock XML: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        SaveXmlToFile(row.DeadlockGraphXml, $"deadlock_{row.DeadlockTime:yyyyMMdd_HHmmss}.xml", "deadlock XML");
     }
 
     private void DownloadBlockedProcessXml_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.DataContext is not BlockedProcessReportRow row || string.IsNullOrEmpty(row.BlockedProcessReportXml)) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            DefaultExt = ".xml",
-            FileName = $"blocked_process_{row.EventTime:yyyyMMdd_HHmmss}.xml"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, row.BlockedProcessReportXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save blocked process XML: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        SaveXmlToFile(row.BlockedProcessReportXml, $"blocked_process_{row.EventTime:yyyyMMdd_HHmmss}.xml", "blocked process XML");
     }
 }

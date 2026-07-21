@@ -4,8 +4,10 @@ using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Analysis.Baselines;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Services;
+using static PerformanceMonitor.Analysis.Baselines.AnomalyThresholds;
 
 namespace PerformanceMonitorLite.Analysis;
 
@@ -25,21 +27,6 @@ public class AnomalyDetector
 {
     private readonly DuckDbInitializer _duckDb;
     private readonly BaselineProvider _baselineProvider;
-
-    /// <summary>
-    /// Default number of standard deviations above baseline mean to flag as anomalous.
-    /// </summary>
-    private const double DefaultDeviationThreshold = 2.0;
-
-    /// <summary>
-    /// Default ratio threshold for rate-based anomaly detection (wait stats).
-    /// </summary>
-    private const double DefaultRatioThreshold = 5.0;
-
-    /// <summary>
-    /// Default ratio threshold for event-based anomaly detection (blocking/deadlocks).
-    /// </summary>
-    private const double DefaultEventRatioThreshold = 3.0;
 
     /// <summary>
     /// Per-metric deviation thresholds. Metrics not listed use DefaultDeviationThreshold.
@@ -111,10 +98,6 @@ public class AnomalyDetector
     /// Emits ANOMALY_OBJECT_GROWTH for the biggest table grower over threshold and
     /// ANOMALY_OBJECT_CONTENTION for the index with the largest new lock-wait time.
     /// </summary>
-    private const decimal ObjectGrowthMbThreshold = 100m;   // ignore tables that grew less than 100 MB
-    private const double ObjectGrowthPctThreshold = 20.0;   // ...and less than 20% day-over-day
-    private const long ObjectLockWaitMsDeltaThreshold = 60000; // 1 minute of new lock waits
-
     private async Task DetectObjectStatsAnomalies(AnalysisContext context, List<Fact> anomalies)
     {
         try
@@ -273,8 +256,9 @@ SELECT (SELECT COUNT(*) FROM v_wait_stats
                 context.ServerId, MetricNames.Cpu, context.TimeRangeStart);
 
             if (baseline.SampleCount == 0) return;
+            // No effectiveStdDev<=0 early return — an untrustworthy/zero-dispersion baseline falls
+            // back to the absolute bar (below) rather than going silent.
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return; // Zero mean + zero stddev — skip
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
@@ -306,8 +290,10 @@ AND   collection_time >= $2 AND collection_time < $3";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakCpu - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(MetricNames.Cpu) || peakCpu < 50) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakCpu,
+                GetDeviationThreshold(MetricNames.Cpu), CpuFloorPct, CpuFallbackPct, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -315,7 +301,9 @@ AND   collection_time >= $2 AND collection_time < $3";
                 ["avg_cpu_in_window"] = avgCpu,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples,
                 ["confidence"] = 1.0,
@@ -339,89 +327,120 @@ AND   collection_time >= $2 AND collection_time < $3";
     }
 
     /// <summary>
-    /// Detects wait stat anomalies — total wait time significantly above
-    /// baseline rate for this time bucket. Uses ratio-based scoring.
+    /// Detects a shift in the wait PROFILE — the whole-server all-types wait rate (ms/sec) running
+    /// significantly above its time-bucketed baseline — and emits ONE ANOMALY_WAIT_PROFILE fact with
+    /// the top wait types as contrib_&lt;TYPE&gt; metadata. This replaces the old per-type
+    /// ANOMALY_WAIT_&lt;type&gt; facts, which (a) compared a per-hour per-type value to a per-interval
+    /// all-types baseline — a ~240x unit inflation — and (b) missed a minority-but-real wait (e.g.
+    /// RESOURCE_SEMAPHORE while CX* dominate the summed baseline). Comparing all-types-vs-all-types on
+    /// the honest per-second scale fixes units, aggregation, and the per-type cascade together.
     /// </summary>
     private async Task DetectWaitAnomalies(AnalysisContext context, List<Fact> anomalies)
     {
         try
         {
             var baseline = await _baselineProvider.GetBaselineAsync(
-                context.ServerId, MetricNames.WaitStats, context.TimeRangeStart);
-
-            // No baseline data at all — can't distinguish "new" waits from "always present."
-            // Skip rather than flagging everything as anomalous.
-            if (baseline.SampleCount == 0) return;
+                context.ServerId, MetricNames.WaitMsPerSec, context.TimeRangeStart);
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
             await connection.OpenAsync();
 
-            // Get per-wait-type totals in the analysis window
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
+            // Current window: all-types wait ms/sec per collection (interval via LAG, never an assumed
+            // cadence — mirrors the WaitMsPerSec baseline), then PEAK across collections (matching the
+            // z-detectors' peak-representative value). Window bound aligned to the baseline: >= $2 AND < $3.
+            double peakRate;
+            double totalWaitMs;
+            long collectionCount;
+            using (var rateCmd = connection.CreateCommand())
+            {
+                rateCmd.CommandText = @"
+WITH per_collection AS (
+    SELECT collection_time,
+           SUM(delta_wait_time_ms)::DOUBLE PRECISION AS total_wait_ms,
+           extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_sec
+    FROM v_wait_stats
+    WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
+    AND   delta_wait_time_ms >= 0
+    GROUP BY collection_time
+)
+SELECT MAX(CASE WHEN interval_sec > 0 THEN total_wait_ms / interval_sec ELSE 0 END) AS peak_ms_per_sec,
+       SUM(total_wait_ms) AS total_wait_ms,
+       COUNT(*) FILTER (WHERE interval_sec IS NOT NULL) AS sample_count
+FROM per_collection";
+                rateCmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+                rateCmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+                rateCmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
+
+                using var rateReader = await rateCmd.ExecuteReaderAsync();
+                if (!await rateReader.ReadAsync()) return;
+                peakRate = rateReader.IsDBNull(0) ? 0.0 : Convert.ToDouble(rateReader.GetValue(0));
+                totalWaitMs = rateReader.IsDBNull(1) ? 0.0 : Convert.ToDouble(rateReader.GetValue(1));
+                collectionCount = rateReader.IsDBNull(2) ? 0L : Convert.ToInt64(rateReader.GetValue(2));
+            }
+
+            if (collectionCount == 0) return; // no rated collection in the window
+
+            // Trustworthy baseline → honest per-second ratio; else fall back to the absolute peak-rate
+            // bar (NOT silence) so a genuinely heavy profile still surfaces on a young store (is_new).
+            bool isNew;
+            double ratio;
+            if (baseline.IsTrustworthy && baseline.Mean > 0)
+            {
+                isNew = false;
+                ratio = peakRate / baseline.Mean;
+            }
+            else
+            {
+                isNew = true;
+                ratio = peakRate >= WaitProfileFallbackMsPerSec ? NoBaselineRatio : 0;
+            }
+
+            if (ratio < DefaultRatioThreshold) return;
+
+            var metadata = new Dictionary<string, double>
+            {
+                ["current_ms_per_sec"] = peakRate,
+                ["baseline_mean"] = baseline.Mean,
+                ["total_wait_ms"] = totalWaitMs,
+                ["ratio"] = ratio,
+                ["is_new"] = isNew ? 1 : 0
+            };
+            AddBaselineContext(metadata, baseline);
+
+            // Top 6 contributors — named in the metadata KEY (a Dictionary<string,double> can't hold
+            // the type name in the value), value = the type's total wait ms in the window.
+            using (var contribCmd = connection.CreateCommand())
+            {
+                contribCmd.CommandText = @"
 SELECT wait_type,
        SUM(delta_wait_time_ms)::BIGINT AS total_ms
 FROM v_wait_stats
-WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
+WHERE server_id = $1 AND collection_time >= $2 AND collection_time < $3
 AND   delta_wait_time_ms > 0
 GROUP BY wait_type
-HAVING SUM(delta_wait_time_ms) > 10000
 ORDER BY total_ms DESC
-LIMIT 10";
+LIMIT 6";
+                contribCmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
+                contribCmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
+                contribCmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
 
-            cmd.Parameters.Add(new DuckDBParameter { Value = context.ServerId });
-            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeStart });
-            cmd.Parameters.Add(new DuckDBParameter { Value = context.TimeRangeEnd });
-
-            var currentHours = (context.TimeRangeEnd - context.TimeRangeStart).TotalHours;
-            if (currentHours <= 0) currentHours = 1;
-
-            // Baseline mean is total wait ms per collection interval for this time bucket.
-            // If no baseline, use ratio=100 for significant new waits.
-            var baselineRate = baseline.SampleCount > 0 ? baseline.Mean : 0;
-
-            using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
-            {
-                var waitType = reader.GetString(0);
-                var currentMs = Convert.ToInt64(reader.GetValue(1));
-                var currentRate = currentMs / currentHours;
-
-                double ratio;
-                string anomalyType;
-
-                if (baselineRate <= 0 || baseline.SampleCount == 0)
+                using var contribReader = await contribCmd.ExecuteReaderAsync();
+                while (await contribReader.ReadAsync())
                 {
-                    ratio = currentMs > 60_000 ? 100.0 : 0;
-                    anomalyType = "new";
+                    var waitType = contribReader.GetString(0);
+                    metadata[$"contrib_{waitType}"] = Convert.ToDouble(contribReader.GetValue(1));
                 }
-                else
-                {
-                    ratio = currentRate / baselineRate;
-                    anomalyType = "spike";
-                }
-
-                if (ratio < DefaultRatioThreshold) continue;
-
-                var metadata = new Dictionary<string, double>
-                {
-                    ["current_ms"] = currentMs,
-                    ["baseline_mean"] = baseline.Mean,
-                    ["ratio"] = ratio,
-                    ["is_new"] = anomalyType == "new" ? 1 : 0
-                };
-                AddBaselineContext(metadata, baseline);
-
-                anomalies.Add(new Fact
-                {
-                    Source = "anomaly",
-                    Key = $"ANOMALY_WAIT_{waitType}",
-                    Value = currentMs,
-                    ServerId = context.ServerId,
-                    Metadata = metadata
-                });
             }
+
+            anomalies.Add(new Fact
+            {
+                Source = "anomaly",
+                Key = "ANOMALY_WAIT_PROFILE",
+                Value = totalWaitMs,
+                ServerId = context.ServerId,
+                Metadata = metadata
+            });
         }
         catch (Exception ex)
         {
@@ -447,10 +466,16 @@ LIMIT 10";
             await connection.OpenAsync();
 
             using var cmd = connection.CreateCommand();
+            /* current_blocking: prefer the blocked-process-report; fall back to the always-on DMV
+               snapshot so RDS (where the BPR session is empty) still counts blocking. Mirrors the
+               overview/alert path (LocalDataService.Overview.cs / LocalDataService.Blocking.cs). */
             cmd.CommandText = @"
 SELECT
-    (SELECT COUNT(*) FROM v_blocked_process_reports
-     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS current_blocking,
+    COALESCE(NULLIF(
+        (SELECT COUNT(*) FROM v_blocked_process_reports
+         WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3), 0),
+        (SELECT COUNT(*) FROM v_dmv_blocking_snapshots
+         WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3)) AS current_blocking,
     (SELECT COUNT(*) FROM v_deadlocks
      WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3) AS current_deadlocks";
 
@@ -473,18 +498,26 @@ SELECT
             var currentBlockingPerHour = currentBlocking / windowHours;
             var currentDeadlocksPerHour = currentDeadlocks / windowHours;
 
-            // Baseline mean = events per hour for this hour+dow bucket
+            // Baseline mean = events per hour for this hour+dow bucket. Gate on IsTrustworthy (not just
+            // SampleCount>0): a thin/zero-history baseline falls back to the absolute event count rather
+            // than an inflated ratio. is_new marks that fallback so the composer renders it honestly as
+            // a first occurrence — never the dishonest "spiked to 100×" the sentinel used to render.
+            var blockingTrust = blockingBaseline.IsTrustworthy;
+            var deadlockTrust = deadlockBaseline.IsTrustworthy;
             var baselineBlockingRate = blockingBaseline.SampleCount > 0 ? blockingBaseline.Mean : 0;
             var baselineDeadlockRate = deadlockBaseline.SampleCount > 0 ? deadlockBaseline.Mean : 0;
 
-            // Blocking spike: at least 5 events in the window AND per-hour rate >= 3x baseline (or no baseline)
-            if (currentBlocking >= 5 && (baselineBlockingRate <= 0 || currentBlockingPerHour / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
+            // Blocking spike: at least 5 events in the window AND (trustworthy → per-hour rate >= 3x
+            // baseline; untrustworthy → fire on the count alone).
+            if (currentBlocking >= 5 && (!blockingTrust || currentBlockingPerHour / Math.Max(baselineBlockingRate, 1) >= DefaultEventRatioThreshold))
             {
+                var isNew = !blockingTrust;
                 var metadata = new Dictionary<string, double>
                 {
                     ["current_count"] = currentBlocking,
                     ["baseline_rate"] = baselineBlockingRate,
-                    ["ratio"] = baselineBlockingRate > 0 ? currentBlockingPerHour / baselineBlockingRate : 100.0
+                    ["ratio"] = isNew ? NoBaselineRatio : currentBlockingPerHour / baselineBlockingRate,
+                    ["is_new"] = isNew ? 1 : 0
                 };
                 AddBaselineContext(metadata, blockingBaseline);
 
@@ -498,14 +531,17 @@ SELECT
                 });
             }
 
-            // Deadlock spike: at least 3 events in the window AND per-hour rate >= 3x baseline (or no baseline)
-            if (currentDeadlocks >= 3 && (baselineDeadlockRate <= 0 || currentDeadlocksPerHour / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
+            // Deadlock spike: at least 3 events in the window AND (trustworthy → per-hour rate >= 3x
+            // baseline; untrustworthy → fire on the count alone).
+            if (currentDeadlocks >= 3 && (!deadlockTrust || currentDeadlocksPerHour / Math.Max(baselineDeadlockRate, 1) >= DefaultEventRatioThreshold))
             {
+                var isNew = !deadlockTrust;
                 var metadata = new Dictionary<string, double>
                 {
                     ["current_count"] = currentDeadlocks,
                     ["baseline_rate"] = baselineDeadlockRate,
-                    ["ratio"] = baselineDeadlockRate > 0 ? currentDeadlocksPerHour / baselineDeadlockRate : 100.0
+                    ["ratio"] = isNew ? NoBaselineRatio : currentDeadlocksPerHour / baselineDeadlockRate,
+                    ["is_new"] = isNew ? 1 : 0
                 };
                 AddBaselineContext(metadata, deadlockBaseline);
 
@@ -537,7 +573,6 @@ SELECT
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
@@ -564,57 +599,59 @@ AND   (delta_reads > 0 OR delta_writes > 0)";
             var ioThreshold = GetDeviationThreshold(MetricNames.IoLatency);
 
             // Read latency anomaly
-            if (currentReadLat > 10)
+            var readDecision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, currentReadLat,
+                ioThreshold, ReadLatencyFloorMs, IoLatencyFallbackMs, SigmaDisplayCap);
+            if (readDecision.Fire)
             {
-                var readDeviation = (currentReadLat - baseline.Mean) / effectiveStdDev;
-                if (readDeviation >= ioThreshold)
+                var metadata = new Dictionary<string, double>
                 {
-                    var metadata = new Dictionary<string, double>
-                    {
-                        ["current_latency_ms"] = currentReadLat,
-                        ["baseline_mean_ms"] = baseline.Mean,
-                        ["baseline_stddev_ms"] = effectiveStdDev,
-                        ["deviation_sigma"] = readDeviation,
-                        ["baseline_samples"] = baseline.SampleCount
-                    };
-                    AddBaselineContext(metadata, baseline);
+                    ["current_latency_ms"] = currentReadLat,
+                    ["baseline_mean_ms"] = baseline.Mean,
+                    ["baseline_stddev_ms"] = effectiveStdDev,
+                    ["deviation_sigma"] = readDecision.Sigma,
+                    ["baseline_low_quality"] = readDecision.LowQualityBaseline ? 1 : 0,
+                    ["fallback_exceedance"] = readDecision.FallbackExceedance,
+                    ["baseline_samples"] = baseline.SampleCount
+                };
+                AddBaselineContext(metadata, baseline);
 
-                    anomalies.Add(new Fact
-                    {
-                        Source = "anomaly",
-                        Key = "ANOMALY_READ_LATENCY",
-                        Value = currentReadLat,
-                        ServerId = context.ServerId,
-                        Metadata = metadata
-                    });
-                }
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = "ANOMALY_READ_LATENCY",
+                    Value = currentReadLat,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
             }
 
             // Write latency anomaly
-            if (currentWriteLat > 5)
+            var writeDecision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, currentWriteLat,
+                ioThreshold, WriteLatencyFloorMs, IoLatencyFallbackMs, SigmaDisplayCap);
+            if (writeDecision.Fire)
             {
-                var writeDeviation = (currentWriteLat - baseline.Mean) / effectiveStdDev;
-                if (writeDeviation >= ioThreshold)
+                var metadata = new Dictionary<string, double>
                 {
-                    var metadata = new Dictionary<string, double>
-                    {
-                        ["current_latency_ms"] = currentWriteLat,
-                        ["baseline_mean_ms"] = baseline.Mean,
-                        ["baseline_stddev_ms"] = effectiveStdDev,
-                        ["deviation_sigma"] = writeDeviation,
-                        ["baseline_samples"] = baseline.SampleCount
-                    };
-                    AddBaselineContext(metadata, baseline);
+                    ["current_latency_ms"] = currentWriteLat,
+                    ["baseline_mean_ms"] = baseline.Mean,
+                    ["baseline_stddev_ms"] = effectiveStdDev,
+                    ["deviation_sigma"] = writeDecision.Sigma,
+                    ["baseline_low_quality"] = writeDecision.LowQualityBaseline ? 1 : 0,
+                    ["fallback_exceedance"] = writeDecision.FallbackExceedance,
+                    ["baseline_samples"] = baseline.SampleCount
+                };
+                AddBaselineContext(metadata, baseline);
 
-                    anomalies.Add(new Fact
-                    {
-                        Source = "anomaly",
-                        Key = "ANOMALY_WRITE_LATENCY",
-                        Value = currentWriteLat,
-                        ServerId = context.ServerId,
-                        Metadata = metadata
-                    });
-                }
+                anomalies.Add(new Fact
+                {
+                    Source = "anomaly",
+                    Key = "ANOMALY_WRITE_LATENCY",
+                    Value = currentWriteLat,
+                    ServerId = context.ServerId,
+                    Metadata = metadata
+                });
             }
         }
         catch (Exception ex)
@@ -635,7 +672,6 @@ AND   (delta_reads > 0 OR delta_writes > 0)";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
@@ -664,8 +700,10 @@ AND   delta_cntr_value >= 0";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakBatch - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(MetricNames.BatchRequests)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakBatch,
+                GetDeviationThreshold(MetricNames.BatchRequests), BatchRequestFloor, BatchRequestFallback, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -673,7 +711,9 @@ AND   delta_cntr_value >= 0";
                 ["avg_batch_requests"] = avgBatch,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -706,7 +746,6 @@ AND   delta_cntr_value >= 0";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
@@ -716,7 +755,7 @@ AND   delta_cntr_value >= 0";
             cmd.CommandText = @"
 WITH per_collection AS (
     SELECT collection_time,
-           SUM(connection_count)::DOUBLE AS total_connections
+           SUM(connection_count)::DOUBLE PRECISION AS total_connections
     FROM v_session_stats
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
     GROUP BY collection_time
@@ -739,8 +778,10 @@ FROM per_collection";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakConnections - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(MetricNames.SessionCount)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakConnections,
+                GetDeviationThreshold(MetricNames.SessionCount), SessionCountFloor, SessionCountFallback, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -748,7 +789,9 @@ FROM per_collection";
                 ["avg_connections"] = avgConnections,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -782,7 +825,6 @@ FROM per_collection";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
@@ -792,7 +834,7 @@ FROM per_collection";
             cmd.CommandText = @"
 WITH per_collection AS (
     SELECT collection_time,
-           SUM(delta_elapsed_time)::DOUBLE AS total_elapsed
+           SUM(delta_elapsed_time)::DOUBLE PRECISION AS total_elapsed
     FROM v_query_stats
     WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
     AND   delta_execution_count > 0
@@ -817,8 +859,10 @@ FROM per_collection";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakElapsed - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(MetricNames.QueryDuration)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakElapsed,
+                GetDeviationThreshold(MetricNames.QueryDuration), QueryDurationFloorUs, QueryDurationFallbackUs, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -826,7 +870,9 @@ FROM per_collection";
                 ["avg_total_elapsed_us"] = avgElapsed,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };
@@ -849,7 +895,7 @@ FROM per_collection";
 
     /// <summary>
     /// Detects memory utilization anomalies using z-score against time-bucketed baseline.
-    /// Lite-only — Dashboard does not collect memory metrics.
+    /// Dashboard and Darling collect memory metrics too; mirror any change across all three.
     /// Measures total_server_memory_mb / target_server_memory_mb as memory pressure %.
     /// </summary>
     private async Task DetectMemoryAnomalies(AnalysisContext context, List<Fact> anomalies)
@@ -861,7 +907,6 @@ FROM per_collection";
 
             if (baseline.SampleCount == 0) return;
             var effectiveStdDev = baseline.EffectiveStdDev;
-            if (effectiveStdDev <= 0) return;
 
             using var readLock = _duckDb.AcquireReadLock();
             using var connection = _duckDb.CreateConnection();
@@ -869,8 +914,8 @@ FROM per_collection";
 
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
-SELECT AVG(total_server_memory_mb::DOUBLE / NULLIF(target_server_memory_mb::DOUBLE, 0) * 100) AS avg_pressure,
-       MAX(total_server_memory_mb::DOUBLE / NULLIF(target_server_memory_mb::DOUBLE, 0) * 100) AS peak_pressure,
+SELECT AVG(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS avg_pressure,
+       MAX(total_server_memory_mb::DOUBLE PRECISION / NULLIF(target_server_memory_mb::DOUBLE PRECISION, 0) * 100) AS peak_pressure,
        COUNT(*) AS sample_count
 FROM v_memory_stats
 WHERE server_id = $1 AND collection_time >= $2 AND collection_time <= $3
@@ -889,8 +934,10 @@ AND   target_server_memory_mb > 0";
 
             if (windowSamples == 0) return;
 
-            var deviation = (peakPressure - baseline.Mean) / effectiveStdDev;
-            if (deviation < GetDeviationThreshold(MetricNames.Memory)) return;
+            var decision = AnomalyGate.EvaluateZScore(
+                baseline.Mean, effectiveStdDev, baseline.IsTrustworthy, peakPressure,
+                GetDeviationThreshold(MetricNames.Memory), MemoryPressureFloorPct, MemoryPressureFallbackPct, SigmaDisplayCap);
+            if (!decision.Fire) return;
 
             var metadata = new Dictionary<string, double>
             {
@@ -898,7 +945,9 @@ AND   target_server_memory_mb > 0";
                 ["avg_memory_pressure_pct"] = avgPressure,
                 ["baseline_mean"] = baseline.Mean,
                 ["baseline_stddev"] = effectiveStdDev,
-                ["deviation_sigma"] = deviation,
+                ["deviation_sigma"] = decision.Sigma,
+                ["baseline_low_quality"] = decision.LowQualityBaseline ? 1 : 0,
+                ["fallback_exceedance"] = decision.FallbackExceedance,
                 ["baseline_samples"] = baseline.SampleCount,
                 ["window_samples"] = windowSamples
             };

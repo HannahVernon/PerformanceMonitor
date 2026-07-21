@@ -1,0 +1,427 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Threading.Tasks;
+using System.Windows.Controls;
+using PerformanceMonitor.Common;
+
+namespace PerformanceMonitor.Darling.Viewer;
+
+/// <summary>
+/// The Queries inner tab's sub-tab dispatch — the six-sub-tab group matching Lite's
+/// <c>QueriesSubTabControl</c> exactly: Performance Trends and Active Queries (W1f-2), the Top Queries /
+/// Top Procedures / Query Store grids (W1f-1), then Query Heatmap last (W1f-2). Copied from Lite's
+/// <c>ServerTab</c> (Refresh / Slicers / Grids partials) with reads rewired to the
+/// <see cref="ViewerDataService"/> Postgres reads. A sub-tab switch reloads through the shell's
+/// overlap-guarded <see cref="RefreshActiveInnerTabAsync"/> (the Queries tab is the active inner tab
+/// whenever its sub-tabs are visible), and <see cref="LoadQueriesAsync"/> loads only the newly-visible
+/// sub-tab (Lite's subTabOnly gating) over the toolbar's settable window. The three grids each carry a UTC
+/// time-range slicer whose drag re-reads over the selection; sorting a grid re-labels the slicer's
+/// aggregate curve (Lite's *Grid_Sorting). The Performance Trends charts / Active Queries grid+slicer /
+/// Query Heatmap live in their own partials (<c>ViewerServerTab.QueryTrends.cs</c> /
+/// <c>.ActiveQueries.cs</c> / <c>.QueryHeatmap.cs</c>). The grids also carry the slicer overlay-on-select
+/// (#1409, <c>ViewerServerTab.SlicerOverlay.cs</c>) and the per-row double-click history windows
+/// (<c>ViewerServerTab.History.cs</c>), so all four Lite interactions — drag-to-narrow, sort-driven metric
+/// re-labeling, overlay-on-select, and double-click-for-history — are wired.
+/// </summary>
+public partial class ViewerServerTab
+{
+    /* Queries sub-tab order — matches Lite's QueriesSubTabControl (W1f-2), keeping Query Heatmap last, the
+       Darling-only LIVE "Current Active Queries" tab inserted right after the stored "Active Queries" tab,
+       and the Query Store Regressions grid (Dashboard parity) inserted right after Query Store — matching
+       the Dashboard's Query Store → Query Store Regressions adjacency: Performance Trends, Active Queries,
+       Current Active Queries (live), the three grids, Query Store Regressions, Query Heatmap. Every
+       reference below uses the NAMED constant, so inserting a tab only shifts these values — no literal-index
+       caller needs touching. */
+    private const int PerformanceTrendsSubTabIndex = 0;
+    private const int ActiveQueriesSubTabIndex = 1;
+    private const int CurrentActiveQueriesSubTabIndex = 2;
+    private const int TopQueriesSubTabIndex = 3;
+    private const int TopProceduresSubTabIndex = 4;
+    private const int QueryStoreSubTabIndex = 5;
+    private const int QueryStoreRegressionsSubTabIndex = 6;
+    private const int QueryHeatmapSubTabIndex = 7;
+
+    private string _queryStatsSlicerMetric = "TotalCpu";
+    private List<TimeSliceBucket>? _queryStatsSlicerData;
+    private string _procStatsSlicerMetric = "TotalCpu";
+    private List<TimeSliceBucket>? _procStatsSlicerData;
+    private string _queryStoreSlicerMetric = "TotalCpu";
+    private List<TimeSliceBucket>? _queryStoreSlicerData;
+
+    /// <summary>
+    /// Wires the Queries tab up-front (from the constructor, after InitializeComponent): the three grids'
+    /// in-grid bar-cell maxima recompute hook (<see cref="SetupBarCellMaxes"/>) and each slicer's
+    /// RangeChanged handler (dragging a slicer re-reads its grid over the selection).
+    /// </summary>
+    private void InitializeQueriesTab()
+    {
+        SetupBarCellMaxes();
+
+        QueryStatsSlicer.RangeChanged += OnQueryStatsSlicerChanged;
+        ProcStatsSlicer.RangeChanged += OnProcStatsSlicerChanged;
+        QueryStoreSlicer.RangeChanged += OnQueryStoreSlicerChanged;
+
+        /* W1f-2 sub-tabs: theme the trend + heatmap charts up front, build the heatmap hover popup +
+           drill-down menu, and wire the Active Queries slicer (each in its own partial). */
+        InitializeQueryTrendCharts();
+        InitializeActiveQueriesTab();
+        InitializeQueryHeatmap();
+
+        /* Default sub-tab is Performance Trends (no comparison), so start the Compare combo disabled. */
+        UpdateCompareDropdownState();
+    }
+
+    /// <summary>Tears down the W1f-2 sub-tabs' chart hover helpers — forwarded from the tab's single
+    /// <see cref="Dispose"/> so the whole tab tears down through one path.</summary>
+    private void DisposeQueriesTabHelpers()
+    {
+        DisposeQueryTrendHelpers();
+    }
+
+    /// <summary>
+    /// A Queries sub-tab switch reloads through the shell's overlap-guarded
+    /// <see cref="RefreshActiveInnerTabAsync"/> (mirrors <see cref="BlockingSubTabs_SelectionChanged"/>).
+    /// Gated on <see cref="System.Windows.FrameworkElement.IsLoaded"/> and the sub-TabControl's own
+    /// selection so build-time and bubbled selections (the child grids, the Compare combo) are ignored.
+    /// </summary>
+    private async void QueriesSubTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, QueriesSubTabControl) || !IsLoaded)
+        {
+            return;
+        }
+
+        /* Comparison applies only to the three grid sub-tabs; disable the Compare combo elsewhere. */
+        UpdateCompareDropdownState();
+
+        /* A drill-down (heatmap / per-chart / Overview lane) switches to Active Queries programmatically and
+           loads its own filtered snapshot; skip the auto-refresh so it doesn't clobber that via an async race
+           (the guard is set/cleared around the tab switches in NavigateToActiveQueriesForWindowAsync). */
+        if (_suppressDrillDownAutoRefresh)
+        {
+            return;
+        }
+
+        await RefreshActiveInnerTabAsync();
+    }
+
+    /// <summary>
+    /// Loads the Queries tab's ACTIVE sub-tab only (Lite's subTabOnly gating): Top Queries / Top
+    /// Procedures / Query Store each read their grid + slicer + comparison over the toolbar's settable window.
+    /// The shell's <see cref="LoadInnerTabAsync"/> owns the try/catch that surfaces failures.
+    /// </summary>
+    private async Task LoadQueriesAsync()
+    {
+        var (startUtc, endUtc) = GetWindowUtc();
+
+        switch (QueriesSubTabControl.SelectedIndex)
+        {
+            case PerformanceTrendsSubTabIndex:
+                await LoadPerformanceTrendsAsync(startUtc, endUtc);
+                break;
+            case ActiveQueriesSubTabIndex:
+                await LoadActiveQueriesAsync(startUtc, endUtc);
+                break;
+            case CurrentActiveQueriesSubTabIndex:
+                /* LIVE, on-demand only — never auto-fetch on tab selection or a toolbar-range refresh (a live
+                   server hit is an explicit operator action). The Refresh button drives the fetch; the tab keeps
+                   its last snapshot / hint until then. */
+                break;
+            case TopProceduresSubTabIndex:
+                await LoadTopProceduresAsync(startUtc, endUtc);
+                break;
+            case QueryStoreSubTabIndex:
+                await LoadQueryStoreAsync(startUtc, endUtc);
+                break;
+            case QueryStoreRegressionsSubTabIndex:
+                await LoadQueryStoreRegressionsAsync(startUtc, endUtc);
+                break;
+            case QueryHeatmapSubTabIndex:
+                await LoadQueryHeatmapAsync(startUtc, endUtc);
+                break;
+            case TopQueriesSubTabIndex:
+            default:
+                await LoadTopQueriesAsync(startUtc, endUtc);
+                break;
+        }
+    }
+
+    private async Task LoadTopQueriesAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetTopQueriesByCpuAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _queryStatsFilterMgr!.UpdateData(rows);
+        SetDefaultSortIfNone(QueryStatsGrid, "TotalElapsedMs", ListSortDirection.Descending);
+        await LoadQueryStatsSlicerAsync(startUtc, endUtc);
+        await RefreshQueryStatsComparisonAsync(startUtc, endUtc);
+    }
+
+    private async Task LoadTopProceduresAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetTopProceduresByCpuAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _procStatsFilterMgr!.UpdateData(rows);
+        SetDefaultSortIfNone(ProcedureStatsGrid, "TotalElapsedMs", ListSortDirection.Descending);
+        await LoadProcStatsSlicerAsync(startUtc, endUtc);
+        await RefreshProcStatsComparisonAsync(startUtc, endUtc);
+    }
+
+    private async Task LoadQueryStoreAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetQueryStoreTopQueriesAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _queryStoreFilterMgr!.UpdateData(rows);
+        SetDefaultSortIfNone(QueryStoreGrid, "TotalDurationMs", ListSortDirection.Descending);
+        await LoadQueryStoreSlicerAsync(startUtc, endUtc);
+        await RefreshQueryStoreComparisonAsync(startUtc, endUtc);
+    }
+
+    /// <summary>
+    /// Loads the Query Store Regressions grid — the Dashboard's regressions view (baseline-vs-recent Query
+    /// Store performance) ported to Darling's store, over the toolbar's settable window. Like the Dashboard
+    /// grid (and unlike the three per-source grids) it has no slicer / comparison / slicer-overlay: the read
+    /// is already a baseline-vs-recent contrast, not a single time series. The default sort matches the
+    /// Dashboard grid's (duration regression % descending) — a grid-view-only SortDescription that does NOT
+    /// touch the read's additional-duration ORDER BY (the TVF's ranking).
+    /// </summary>
+    private async Task LoadQueryStoreRegressionsAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var rows = await _dataService.GetQueryStoreRegressionsAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _queryStoreRegressionsFilterMgr!.UpdateData(rows);
+        SetDefaultSortIfNone(QueryStoreRegressionsGrid, "DurationRegressionPercent", ListSortDirection.Descending);
+    }
+
+    // ── Slicers (Lite's ServerTab.Slicers.cs; the slicer sends UTC bounds, the viewer reads take naive UTC) ──
+
+    private async Task LoadQueryStatsSlicerAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var data = await _dataService.GetQueryStatsSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _queryStatsSlicerData = data;
+        _queryStatsSlicerMetric = "TotalCpu";
+        if (data.Count > 0)
+            QueryStatsSlicer.LoadData(data, "Total CPU (ms)", startUtc, endUtc);
+    }
+
+    private async void OnQueryStatsSlicerChanged(object? sender, SlicerRangeEventArgs e)
+    {
+        try
+        {
+            var rows = await _dataService.GetTopQueriesByCpuAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
+            _queryStatsFilterMgr!.UpdateData(rows);
+            await RefreshQueryStatsComparisonAsync(e.StartUtc, e.EndUtc);
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"query-stats slicer failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadProcStatsSlicerAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var data = await _dataService.GetProcStatsSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _procStatsSlicerData = data;
+        _procStatsSlicerMetric = "TotalCpu";
+        if (data.Count > 0)
+            ProcStatsSlicer.LoadData(data, "Total CPU (ms)", startUtc, endUtc);
+    }
+
+    private async void OnProcStatsSlicerChanged(object? sender, SlicerRangeEventArgs e)
+    {
+        try
+        {
+            var rows = await _dataService.GetTopProceduresByCpuAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
+            _procStatsFilterMgr!.UpdateData(rows);
+            await RefreshProcStatsComparisonAsync(e.StartUtc, e.EndUtc);
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"procedure-stats slicer failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadQueryStoreSlicerAsync(DateTime startUtc, DateTime endUtc)
+    {
+        var data = await _dataService.GetQueryStoreSlicerDataAsync(_server.ServerId, startUtc, endUtc, databaseNames: SelectedDatabaseFilter);
+        _queryStoreSlicerData = data;
+        _queryStoreSlicerMetric = "TotalCpu";
+        if (data.Count > 0)
+            QueryStoreSlicer.LoadData(data, "Total CPU (ms)", startUtc, endUtc);
+    }
+
+    private async void OnQueryStoreSlicerChanged(object? sender, SlicerRangeEventArgs e)
+    {
+        try
+        {
+            var rows = await _dataService.GetQueryStoreTopQueriesAsync(_server.ServerId, e.StartUtc, e.EndUtc, databaseNames: SelectedDatabaseFilter);
+            _queryStoreFilterMgr!.UpdateData(rows);
+            await RefreshQueryStoreComparisonAsync(e.StartUtc, e.EndUtc);
+        }
+        catch (Exception ex)
+        {
+            StatusChanged?.Invoke($"query-store slicer failed: {ex.Message}");
+        }
+    }
+
+    // ── Sort-driven slicer metric re-labeling (Lite's ServerTab.Grids.cs *Grid_Sorting) ──
+
+    /// <summary>Sorting the Top Queries grid swaps the slicer's aggregate curve to match the sorted column.</summary>
+    private void QueryStatsGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        if (_queryStatsSlicerData == null || _queryStatsSlicerData.Count == 0) return;
+
+        var col = SortColumnPath(e.Column);
+        var (metric, label) = col switch
+        {
+            "TotalCpuMs" => ("TotalCpu", "Total CPU (ms)"),
+            "AvgCpuMs" => ("AvgCpu", "Avg CPU (ms)"),
+            "TotalElapsedMs" => ("TotalElapsed", "Total Duration (ms)"),
+            "AvgElapsedMs" => ("AvgElapsed", "Avg Duration (ms)"),
+            "TotalLogicalReads" => ("TotalReads", "Total Reads"),
+            "AvgReads" => ("AvgReads", "Avg Reads"),
+            "TotalLogicalWrites" => ("TotalWrites", "Total Writes"),
+            "TotalPhysicalReads" => ("TotalPhysReads", "Total Physical Reads"),
+            _ => ("TotalCpu", "Total CPU (ms)"),
+        };
+
+        if (metric == _queryStatsSlicerMetric) return;
+        _queryStatsSlicerMetric = metric;
+
+        foreach (var bucket in _queryStatsSlicerData)
+        {
+            var n = bucket.SessionCount > 0 ? bucket.SessionCount : 1;
+            bucket.Value = metric switch
+            {
+                "TotalCpu" => bucket.TotalCpu,
+                "AvgCpu" => bucket.TotalCpu / n,
+                "TotalElapsed" => bucket.TotalElapsed,
+                "AvgElapsed" => bucket.TotalElapsed / n,
+                "TotalReads" => bucket.TotalReads,
+                "AvgReads" => bucket.TotalReads / n,
+                "TotalWrites" => bucket.TotalWrites,
+                "TotalPhysReads" => bucket.TotalPhysicalReads,
+                _ => bucket.TotalCpu,
+            };
+        }
+
+        QueryStatsSlicer.UpdateMetric(label);
+    }
+
+    /// <summary>Sorting the Top Procedures grid swaps the slicer's aggregate curve to match the sorted column.</summary>
+    private void ProcedureStatsGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        if (_procStatsSlicerData == null || _procStatsSlicerData.Count == 0) return;
+
+        var col = SortColumnPath(e.Column);
+        var (metric, label) = col switch
+        {
+            "TotalCpuMs" => ("TotalCpu", "Total CPU (ms)"),
+            "AvgCpuMs" => ("AvgCpu", "Avg CPU (ms)"),
+            "TotalElapsedMs" => ("TotalElapsed", "Total Duration (ms)"),
+            "AvgElapsedMs" => ("AvgElapsed", "Avg Duration (ms)"),
+            "TotalLogicalReads" or "AvgReads" => ("TotalReads", "Total Reads"),
+            "TotalLogicalWrites" => ("TotalWrites", "Total Writes"),
+            "TotalPhysicalReads" => ("TotalReads", "Total Physical Reads"),
+            _ => ("TotalCpu", "Total CPU (ms)"),
+        };
+
+        if (metric == _procStatsSlicerMetric) return;
+        _procStatsSlicerMetric = metric;
+
+        foreach (var bucket in _procStatsSlicerData)
+        {
+            var n = bucket.SessionCount > 0 ? bucket.SessionCount : 1;
+            bucket.Value = metric switch
+            {
+                "TotalCpu" => bucket.TotalCpu,
+                "AvgCpu" => bucket.TotalCpu / n,
+                "TotalElapsed" => bucket.TotalElapsed,
+                "AvgElapsed" => bucket.TotalElapsed / n,
+                "TotalReads" => bucket.TotalReads,
+                "TotalWrites" => bucket.TotalWrites,
+                _ => bucket.TotalCpu,
+            };
+        }
+
+        ProcStatsSlicer.UpdateMetric(label);
+    }
+
+    /// <summary>Sorting the Query Store grid swaps the slicer's aggregate curve to match the sorted column.</summary>
+    private void QueryStoreGrid_Sorting(object sender, DataGridSortingEventArgs e)
+    {
+        if (_queryStoreSlicerData == null || _queryStoreSlicerData.Count == 0) return;
+
+        var col = SortColumnPath(e.Column);
+        var (metric, label) = col switch
+        {
+            "TotalCpuMs" => ("TotalCpu", "Total CPU (ms)"),
+            "AvgCpuTimeMs" => ("AvgCpu", "Avg CPU (ms)"),
+            "TotalDurationMs" => ("TotalElapsed", "Total Duration (ms)"),
+            "AvgDurationMs" => ("AvgElapsed", "Avg Duration (ms)"),
+            "AvgLogicalReads" => ("TotalReads", "Avg Reads"),
+            "AvgLogicalWrites" => ("TotalWrites", "Avg Writes"),
+            "AvgPhysicalReads" => ("TotalReads", "Avg Physical Reads"),
+            "TotalExecutions" => ("Sessions", "Executions"),
+            _ => ("TotalCpu", "Total CPU (ms)"),
+        };
+
+        if (metric == _queryStoreSlicerMetric) return;
+        _queryStoreSlicerMetric = metric;
+
+        foreach (var bucket in _queryStoreSlicerData)
+        {
+            var n = bucket.SessionCount > 0 ? bucket.SessionCount : 1;
+            bucket.Value = metric switch
+            {
+                "TotalCpu" => bucket.TotalCpu,
+                "AvgCpu" => bucket.TotalCpu / n,
+                "TotalElapsed" => bucket.TotalElapsed,
+                "AvgElapsed" => bucket.TotalElapsed / n,
+                "TotalReads" => bucket.TotalReads,
+                "TotalWrites" => bucket.TotalWrites,
+                "Sessions" => bucket.SessionCount,
+                _ => bucket.TotalCpu,
+            };
+        }
+
+        QueryStoreSlicer.UpdateMetric(label);
+    }
+
+    /// <summary>The sorted column's member path (SortMemberPath, else the bound Binding path) — Lite's fallback.</summary>
+    private static string SortColumnPath(DataGridColumn column)
+    {
+        var col = column.SortMemberPath ?? "";
+        if (string.IsNullOrEmpty(col) && column is DataGridBoundColumn bc &&
+            bc.Binding is System.Windows.Data.Binding b)
+        {
+            col = b.Path.Path;
+        }
+        return col;
+    }
+
+    /// <summary>
+    /// Sets the grid's default sort when the user has not sorted it yet (Lite's SetDefaultSortIfNone) —
+    /// so the first render matches the read's ORDER BY. The filter manager preserves sort across reloads,
+    /// so this only fires on the initial load.
+    /// </summary>
+    private static void SetDefaultSortIfNone(DataGrid grid, string bindingPath, ListSortDirection direction)
+    {
+        if (grid.Items.SortDescriptions.Count > 0) return;
+
+        grid.Items.SortDescriptions.Add(new SortDescription(bindingPath, direction));
+        foreach (var column in grid.Columns)
+        {
+            if (column.SortMemberPath == bindingPath ||
+                (column is DataGridBoundColumn bc && bc.Binding is System.Windows.Data.Binding b && b.Path.Path == bindingPath))
+            {
+                column.SortDirection = direction;
+                return;
+            }
+        }
+    }
+}

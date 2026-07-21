@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Input;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -51,11 +52,7 @@ public partial class ManageServersWindow : Window
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
             ?? "0.0.0";
 
-        int plusIndex = raw.IndexOf('+');
-        string trimmed = plusIndex >= 0 ? raw[..plusIndex] : raw;
-        return System.Version.TryParse(trimmed, out var v)
-            ? new System.Version(v.Major, v.Minor, v.Build).ToString()
-            : trimmed;
+        return VersionText.Normalize(raw);
     }
 
     private void AddButton_Click(object sender, RoutedEventArgs e)
@@ -144,10 +141,10 @@ public partial class ManageServersWindow : Window
         }
     }
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyCell(sender);
-    private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "servers");
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "servers", App.CsvSeparator);
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {

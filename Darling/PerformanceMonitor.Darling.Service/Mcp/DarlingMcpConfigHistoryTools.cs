@@ -1,0 +1,254 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
+using ModelContextProtocol.Server;
+using Npgsql;
+using PerformanceMonitor.Common;
+
+#pragma warning disable CA1707 // MCP tools use snake_case naming convention
+
+namespace PerformanceMonitor.Darling.Service.Mcp;
+
+/// <summary>
+/// The config / trace-flag diagnostic-depth MCP tools — get_server_config_changes,
+/// get_database_config_changes, get_trace_flag_changes (the Dashboard's change-history names) and
+/// get_database_scoped_config (the Lite latest-snapshot name) — served over Darling's Postgres store. The
+/// three change tools diff the store's append-only config snapshots (the Dashboard reads pre-materialized
+/// <c>report.*_changes</c> tables that Darling does not have, so Darling computes the diff from the raw
+/// snapshot history via <see cref="DarlingConfigHistoryReader"/>); get_database_scoped_config ports Lite's
+/// tool over the viewer's latest-snapshot read. All are STORED reads (no live monitored-server hit).
+///
+/// <para>
+/// Each change tool's Description states the two honest caveats plainly (they are NOT silently dropped):
+/// (1) config is captured ON CONNECT only, so change granularity equals the connect/restart cadence and a
+/// stable deployment may show no changes until the next connect; (2) the tools emit only the values Darling
+/// collects — the Dashboard's <c>requires_restart</c> / <c>description</c> / <c>setting_type</c> /
+/// generated <c>change_description</c> enrichment is not collected here and is omitted.
+/// </para>
+/// </summary>
+[McpServerToolType]
+public sealed class DarlingMcpConfigHistoryTools
+{
+    [McpServerTool(Name = "get_server_config_changes"), Description("Gets server configuration change history by diffing sp_configure (sys.configurations) snapshots. Shows which settings changed and their old vs new configured/in-use values. NOTE: this edition captures config on server connect (not on a fixed schedule), so changes are detected between connect snapshots and need at least two; requires_restart and the setting description are not collected and are omitted.")]
+    public static async Task<string> GetServerConfigChanges(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history to retrieve. Default 168 (7 days).")] int hours_back = 168)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var windowStart = NaiveUtcNow().AddHours(-hours_back);
+            var snapshots = await DarlingConfigHistoryReader.GetServerConfigSnapshotsAsync(postgres, resolved.Value.ServerId);
+            /* The tool reads the full unbounded history and only lower-bounds, so pass DateTime.MaxValue as the
+               (no-op) upper edge — the shared both-edges diff then reproduces the prior behavior exactly. */
+            var changes = ConfigChangeDiff.DiffServerConfigChanges(snapshots, windowStart, DateTime.MaxValue);
+            if (changes.Count == 0)
+                return NoChanges(resolved.Value.ServerName, hours_back, DistinctCaptures(snapshots.Select(s => s.CaptureTime)));
+
+            var result = changes.Select(c => new
+            {
+                change_time = c.ChangeTime.ToString("o"),
+                configuration_name = c.ConfigurationName,
+                old_value_configured = c.OldValueConfigured,
+                new_value_configured = c.NewValueConfigured,
+                old_value_in_use = c.OldValueInUse,
+                new_value_in_use = c.NewValueInUse,
+                is_dynamic = c.IsDynamic,
+                is_advanced = c.IsAdvanced
+            });
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                change_count = changes.Count,
+                changes = result
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_server_config_changes", ex);
+        }
+    }
+
+    [McpServerTool(Name = "get_database_config_changes"), Description("Gets database configuration change history by diffing sys.databases snapshots. Shows which database settings changed (recovery model, RCSI, compatibility level, etc.) with old and new values; setting_name is the underlying column name. NOTE: this edition captures config on server connect (not on a fixed schedule), so changes are detected between connect snapshots and need at least two; the setting category/description narrative is not collected and is omitted.")]
+    public static async Task<string> GetDatabaseConfigChanges(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history to retrieve. Default 168 (7 days).")] int hours_back = 168)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var windowStart = NaiveUtcNow().AddHours(-hours_back);
+            var snapshots = await DarlingConfigHistoryReader.GetDatabaseConfigSnapshotsAsync(postgres, resolved.Value.ServerId);
+            var changes = ConfigChangeDiff.DiffDatabaseConfigChanges(snapshots, windowStart, DateTime.MaxValue);
+            if (changes.Count == 0)
+                return NoChanges(resolved.Value.ServerName, hours_back, DistinctCaptures(snapshots.Select(s => s.CaptureTime)));
+
+            var result = changes.Select(c => new
+            {
+                change_time = c.ChangeTime.ToString("o"),
+                database_name = c.DatabaseName,
+                setting_name = c.SettingName,
+                old_value = c.OldValue,
+                new_value = c.NewValue
+            });
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                change_count = changes.Count,
+                changes = result
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_database_config_changes", ex);
+        }
+    }
+
+    [McpServerTool(Name = "get_trace_flag_changes"), Description("Gets trace flag change history by diffing DBCC TRACESTATUS snapshots. Shows which trace flags were enabled or disabled (change_type), with scope (global/session) and the change time. NOTE: this edition captures config on server connect (not on a fixed schedule), so changes are detected between connect snapshots and need at least two.")]
+    public static async Task<string> GetTraceFlagChanges(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history to retrieve. Default 168 (7 days).")] int hours_back = 168)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        var validation = McpHelpers.ValidateHoursBack(hours_back);
+        if (validation != null) return validation;
+
+        try
+        {
+            var windowStart = NaiveUtcNow().AddHours(-hours_back);
+            var snapshots = await DarlingConfigHistoryReader.GetTraceFlagSnapshotsAsync(postgres, resolved.Value.ServerId);
+            var changes = ConfigChangeDiff.DiffTraceFlagChanges(snapshots, windowStart, DateTime.MaxValue);
+            if (changes.Count == 0)
+                return NoChanges(resolved.Value.ServerName, hours_back, DistinctCaptures(snapshots.Select(s => s.CaptureTime)));
+
+            var result = changes.Select(c => new
+            {
+                change_time = c.ChangeTime.ToString("o"),
+                trace_flag = c.TraceFlag,
+                change_type = c.ChangeType,
+                previous_status = c.PreviousStatus,
+                new_status = c.NewStatus,
+                scope = Scope(c.IsGlobal, c.IsSession),
+                is_global = c.IsGlobal,
+                is_session = c.IsSession
+            });
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                hours_back,
+                change_count = changes.Count,
+                changes = result
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_trace_flag_changes", ex);
+        }
+    }
+
+    [McpServerTool(Name = "get_database_scoped_config"), Description("Gets database-scoped configuration settings (sys.database_scoped_configurations). Shows MAXDOP, legacy CE, parameter sniffing, and other per-database settings.")]
+    public static async Task<string> GetDatabaseScopedConfig(
+        NpgsqlDataSource postgres,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Filter to a specific database. Omit for all databases.")] string? database_name = null)
+    {
+        var (resolved, error) = await DarlingServerResolver.ResolveOrErrorAsync(postgres, server_name);
+        if (error != null) return error;
+
+        try
+        {
+            var rows = await DarlingConfigHistoryReader.GetLatestDatabaseScopedConfigAsync(postgres, resolved.Value.ServerId);
+            if (rows.Count == 0)
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No database-scoped configuration data available. The config collector may not have run yet.");
+
+            IEnumerable<DarlingConfigHistoryReader.DatabaseScopedConfigReadRow> filtered = rows;
+            if (!string.IsNullOrEmpty(database_name))
+                filtered = filtered.Where(r => r.DatabaseName.Equals(database_name, StringComparison.OrdinalIgnoreCase));
+
+            var grouped = filtered
+                .GroupBy(r => r.DatabaseName)
+                .Select(g => new
+                {
+                    database_name = g.Key,
+                    settings = g.Select(r => new
+                    {
+                        name = r.ConfigurationName,
+                        value = r.Value,
+                        value_for_secondary = string.IsNullOrEmpty(r.ValueForSecondary) ? null : r.ValueForSecondary
+                    })
+                }).ToList();
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                database_count = grouped.Count,
+                databases = grouped
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_database_scoped_config", ex);
+        }
+    }
+
+    /// <summary>The number of distinct config CAPTURES (capture_time values) among the snapshot rows — the
+    /// reads return one row per setting/database/flag per capture, so a raw row count would never hit the
+    /// "fewer than two snapshots" branch on a freshly-connected server.</summary>
+    private static int DistinctCaptures(IEnumerable<DateTime> captureTimes) =>
+        captureTimes.Distinct().Count();
+
+    /// <summary>The "empty" miss for a change tool — distinguishes "no snapshots collected yet" from "snapshots
+    /// exist but nothing changed", so a caller understands why the history is empty (the on-connect cadence).</summary>
+    private static string NoChanges(string serverName, int hoursBack, int snapshotCount) =>
+        McpHelpers.Status(
+            "empty",
+            snapshotCount <= 1
+                ? "No configuration change history yet: fewer than two config snapshots have been captured for this server. Config is captured when the service connects to the server, so changes appear once a second connect snapshot exists."
+                : $"No configuration changes detected in the last {hoursBack}h across the captured snapshots.",
+            new { server = serverName, snapshot_count = snapshotCount });
+
+    /// <summary>Global / Session / Global+Session scope label from the two flags.</summary>
+    private static string Scope(bool? isGlobal, bool? isSession) =>
+        (isGlobal == true, isSession == true) switch
+        {
+            (true, true) => "Global+Session",
+            (true, false) => "Global",
+            (false, true) => "Session",
+            _ => "",
+        };
+
+    private static DateTime NaiveUtcNow() => DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+}

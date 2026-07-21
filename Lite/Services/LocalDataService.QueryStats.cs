@@ -40,11 +40,12 @@ WHERE d.name = @database_name;", connection);
     /// Gets top queries by CPU for a server over a time period.
     /// </summary>
     public async Task<List<TimeSliceBucket>> GetQueryStatsSlicerDataAsync(
-        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -58,13 +59,15 @@ SELECT
 FROM v_query_stats
 WHERE server_id = $1
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 GROUP BY date_trunc('hour', collection_time)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
@@ -86,13 +89,14 @@ ORDER BY bucket";
         return items;
     }
 
-    public async Task<List<QueryStatsRow>> GetTopQueriesByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0, string? databaseName = null)
+    public async Task<List<QueryStatsRow>> GetTopQueriesByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0, IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetTopQueriesByCpuAsync", "v_query_stats top N by CPU");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 6, out var dbValues);
 
         command.CommandText = @"
 WITH ranked AS (
@@ -125,22 +129,60 @@ WITH ranked AS (
         MAX(max_spills) AS max_spills,
         MAX(query_plan_hash) AS query_plan_hash,
         MAX(sql_handle) AS sql_handle,
-        MAX(plan_handle) AS plan_handle
+        MAX(plan_handle) AS plan_handle,
+        MIN(min_used_grant_kb) AS min_used_grant_kb,
+        MAX(max_used_grant_kb) AS max_used_grant_kb,
+        MIN(min_ideal_grant_kb) AS min_ideal_grant_kb,
+        MAX(max_ideal_grant_kb) AS max_ideal_grant_kb,
+        MIN(min_reserved_threads) AS min_reserved_threads,
+        MAX(max_reserved_threads) AS max_reserved_threads,
+        MIN(min_used_threads) AS min_used_threads,
+        MAX(max_used_threads) AS max_used_threads,
+        MAX(total_clr_time) AS total_clr_time,
+        MAX(plan_generation_num) AS plan_generation_num,
+        MAX(CAST(delta_worker_time AS DOUBLE PRECISION) / NULLIF(sample_interval_seconds, 0) / 1000.0) AS worker_time_per_second
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
     AND   collection_time <= $3
-    AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE
-    AND   ($6 IS NULL OR database_name = $6)
+    AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE" + dbClause + @"
     GROUP BY database_name, query_hash
     HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
     ORDER BY SUM(delta_elapsed_time) DESC
     LIMIT $4 + 5
+),
+module AS (
+    /* #1568 module attribution: one procedure_stats identity per sql_handle (latest collection_time
+       wins) so a statement whose sql_handle matches a cached procedure/function/trigger inherits its
+       db.schema.object and the query_stats row never fans out. Both stores persist the SAME normalized
+       CONVERT(varchar(130), ..., 1) handle text, so the join key lines up; unmatched -> ad hoc. */
+    SELECT
+        sql_handle,
+        object_name,
+        schema_name,
+        database_name
+    FROM
+    (
+        SELECT
+            sql_handle,
+            object_name,
+            schema_name,
+            database_name,
+            ROW_NUMBER() OVER (PARTITION BY sql_handle ORDER BY collection_time DESC) AS rn
+        FROM v_procedure_stats
+        WHERE server_id = $1
+        AND   sql_handle IS NOT NULL
+        AND   sql_handle <> ''
+    ) ranked_modules
+    WHERE rn = 1
 )
 SELECT
     r.*,
     t.query_text,
-    t.query_plan_xml AS query_plan
+    t.query_plan_xml AS query_plan,
+    m.object_name AS module_object_name,
+    m.schema_name AS module_schema_name,
+    m.database_name AS module_database_name
 FROM ranked r
 LEFT JOIN LATERAL (
     SELECT query_text, query_plan_xml
@@ -152,6 +194,7 @@ LEFT JOIN LATERAL (
     ORDER BY collection_time DESC
     LIMIT 1
 ) t ON TRUE
+LEFT JOIN module m ON m.sql_handle = r.sql_handle
 WHERE t.query_text IS NULL OR t.query_text NOT LIKE 'WAITFOR%'
 ORDER BY r.total_elapsed_us DESC
 LIMIT $4";
@@ -161,7 +204,8 @@ LIMIT $4";
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = top });
         command.Parameters.Add(new DuckDBParameter { Value = utcOffsetMinutes });
-        command.Parameters.Add(new DuckDBParameter { Value = (object?)databaseName ?? DBNull.Value });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryStatsRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -198,8 +242,22 @@ LIMIT $4";
                 QueryPlanHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
                 SqlHandle = reader.IsDBNull(27) ? "" : reader.GetString(27),
                 PlanHandle = reader.IsDBNull(28) ? "" : reader.GetString(28),
-                QueryText = reader.IsDBNull(29) ? "" : reader.GetString(29),
-                QueryPlan = reader.IsDBNull(30) ? null : reader.GetString(30)
+                MinUsedGrantKb = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
+                MaxUsedGrantKb = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
+                MinIdealGrantKb = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
+                MaxIdealGrantKb = reader.IsDBNull(32) ? 0 : reader.GetInt64(32),
+                MinReservedThreads = reader.IsDBNull(33) ? 0 : reader.GetInt64(33),
+                MaxReservedThreads = reader.IsDBNull(34) ? 0 : reader.GetInt64(34),
+                MinUsedThreads = reader.IsDBNull(35) ? 0 : reader.GetInt64(35),
+                MaxUsedThreads = reader.IsDBNull(36) ? 0 : reader.GetInt64(36),
+                TotalClrUs = reader.IsDBNull(37) ? 0 : reader.GetInt64(37),
+                PlanGenerationNum = reader.IsDBNull(38) ? 0 : reader.GetInt64(38),
+                WorkerTimePerSecond = reader.IsDBNull(39) ? 0 : ToDouble(reader.GetValue(39)),
+                QueryText = reader.IsDBNull(40) ? "" : reader.GetString(40),
+                QueryPlan = reader.IsDBNull(41) ? null : reader.GetString(41),
+                ModuleObjectName = reader.IsDBNull(42) ? "" : reader.GetString(42),
+                ModuleSchemaName = reader.IsDBNull(43) ? "" : reader.GetString(43),
+                ModuleDatabaseName = reader.IsDBNull(44) ? "" : reader.GetString(44)
             });
         }
 
@@ -213,18 +271,20 @@ LIMIT $4";
     public async Task<List<QueryStatsComparisonItem>> GetQueryStatsComparisonAsync(
         int serverId,
         DateTime currentStart, DateTime currentEnd,
-        DateTime baselineStart, DateTime baselineEnd)
+        DateTime baselineStart, DateTime baselineEnd,
+        IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetQueryStatsComparisonAsync", "v_query_stats comparison");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 6, out var dbValues);
 
         command.CommandText = @"
 WITH top_current AS (
     SELECT query_hash, database_name
     FROM v_query_stats
     WHERE server_id = $1
-    AND   collection_time >= $2 AND collection_time <= $3
+    AND   collection_time >= $2 AND collection_time <= $3" + dbClause + @"
     AND   delta_execution_count > 0
     GROUP BY query_hash, database_name
     ORDER BY SUM(delta_execution_count) DESC
@@ -234,7 +294,7 @@ top_baseline AS (
     SELECT query_hash, database_name
     FROM v_query_stats
     WHERE server_id = $1
-    AND   collection_time >= $4 AND collection_time <= $5
+    AND   collection_time >= $4 AND collection_time <= $5" + dbClause + @"
     AND   delta_execution_count > 0
     GROUP BY query_hash, database_name
     ORDER BY SUM(delta_execution_count) DESC
@@ -251,9 +311,9 @@ top_hashes AS (
 current_period AS (
     SELECT th.database_name, th.query_hash,
            SUM(qs.delta_execution_count) AS exec_count,
-           SUM(qs.delta_elapsed_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(qs.delta_worker_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(qs.delta_physical_reads)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
+           SUM(qs.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(qs.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(qs.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
            MAX(qs.query_text) AS query_text
     FROM top_hashes th
     INNER JOIN v_query_stats qs
@@ -267,9 +327,9 @@ current_period AS (
 baseline_period AS (
     SELECT th.database_name, th.query_hash,
            SUM(qs.delta_execution_count) AS exec_count,
-           SUM(qs.delta_elapsed_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(qs.delta_worker_time)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(qs.delta_physical_reads)::DOUBLE / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
+           SUM(qs.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(qs.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(qs.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(qs.delta_execution_count), 0) AS avg_reads,
            MAX(qs.query_text) AS query_text
     FROM top_hashes th
     INNER JOIN v_query_stats qs
@@ -298,6 +358,8 @@ FULL OUTER JOIN baseline_period b
         command.Parameters.Add(new DuckDBParameter { Value = currentEnd });
         command.Parameters.Add(new DuckDBParameter { Value = baselineStart });
         command.Parameters.Add(new DuckDBParameter { Value = baselineEnd });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryStatsComparisonItem>();
         using var reader = await command.ExecuteReaderAsync();
@@ -347,8 +409,38 @@ SELECT
     max_worker_time,
     min_elapsed_time,
     max_elapsed_time,
-    query_plan_xml,
-    query_plan_hash
+    query_plan_hash,
+    min_grant_kb,
+    max_grant_kb,
+    min_used_grant_kb,
+    max_used_grant_kb,
+    min_ideal_grant_kb,
+    max_ideal_grant_kb,
+    min_reserved_threads,
+    max_reserved_threads,
+    min_used_threads,
+    max_used_threads,
+    min_physical_reads,
+    max_physical_reads,
+    min_rows,
+    max_rows,
+    min_spills,
+    max_spills,
+    total_clr_time,
+    creation_time,
+    last_execution_time,
+    execution_count,
+    total_worker_time,
+    total_elapsed_time,
+    total_logical_reads,
+    total_logical_writes,
+    total_physical_reads,
+    total_rows,
+    total_spills,
+    sql_handle,
+    plan_handle,
+    query_hash,
+    sample_interval_seconds
 FROM v_query_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -384,8 +476,38 @@ ORDER BY collection_time";
                 MaxCpuUs = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
                 MinElapsedUs = reader.IsDBNull(13) ? 0 : reader.GetInt64(13),
                 MaxElapsedUs = reader.IsDBNull(14) ? 0 : reader.GetInt64(14),
-                QueryPlan = reader.IsDBNull(15) ? null : reader.GetString(15),
-                QueryPlanHash = reader.IsDBNull(16) ? "" : reader.GetString(16)
+                QueryPlanHash = reader.IsDBNull(15) ? "" : reader.GetString(15),
+                MinGrantKb = reader.IsDBNull(16) ? 0 : reader.GetInt64(16),
+                MaxGrantKb = reader.IsDBNull(17) ? 0 : reader.GetInt64(17),
+                MinUsedGrantKb = reader.IsDBNull(18) ? 0 : reader.GetInt64(18),
+                MaxUsedGrantKb = reader.IsDBNull(19) ? 0 : reader.GetInt64(19),
+                MinIdealGrantKb = reader.IsDBNull(20) ? 0 : reader.GetInt64(20),
+                MaxIdealGrantKb = reader.IsDBNull(21) ? 0 : reader.GetInt64(21),
+                MinReservedThreads = reader.IsDBNull(22) ? 0 : reader.GetInt64(22),
+                MaxReservedThreads = reader.IsDBNull(23) ? 0 : reader.GetInt64(23),
+                MinUsedThreads = reader.IsDBNull(24) ? 0 : reader.GetInt64(24),
+                MaxUsedThreads = reader.IsDBNull(25) ? 0 : reader.GetInt64(25),
+                MinPhysicalReads = reader.IsDBNull(26) ? 0 : reader.GetInt64(26),
+                MaxPhysicalReads = reader.IsDBNull(27) ? 0 : reader.GetInt64(27),
+                MinRows = reader.IsDBNull(28) ? 0 : reader.GetInt64(28),
+                MaxRows = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
+                MinSpills = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
+                MaxSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
+                TotalClrTimeUs = reader.IsDBNull(32) ? 0 : reader.GetInt64(32),
+                CreationTime = reader.IsDBNull(33) ? (DateTime?)null : reader.GetDateTime(33),
+                LastExecutionTime = reader.IsDBNull(34) ? (DateTime?)null : reader.GetDateTime(34),
+                TotalExecutions = reader.IsDBNull(35) ? 0 : reader.GetInt64(35),
+                TotalCpuUs = reader.IsDBNull(36) ? 0 : reader.GetInt64(36),
+                TotalElapsedUs = reader.IsDBNull(37) ? 0 : reader.GetInt64(37),
+                TotalLogicalReads = reader.IsDBNull(38) ? 0 : reader.GetInt64(38),
+                TotalLogicalWrites = reader.IsDBNull(39) ? 0 : reader.GetInt64(39),
+                TotalPhysicalReads = reader.IsDBNull(40) ? 0 : reader.GetInt64(40),
+                TotalRows = reader.IsDBNull(41) ? 0 : reader.GetInt64(41),
+                TotalSpills = reader.IsDBNull(42) ? 0 : reader.GetInt64(42),
+                SqlHandle = reader.IsDBNull(43) ? "" : reader.GetString(43),
+                PlanHandle = reader.IsDBNull(44) ? "" : reader.GetString(44),
+                QueryHash = reader.IsDBNull(45) ? "" : reader.GetString(45),
+                SampleIntervalSeconds = reader.IsDBNull(46) ? (int?)null : reader.GetInt32(46)
             });
         }
 
@@ -413,7 +535,28 @@ SELECT
     max_worker_time,
     min_elapsed_time,
     max_elapsed_time,
-    total_spills
+    total_spills,
+    min_logical_reads,
+    max_logical_reads,
+    min_physical_reads,
+    max_physical_reads,
+    min_logical_writes,
+    max_logical_writes,
+    min_spills,
+    max_spills,
+    sql_handle,
+    plan_handle,
+    cached_time,
+    last_execution_time,
+    object_type,
+    execution_count,
+    total_worker_time,
+    total_elapsed_time,
+    total_logical_reads,
+    total_physical_reads,
+    total_logical_writes,
+    delta_spills,
+    CAST(extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS BIGINT) AS sample_interval_seconds
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   database_name = $2
@@ -447,7 +590,28 @@ ORDER BY collection_time";
                 MaxWorkerTimeUs = reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
                 MinElapsedTimeUs = reader.IsDBNull(9) ? 0 : reader.GetInt64(9),
                 MaxElapsedTimeUs = reader.IsDBNull(10) ? 0 : reader.GetInt64(10),
-                TotalSpills = reader.IsDBNull(11) ? 0 : reader.GetInt64(11)
+                TotalSpills = reader.IsDBNull(11) ? 0 : reader.GetInt64(11),
+                MinLogicalReads = reader.IsDBNull(12) ? 0 : reader.GetInt64(12),
+                MaxLogicalReads = reader.IsDBNull(13) ? 0 : reader.GetInt64(13),
+                MinPhysicalReads = reader.IsDBNull(14) ? 0 : reader.GetInt64(14),
+                MaxPhysicalReads = reader.IsDBNull(15) ? 0 : reader.GetInt64(15),
+                MinLogicalWrites = reader.IsDBNull(16) ? 0 : reader.GetInt64(16),
+                MaxLogicalWrites = reader.IsDBNull(17) ? 0 : reader.GetInt64(17),
+                MinSpills = reader.IsDBNull(18) ? 0 : reader.GetInt64(18),
+                MaxSpills = reader.IsDBNull(19) ? 0 : reader.GetInt64(19),
+                SqlHandle = reader.IsDBNull(20) ? "" : reader.GetString(20),
+                PlanHandle = reader.IsDBNull(21) ? "" : reader.GetString(21),
+                CachedTime = reader.IsDBNull(22) ? (DateTime?)null : reader.GetDateTime(22),
+                LastExecutionTime = reader.IsDBNull(23) ? (DateTime?)null : reader.GetDateTime(23),
+                ObjectType = reader.IsDBNull(24) ? "" : reader.GetString(24),
+                TotalExecutions = reader.IsDBNull(25) ? 0 : reader.GetInt64(25),
+                TotalCpuUs = reader.IsDBNull(26) ? 0 : reader.GetInt64(26),
+                TotalElapsedUs = reader.IsDBNull(27) ? 0 : reader.GetInt64(27),
+                TotalLogicalReads = reader.IsDBNull(28) ? 0 : reader.GetInt64(28),
+                TotalPhysicalReads = reader.IsDBNull(29) ? 0 : reader.GetInt64(29),
+                TotalLogicalWrites = reader.IsDBNull(30) ? 0 : reader.GetInt64(30),
+                DeltaSpills = reader.IsDBNull(31) ? 0 : reader.GetInt64(31),
+                SampleIntervalSeconds = reader.IsDBNull(32) ? (int?)null : Convert.ToInt32(reader.GetValue(32))
             });
         }
 
@@ -642,11 +806,12 @@ OPTION(RECOMPILE);',
     /// Gets top procedures by CPU for a server.
     /// </summary>
     public async Task<List<TimeSliceBucket>> GetProcStatsSlicerDataAsync(
-        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null)
+        int serverId, int hoursBack, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -660,13 +825,15 @@ SELECT
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 GROUP BY date_trunc('hour', collection_time)
 ORDER BY bucket";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<TimeSliceBucket>();
         using var reader = await command.ExecuteReaderAsync();
@@ -687,13 +854,14 @@ ORDER BY bucket";
         return items;
     }
 
-    public async Task<List<ProcedureStatsRow>> GetTopProceduresByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0, string? databaseName = null)
+    public async Task<List<ProcedureStatsRow>> GetTopProceduresByCpuAsync(int serverId, int hoursBack = 24, int top = 50, DateTime? fromDate = null, DateTime? toDate = null, int utcOffsetMinutes = 0, IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetTopProceduresByCpuAsync", "v_procedure_stats top N by CPU");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 6, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -717,19 +885,19 @@ SELECT
     MAX(max_physical_reads) AS max_physical_reads,
     MIN(min_logical_writes) AS min_logical_writes,
     MAX(max_logical_writes) AS max_logical_writes,
-    SUM(total_spills) AS total_spills,
+    SUM(delta_spills) AS total_spills,
     MIN(min_spills) AS min_spills,
     MAX(max_spills) AS max_spills,
     MAX(cached_time) AS cached_time,
     MAX(last_execution_time) AS last_execution_time,
     MAX(sql_handle) AS sql_handle,
-    MAX(plan_handle) AS plan_handle
+    MAX(plan_handle) AS plan_handle,
+    CAST(SUM(delta_spills) AS DOUBLE PRECISION) / NULLIF(SUM(delta_execution_count), 0) AS avg_spills
 FROM v_procedure_stats
 WHERE server_id = $1
 AND   collection_time >= $2
 AND   collection_time <= $3
-AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE
-AND   ($6 IS NULL OR database_name = $6)
+AND   last_execution_time >= $2 + $5 * INTERVAL '1' MINUTE" + dbClause + @"
 GROUP BY database_name, schema_name, object_name, object_type
 HAVING SUM(delta_execution_count) > 0 OR SUM(delta_elapsed_time) > 0
 ORDER BY SUM(delta_elapsed_time) DESC
@@ -740,7 +908,8 @@ LIMIT $4";
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
         command.Parameters.Add(new DuckDBParameter { Value = top });
         command.Parameters.Add(new DuckDBParameter { Value = utcOffsetMinutes });
-        command.Parameters.Add(new DuckDBParameter { Value = (object?)databaseName ?? DBNull.Value });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<ProcedureStatsRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -774,7 +943,8 @@ LIMIT $4";
                 CachedTime = reader.IsDBNull(23) ? (DateTime?)null : reader.GetDateTime(23),
                 LastExecutionTime = reader.IsDBNull(24) ? (DateTime?)null : reader.GetDateTime(24),
                 SqlHandle = reader.IsDBNull(25) ? "" : reader.GetString(25),
-                PlanHandle = reader.IsDBNull(26) ? "" : reader.GetString(26)
+                PlanHandle = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                AvgSpills = reader.IsDBNull(27) ? 0 : ToDouble(reader.GetValue(27))
             });
         }
 
@@ -787,18 +957,20 @@ LIMIT $4";
     public async Task<List<ProcedureStatsComparisonItem>> GetProcedureStatsComparisonAsync(
         int serverId,
         DateTime currentStart, DateTime currentEnd,
-        DateTime baselineStart, DateTime baselineEnd)
+        DateTime baselineStart, DateTime baselineEnd,
+        IReadOnlyList<string>? databaseNames = null)
     {
         using var _q = TimeQuery("GetProcedureStatsComparisonAsync", "v_procedure_stats comparison");
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 6, out var dbValues);
 
         command.CommandText = @"
 WITH top_current AS (
     SELECT database_name, schema_name, object_name
     FROM v_procedure_stats
     WHERE server_id = $1
-    AND   collection_time >= $2 AND collection_time <= $3
+    AND   collection_time >= $2 AND collection_time <= $3" + dbClause + @"
     AND   delta_execution_count > 0
     GROUP BY database_name, schema_name, object_name
     ORDER BY SUM(delta_execution_count) DESC
@@ -808,7 +980,7 @@ top_baseline AS (
     SELECT database_name, schema_name, object_name
     FROM v_procedure_stats
     WHERE server_id = $1
-    AND   collection_time >= $4 AND collection_time <= $5
+    AND   collection_time >= $4 AND collection_time <= $5" + dbClause + @"
     AND   delta_execution_count > 0
     GROUP BY database_name, schema_name, object_name
     ORDER BY SUM(delta_execution_count) DESC
@@ -825,9 +997,9 @@ top_procs AS (
 current_period AS (
     SELECT tp.database_name, tp.schema_name, tp.object_name,
            SUM(ps.delta_execution_count) AS exec_count,
-           SUM(ps.delta_elapsed_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(ps.delta_worker_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(ps.delta_physical_reads)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
+           SUM(ps.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(ps.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(ps.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
     FROM top_procs tp
     INNER JOIN v_procedure_stats ps
       ON  ps.database_name IS NOT DISTINCT FROM tp.database_name
@@ -841,9 +1013,9 @@ current_period AS (
 baseline_period AS (
     SELECT tp.database_name, tp.schema_name, tp.object_name,
            SUM(ps.delta_execution_count) AS exec_count,
-           SUM(ps.delta_elapsed_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
-           SUM(ps.delta_worker_time)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
-           SUM(ps.delta_physical_reads)::DOUBLE / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
+           SUM(ps.delta_elapsed_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_duration_ms,
+           SUM(ps.delta_worker_time)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) / 1000.0 AS avg_cpu_ms,
+           SUM(ps.delta_physical_reads)::DOUBLE PRECISION / NULLIF(SUM(ps.delta_execution_count), 0) AS avg_reads
     FROM top_procs tp
     INNER JOIN v_procedure_stats ps
       ON  ps.database_name IS NOT DISTINCT FROM tp.database_name
@@ -873,6 +1045,8 @@ FULL OUTER JOIN baseline_period b
         command.Parameters.Add(new DuckDBParameter { Value = currentEnd });
         command.Parameters.Add(new DuckDBParameter { Value = baselineStart });
         command.Parameters.Add(new DuckDBParameter { Value = baselineEnd });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<ProcedureStatsComparisonItem>();
         using var reader = await command.ExecuteReaderAsync();
@@ -900,12 +1074,13 @@ FULL OUTER JOIN baseline_period b
     /// <summary>
     /// Gets query duration trend — total elapsed time per collection snapshot.
     /// </summary>
-    public async Task<List<QueryTrendPoint>> GetQueryDurationTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<QueryTrendPoint>> GetQueryDurationTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 WITH raw AS
@@ -914,23 +1089,25 @@ WITH raw AS
         collection_time,
         SUM(delta_elapsed_time) / 1000.0 AS total_elapsed_ms,
         SUM(delta_execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
-    AND   collection_time <= $3
+    AND   collection_time <= $3" + dbClause + @"
     GROUP BY collection_time
 )
 SELECT
     collection_time,
     CASE WHEN interval_seconds > 0 THEN total_elapsed_ms / interval_seconds ELSE 0 END AS elapsed_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE) / interval_seconds ELSE 0 END AS executions_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS executions_per_second
 FROM raw
 ORDER BY collection_time";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryTrendPoint>();
         using var reader = await command.ExecuteReaderAsync();
@@ -949,12 +1126,13 @@ ORDER BY collection_time";
     /// <summary>
     /// Gets procedure duration trend — elapsed time per second per collection snapshot.
     /// </summary>
-    public async Task<List<QueryTrendPoint>> GetProcedureDurationTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<QueryTrendPoint>> GetProcedureDurationTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 WITH raw AS
@@ -963,23 +1141,25 @@ WITH raw AS
         collection_time,
         SUM(delta_elapsed_time) / 1000.0 AS total_elapsed_ms,
         SUM(delta_execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_procedure_stats
     WHERE server_id = $1
     AND   collection_time >= $2
-    AND   collection_time <= $3
+    AND   collection_time <= $3" + dbClause + @"
     GROUP BY collection_time
 )
 SELECT
     collection_time,
     CASE WHEN interval_seconds > 0 THEN total_elapsed_ms / interval_seconds ELSE 0 END AS elapsed_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE) / interval_seconds ELSE 0 END AS executions_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS executions_per_second
 FROM raw
 ORDER BY collection_time";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryTrendPoint>();
         using var reader = await command.ExecuteReaderAsync();
@@ -998,12 +1178,13 @@ ORDER BY collection_time";
     /// <summary>
     /// Gets execution count trend — executions per second per collection snapshot from query_stats.
     /// </summary>
-    public async Task<List<QueryTrendPoint>> GetExecutionCountTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<QueryTrendPoint>> GetExecutionCountTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 WITH raw AS
@@ -1011,22 +1192,24 @@ WITH raw AS
     SELECT
         collection_time,
         SUM(delta_execution_count) AS total_executions,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_query_stats
     WHERE server_id = $1
     AND   collection_time >= $2
-    AND   collection_time <= $3
+    AND   collection_time <= $3" + dbClause + @"
     GROUP BY collection_time
 )
 SELECT
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE) / interval_seconds ELSE 0 END AS executions_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_executions AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS executions_per_second
 FROM raw
 ORDER BY collection_time";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<QueryTrendPoint>();
         using var reader = await command.ExecuteReaderAsync();
@@ -1056,19 +1239,20 @@ ORDER BY collection_time";
     {
         HeatmapMetric.Duration => "(delta_elapsed_time / 1000.0) / NULLIF(delta_execution_count, 0)",
         HeatmapMetric.Cpu => "(delta_worker_time / 1000.0) / NULLIF(delta_execution_count, 0)",
-        HeatmapMetric.LogicalReads => "CAST(delta_logical_reads AS DOUBLE) / NULLIF(delta_execution_count, 0)",
-        HeatmapMetric.LogicalWrites => "CAST(delta_logical_writes AS DOUBLE) / NULLIF(delta_execution_count, 0)",
-        HeatmapMetric.ExecutionCount => "CAST(delta_execution_count AS DOUBLE)",
+        HeatmapMetric.LogicalReads => "CAST(delta_logical_reads AS DOUBLE PRECISION) / NULLIF(delta_execution_count, 0)",
+        HeatmapMetric.LogicalWrites => "CAST(delta_logical_writes AS DOUBLE PRECISION) / NULLIF(delta_execution_count, 0)",
+        HeatmapMetric.ExecutionCount => "CAST(delta_execution_count AS DOUBLE PRECISION)",
         _ => "(delta_elapsed_time / 1000.0) / NULLIF(delta_execution_count, 0)"
     };
 
-    public async Task<HeatmapResult> GetQueryHeatmapAsync(int serverId, HeatmapMetric metric, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<HeatmapResult> GetQueryHeatmapAsync(int serverId, HeatmapMetric metric, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
         var metricExpr = GetMetricColumn(metric);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         AppLogger.Info("Heatmap", $"GetQueryHeatmapAsync: serverId={serverId}, metric={metric}, hoursBack={hoursBack}, start={startTime:O}, end={endTime:O}");
 
@@ -1085,7 +1269,7 @@ WITH per_query AS (
     AND   collection_time >= $2
     AND   collection_time <= $3
     AND   delta_execution_count > 0
-    AND   {metricExpr} IS NOT NULL
+    AND   {metricExpr} IS NOT NULL{dbClause}
 )
 SELECT
     time_bin,
@@ -1108,6 +1292,8 @@ ORDER BY time_bin, bucket_index";
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var rawCells = new List<HeatmapCell>();
         using var reader = await command.ExecuteReaderAsync();
@@ -1187,6 +1373,9 @@ public class QueryTrendPoint
 
 public class QueryStatsRow
 {
+    /// <summary>Gates "Get Actual Plan (re-run)" — see <see cref="QuerySnapshotRow.CanGetActualPlan"/>.</summary>
+    public bool CanGetActualPlan => !string.IsNullOrEmpty(QueryText);
+
     public string DatabaseName { get; set; } = "";
     public string QueryHash { get; set; } = "";
     public DateTime? LastExecutionTime { get; set; }
@@ -1213,14 +1402,39 @@ public class QueryStatsRow
     public long MaxRows { get; set; }
     public long MinGrantKb { get; set; }
     public long MaxGrantKb { get; set; }
+    public long MinUsedGrantKb { get; set; }
+    public long MaxUsedGrantKb { get; set; }
+    public long MinIdealGrantKb { get; set; }
+    public long MaxIdealGrantKb { get; set; }
+    public long MinReservedThreads { get; set; }
+    public long MaxReservedThreads { get; set; }
+    public long MinUsedThreads { get; set; }
+    public long MaxUsedThreads { get; set; }
+    public long TotalClrUs { get; set; }
     public long MinSpills { get; set; }
     public long MaxSpills { get; set; }
+    public long PlanGenerationNum { get; set; }
+    public double WorkerTimePerSecond { get; set; }
     public string QueryPlanHash { get; set; } = "";
     public string SqlHandle { get; set; } = "";
     public string PlanHandle { get; set; } = "";
     public string QueryText { get; set; } = "";
     public string? QueryPlan { get; set; }
     public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
+
+    /* #1568 module attribution (read-time stitch of query_stats.sql_handle -> procedure_stats): the
+       matched procedure/function/trigger's identity, or empty when this statement is ad hoc. */
+    public string ModuleObjectName { get; set; } = "";
+    public string ModuleSchemaName { get; set; } = "";
+    public string ModuleDatabaseName { get; set; } = "";
+
+    /// <summary>Grid "Module" column: <c>database.schema.object</c> when this statement's sql_handle matched a
+    /// cached module (procedure/function/trigger), else the literal <c>ad hoc</c> (#1568).</summary>
+    public string ModuleName =>
+        string.IsNullOrEmpty(ModuleObjectName)
+            ? "ad hoc"
+            : $"{ModuleDatabaseName}.{ModuleSchemaName}.{ModuleObjectName}";
+
     public double TotalCpuMs => TotalCpuUs / 1000.0;
     public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public double AvgCpuMs => TotalExecutions > 0 ? TotalCpuMs / TotalExecutions : 0;
@@ -1230,6 +1444,8 @@ public class QueryStatsRow
     public double MaxCpuMs => MaxCpuUs / 1000.0;
     public double MinElapsedMs => MinElapsedUs / 1000.0;
     public double MaxElapsedMs => MaxElapsedUs / 1000.0;
+    // total_clr_time is stored in microseconds (like worker/elapsed time)
+    public double TotalClrMs => TotalClrUs / 1000.0;
 }
 
 public class ProcedureStatsRow
@@ -1255,6 +1471,7 @@ public class ProcedureStatsRow
     public long MinLogicalWrites { get; set; }
     public long MaxLogicalWrites { get; set; }
     public long TotalSpills { get; set; }
+    public double AvgSpills { get; set; }
     public long MinSpills { get; set; }
     public long MaxSpills { get; set; }
     public DateTime? CachedTime { get; set; }
@@ -1292,19 +1509,56 @@ public class QueryStatsHistoryRow
     public long MaxCpuUs { get; set; }
     public long MinElapsedUs { get; set; }
     public long MaxElapsedUs { get; set; }
-    public string? QueryPlan { get; set; }
+    public long MinGrantKb { get; set; }
+    public long MaxGrantKb { get; set; }
+    public long MinUsedGrantKb { get; set; }
+    public long MaxUsedGrantKb { get; set; }
+    public long MinIdealGrantKb { get; set; }
+    public long MaxIdealGrantKb { get; set; }
+    public long MinReservedThreads { get; set; }
+    public long MaxReservedThreads { get; set; }
+    public long MinUsedThreads { get; set; }
+    public long MaxUsedThreads { get; set; }
+    public long MinPhysicalReads { get; set; }
+    public long MaxPhysicalReads { get; set; }
+    public long MinRows { get; set; }
+    public long MaxRows { get; set; }
+    public long MinSpills { get; set; }
+    public long MaxSpills { get; set; }
+    public long TotalClrTimeUs { get; set; }
     public string QueryPlanHash { get; set; } = "";
-    public bool HasQueryPlan => !string.IsNullOrEmpty(QueryPlan);
+    public DateTime? CreationTime { get; set; }
+    public DateTime? LastExecutionTime { get; set; }
+    public long TotalExecutions { get; set; }
+    public long TotalCpuUs { get; set; }
+    public long TotalElapsedUs { get; set; }
+    public long TotalLogicalReads { get; set; }
+    public long TotalLogicalWrites { get; set; }
+    public long TotalPhysicalReads { get; set; }
+    public long TotalRows { get; set; }
+    public long TotalSpills { get; set; }
+    public string SqlHandle { get; set; } = "";
+    public string PlanHandle { get; set; } = "";
+    public string QueryHash { get; set; } = "";
+    public int? SampleIntervalSeconds { get; set; }
     public double DeltaCpuMs => DeltaCpuUs / 1000.0;
     public double DeltaElapsedMs => DeltaElapsedUs / 1000.0;
     public double AvgCpuMs => DeltaExecutions > 0 ? DeltaCpuMs / DeltaExecutions : 0;
     public double AvgElapsedMs => DeltaExecutions > 0 ? DeltaElapsedMs / DeltaExecutions : 0;
     public double AvgReads => DeltaExecutions > 0 ? (double)DeltaLogicalReads / DeltaExecutions : 0;
+    public double AvgPhysicalReads => DeltaExecutions > 0 ? (double)DeltaPhysicalReads / DeltaExecutions : 0;
+    public double AvgWrites => DeltaExecutions > 0 ? (double)DeltaLogicalWrites / DeltaExecutions : 0;
+    public double AvgRows => DeltaExecutions > 0 ? (double)DeltaRows / DeltaExecutions : 0;
     public double MinCpuMs => MinCpuUs / 1000.0;
     public double MaxCpuMs => MaxCpuUs / 1000.0;
     public double MinElapsedMs => MinElapsedUs / 1000.0;
     public double MaxElapsedMs => MaxElapsedUs / 1000.0;
+    public double TotalClrMs => TotalClrTimeUs / 1000.0;
+    public double TotalCpuMs => TotalCpuUs / 1000.0;
+    public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public string CollectionTimeLocal => ServerTimeHelper.FormatServerTime(CollectionTime);
+    public string CreationTimeLocal => ServerTimeHelper.FormatServerTime(CreationTime);
+    public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
 }
 
 public class ProcedureStatsHistoryRow
@@ -1321,14 +1575,42 @@ public class ProcedureStatsHistoryRow
     public long MinElapsedTimeUs { get; set; }
     public long MaxElapsedTimeUs { get; set; }
     public long TotalSpills { get; set; }
+    public long MinLogicalReads { get; set; }
+    public long MaxLogicalReads { get; set; }
+    public long MinPhysicalReads { get; set; }
+    public long MaxPhysicalReads { get; set; }
+    public long MinLogicalWrites { get; set; }
+    public long MaxLogicalWrites { get; set; }
+    public long MinSpills { get; set; }
+    public long MaxSpills { get; set; }
+    public string SqlHandle { get; set; } = "";
+    public string PlanHandle { get; set; } = "";
+    public DateTime? CachedTime { get; set; }
+    public DateTime? LastExecutionTime { get; set; }
+    public string ObjectType { get; set; } = "";
+    public long TotalExecutions { get; set; }
+    public long TotalCpuUs { get; set; }
+    public long TotalElapsedUs { get; set; }
+    public long TotalLogicalReads { get; set; }
+    public long TotalPhysicalReads { get; set; }
+    public long TotalLogicalWrites { get; set; }
+    public long DeltaSpills { get; set; }
+    public int? SampleIntervalSeconds { get; set; }
     public double DeltaCpuMs => DeltaCpuUs / 1000.0;
     public double DeltaElapsedMs => DeltaElapsedUs / 1000.0;
     public double AvgCpuMs => DeltaExecutions > 0 ? DeltaCpuMs / DeltaExecutions : 0;
     public double AvgElapsedMs => DeltaExecutions > 0 ? DeltaElapsedMs / DeltaExecutions : 0;
     public double AvgReads => DeltaExecutions > 0 ? (double)DeltaLogicalReads / DeltaExecutions : 0;
+    public double AvgPhysicalReads => DeltaExecutions > 0 ? (double)DeltaPhysicalReads / DeltaExecutions : 0;
+    public double AvgWrites => DeltaExecutions > 0 ? (double)DeltaLogicalWrites / DeltaExecutions : 0;
+    public double AvgSpills => DeltaExecutions > 0 ? (double)DeltaSpills / DeltaExecutions : 0;
     public double MinCpuMs => MinWorkerTimeUs / 1000.0;
     public double MaxCpuMs => MaxWorkerTimeUs / 1000.0;
     public double MinElapsedMs => MinElapsedTimeUs / 1000.0;
     public double MaxElapsedMs => MaxElapsedTimeUs / 1000.0;
+    public double TotalCpuMs => TotalCpuUs / 1000.0;
+    public double TotalElapsedMs => TotalElapsedUs / 1000.0;
     public string CollectionTimeLocal => ServerTimeHelper.FormatServerTime(CollectionTime);
+    public string CachedTimeLocal => ServerTimeHelper.FormatServerTime(CachedTime);
+    public string LastExecutionTimeLocal => ServerTimeHelper.FormatServerTime(LastExecutionTime);
 }

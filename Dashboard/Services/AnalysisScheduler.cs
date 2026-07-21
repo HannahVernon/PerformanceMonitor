@@ -53,6 +53,16 @@ namespace PerformanceMonitorDashboard.Services
         private readonly CancellationTokenSource _cts = new();
         private bool _cycleRunning;
 
+        /// <summary>
+        /// When findings retention last ran. The <see cref="SqlServerFindingStore"/> declares a
+        /// 30-day cleanup that nothing scheduled, so each monitored server's
+        /// config.analysis_findings grew unbounded. The purge rides this analysis timer but fires
+        /// only once per 24h (a DELETE per server, not per 5-minute cycle). Seeded to now so the
+        /// first purge is a day out rather than on the first tick — matching the maintenance-warmup
+        /// rationale of the Lite twin's _last*Time seeds.
+        /// </summary>
+        private DateTime _lastCleanupUtc = DateTime.UtcNow;
+
         public AnalysisScheduler(
             IServerManager serverManager,
             ICredentialService credentialService,
@@ -143,6 +153,13 @@ namespace PerformanceMonitorDashboard.Services
             var timeoutSeconds = Math.Clamp(prefs.AnalysisTimeoutSeconds, 30, 600);
             var timeout = TimeSpan.FromSeconds(timeoutSeconds);
 
+            /* Findings retention rides this analysis cycle but fires only once per 24h. Each
+               monitored server owns its config.analysis_findings (per-server connection), so the
+               purge runs per server inside the loop below, reusing that server's AnalysisService. */
+            var cleanupDue = DateTime.UtcNow - _lastCleanupUtc >= TimeSpan.FromHours(24);
+            if (cleanupDue)
+                _lastCleanupUtc = DateTime.UtcNow;
+
             foreach (var server in _serverManager.GetAllServers())
             {
                 if (cancellationToken.IsCancellationRequested)
@@ -166,6 +183,13 @@ namespace PerformanceMonitorDashboard.Services
                        block analysis for every other server. */
                     var planFetcher = new SqlServerPlanFetcher(connectionString);
                     var analysisService = new AnalysisService(connectionString, planFetcher);
+
+                    /* Daily findings retention: the store's declared 30-day cleanup was never
+                       scheduled, so config.analysis_findings grew unbounded. Reuses this server's
+                       AnalysisService; CleanupOldFindingsAsync logs and never throws. */
+                    if (cleanupDue)
+                        await analysisService.CleanupAsync(retentionDays: 30);
+
                     var analyzeTask = analysisService.AnalyzeAsync(serverId, displayName, hoursBack: 4);
 
                     /* Clear the in-flight marker only when the task truly finishes — not

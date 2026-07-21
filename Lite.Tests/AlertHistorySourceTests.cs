@@ -194,7 +194,7 @@ AND   dismissed = FALSE";
         await _helper.InsertLiveAlertAsync(
             connection, DateTime.UtcNow.AddHours(-1), 1, "Server1", "High CPU");
         await _helper.InsertLiveAlertAsync(
-            connection, DateTime.UtcNow.AddHours(-2), 2, "Server2", "TempDB Space");
+            connection, DateTime.UtcNow.AddHours(-2), 2, "Server2", "tempdb Space");
 
         await _helper.RefreshArchiveViewsAsync();
 

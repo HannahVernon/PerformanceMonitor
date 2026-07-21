@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>PerformanceMonitor.Darling.Analysis</RootNamespace>
+    <AssemblyName>PerformanceMonitor.Darling.Analysis</AssemblyName>
+    <Company>Darling Data, LLC</Company>
+    <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <NoWarn>CA1849;CA2007;CA1508;CA1822;CA1805;CA1510;CA1816;CA1861;CA1845;CA2201;CA1848;CA1852;CA1305;CA1860;CA1707;CA1507;CA1806;CA2254</NoWarn>
+    <WarningsAsErrors>CS4014</WarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The plan fetcher connects to the MONITORED SQL Server (same client the Service uses);
+         Npgsql and Logging.Abstractions flow transitively from the Storage/Notifications references. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\PerformanceMonitor.Analysis\PerformanceMonitor.Analysis.csproj" />
+    <ProjectReference Include="..\..\PerformanceMonitor.Collectors\PerformanceMonitor.Collectors.csproj" />
+    <!-- AlertContextSerializer: the finding store persists/reads remediation_action_json through the
+         SAME serializer both apps use, so a Darling finding's action round-trips byte-identically. -->
+    <ProjectReference Include="..\..\PerformanceMonitor.Notifications\PerformanceMonitor.Notifications.csproj" />
+    <!-- PlanAdvisoryAggregator: the fact collector's WS4 plan advisories parse collected plan XML
+         through the same shared ShowPlanParser/PlanAnalyzer both apps use. -->
+    <ProjectReference Include="..\..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.Darling.Storage\PerformanceMonitor.Darling.Storage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Darling.Tests" />
+    <!-- The viewer's blocking read path reuses PgBlockingPairRowQuery (the shared source-agnostic
+         chain reconstructor's Postgres row shaper) directly, mirroring how Lite/Dashboard consume
+         the shared blocking internals. -->
+    <InternalsVisibleTo Include="PerformanceMonitor.Darling.Viewer" />
+  </ItemGroup>
+</Project>

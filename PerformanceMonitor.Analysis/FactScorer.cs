@@ -77,6 +77,41 @@ public class FactScorer
 
             fact.Severity = Math.Min(fact.BaseSeverity * (1.0 + totalBoost), 2.0);
         }
+
+        // Layer 3: tuning-class severity cap. Parallelism (CXPACKET) saturates its base to 1.0 at 25%
+        // of period and then amplifiers multiply it past 1.5 into the CRITICAL band on stacking alone —
+        // but parallelism is a TUNING opportunity, not an outage. Cap the FINAL severity of the
+        // tuning-class keys at the WARNING ceiling so they can't reach CRITICAL by amplifier count.
+        // ESCAPE HATCH: release the cap entirely when an impact-bearing peer co-fired — THREADPOOL
+        // (thread exhaustion), SOS_SCHEDULER_YIELD (CPU starvation), or RESOURCE_SEMAPHORE (grant
+        // starvation) — because then the parallelism genuinely IS driving an outage and CRITICAL is
+        // earned. "Co-fired" must mean SIGNIFICANT, not merely present. Only THREADPOOL's base is
+        // self-gating: ScoreWaitFact requires >= 1hr total AND >= 1s avg before THREADPOOL scores at
+        // all, so BaseSeverity > 0 there already means real exhaustion — keep the presence check.
+        // SOS_SCHEDULER_YIELD (0.75, null) and RESOURCE_SEMAPHORE (0.01, null) have NO minimum guard,
+        // so their BaseSeverity > 0 fires on ANY trace of the wait; and SOS physically co-occurs with
+        // high CXPACKET (parallel workers yield -> SOS) and is emitted for any delta_wait_time_ms > 0,
+        // so a trivial SOS (e.g. 500ms over an hour) would release the cap on exactly the busy servers
+        // the cap targets — re-admitting the CXPACKET=CRITICAL noise the cap exists to kill. Gate
+        // SOS/RS on SIGNIFICANCE (fraction of period) via the same HasSignificantWait helper the
+        // amplifiers use, not on mere presence: SOS at 0.25 (matches the CXPACKET SOS amplifier bar);
+        // RS at 0.10 (RESOURCE_SEMAPHORE has no HasSignificantWait amplifier bar, so pick a bar here —
+        // 0.10 of period is meaningful grant starvation). Caps numeric Severity only — SeverityBand is
+        // derived from it downstream, so a capped fact stays in WARNING without a separate band edit
+        // and Lite parity is preserved.
+        var impactPeerCoFired =
+            (factsByKey.TryGetValue("THREADPOOL", out var tpPeer) && tpPeer.BaseSeverity > 0)
+            || HasSignificantWait(factsByKey, "SOS_SCHEDULER_YIELD", 0.25)
+            || HasSignificantWait(factsByKey, "RESOURCE_SEMAPHORE", 0.10);
+
+        if (!impactPeerCoFired)
+        {
+            foreach (var fact in facts)
+            {
+                if (IsTuningClassKey(fact.Key))
+                    fact.Severity = Math.Min(fact.Severity, TuningClassSeverityCeiling);
+            }
+        }
     }
 
     /// <summary>
@@ -96,6 +131,20 @@ public class FactScorer
             var avgMs = fact.Metadata.GetValueOrDefault("avg_ms_per_wait");
             if (waitTimeMs < 3_600_000 || avgMs < 1_000) return 0.0;
         }
+
+        // PAGELATCH_UP (tempdb allocation contention) is scored on ABSOLUTE wait_time_ms, not
+        // fraction-of-period, because its source — the Dashboard's report.tempdb_contention_analysis
+        // contention_level CASE — trips on an absolute PAGELATCH_UP total (install/47:2515:
+        // pagelatch_up_ms > 10000 -> "MEDIUM - PAGELATCH_UP contention"). PAGELATCH_UP is the canonical
+        // PFS/GAM/SGAM allocation-page latch (the fix is add tempdb data files / TF 1118), and the source
+        // reads the SAME server-wide wait_stats this fact is built from, so scoring the wait total is a
+        // faithful port. Flat 0.5 (MEDIUM) at the source's single PAGELATCH_UP tier — there is no higher
+        // band for it there; the view's CRITICAL "allocation contention" comes from a tempdb-scoped
+        // dm_os_waiting_tasks flag (allocation_contention_warning, install/47:2503) that is NOT carried in
+        // this fact. Absolute-ms is consistent with the THREADPOOL gate just above (the analysis window is
+        // hours-scale; the source's window is 1 hour).
+        if (fact.Key == "PAGELATCH_UP")
+            return fact.Metadata.GetValueOrDefault("wait_time_ms") > 10_000 ? 0.5 : 0.0;
 
         var thresholds = GetWaitThresholds(fact.Key);
         if (thresholds == null) return 0.0;
@@ -150,8 +199,34 @@ public class FactScorer
             // CPU spike: value is max CPU %. Concerning at 80%, critical at 95%.
             // Only emitted when max is significantly above average (bursty).
             "CPU_SPIKE" => ApplyThresholdFormula(fact.Value, 80, 95),
+            // Runnable-task queue depth — a STANDALONE scheduler-pressure signal that roots the collected
+            // cpu_scheduler_stats snapshot directly. Distinct from (and additive to) the #1494 THREADPOOL
+            // runnable-queue amplifier, which still fires independently off the same RUNNABLE_TASKS fact.
+            "RUNNABLE_TASKS" => ScoreRunnableTasks(fact),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores the runnable-task-queue pressure signal (RUNNABLE_TASKS context fact; Value =
+    /// total_runnable_tasks_count from the latest cpu_scheduler_stats snapshot). Tiers mirror the
+    /// Dashboard's report.cpu_scheduler_pressure pressure_level CASE
+    /// (install/47_create_reporting_views.sql lines 1839-1844): > 50 CRITICAL, > 20 HIGH, > 10 MEDIUM,
+    /// else the collector's own runnable_tasks_warning flag (SUM(runnable_tasks_count) >= cpu_count) as a
+    /// small-box HIGH fallback the absolute > 10 bar misses. Base maxes at 1.0 (WARNING band) exactly as
+    /// every other base fact does — the CRITICAL band (>= 1.5) is reached only with corroboration, which
+    /// is precisely the runnable-queue -> THREADPOOL amplifier path (#1494). A bare runnable queue with no
+    /// thread/CPU corroboration is a strong WARNING, not an outage.
+    /// </summary>
+    private static double ScoreRunnableTasks(Fact fact)
+    {
+        var total = fact.Value; // total_runnable_tasks_count (latest snapshot)
+        if (total > 50) return 1.0;   // CRITICAL - High runnable task queue (install/47:1839)
+        if (total > 20) return 0.75;  // HIGH - Moderate runnable task queue (install/47:1840)
+        if (total > 10) return 0.5;   // MEDIUM - Some runnable tasks queued (install/47:1841)
+        // Small-box per-scheduler pressure below the absolute bar (install/47:1844: runnable_tasks_warning).
+        if (fact.Metadata.GetValueOrDefault("runnable_tasks_warning") >= 1.0) return 0.75;
+        return 0.0;
     }
 
     /// <summary>
@@ -176,14 +251,42 @@ public class FactScorer
     {
         return fact.Key switch
         {
-            // TempDB usage: concerning at 75%, critical at 90%
-            "TEMPDB_USAGE" => ApplyThresholdFormula(fact.Value, 0.75, 0.90),
+            // TempDB usage scores the WORSE of two INDEPENDENT pressures: space-fraction fill (concerning
+            // 75%, critical 90%) and absolute version-store size (ScoreTempDbVersionStore) — a multi-GB
+            // version store is a problem even when total tempdb space is nowhere near full, and the
+            // fraction arm is blind to it.
+            "TEMPDB_USAGE" => Math.Max(
+                ApplyThresholdFormula(fact.Value, 0.75, 0.90),
+                ScoreTempDbVersionStore(fact)),
             _ => 0.0
         };
     }
 
     /// <summary>
-    /// Scores memory grant facts. Only MEMORY_GRANT_PENDING (from resource semaphore) for now.
+    /// Scores tempdb VERSION-STORE pressure by ABSOLUTE reserved size (max_version_store_mb, carried in
+    /// the TEMPDB_USAGE fact metadata by every collector), independent of the space-fraction the main arm
+    /// scores. The version store grows with long-running RCSI/snapshot transactions (and heavy triggers)
+    /// that pin old row versions, so it can reach gigabytes while total tempdb space is barely used —
+    /// space-fraction alone misses it. Tiers mirror the Dashboard's report.tempdb_pressure pressure_level
+    /// CASE (install/47_create_reporting_views.sql lines 1431-1433): > 5000 MB CRITICAL, > 2000 MB HIGH,
+    /// > 1000 MB MEDIUM. Base maxes at 1.0 (WARNING) like every base fact — the > 5000 "CRITICAL" tier
+    /// caps at 1.0 here; the CRITICAL band is earned only via corroboration. tempdb_contention_analysis
+    /// corroborates the > 1 GB bar (version_store_high_warning fires at 1 GB — install/47:2504,
+    /// install/34:146). Absent metadata (older facts) scores 0, preserving prior behavior.
+    /// </summary>
+    private static double ScoreTempDbVersionStore(Fact fact)
+    {
+        var versionStoreMb = fact.Metadata.GetValueOrDefault("max_version_store_mb");
+        if (versionStoreMb > 5000) return 1.0;   // CRITICAL - Version store > 5GB (install/47:1431)
+        if (versionStoreMb > 2000) return 0.75;  // HIGH - Version store > 2GB     (install/47:1432)
+        if (versionStoreMb > 1000) return 0.5;   // MEDIUM - Version store > 1GB   (install/47:1433)
+        return 0.0;
+    }
+
+    /// <summary>
+    /// Scores memory facts: grant waiters (MEMORY_GRANT_PENDING), security-cache growth (MEMORY_CLERKS),
+    /// plan-cache single-use bloat (PLAN_CACHE_BLOAT), and ring-buffer physical-memory-pressure
+    /// notifications (MEMORY_PRESSURE_EVENTS).
     /// </summary>
     private static double ScoreMemoryFact(Fact fact)
     {
@@ -191,8 +294,77 @@ public class FactScorer
         {
             // Grant waiters: concerning at 1, critical at 5
             "MEMORY_GRANT_PENDING" => ApplyThresholdFormula(fact.Value, 1, 5),
+            // Security cache (TokenAndPermUserStore) growth — WARNING at >= 1 GB. See ScoreSecurityCache.
+            "MEMORY_CLERKS" => ScoreSecurityCache(fact),
+            // Plan-cache single-use bloat — % single-use plans, size-guarded. See ScorePlanCacheBloat.
+            "PLAN_CACHE_BLOAT" => ScorePlanCacheBloat(fact),
+            // Ring-buffer physical-memory-pressure notifications — max indicator band. See
+            // ScoreMemoryPressureEvents.
+            "MEMORY_PRESSURE_EVENTS" => ScoreMemoryPressureEvents(fact),
             _ => 0.0
         };
+    }
+
+    /// <summary>
+    /// Scores plan-cache single-use bloat off the PLAN_CACHE_BLOAT fact (Value = single_use_percent =
+    /// single_use_plans * 100 / total_plans over the LATEST plan_cache_stats snapshot). Tiers mirror the
+    /// Dashboard's report.plan_cache_bloat bloat_level CASE
+    /// (install/47_create_reporting_views.sql lines 1485-1487): &gt; 50 CRITICAL, &gt; 30 HIGH, &gt; 20
+    /// MEDIUM, else NORMAL. Base maxes at 1.0 (WARNING) like every base fact — the &gt; 50 "CRITICAL"
+    /// tier caps at 1.0 here; the CRITICAL band is earned only via corroboration.
+    ///
+    /// <para>NOISE-CONTROL GUARD (not in the Dashboard's raw report view, appropriate for a SCORED
+    /// recommendation): only score when the single-use footprint is materially large
+    /// (single_use_size_mb &gt;= 100). A tiny or idle cache can show a high single-use % on a handful of
+    /// MB — that is not memory bloat worth a card, so it stays context-only (score 0) below the size
+    /// floor. The percentage still rides in Value for the AI surface either way.</para>
+    /// </summary>
+    private static double ScorePlanCacheBloat(Fact fact)
+    {
+        // Real memory bloat only — a high % on a trivially small single-use footprint is noise.
+        if (fact.Metadata.GetValueOrDefault("single_use_size_mb") < 100.0) return 0.0;
+
+        var singleUsePercent = fact.Value; // single_use_plans * 100 / total_plans (latest snapshot)
+        if (singleUsePercent > 50) return 1.0;   // CRITICAL - single-use plans > 50% (install/47:1485)
+        if (singleUsePercent > 30) return 0.75;  // HIGH     - single-use plans > 30% (install/47:1486)
+        if (singleUsePercent > 20) return 0.5;   // MEDIUM   - single-use plans > 20% (install/47:1487)
+        return 0.0;
+    }
+
+    /// <summary>
+    /// Scores ring-buffer physical-memory-pressure notifications off the MEMORY_PRESSURE_EVENTS fact
+    /// (Value = the max of memory_indicators_process / memory_indicators_system over the analysis
+    /// window; the collector emits it only when a genuine MEDIUM+ indicator is present). Bands mirror the
+    /// Dashboard's report.memory_pressure_events severity CASE
+    /// (install/47_create_reporting_views.sql lines 229-236), which keys severity purely off the
+    /// indicators: process/system &gt;= 3 → HIGH, &gt;= 2 → MEDIUM, else LOW. A real
+    /// RESOURCE_MEMPHYSICAL_LOW is a genuine memory-pressure event, so HIGH earns the WARNING band (0.9);
+    /// MEDIUM is a softer 0.5. These are incident-ish facts (a real event, not a standing config), so
+    /// 0.5+ roots via the InferenceEngine's incident threshold — no ConfigAdvisoryRootKey. The LOW floor
+    /// scores 0 as a defensive backstop (the collector already gates it out).
+    /// </summary>
+    private static double ScoreMemoryPressureEvents(Fact fact)
+    {
+        var maxIndicator = fact.Value; // max(process, system) memory-pressure indicator in the window
+        if (maxIndicator >= 3) return 0.9;  // HIGH   - indicator >= 3 (install/47:230-231)
+        if (maxIndicator >= 2) return 0.5;  // MEDIUM - indicator >= 2 (install/47:232-233)
+        return 0.0;                         // LOW    - not a scored concern (install/47:234)
+    }
+
+    /// <summary>
+    /// Scores TokenAndPermUserStore (security cache) growth off the otherwise context-only MEMORY_CLERKS
+    /// fact. That fact carries each top-clerk's size in MB keyed by its clerk_type (MemoryClerksCollector
+    /// stores clerk_type = sys.dm_os_memory_clerks.type), so the security cache is the USERSTORE_TOKENPERM
+    /// entry. The Dashboard fires a single WARNING at >= 1 GB with no size escalation
+    /// (install/50_configuration_issues_analyzer.sql line 562 severity=WARNING, line 583 threshold
+    /// pages_kb / 1024 / 1024 >= 1.0), so this is a flat WARNING-band base (0.9). Absent when the clerk is
+    /// not among the top-10 collected, which for a >= 1 GB clerk is effectively never. Non-security clerk
+    /// sets (buffer pool, etc.) score 0, preserving MEMORY_CLERKS as context-only for those.
+    /// </summary>
+    private static double ScoreSecurityCache(Fact fact)
+    {
+        var securityCacheMb = fact.Metadata.GetValueOrDefault("USERSTORE_TOKENPERM");
+        return securityCacheMb >= 1024.0 ? 0.9 : 0.0; // >= 1 GB -> flat WARNING (install/50:562,583)
     }
 
     /// <summary>
@@ -260,6 +432,20 @@ public class FactScorer
             case "CONFIG_MIN_MAX_MEMORY_NARROW":
                 return 0.4;
 
+            // Priority boost enabled (value_in_use == 1) — a Dashboard WARNING (install/50_configuration_issues_analyzer.sql
+            // line 368: "Priority boost is enabled ... not recommended"): it hands SQL Server threads an
+            // above-normal Windows scheduling priority, starving OS-critical threads. It is rare and
+            // clearly-wrong (not a routine tuning choice like MAXDOP/CTFP), so it scores the WARNING band
+            // (0.9) — surfacing prominently when present — rather than the low 0.4 config-advisory base.
+            case "CONFIG_PRIORITY_BOOST":
+                return fact.Value == 1 ? 0.9 : 0.0;
+
+            // Lightweight pooling / fiber mode enabled (value_in_use == 1) — a Dashboard WARNING
+            // (install/50:401: "Lightweight pooling (fiber mode) is enabled ... issues with OLEDB and other
+            // components"). Same rationale: rare, clearly-wrong, WARNING band (0.9).
+            case "CONFIG_LIGHTWEIGHT_POOLING":
+                return fact.Value == 1 ? 0.9 : 0.0;
+
             // WS5 server-health advisories (advise-only — no Apply). Each carries the bad/good
             // signal in Value so it scores its 0.4 advisory base only when bad and 0 otherwise;
             // the noise-control gating (Express / small-RAM for LPIM, dumps>0, IFI-known) lives in
@@ -308,6 +494,18 @@ public class FactScorer
         // Amplifiers for LCK_M_S/LCK_M_IS push it above 0.5 when reader/writer
         // contention confirms RCSI would help.
         if (rcsiOff > 0)
+            score = Math.Max(score, 0.3);
+
+        // Query Store disabled on a user database — INFO advisory (install/50_configuration_issues_analyzer.sql
+        // line 83 severity=INFO). Detected purely from the aggregate counts every collector already emits:
+        // query_store_on_count (user DBs with QS on; system DBs are excluded from both counts) < database_count
+        // (user DB total) means at least one user database has Query Store off. Low 0.3 base — DB_CONFIG is a
+        // ConfigAdvisoryRootKey so it roots as a standing INFO advisory at any positive severity, and 0.3 keeps
+        // it in the INFO band (< 0.75) matching the Dashboard. Requires BOTH counts present so a fact carrying
+        // partial metadata never trips it.
+        if (fact.Metadata.TryGetValue("database_count", out var dbCount) && dbCount > 0
+            && fact.Metadata.TryGetValue("query_store_on_count", out var queryStoreOn)
+            && queryStoreOn < dbCount)
             score = Math.Max(score, 0.3);
 
         return score;
@@ -375,6 +573,33 @@ public class FactScorer
         return tierBase * impact;
     }
 
+    // Wait-profile severity ramp (see the ANOMALY_WAIT_PROFILE arm). Floor matches the detectors'
+    // DefaultRatioThreshold; these are HONEST per-second-scale starting values — CALIBRATE ON SQL2025/HAMMERDB.
+    private const double WaitProfileRatioFloor = 4.0;
+    private const double WaitProfileRatioSpan = 8.0;
+
+    // Bounded-metric low-quality fallback ramp (see the z-score anomaly arm). When the quality gate fires
+    // on a thin baseline (baseline_low_quality=1) the stored deviation_sigma is the real (small) z that the
+    // 2σ gate would zero out — so grade off the absolute exceedance (peak ÷ the absolute-fallback bar, which
+    // is >= 1.0 on a fire) instead: floor 0.5 AT the bar (clears InferenceEngine's 0.5 entry-point), ramping
+    // to 1.0 at 2× the bar. Sensible default — CALIBRATE ON SQL2025/HAMMERDB.
+    private const double LowQualityFallbackSpan = 1.0;
+
+    // Layer-3 tuning-class severity ceiling (see ScoreAll). Parallelism/anomaly signals describe a tuning
+    // opportunity, not an outage — their FINAL severity is capped here (bands are >= 1.5 CRITICAL) unless an
+    // impact peer co-fired. 1.49 keeps a capped fact in the WARNING band without touching SeverityBand.
+    private const double TuningClassSeverityCeiling = 1.49;
+
+    /// <summary>
+    /// Tuning-class keys whose FINAL severity is capped at the WARNING ceiling (Layer 3) unless an
+    /// impact peer co-fired: parallelism (CXPACKET/CXCONSUMER), excessive-DOP queries, and every
+    /// anomaly fact. Today only CXPACKET can exceed the ceiling on amplifiers (ANOMALY_* and
+    /// QUERY_HIGH_DOP already max at 1.0) — the rest is forward-safety as those ramps evolve.
+    /// </summary>
+    private static bool IsTuningClassKey(string key) =>
+        key is "CXPACKET" or "CXCONSUMER" or "QUERY_HIGH_DOP"
+        || key.StartsWith("ANOMALY_", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Scores anomaly facts based on deviation from baseline.
     /// At 2σ → 0.5, at 4σ → 1.0. Higher deviations are more severe.
@@ -393,14 +618,47 @@ public class FactScorer
             // Deviation-based scoring: 2σ = 0.5, 4σ = 1.0
             var deviation = fact.Metadata.GetValueOrDefault("deviation_sigma");
             var confidence = fact.Metadata.GetValueOrDefault("confidence", 1.0);
+
+            // Thin/untrustworthy baseline: the detector's quality gate fired on the absolute-fallback bar,
+            // NOT the z-score, so deviation_sigma is the real (small) z. Applying the 2σ gate below would
+            // zero it and InferenceEngine would silently drop the finding (Severity must clear 0.5 to root)
+            // — defeating the "fire on the absolute bar, not silence" guarantee (e.g. memory 96% on a young
+            // store). Grade off the absolute exceedance instead: the fire already cleared the bar so
+            // exceedance >= 1.0 → floor 0.5, ramping to 1.0 at 2× the bar.
+            if (fact.Metadata.GetValueOrDefault("baseline_low_quality") >= 1.0)
+            {
+                var over = Math.Max(0.0, fact.Metadata.GetValueOrDefault("fallback_exceedance") - 1.0);
+                // Floor AFTER the confidence multiply, not before it. confidence is a hardcoded 1.0
+                // everywhere today so the ramp already lands >= 0.5 at the bar, but if confidence ever
+                // drops sub-1.0 the un-floored product would fall below InferenceEngine's 0.5 root
+                // entry-point and silently drop the finding — re-breaking the "fire on the absolute bar,
+                // not silence" guarantee. Math.Max(0.5, ...) keeps a fired low-quality anomaly rootable
+                // regardless of confidence. Behaviorally identical at confidence == 1.0.
+                return Math.Max(0.5, (0.5 + 0.5 * Math.Min(over / LowQualityFallbackSpan, 1.0)) * confidence);
+            }
+
             if (deviation < 2.0) return 0.0;
             var base_score = 0.5 + 0.5 * Math.Min((deviation - 2.0) / 2.0, 1.0);
             return base_score * confidence;
         }
 
+        // Wait-profile (the one ANOMALY_WAIT_PROFILE fact) — must precede the generic ANOMALY_WAIT_
+        // branch below, which it also prefix-matches. The ratio is now the HONEST per-second scale
+        // (peak window all-types ms/sec ÷ baseline mean), so the ramp is far smaller than the old
+        // 5×/20× that was calibrated to a ~240×-inflated per-hour-vs-per-interval input: 4× → 0.5,
+        // saturating to 1.0 at 12×. Starting values matching the detectors' DefaultRatioThreshold;
+        // CALIBRATE ON THE SQL2025/HAMMERDB BOX.
+        if (fact.Key.StartsWith("ANOMALY_WAIT_PROFILE", StringComparison.OrdinalIgnoreCase))
+        {
+            var ratio = fact.Metadata.GetValueOrDefault("ratio");
+            if (ratio < WaitProfileRatioFloor) return 0.0;
+            return 0.5 + 0.5 * Math.Min((ratio - WaitProfileRatioFloor) / WaitProfileRatioSpan, 1.0);
+        }
+
         if (fact.Key.StartsWith("ANOMALY_WAIT_", StringComparison.OrdinalIgnoreCase))
         {
-            // Ratio-based scoring: 5x = 0.5, 20x = 1.0
+            // Legacy per-type wait anomaly (detectors now emit ANOMALY_WAIT_PROFILE instead; kept for
+            // any pre-upgrade persisted facts). Ratio-based scoring: 5x = 0.5, 20x = 1.0.
             var ratio = fact.Metadata.GetValueOrDefault("ratio");
             if (ratio < 5) return 0.0;
             return 0.5 + 0.5 * Math.Min((ratio - 5.0) / 15.0, 1.0);
@@ -621,16 +879,28 @@ public class FactScorer
     ];
 
     /// <summary>
-    /// THREADPOOL: thread exhaustion confirmed by parallelism pressure.
-    /// Blocking and config amplifiers added later.
+    /// THREADPOOL: thread exhaustion — the impact-bearing escalation path for a parallelism →
+    /// worker-exhaustion meltdown. The CXPACKET amplifier is deliberately heavy (+0.5): CXPACKET
+    /// itself is capped at the WARNING ceiling (see the Layer-3 cap in ScoreAll), so a genuine
+    /// meltdown must reach CRITICAL through THREADPOOL (an impact key, never capped), not through
+    /// parallelism alone. The runnable-queue amplifier corroborates real scheduler CPU pressure from
+    /// the RUNNABLE_TASKS context fact's runnable_tasks_warning flag (the collector's own
+    /// SUM(runnable_tasks_count) >= cpu_count heuristic, read from cpu_scheduler_stats).
     /// </summary>
     private static List<AmplifierDefinition> ThreadpoolAmplifiers() =>
     [
         new()
         {
             Description = "CXPACKET significant — parallel queries consuming thread pool",
-            Boost = 0.2,
+            Boost = 0.5,
             Predicate = facts => HasSignificantWait(facts, "CXPACKET", 0.10)
+        },
+        new()
+        {
+            Description = "Runnable-task queue backed up — schedulers under real CPU pressure",
+            Boost = 0.5,
+            Predicate = facts => facts.TryGetValue("RUNNABLE_TASKS", out var rt)
+                              && rt.Metadata.GetValueOrDefault("runnable_tasks_warning") >= 1.0
         },
         new()
         {

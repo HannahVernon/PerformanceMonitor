@@ -21,4 +21,10 @@
     <ProjectReference Include="..\Lite\PerformanceMonitorLite.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Notifications\PerformanceMonitor.Notifications.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- system_health event samples (one per feeder event; shapes per sp_HealthParser xpath) for the
+         System Events reader round-trip tests. Mirrors Darling.Tests' Fixtures\SystemHealth set. -->
+    <None Include="Fixtures\SystemHealth\*.xml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -8,10 +8,10 @@
     <AssemblyName>PerformanceMonitorLite</AssemblyName>
     <RootNamespace>PerformanceMonitorLite</RootNamespace>
     <Product>SQL Server Performance Monitor Lite</Product>
-    <Version>3.1.0</Version>
-    <AssemblyVersion>3.1.0.0</AssemblyVersion>
-    <FileVersion>3.1.0.0</FileVersion>
-    <InformationalVersion>3.1.0</InformationalVersion>
+    <Version>3.2.0</Version>
+    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+    <FileVersion>3.2.0.0</FileVersion>
+    <InformationalVersion>3.2.0</InformationalVersion>
     <Company>Darling Data, LLC</Company>
     <Copyright>Copyright © 2026 Darling Data, LLC</Copyright>
     <Description>Lightweight SQL Server performance monitoring - no installation required on target servers</Description>
@@ -39,7 +39,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PerformanceMonitor.Alerting\PerformanceMonitor.Alerting.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Analysis\PerformanceMonitor.Analysis.csproj" />
+    <ProjectReference Include="..\PerformanceMonitor.Collectors\PerformanceMonitor.Collectors.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Common\PerformanceMonitor.Common.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.PlanAnalysis\PerformanceMonitor.PlanAnalysis.csproj" />
     <ProjectReference Include="..\PerformanceMonitor.Notifications\PerformanceMonitor.Notifications.csproj" />

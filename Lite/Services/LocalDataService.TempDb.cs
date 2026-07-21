@@ -110,20 +110,8 @@ LIMIT 1";
     }
 }
 
-public class TempDbSpaceInfo
-{
-    public double TotalReservedMb { get; set; }
-    public double UnallocatedMb { get; set; }
-    public double UserObjectReservedMb { get; set; }
-    public double InternalObjectReservedMb { get; set; }
-    public double VersionStoreReservedMb { get; set; }
-    public int TopConsumerSessionId { get; set; }
-    public double TopConsumerMb { get; set; }
-
-    public double UsedPercent => TotalReservedMb + UnallocatedMb > 0
-        ? TotalReservedMb / (TotalReservedMb + UnallocatedMb) * 100
-        : 0;
-}
+/* TempDbSpaceInfo moved to PerformanceMonitor.Alerting (Phase-5 A0);
+   the bare name resolves through the global using alias in GlobalUsings.cs. */
 
 public class TempDbRow
 {

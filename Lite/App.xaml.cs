@@ -11,6 +11,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -159,6 +161,9 @@ public partial class App : Application
     /* Color theme ("Dark" or "Light") */
     public static string ColorTheme { get; set; } = "Dark";
 
+    /* NOC Overview tile sort ("Cpu" = CPU% descending default, or "Name") */
+    public static ServerOverviewSortMode OverviewSortMode { get; set; } = ServerOverviewSort.Default;
+
     /* Update check settings */
     public static bool CheckForUpdatesOnStartup { get; set; } = true;
 
@@ -172,8 +177,21 @@ public partial class App : Application
     public static string SlackWebhookUrl { get; set; } = "";
     public static string SlackProxyAddress { get; set; } = "";
 
+    /* Generic webhook settings (#1506) — POSTs an operator-authored JSON body to any endpoint, so an
+       alert can drive automation we ship no adapter for (PagerDuty, Opsgenie, n8n, or a GitHub
+       repository_dispatch that re-runs a workflow). The URL and the headers JSON both carry bearer
+       tokens, so — like the Teams/Slack URLs — they live in Credential Manager, never in settings.json;
+       only the enable flag, the proxy, and the body template are plain prefs. */
+    public static bool GenericWebhookEnabled { get; set; } = false;
+    public static string GenericWebhookUrl { get; set; } = "";
+    public static string GenericWebhookHeadersJson { get; set; } = "";
+    public static string GenericWebhookBodyTemplate { get; set; } = "";
+    public static string GenericWebhookProxyAddress { get; set; } = "";
+
     private const string TeamsWebhookCredentialKey = "TeamsWebhook";
     private const string SlackWebhookCredentialKey = "SlackWebhook";
+    private const string GenericWebhookCredentialKey = "GenericWebhook";
+    private const string GenericWebhookHeadersCredentialKey = "GenericWebhookHeaders";
 
     /// <summary>
     /// Gets a webhook URL from Windows Credential Manager.
@@ -579,6 +597,9 @@ public partial class App : Application
                 if (t == "Dark" || t == "Light" || t == "CoolBreeze") ColorTheme = t;
             }
 
+            /* NOC Overview tile sort */
+            if (root.TryGetProperty("overview_sort_mode", out v)) OverviewSortMode = ServerOverviewSort.ParseMode(v.GetString());
+
             /* Update check settings */
             if (root.TryGetProperty("check_for_updates_on_startup", out v)) CheckForUpdatesOnStartup = v.GetBoolean();
 
@@ -589,6 +610,12 @@ public partial class App : Application
             /* Slack webhook settings */
             if (root.TryGetProperty("slack_webhook_enabled", out v)) SlackWebhookEnabled = v.GetBoolean();
             if (root.TryGetProperty("slack_proxy_address", out v)) SlackProxyAddress = v.GetString() ?? "";
+
+            /* Generic webhook settings (#1506). The URL + headers JSON are secrets and load from Credential
+               Manager below; only these three are plain prefs. */
+            if (root.TryGetProperty("generic_webhook_enabled", out v)) GenericWebhookEnabled = v.GetBoolean();
+            if (root.TryGetProperty("generic_proxy_address", out v)) GenericWebhookProxyAddress = v.GetString() ?? "";
+            if (root.TryGetProperty("generic_body_template", out v)) GenericWebhookBodyTemplate = v.GetString() ?? "";
 
             /* Migrate webhook URLs from plaintext settings.json to Credential Manager */
             if (root.TryGetProperty("teams_webhook_url", out v))
@@ -608,9 +635,12 @@ public partial class App : Application
                 }
             }
 
-            /* Load webhook URLs from Credential Manager */
+            /* Load webhook URLs from Credential Manager. The generic channel's headers JSON rides the same
+               secure store as a URL — it carries the Authorization bearer token (#1506). */
             TeamsWebhookUrl = GetWebhookUrl(TeamsWebhookCredentialKey);
             SlackWebhookUrl = GetWebhookUrl(SlackWebhookCredentialKey);
+            GenericWebhookUrl = GetWebhookUrl(GenericWebhookCredentialKey);
+            GenericWebhookHeadersJson = GetWebhookUrl(GenericWebhookHeadersCredentialKey);
 
             /* SMTP settings */
             if (root.TryGetProperty("smtp_enabled", out v)) SmtpEnabled = v.GetBoolean();
@@ -629,6 +659,29 @@ public partial class App : Application
             if (root.TryGetProperty("analysis_timeout_seconds", out v)) AnalysisTimeoutSeconds = (int)Math.Clamp(v.GetInt64(), 30, 600);
         }
         catch { /* Use defaults */ }
+    }
+
+    /// <summary>
+    /// Reads settings.json (or starts fresh), applies <paramref name="mutate"/>, and writes it back
+    /// indented; logs and swallows any error under <paramref name="what"/>. Shared by the single-value
+    /// Save* methods (and MainWindow's Overview sort selector) so the read/merge/write/catch boilerplate
+    /// lives in one place.
+    /// </summary>
+    public static void WriteSetting(string what, Action<JsonNode> mutate)
+    {
+        var settingsPath = Path.Combine(ConfigDirectory, "settings.json");
+        try
+        {
+            JsonNode root = File.Exists(settingsPath)
+                ? JsonNode.Parse(File.ReadAllText(settingsPath)) ?? new JsonObject()
+                : new JsonObject();
+            mutate(root);
+            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Settings", $"Failed to save {what}: {ex.Message}");
+        }
     }
 
     private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)

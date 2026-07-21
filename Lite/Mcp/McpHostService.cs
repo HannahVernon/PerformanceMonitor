@@ -78,6 +78,7 @@ public sealed class McpHostService : BackgroundService
                 .WithGeminiCompatibleTools<McpHealthTools>()
                 .WithGeminiCompatibleTools<McpWaitTools>()
                 .WithGeminiCompatibleTools<McpBlockingTools>()
+                .WithGeminiCompatibleTools<McpLongQueryTools>()
                 .WithGeminiCompatibleTools<McpQueryTools>()
                 .WithGeminiCompatibleTools<McpCpuTools>()
                 .WithGeminiCompatibleTools<McpMemoryTools>()
@@ -91,6 +92,11 @@ public sealed class McpHostService : BackgroundService
                 .WithGeminiCompatibleTools<McpServerInfoTools>()
                 .WithGeminiCompatibleTools<McpSessionTools>()
                 .WithGeminiCompatibleTools<McpObjectStatsTools>()
+                .WithGeminiCompatibleTools<McpLatchSpinlockTools>()
+                .WithGeminiCompatibleTools<McpPlanCacheSchedulerTools>()
+                .WithGeminiCompatibleTools<McpConfigHistoryTools>()
+                .WithGeminiCompatibleTools<McpDefaultTraceTools>()
+                .WithGeminiCompatibleTools<McpHealthParserTools>()
                 .WithGeminiCompatibleTools<McpAnalysisTools>();
 
             _app = builder.Build();

@@ -92,16 +92,16 @@ SELECT
     f.database_name,
     f.file_name,
     CASE WHEN SUM(f.delta_reads) > 0
-         THEN SUM(CAST(f.delta_stall_read_ms AS DOUBLE)) / SUM(f.delta_reads)
+         THEN SUM(CAST(f.delta_stall_read_ms AS DOUBLE PRECISION)) / SUM(f.delta_reads)
          ELSE 0 END AS avg_read_latency_ms,
     CASE WHEN SUM(f.delta_writes) > 0
-         THEN SUM(CAST(f.delta_stall_write_ms AS DOUBLE)) / SUM(f.delta_writes)
+         THEN SUM(CAST(f.delta_stall_write_ms AS DOUBLE PRECISION)) / SUM(f.delta_writes)
          ELSE 0 END AS avg_write_latency_ms,
     CASE WHEN SUM(f.delta_reads) > 0
-         THEN SUM(CAST(COALESCE(f.delta_stall_queued_read_ms, 0) AS DOUBLE)) / SUM(f.delta_reads)
+         THEN SUM(CAST(COALESCE(f.delta_stall_queued_read_ms, 0) AS DOUBLE PRECISION)) / SUM(f.delta_reads)
          ELSE 0 END AS avg_queued_read_latency_ms,
     CASE WHEN SUM(f.delta_writes) > 0
-         THEN SUM(CAST(COALESCE(f.delta_stall_queued_write_ms, 0) AS DOUBLE)) / SUM(f.delta_writes)
+         THEN SUM(CAST(COALESCE(f.delta_stall_queued_write_ms, 0) AS DOUBLE PRECISION)) / SUM(f.delta_writes)
          ELSE 0 END AS avg_queued_write_latency_ms
 FROM v_file_io_stats f
 JOIN top_files tf ON tf.database_name = f.database_name AND tf.file_name = f.file_name
@@ -177,10 +177,10 @@ SELECT
     collection_time,
     file_label,
     CASE WHEN interval_seconds > 0
-         THEN CAST(delta_read_bytes AS DOUBLE) / interval_seconds / 1048576.0
+         THEN CAST(delta_read_bytes AS DOUBLE PRECISION) / interval_seconds / 1048576.0
          ELSE 0 END AS read_mb_per_sec,
     CASE WHEN interval_seconds > 0
-         THEN CAST(delta_write_bytes AS DOUBLE) / interval_seconds / 1048576.0
+         THEN CAST(delta_write_bytes AS DOUBLE PRECISION) / interval_seconds / 1048576.0
          ELSE 0 END AS write_mb_per_sec
 FROM with_interval
 WHERE interval_seconds IS NOT NULL AND interval_seconds > 0
@@ -220,8 +220,8 @@ ORDER BY collection_time, file_label";
 SELECT
     collection_time,
     file_name,
-    CASE WHEN SUM(delta_reads) > 0 THEN SUM(CAST(delta_stall_read_ms AS DOUBLE)) / SUM(delta_reads) ELSE 0 END AS avg_read_latency_ms,
-    CASE WHEN SUM(delta_writes) > 0 THEN SUM(CAST(delta_stall_write_ms AS DOUBLE)) / SUM(delta_writes) ELSE 0 END AS avg_write_latency_ms
+    CASE WHEN SUM(delta_reads) > 0 THEN SUM(CAST(delta_stall_read_ms AS DOUBLE PRECISION)) / SUM(delta_reads) ELSE 0 END AS avg_read_latency_ms,
+    CASE WHEN SUM(delta_writes) > 0 THEN SUM(CAST(delta_stall_write_ms AS DOUBLE PRECISION)) / SUM(delta_writes) ELSE 0 END AS avg_write_latency_ms
 FROM v_file_io_stats
 WHERE server_id = $1
 AND   collection_time >= $2

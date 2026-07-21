@@ -167,9 +167,10 @@ namespace PerformanceMonitor.Ui
         }
 
         /// <summary>
-        /// Sets Y-axis limits with padding for a bottom legend and top breathing room.
-        /// Adds a small margin below a zero baseline so flat-at-zero lines stay visible above the
-        /// axis. Call this BEFORE LockChartVerticalAxis.
+        /// Sets Y-axis limits with padding for a bottom legend and top breathing room. Floors the axis
+        /// at zero for non-negative data (the common metric case) so there is no magnitude-scaled
+        /// dead-band below the lines; only genuinely-negative data gets a below-zero margin. Call this
+        /// BEFORE LockChartVerticalAxis.
         /// </summary>
         public static void SetChartYLimitsWithLegendPadding(WpfPlot chart, double dataYMin = 0, double dataYMax = 0)
         {
@@ -179,16 +180,30 @@ namespace PerformanceMonitor.Ui
                 dataYMin = limits.Bottom;
                 dataYMax = limits.Top;
             }
+
+            var (yMin, yMax) = ComputeYLimitsWithLegendPadding(dataYMin, dataYMax);
+            chart.Plot.Axes.SetLimitsY(yMin, yMax);
+        }
+
+        /// <summary>
+        /// Pure Y-limit math behind <see cref="SetChartYLimitsWithLegendPadding"/>, extracted so it can be
+        /// unit-tested without a WPF control. Floors at zero for non-negative data so high-magnitude charts
+        /// get no dead-band below the lines; only genuinely-negative data gets a 10%-of-range below-zero
+        /// margin. Adds 15%-of-range top breathing room so a series that plateaus at a hard ceiling
+        /// (e.g. CPU-scheduler task counts pinned at the scheduler count) does not crowd the top edge
+        /// and read as clipped; a momentary peak simply gets a little more air above it.
+        /// </summary>
+        public static (double YMin, double YMax) ComputeYLimitsWithLegendPadding(double dataYMin, double dataYMax)
+        {
             if (dataYMax <= dataYMin) dataYMax = dataYMin + 1;
 
             double range = dataYMax - dataYMin;
-            double topPadding = range * 0.05;
+            double topPadding = range * 0.15;
 
-            /* Add a small bottom margin when dataYMin is zero so flat lines at Y=0 are visible above the axis */
-            double yMin = dataYMin > 0 ? 0 : dataYMin == 0 ? -(range * 0.05) : dataYMin - (range * 0.10);
+            double yMin = dataYMin >= 0 ? 0 : dataYMin - (range * 0.10);
             double yMax = dataYMax + topPadding;
 
-            chart.Plot.Axes.SetLimitsY(yMin, yMax);
+            return (yMin, yMax);
         }
 
         /// <summary>

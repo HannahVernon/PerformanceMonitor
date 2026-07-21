@@ -139,6 +139,7 @@ public class SqlServerBaselineProvider
         var query = GetBaselineQuery(metricName);
         if (query == null) return null;
 
+        var absStdDevFloor = AbsStdDevFloorFor(metricName);
         var windowStart = analysisTime.AddDays(-BaselineWindowDays);
 
         try
@@ -161,6 +162,7 @@ public class SqlServerBaselineProvider
                 var mean = reader.IsDBNull(2) ? 0.0 : Convert.ToDouble(reader.GetValue(2));
                 var stddev = reader.IsDBNull(3) ? 0.0 : Convert.ToDouble(reader.GetValue(3));
                 var count = reader.IsDBNull(4) ? 0L : Convert.ToInt64(reader.GetValue(4));
+                var distinctDays = reader.IsDBNull(5) ? 0L : Convert.ToInt64(reader.GetValue(5));
 
                 buckets[(hour, dow)] = new BaselineBucket
                 {
@@ -169,6 +171,8 @@ public class SqlServerBaselineProvider
                     Mean = mean,
                     StdDev = stddev,
                     SampleCount = count,
+                    DistinctDays = distinctDays,
+                    AbsStdDevFloor = absStdDevFloor,
                     // Every bucket here is a full (hour, day-of-week) bucket; the HourOnly/Flat
                     // tiers are assigned only on the collapse/flat paths below. A sparse full
                     // bucket is still Full, just low-sample. (Was a copy-paste of two identical
@@ -203,7 +207,8 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(CAST(sqlserver_cpu_utilization AS FLOAT)) AS mean_val,
        STDEV(CAST(sqlserver_cpu_utilization AS FLOAT)) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM collect.cpu_utilization_stats
 WHERE collection_time >= @windowStart AND collection_time < @windowEnd
 GROUP BY DATEPART(HOUR, collection_time),
@@ -227,7 +232,8 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(cntr_value_delta) AS mean_val,
        STDEV(cntr_value_delta) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM filtered
 WHERE NOT (cntr_value_delta = 0 AND ISNULL(prev_value, 0) > 1000)
 GROUP BY DATEPART(HOUR, collection_time),
@@ -255,7 +261,8 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(CAST(total_wait_ms AS FLOAT)) AS mean_val,
        STDEV(CAST(total_wait_ms AS FLOAT)) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM with_lag
 WHERE NOT (total_wait_ms = 0 AND ISNULL(prev_value, 0) > 10000)
 GROUP BY DATEPART(HOUR, collection_time),
@@ -278,7 +285,8 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(CAST(total_connections AS FLOAT)) AS mean_val,
        STDEV(CAST(total_connections AS FLOAT)) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM per_collection
 GROUP BY DATEPART(HOUR, collection_time),
          (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7;",
@@ -307,7 +315,8 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(CAST(total_elapsed AS FLOAT)) AS mean_val,
        STDEV(CAST(total_elapsed AS FLOAT)) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM with_lag
 WHERE NOT (total_elapsed = 0 AND ISNULL(prev_value, 0) > 100000)
 GROUP BY DATEPART(HOUR, collection_time),
@@ -321,7 +330,8 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(io_stall_read_ms_delta * 1.0 / NULLIF(num_of_reads_delta, 0)) AS mean_val,
        STDEV(io_stall_read_ms_delta * 1.0 / NULLIF(num_of_reads_delta, 0)) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM collect.file_io_stats
 WHERE collection_time >= @windowStart AND collection_time < @windowEnd
 AND   (num_of_reads_delta > 0 OR num_of_writes_delta > 0)
@@ -355,7 +365,8 @@ SELECT DATEPART(HOUR, minute_bucket) AS hour_of_day,
        (DATEPART(WEEKDAY, minute_bucket) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(event_count) AS mean_val,
        STDEV(event_count) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(minute_bucket AS DATE)) AS distinct_days
 FROM per_interval
 GROUP BY DATEPART(HOUR, minute_bucket),
          (DATEPART(WEEKDAY, minute_bucket) + @@DATEFIRST - 1) % 7;",
@@ -385,7 +396,8 @@ SELECT DATEPART(HOUR, minute_bucket) AS hour_of_day,
        (DATEPART(WEEKDAY, minute_bucket) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(event_count) AS mean_val,
        STDEV(event_count) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(minute_bucket AS DATE)) AS distinct_days
 FROM per_interval
 GROUP BY DATEPART(HOUR, minute_bucket),
          (DATEPART(WEEKDAY, minute_bucket) + @@DATEFIRST - 1) % 7;",
@@ -402,16 +414,68 @@ SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
        (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
        AVG(CAST(total_memory_mb AS FLOAT) / NULLIF(committed_target_memory_mb, 0) * 100) AS mean_val,
        STDEV(CAST(total_memory_mb AS FLOAT) / NULLIF(committed_target_memory_mb, 0) * 100) AS stddev_val,
-       COUNT(*) AS sample_count
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
 FROM collect.memory_stats
 WHERE collection_time >= @windowStart AND collection_time < @windowEnd
 AND   committed_target_memory_mb > 0
 GROUP BY DATEPART(HOUR, collection_time),
          (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7;",
 
+            // ── Chart-unit / all-types wait rate (for the wait-profile anomaly detector) ──
+            // All-types wait ms per SECOND, the T-SQL analog of Lite/Darling's LAG-interval per-second
+            // query: aggregate to total wait ms per collection, derive the per-second rate from the
+            // ACTUAL inter-collection interval via LAG (never an assumed cadence), then exclude the
+            // restart-signature zero (a 0-rate right after a >100 ms/sec sample) while keeping idle zeros.
+            SqlServerMetricNames.WaitMsPerSec => @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+;WITH per_collection AS (
+    SELECT collection_time,
+           CAST(SUM(wait_time_ms_delta) AS FLOAT) AS total_wait_ms,
+           DATEDIFF(SECOND, LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_sec
+    FROM collect.wait_stats
+    WHERE collection_time >= @windowStart AND collection_time < @windowEnd
+    AND   wait_time_ms_delta >= 0
+    GROUP BY collection_time
+),
+with_rate AS (
+    SELECT collection_time,
+           CASE WHEN interval_sec > 0 THEN total_wait_ms / interval_sec ELSE 0 END AS ms_per_sec
+    FROM per_collection
+    WHERE interval_sec IS NOT NULL
+),
+with_lag AS (
+    SELECT collection_time, ms_per_sec,
+           LAG(ms_per_sec) OVER (ORDER BY collection_time) AS prev_rate
+    FROM with_rate
+)
+SELECT DATEPART(HOUR, collection_time) AS hour_of_day,
+       (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7 AS day_of_week,
+       AVG(ms_per_sec) AS mean_val,
+       STDEV(ms_per_sec) AS stddev_val,
+       COUNT(*) AS sample_count,
+       COUNT(DISTINCT CAST(collection_time AS DATE)) AS distinct_days
+FROM with_lag
+WHERE NOT (ms_per_sec = 0 AND ISNULL(prev_rate, 0) > 100)
+GROUP BY DATEPART(HOUR, collection_time),
+         (DATEPART(WEEKDAY, collection_time) + @@DATEFIRST - 1) % 7;",
+
             _ => null
         };
     }
+
+    /// <summary>
+    /// Bounded-metric absolute dispersion floor (see BaselineBucket.AbsStdDevFloor). Server-relative
+    /// metrics have no universal floor and return 0. Tunable — calibrate on the SQL2025/HammerDB box.
+    /// </summary>
+    private static double AbsStdDevFloorFor(string metricName) => metricName switch
+    {
+        SqlServerMetricNames.Cpu => 5.0,        // CPU utilization %
+        SqlServerMetricNames.Memory => 4.0,     // memory pressure %
+        SqlServerMetricNames.IoLatency => 2.5,  // I/O latency ms
+        _ => 0.0,                                // batch/query-duration/sessions/waits/blocking/deadlock — server-relative
+    };
 
     /// <summary>
     /// Collapses multiple day-of-week buckets for the same hour into a single
@@ -436,6 +500,10 @@ GROUP BY DATEPART(HOUR, collection_time),
             Mean = weightedMean,
             StdDev = Math.Sqrt(pooledVariance),
             SampleCount = totalSamples,
+            // Each calendar day lands in exactly one day-of-week bucket, so summing distinct-days
+            // across the dow buckets for this hour is exact (no double-count).
+            DistinctDays = hourBuckets.Sum(b => b.DistinctDays),
+            AbsStdDevFloor = hourBuckets[0].AbsStdDevFloor,
             Tier = BaselineTier.HourOnly
         };
     }
@@ -459,6 +527,11 @@ GROUP BY DATEPART(HOUR, collection_time),
             Mean = weightedMean,
             StdDev = Math.Sqrt(pooledVariance),
             SampleCount = totalSamples,
+            // A calendar day recurs across the 24 hour buckets, so summing would double-count;
+            // MAX is a ~5 ceiling (each (hour, dow) bucket holds at most ~5 same-weekday dates in a
+            // 30-day window) — a cheap proxy that avoids an extra global DISTINCT-days query.
+            DistinctDays = allBuckets.Max(b => b.DistinctDays),
+            AbsStdDevFloor = allBuckets[0].AbsStdDevFloor,
             Tier = BaselineTier.Flat
         };
     }
@@ -505,23 +578,78 @@ public class BaselineBucket
     public long SampleCount { get; init; }
     public BaselineTier Tier { get; init; }
 
+    /// <summary>
+    /// Distinct calendar days observed in this bucket — the baseline-QUALITY signal the old
+    /// quantity-only warmup gate lacked (a bucket with many samples but few distinct days is one
+    /// busy day, not a trend). Carried through collapse by CollapseToHourOnly (SUM — each calendar
+    /// day lands in exactly one day-of-week bucket, so the sum is exact) and CollapseToFlat (MAX —
+    /// a calendar day recurs across the 24 hour buckets; MAX is a ~5 ceiling, not the true pooled
+    /// distinct-day count, but a cheap proxy that avoids a second global query).
+    /// </summary>
+    public long DistinctDays { get; init; }
+
+    /// <summary>
+    /// Absolute dispersion floor for BOUNDED metrics (CPU %, memory %, I/O ms) so a
+    /// variance-collapsed baseline can't manufacture a giant z-score. 0 for server-relative
+    /// metrics (batch/query-duration/sessions/waits/blocking), which have no universal floor and
+    /// rely on the detector magnitude floors + the quality gate instead. Set per metric by the provider.
+    /// </summary>
+    public double AbsStdDevFloor { get; init; }
+
+    // Baseline-quality tier gates (see IsTrustworthy). Day-mins are tier-aware: a Full (hour × dow)
+    // bucket only sees ~5 same-weekday dates in a 30-day window, so its day-min is a modest 3. The Flat
+    // tier's DistinctDays is a MAX-over-hour-buckets proxy (CollapseToFlat) capped at that SAME ~5
+    // ceiling, so it can't demand more than a Full bucket — a >=15 floor was structurally unreachable and
+    // left the Flat trust branch permanently dead, so match Full at 3. Sample-mins mirror the provider's
+    // per-tier selection floors.
+    private const long FullSampleMin = 10;
+    private const long FullDayMin = 3;
+    private const long HourOnlySampleMin = 10;
+    private const long HourOnlyDayMin = 10;
+    private const long FlatSampleMin = 3;
+    private const long FlatDayMin = 3;
+
     public static BaselineBucket Empty => new()
     {
         HourOfDay = -1, DayOfWeek = -1, Mean = 0, StdDev = 0,
-        SampleCount = 0, Tier = BaselineTier.Flat
+        SampleCount = 0, DistinctDays = 0, Tier = BaselineTier.Flat
     };
 
     /// <summary>
-    /// Returns the effective stddev with a proportional minimum floor to prevent
-    /// division-by-zero in z-score calculations. When both mean and stddev are 0
-    /// (zero activity), returns 0 — callers should skip scoring.
+    /// Returns the effective stddev with a proportional minimum floor plus, for bounded metrics,
+    /// an absolute floor — both prevent division-by-zero AND a variance-collapsed baseline from
+    /// producing a giant z-score. When both mean and stddev are 0 (zero activity), returns 0 —
+    /// callers should skip scoring (or fall back to the absolute-threshold path).
     /// </summary>
     public double EffectiveStdDev
     {
         get
         {
             if (Mean == 0 && StdDev <= 0) return 0; // Zero activity — skip scoring
-            return Math.Max(StdDev, Mean * 0.01);
+            return Math.Max(Math.Max(StdDev, Mean * 0.01), AbsStdDevFloor);
+        }
+    }
+
+    /// <summary>
+    /// Whether this baseline is dense enough to trust a z-score / ratio against. Requires real
+    /// dispersion, the tier's sample floor, AND enough DISTINCT days. A low-quality baseline is NOT
+    /// silenced — the detector falls back to an absolute-threshold bar instead. This gate and the
+    /// #1486 magnitude floors are COMPLEMENTARY, not both-mandatory: a trustworthy baseline trusts z
+    /// with the magnitude floor as a sanity ceiling; an untrustworthy one fires only on the higher
+    /// absolute bar — they must never AND into blindness on a young store.
+    /// </summary>
+    public bool IsTrustworthy
+    {
+        get
+        {
+            if (EffectiveStdDev <= 0) return false;
+            var (sampleMin, dayMin) = Tier switch
+            {
+                BaselineTier.Full => (FullSampleMin, FullDayMin),
+                BaselineTier.HourOnly => (HourOnlySampleMin, HourOnlyDayMin),
+                _ => (FlatSampleMin, FlatDayMin),
+            };
+            return SampleCount >= sampleMin && DistinctDays >= dayMin;
         }
     }
 }
@@ -545,4 +673,9 @@ public static class SqlServerMetricNames
     public const string Blocking = "blocking";
     public const string Deadlock = "deadlock";
     public const string Memory = "memory";
+
+    // All-types wait ms/sec — the wait-profile anomaly baseline (the Dashboard analog of
+    // Lite/Darling MetricNames.WaitMsPerSec). (Dashboard also lacks BlockingPerMinute; add if a
+    // blocking-per-minute band/detector is ever ported here.)
+    public const string WaitMsPerSec = "wait_ms_per_sec";
 }

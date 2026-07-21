@@ -6,28 +6,27 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
-using System;
 using System.Data;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Xml.Linq;
-using DuckDB.NET.Data;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitorLite.Models;
 
 namespace PerformanceMonitorLite.Services;
 
 public partial class RemoteCollectorService
 {
-    /* We create and manage our own XE session to avoid conflicts with user's existing sessions */
-    private const string BlockedProcessXeSessionName = "PerformanceMonitor_BlockedProcess";
+    /* The session name lives in the shared definition so the ring-buffer reader and this
+       lifecycle code can never disagree on it. */
+    private const string BlockedProcessXeSessionName = BlockedProcessReportCollector.XeSessionName;
 
     /// <summary>
     /// Ensures the blocked process XE session exists and is running.
     /// Creates a ring_buffer session for ALL platforms (on-prem, MI, Azure SQL DB).
-    /// Uses server-scoped session for on-prem/MI, database-scoped for Azure SQL DB.
+    /// Server-scoped session for on-prem/MI; on Azure SQL DB a database-scoped session in EVERY
+    /// monitored database (#1535 — a single session only ever captured the connection's own
+    /// database, so blocking in the logical server's other databases never appeared).
     /// </summary>
     public async Task EnsureBlockedProcessXeSessionAsync(ServerConnection server, int engineEdition = 0, CancellationToken cancellationToken = default)
     {
@@ -38,27 +37,33 @@ public partial class RemoteCollectorService
             return;
         }
 
-        bool isAzureSqlDb = engineEdition == 5;
+        if (engineEdition == 5)
+        {
+            /* Azure SQL DB: one database-scoped session per monitored database, matching the
+               per-database ring-buffer read (BlockedProcessReportCollector.RunsPerDatabase). The
+               shared driver skips master, honors ExcludedDatabases via the shared database list,
+               self-heals sessions the reader can't see, and only surfaces unhealthy when NO
+               database could be ensured. */
+            await EnsureDatabaseScopedXeSessionsAsync(
+                server, "blocked process", BlockedProcessXeSessionName,
+                EnsureBlockedProcessXeSessionAzureSqlDbAsync, cancellationToken);
+            return;
+        }
 
         try
         {
             using var connection = await CreateConnectionAsync(server, cancellationToken);
 
-            if (isAzureSqlDb)
-            {
-                /* Azure SQL DB: create database-scoped session with ring_buffer */
-                await EnsureBlockedProcessXeSessionAzureSqlDbAsync(connection, cancellationToken);
-            }
-            else
-            {
-                /* On-prem and Azure MI: create server-scoped session with ring_buffer */
-                await EnsureBlockedProcessXeSessionOnPremAsync(connection, server, cancellationToken);
-            }
+            /* On-prem and Azure MI: create server-scoped session with ring_buffer */
+            await EnsureBlockedProcessXeSessionOnPremAsync(connection, server, cancellationToken);
+        }
+        catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+        {
+            /* The session is already present + running -- see IsBenignXeSessionAlreadyPresent (#1251). */
+            AppLogger.Info("XeSession", $"[{server.DisplayName}] Blocked process XE session already present (benign, #1251)");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to ensure blocked process XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure blocked process XE session: {ex.Message}");
 
             /* Propagate so RunCollectorAsync marks the collector unhealthy instead
@@ -109,7 +114,6 @@ SELECT @threshold;", connection);
 
             if (threshold == 0)
             {
-                _logger?.LogInformation("Configured blocked process threshold to 5 seconds on '{Server}'", server.DisplayName);
                 AppLogger.Info("XeSession", $"[{server.DisplayName}] Configured blocked process threshold to 5 seconds");
             }
         }
@@ -145,20 +149,17 @@ WHERE ses.name = @session_name;", connection))
                             $"ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON SERVER STATE = START;", connection);
                         startCmd.CommandTimeout = CommandTimeoutSeconds;
                         await startCmd.ExecuteNonQueryAsync(cancellationToken);
-                        _logger?.LogInformation("Started blocked process XE session on '{Server}'", server.DisplayName);
                         AppLogger.Info("XeSession", $"[{server.DisplayName}] Started blocked process XE session");
                     }
                     catch (SqlException ex)
                     {
-                        _logger?.LogWarning("Failed to start blocked process XE session on '{Server}': {Message}",
-                            server.DisplayName, ex.Message);
                         AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to start blocked process XE session: {ex.Message}");
                         throw;
                     }
                 }
                 else
                 {
-                    _logger?.LogDebug("Blocked process XE session is running on '{Server}'", server.DisplayName);
+                    AppLogger.Debug("XeSession", $"Blocked process XE session is running on '{server.DisplayName}'");
                 }
                 return;
             }
@@ -184,13 +185,10 @@ WITH
 ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON SERVER STATE = START;", connection);
             createCmd.CommandTimeout = CommandTimeoutSeconds;
             await createCmd.ExecuteNonQueryAsync(cancellationToken);
-            _logger?.LogInformation("Created and started blocked process XE session on '{Server}'", server.DisplayName);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Created and started blocked process XE session");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to create blocked process XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to create blocked process XE session: {ex.Message}");
             throw;
         }
@@ -232,8 +230,8 @@ END;", connection);
                 startCmd.CommandTimeout = CommandTimeoutSeconds;
                 await startCmd.ExecuteNonQueryAsync(cancellationToken);
 
-                _logger?.LogDebug("Blocked process XE session already exists (database-scoped, Azure SQL DB)");
-                AppLogger.Info("XeSession", $"[Azure SQL DB] Blocked process XE session verified (database-scoped)");
+                /* Debug, not Info: this fires once per monitored database per cycle (#1535). */
+                AppLogger.Debug("XeSession", $"[Azure SQL DB:{connection.Database}] Blocked process XE session verified (database-scoped)");
                 return;
             }
         }
@@ -259,569 +257,241 @@ ALTER EVENT SESSION [{BlockedProcessXeSessionName}] ON DATABASE STATE = START;",
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        _logger?.LogInformation("Created and started blocked process XE session (database-scoped, Azure SQL DB)");
-        AppLogger.Info("XeSession", $"[Azure SQL DB] Created and started blocked process XE session (database-scoped)");
+        AppLogger.Info("XeSession", $"[Azure SQL DB:{connection.Database}] Created and started blocked process XE session (database-scoped)");
     }
 
     /// <summary>
-    /// Collects blocked process reports from the XE session ring_buffer.
-    /// For on-prem/MI: reads from server-scoped session.
-    /// For Azure SQL DB: reads from database-scoped session.
+    /// True when every error is a benign "the session is already there" extended-events error:
+    /// 25631 (event session already exists) or 25705 (already started). On Azure SQL DB the XE
+    /// existence catalogs (sys.database_event_sessions / sys.dm_xe_database_sessions) are visibility-
+    /// scoped per principal and can come back empty even when the session is present + running, so the
+    /// CREATE/START path reports these -- they confirm the session is up, not a failure to surface (#1251).
+    /// Shared by the blocked-process and deadlock ensure paths (same partial class).
+    /// </summary>
+    private static bool IsBenignXeSessionAlreadyPresent(SqlException ex)
+    {
+        if (ex.Errors.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (Microsoft.Data.SqlClient.SqlError error in ex.Errors)
+        {
+            /* 25631 = event session already exists; 25705 = already started. */
+            if (error.Number != 25631 && error.Number != 25705)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Azure SQL DB ensure driver, shared by the deadlock and blocked-process paths (#1535): one
+    /// database-scoped XE session per monitored database, matching the collectors' per-database
+    /// ring-buffer reads. Master is skipped (database-scoped sessions can't be created in logical
+    /// master); ExcludedDatabases is honored by <see cref="GetAzureDatabaseListAsync"/>.
+    ///
+    /// <para><b>The #1251 benign path grew a read-back check.</b> A benign "already exists"/"already
+    /// started" from the engine proves the session is there, but NOT that this principal can see it:
+    /// the ring-buffer reader joins <c>sys.dm_xe_database_sessions</c>, and a session that is
+    /// invisible there (created by another principal, or present-but-stopped) reads zero rows forever
+    /// while the collector records SUCCESS — the exact silent-empty shape of #1346/#1535. So after a
+    /// benign error the session is probed in the reader's own DMV, and an invisible one is dropped
+    /// and recreated under this principal. On-prem keeps the plain benign log: its server-scoped
+    /// catalogs need the same VIEW SERVER STATE every collector already requires.</para>
+    ///
+    /// <para><b>Failure isolation:</b> one database failing to ensure must not kill capture for the
+    /// other databases, so per-database failures are warn-logged and the cycle proceeds — but if NO
+    /// database could be ensured, capture is fully dead and this throws (SqlException failures as
+    /// <see cref="XeSessionEnsureException"/> for the #1086 health surface) instead of letting a
+    /// zero-row read record SUCCESS.</para>
+    /// </summary>
+    private async Task EnsureDatabaseScopedXeSessionsAsync(
+        ServerConnection server,
+        string captureName,
+        string sessionName,
+        Func<SqlConnection, CancellationToken, Task> ensureAsync,
+        CancellationToken cancellationToken)
+    {
+        List<string> databases;
+        try
+        {
+            databases = await GetAzureDatabaseListAsync(server, cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to enumerate databases for {captureName} XE sessions: {ex.Message}");
+            throw new XeSessionEnsureException(captureName, ex);
+        }
+
+        int attempted = 0;
+        int healthy = 0;
+        Exception? firstFailure = null;
+
+        foreach (var databaseName in databases)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            /* Logical master can't host database-scoped event sessions. */
+            if (string.Equals(databaseName, "master", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            attempted++;
+
+            try
+            {
+                using var connection = await OpenAzureDatabaseConnectionAsync(server, databaseName, cancellationToken);
+                var readable = true;
+
+                try
+                {
+                    await ensureAsync(connection, cancellationToken);
+                }
+                catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+                {
+                    var recreateKey = $"{server.Id}:{databaseName}:{sessionName}";
+
+                    if (await IsDatabaseScopedXeSessionVisibleAsync(connection, sessionName, cancellationToken))
+                    {
+                        AppLogger.Debug("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session already present (benign, #1251)");
+                    }
+                    else if (_xeSessionRecreateGaveUp.ContainsKey(recreateKey))
+                    {
+                        /* Recreate already proven not to fix visibility here — don't churn the
+                           session every cycle (each DROP wipes captured-but-unread events).
+                           Counted unhealthy, quietly (the give-up itself was logged at Error). */
+                        AppLogger.Debug("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session still not readable; recreate previously didn't help — skipping (#1535)");
+                        readable = false;
+                        firstFailure ??= ex;
+                    }
+                    else
+                    {
+                        /* Exists per the engine, invisible to the reader's DMV — reclaim it.
+                           Failures here fall to the per-database catch below. */
+                        await RecreateDatabaseScopedXeSessionAsync(connection, sessionName, ensureAsync, cancellationToken);
+
+                        if (await IsDatabaseScopedXeSessionVisibleAsync(connection, sessionName, cancellationToken))
+                        {
+                            AppLogger.Info("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session existed but was not visible to the ring-buffer reader — dropped and recreated (#1535)");
+                        }
+                        else
+                        {
+                            /* Recreated under THIS principal and still invisible — recreating
+                               again next cycle can't help and would only churn events away. */
+                            _xeSessionRecreateGaveUp[recreateKey] = 1;
+                            AppLogger.Error("XeSession", $"[{server.DisplayName}] [{databaseName}] {captureName} XE session is still not visible in sys.dm_xe_database_sessions after recreating it — the ring-buffer reader cannot see this database's capture; giving up on recreates until the app restarts (#1535)");
+                            readable = false;
+                            firstFailure ??= ex;
+                        }
+                    }
+                }
+
+                if (readable)
+                {
+                    healthy++;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                firstFailure ??= ex;
+                AppLogger.Warn("XeSession", $"[{server.DisplayName}] [{databaseName}] Failed to ensure {captureName} XE session: {ex.Message}");
+            }
+        }
+
+        if (attempted > 0 && healthy == 0 && firstFailure is not null)
+        {
+            AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure the {captureName} XE session in all {attempted} database(s)");
+
+            if (firstFailure is SqlException sqlFailure)
+            {
+                throw new XeSessionEnsureException(captureName, sqlFailure);
+            }
+
+            /* Non-SQL failure (e.g. a connection-open fault) — surface it raw with its original
+               stack; RunCollectorAsync's general handler classifies it ERROR, which is still not a
+               silent SUCCESS. */
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFailure).Throw();
+        }
+    }
+
+    /* Databases where a drop+recreate demonstrably did NOT make the session visible to the reader
+       (see the give-up branch above): keyed server:database:session, in-memory so an app restart
+       retries once. Prevents a per-cycle DROP/CREATE ping-pong that would wipe captured-but-unread
+       ring-buffer events every cycle in a pathological-permissions database. */
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _xeSessionRecreateGaveUp = new();
+
+    /// <summary>
+    /// Whether the database-scoped session is visible to THIS principal in
+    /// <c>sys.dm_xe_database_sessions</c> — the very DMV the ring-buffer reader joins, so this is
+    /// the reader's-eye view: false means the reader would see zero rows regardless of captured
+    /// events (session stopped, or running but created by a principal whose sessions we can't see).
+    /// </summary>
+    private async Task<bool> IsDatabaseScopedXeSessionVisibleAsync(SqlConnection connection, string sessionName, CancellationToken cancellationToken)
+    {
+        using var cmd = new SqlCommand(@"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT /* PerformanceMonitorLite */
+    is_visible =
+        CASE
+            WHEN EXISTS
+            (
+                SELECT
+                    1/0
+                FROM sys.dm_xe_database_sessions AS xes
+                WHERE xes.name = @session_name
+            )
+            THEN 1
+            ELSE 0
+        END;", connection);
+        cmd.CommandTimeout = CommandTimeoutSeconds;
+        cmd.Parameters.Add(new SqlParameter("@session_name", SqlDbType.NVarChar, 128) { Value = sessionName });
+        var result = await cmd.ExecuteScalarAsync(cancellationToken);
+        return result is int isVisible && isVisible == 1;
+    }
+
+    /// <summary>
+    /// Drops the (engine-confirmed-present) database-scoped session and re-runs the ensure so it is
+    /// recreated under this principal, visible to the reader. The DROP works by name even when the
+    /// catalogs hide the session — the same store the CREATE collided with resolves it.
+    /// </summary>
+    private static async Task RecreateDatabaseScopedXeSessionAsync(
+        SqlConnection connection,
+        string sessionName,
+        Func<SqlConnection, CancellationToken, Task> ensureAsync,
+        CancellationToken cancellationToken)
+    {
+        using (var dropCmd = new SqlCommand($"DROP EVENT SESSION [{sessionName}] ON DATABASE;", connection))
+        {
+            dropCmd.CommandTimeout = CommandTimeoutSeconds;
+            await dropCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await ensureAsync(connection, cancellationToken);
+    }
+
+    /// <summary>
+    /// Collects blocked process reports via the shared <see cref="BlockedProcessReportCollector"/>
+    /// definition (the server- vs database-scoped ring-buffer reads, the wait_resource →
+    /// contentious-object resolution, the event_time watermark, and the report-XML parse live
+    /// there — the cross-SKU parity contract). The XE session lifecycle stays here; a
+    /// missing/inaccessible session is tolerated as zero rows, exactly as before.
     /// </summary>
     private async Task<int> CollectBlockedProcessReportsAsync(ServerConnection server, CancellationToken cancellationToken)
     {
-        var serverStatus = _serverManager.GetConnectionStatus(server.Id);
-        bool isAzureSqlDb = serverStatus.SqlEngineEdition == 5;
-
-        /* The ring-buffer source DMV is the only engine difference (database-scoped on Azure SQL DB,
-           server-scoped elsewhere); event extraction and the wait_resource -> object decode are shared. */
-        string ringBufferSource = isAzureSqlDb
-            ? @"sys.dm_xe_database_session_targets AS xet
-JOIN sys.dm_xe_database_sessions AS xes
-  ON xes.address = xet.event_session_address"
-            : @"sys.dm_xe_session_targets AS xet
-JOIN sys.dm_xe_sessions AS xes
-  ON xes.address = xet.event_session_address";
-
-        /* Resolve contentious_object from wait_resource (KEY hobt -> sys.partitions, OBJECT objid,
-           PAGE/RID -> sys.dm_db_page_info), mirroring sp_HumanEventsBlockViewer (DarlingData #812) so
-           Dashboard and Lite -- and the #1140 dedup fingerprint -- agree. The event object_id/database_id
-           is unreliable for lock waits, kept only as a COALESCE fallback. Cross-db lookups are per-database
-           dynamic SQL guarded by DB-online + TRY/CATCH; the 2019+ DMV is version-gated (or @azure, which
-           reports ProductVersion 12 on Azure SQL DB). #bpr is a #temp (not a table var) so the dynamic SQL
-           can see it. The final SELECT keeps the original 5 columns, so the reader/appender is unchanged. */
-        string query = $@"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-DECLARE
-    @product_version integer =
-        CONVERT
-        (
-            integer,
-            PARSENAME
-            (
-                CONVERT(sysname, SERVERPROPERTY('ProductVersion')),
-                4
-            )
-        ),
-    @azure bit =
-        CASE
-            WHEN CONVERT(integer, SERVERPROPERTY('EngineEdition')) = 5
-            THEN 1
-            ELSE 0
-        END,
-    @resolve_sql nvarchar(max),
-    @resolve_database_id integer,
-    @key_dbs CURSOR,
-    @page_dbs CURSOR;
-
-DECLARE
-    @PerformanceMonitor_BlockedProcess TABLE
-(
-    ring_buffer xml NOT NULL
-);
-
-INSERT
-    @PerformanceMonitor_BlockedProcess
-(
-    ring_buffer
-)
-SELECT /* PerformanceMonitorLite */
-    ring_xml = TRY_CAST(xet.target_data AS xml)
-FROM {ringBufferSource}
-WHERE xes.name = N'{BlockedProcessXeSessionName}'
-AND   xet.target_name = N'ring_buffer'
-OPTION(RECOMPILE);
-
-SELECT
-    x.event_time,
-    x.blocked_process_report_xml,
-    x.object_id,
-    x.database_id,
-    x.wait_resource,
-    lock_type = CONVERT(varchar(32), NULL),
-    frag = CONVERT(nvarchar(1024), NULL),
-    resource_database_id = CONVERT(integer, NULL),
-    resource_hobt_id = CONVERT(bigint, NULL),
-    resource_file_id = CONVERT(integer, NULL),
-    resource_page_id = CONVERT(bigint, NULL),
-    resource_object_id = CONVERT(integer, NULL),
-    contentious_object = CONVERT(nvarchar(4000), NULL)
-INTO #bpr
-FROM
-(
-    SELECT
-        event_time = evt.value('(@timestamp)[1]', 'datetime2'),
-        blocked_process_report_xml = CONVERT(nvarchar(max), evt.query('data[@name=""blocked_process""]/value/blocked-process-report')),
-        object_id = evt.value('(data[@name=""object_id""]/value/text())[1]', 'integer'),
-        database_id = evt.value('(data[@name=""database_id""]/value/text())[1]', 'integer'),
-        wait_resource = evt.value('(data[@name=""blocked_process""]/value/blocked-process-report/blocked-process/process/@waitresource)[1]', 'nvarchar(1024)')
-    FROM @PerformanceMonitor_BlockedProcess AS rb
-    CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""blocked_process_report""]') AS q(evt)
-    WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
-) AS x
-OPTION(RECOMPILE);
-
-/* Classify the lock resource (prefers an embedded KEY/PAGE in a compound resource). */
-UPDATE
-    b
-SET
-    b.lock_type =
-        CASE
-            WHEN b.wait_resource LIKE N'%KEY: %'    THEN 'KEY'
-            WHEN b.wait_resource LIKE N'%OBJECT: %' THEN 'OBJECT'
-            WHEN b.wait_resource LIKE N'%RID: %'    THEN 'RID'
-            WHEN b.wait_resource LIKE N'%PAGE: %'   THEN 'PAGE'
-            ELSE LEFT(UPPER(LEFT(b.wait_resource, CHARINDEX(N':', b.wait_resource + N':') - 1)), 32)
-        END
-FROM #bpr AS b
-WHERE b.wait_resource IS NOT NULL
-AND   b.wait_resource <> N''
-OPTION(RECOMPILE);
-
-UPDATE
-    b
-SET
-    b.frag =
-        SUBSTRING
-        (
-            b.wait_resource,
-            CHARINDEX(b.lock_type + N': ', b.wait_resource) + LEN(b.lock_type) + 2,
-            1024
-        )
-FROM #bpr AS b
-WHERE b.lock_type IN ('KEY', 'OBJECT', 'RID', 'PAGE')
-OPTION(RECOMPILE);
-
-UPDATE
-    b
-SET
-    b.resource_database_id =
-        TRY_CONVERT(integer, LEFT(b.frag, CHARINDEX(N':', b.frag + N':') - 1))
-FROM #bpr AS b
-WHERE b.frag IS NOT NULL
-OPTION(RECOMPILE);
-
-UPDATE
-    b
-SET
-    b.resource_hobt_id =
-        TRY_CONVERT(bigint, LTRIM(LEFT(r.rest, CHARINDEX(N' ', r.rest + N' ') - 1)))
-FROM #bpr AS b
-CROSS APPLY
-(
-    SELECT
-        rest = SUBSTRING(b.frag, CHARINDEX(N':', b.frag) + 1, 1024)
-) AS r
-WHERE b.lock_type = 'KEY'
-OPTION(RECOMPILE);
-
-UPDATE
-    b
-SET
-    b.resource_object_id =
-        TRY_CONVERT(integer, LEFT(r.rest, CHARINDEX(N':', r.rest + N':') - 1))
-FROM #bpr AS b
-CROSS APPLY
-(
-    SELECT
-        rest = SUBSTRING(b.frag, CHARINDEX(N':', b.frag) + 1, 1024)
-) AS r
-WHERE b.lock_type = 'OBJECT'
-OPTION(RECOMPILE);
-
-UPDATE
-    b
-SET
-    b.resource_file_id =
-        TRY_CONVERT(integer, LEFT(r.rest, CHARINDEX(N':', r.rest + N':') - 1)),
-    b.resource_page_id =
-        TRY_CONVERT(bigint, LEFT(p.rest2, CHARINDEX(N':', p.rest2 + N':') - 1))
-FROM #bpr AS b
-CROSS APPLY
-(
-    SELECT
-        rest = SUBSTRING(b.frag, CHARINDEX(N':', b.frag) + 1, 1024)
-) AS r
-CROSS APPLY
-(
-    SELECT
-        rest2 = SUBSTRING(r.rest, CHARINDEX(N':', r.rest) + 1, 1024)
-) AS p
-WHERE b.lock_type IN ('PAGE', 'RID')
-OPTION(RECOMPILE);
-
-/* KEY -> object_id via sys.partitions, per contended database (no cross-db form of the view). */
-SET @key_dbs =
-    CURSOR
-    LOCAL FAST_FORWARD
-    FOR
-    SELECT DISTINCT
-        b.resource_database_id
-    FROM #bpr AS b
-    WHERE b.lock_type = 'KEY'
-    AND   b.resource_database_id IS NOT NULL
-    AND   b.resource_hobt_id IS NOT NULL;
-
-OPEN @key_dbs;
-FETCH NEXT FROM @key_dbs INTO @resolve_database_id;
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    IF DB_NAME(@resolve_database_id) IS NOT NULL
-    AND DATABASEPROPERTYEX(DB_NAME(@resolve_database_id), 'Status') = N'ONLINE'
-    BEGIN
-        SET @resolve_sql = N'
-        BEGIN TRY
-            UPDATE b
-            SET b.resource_object_id = p.object_id
-            FROM #bpr AS b
-            JOIN ' + QUOTENAME(DB_NAME(@resolve_database_id)) + N'.sys.partitions AS p
-              ON p.hobt_id = b.resource_hobt_id
-            WHERE b.lock_type = ''KEY''
-            AND   b.resource_database_id = @resolve_database_id
-            OPTION(RECOMPILE);
-        END TRY
-        BEGIN CATCH
-            /* no metadata access to the database -> leave for labeling */
-        END CATCH;';
-        EXECUTE sys.sp_executesql
-            @resolve_sql,
-          N'@resolve_database_id integer',
-            @resolve_database_id;
-    END;
-    FETCH NEXT FROM @key_dbs INTO @resolve_database_id;
-END;
-
-/* PAGE / RID -> object_id via sys.dm_db_page_info (2019+ or Azure SQL DB; VIEW DATABASE STATE -> TRY/CATCH). */
-IF @product_version >= 15
-OR @azure = 1
-BEGIN
-    SET @page_dbs =
-        CURSOR
-        LOCAL FAST_FORWARD
-        FOR
-        SELECT DISTINCT
-            b.resource_database_id
-        FROM #bpr AS b
-        WHERE b.lock_type IN ('PAGE', 'RID')
-        AND   b.resource_database_id IS NOT NULL
-        AND   b.resource_page_id IS NOT NULL;
-
-    OPEN @page_dbs;
-    FETCH NEXT FROM @page_dbs INTO @resolve_database_id;
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        IF DB_NAME(@resolve_database_id) IS NOT NULL
-        AND DATABASEPROPERTYEX(DB_NAME(@resolve_database_id), 'Status') = N'ONLINE'
-        BEGIN
-            SET @resolve_sql = N'
-            BEGIN TRY
-                UPDATE b
-                SET b.resource_object_id = pi.object_id
-                FROM #bpr AS b
-                CROSS APPLY sys.dm_db_page_info(b.resource_database_id, b.resource_file_id, b.resource_page_id, ''LIMITED'') AS pi
-                WHERE b.lock_type IN (''PAGE'', ''RID'')
-                AND   b.resource_database_id = @resolve_database_id
-                OPTION(RECOMPILE);
-            END TRY
-            BEGIN CATCH
-                /* no VIEW DATABASE STATE / page reallocated -> leave for labeling */
-            END CATCH;';
-            EXECUTE sys.sp_executesql
-                @resolve_sql,
-              N'@resolve_database_id integer',
-                @resolve_database_id;
-        END;
-        FETCH NEXT FROM @page_dbs INTO @resolve_database_id;
-    END;
-END;
-
-/* Format (plain schema.object) + label; the event object_id is the fallback, then the Unresolved sentinel. */
-UPDATE
-    b
-SET
-    b.contentious_object =
-        COALESCE
-        (
-            CASE
-                WHEN b.resource_object_id > 0
-                AND  OBJECT_NAME(b.resource_object_id, b.resource_database_id) IS NOT NULL
-                THEN CONCAT
-                     (
-                         OBJECT_SCHEMA_NAME(b.resource_object_id, b.resource_database_id),
-                         N'.',
-                         OBJECT_NAME(b.resource_object_id, b.resource_database_id)
-                     )
-            END,
-            CASE
-                WHEN b.object_id > 0
-                AND  OBJECT_NAME(b.object_id, b.database_id) IS NOT NULL
-                THEN CONCAT
-                     (
-                         OBJECT_SCHEMA_NAME(b.object_id, b.database_id),
-                         N'.',
-                         OBJECT_NAME(b.object_id, b.database_id)
-                     )
-            END,
-            N'Unresolved: ' +
-            CASE
-                WHEN b.lock_type IS NULL
-                THEN N''
-                ELSE LOWER(b.lock_type) + N' lock, '
-            END +
-            N'database: ' + ISNULL(DB_NAME(b.database_id), N'unknown')
-        )
-FROM #bpr AS b
-OPTION(RECOMPILE);
-
-SELECT
-    b.event_time,
-    b.blocked_process_report_xml,
-    b.object_id,
-    b.database_id,
-    b.contentious_object
-FROM #bpr AS b
-OPTION(RECOMPILE);";
-
-        var serverId = GetServerId(server);
-        var collectionTime = DateTime.UtcNow;
-        var rowsCollected = 0;
-        _lastSqlMs = 0;
-        _lastDuckDbMs = 0;
-
-        /* Query the most recent event_time we already have for this server.
-           Pass it to SQL Server so we only fetch events newer than what we've collected.
-           This prevents the same blocked process report from being inserted multiple times
-           as it lingers in the ring buffer across collection cycles. */
-        DateTime? lastCollectedTime = null;
         try
         {
-            using var duckConn = _duckDb.CreateConnection();
-            await duckConn.OpenAsync(cancellationToken);
-            using var cmd = duckConn.CreateCommand();
-            cmd.CommandText = "SELECT MAX(event_time) FROM blocked_process_reports WHERE server_id = $1";
-            cmd.Parameters.Add(new DuckDBParameter { Value = serverId });
-            var result = await cmd.ExecuteScalarAsync(cancellationToken);
-            if (result is DateTime dt)
-                lastCollectedTime = dt;
-        }
-        catch
-        {
-            /* If DuckDB query fails, fall back to default 10-minute window */
-        }
-
-        var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
-
-        /* Use the most recent timestamp from DuckDB as the cutoff, or fall back to 10-minute window */
-        command.Parameters.Add(new SqlParameter("@cutoff_time", SqlDbType.DateTime2) { Value = lastCollectedTime ?? DateTime.UtcNow.AddMinutes(-10) });
-
-        try
-        {
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            sqlSw.Stop();
-            _lastSqlMs = sqlSw.ElapsedMilliseconds;
-
-            var duckSw = Stopwatch.StartNew();
-
-            using (var duckConnection = _duckDb.CreateConnection())
-            {
-                await duckConnection.OpenAsync(cancellationToken);
-
-                using (var appender = duckConnection.CreateAppender("blocked_process_reports"))
-                {
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        var eventTime = reader.IsDBNull(0) ? (DateTime?)null : reader.GetDateTime(0);
-                        var reportXml = reader.IsDBNull(1) ? null : reader.GetString(1);
-                        /* #1140: object_id/database_id are the event's own data fields and contentious_object
-                           is resolved server-side in the collection query (cols 2-4), not parsed from the XML. */
-                        var objectId = reader.IsDBNull(2) ? (int?)null : reader.GetInt32(2);
-                        var databaseId = reader.IsDBNull(3) ? (int?)null : reader.GetInt32(3);
-                        var contentiousObject = reader.IsDBNull(4) ? null : reader.GetString(4);
-
-                        if (string.IsNullOrEmpty(reportXml))
-                        {
-                            continue;
-                        }
-
-                        /* Parse the blocked process report XML in C# */
-                        var parsed = ParseBlockedProcessReportXml(reportXml, eventTime);
-                        if (parsed == null)
-                        {
-                            continue;
-                        }
-
-                        var row = appender.CreateRow();
-                        row.AppendValue(GenerateCollectionId())
-                           .AppendValue(collectionTime)
-                           .AppendValue(serverId)
-                           .AppendValue(GetServerNameForStorage(server))
-                           .AppendValue(parsed.EventTime)
-                           .AppendValue(parsed.DatabaseName)
-                           .AppendValue(parsed.BlockedSpid)
-                           .AppendValue(parsed.BlockedEcid)
-                           .AppendValue(parsed.BlockingSpid)
-                           .AppendValue(parsed.BlockingEcid)
-                           .AppendValue(parsed.WaitTimeMs)
-                           .AppendValue(parsed.WaitResource)
-                           .AppendValue(parsed.LockMode)
-                           .AppendValue(parsed.BlockedStatus)
-                           .AppendValue(parsed.BlockedIsolationLevel)
-                           .AppendValue(parsed.BlockedLogUsed)
-                           .AppendValue(parsed.BlockedTransactionCount)
-                           .AppendValue(parsed.BlockedClientApp)
-                           .AppendValue(parsed.BlockedHostName)
-                           .AppendValue(parsed.BlockedLoginName)
-                           .AppendValue(parsed.BlockedSqlText)
-                           .AppendValue(parsed.BlockingStatus)
-                           .AppendValue(parsed.BlockingIsolationLevel)
-                           .AppendValue(parsed.BlockingClientApp)
-                           .AppendValue(parsed.BlockingHostName)
-                           .AppendValue(parsed.BlockingLoginName)
-                           .AppendValue(parsed.BlockingSqlText)
-                           .AppendValue(parsed.BlockedTransactionName)
-                           .AppendValue(parsed.BlockingTransactionName)
-                           .AppendValue(parsed.BlockedLastTranStarted)
-                           .AppendValue(parsed.BlockingLastTranStarted)
-                           .AppendValue(parsed.BlockedLastBatchStarted)
-                           .AppendValue(parsed.BlockingLastBatchStarted)
-                           .AppendValue(parsed.BlockedLastBatchCompleted)
-                           .AppendValue(parsed.BlockingLastBatchCompleted)
-                           .AppendValue(parsed.BlockedPriority)
-                           .AppendValue(parsed.BlockingPriority)
-                           .AppendValue(reportXml)
-                           .AppendValue(objectId)
-                           .AppendValue(databaseId)
-                           .AppendValue(contentiousObject)
-                           .AppendValue(parsed.MonitorLoop)
-                           .EndRow();
-
-                        rowsCollected++;
-                    }
-                }
-            }
-
-            duckSw.Stop();
-            _lastDuckDbMs = duckSw.ElapsedMilliseconds;
+            return await RunCollectorDefinitionAsync(BlockedProcessReportCollector.Instance, server, cancellationToken);
         }
         catch (SqlException ex) when (ex.Number == 297 || ex.Number == 15151 || ex.Message.Contains("XE session"))
         {
             /* XE session not found or not accessible */
-            _logger?.LogDebug("Blocked process XE session not available on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Blocked process XE session not available: {ex.Message}");
             return 0;
         }
-
-        _logger?.LogDebug("Collected {RowCount} blocked process reports for server '{Server}'", rowsCollected, server.DisplayName);
-        return rowsCollected;
-    }
-
-    /// <summary>
-    /// Parses a blocked-process-report XML fragment into a structured object.
-    /// XML structure: &lt;blocked-process-report&gt;&lt;blocked-process&gt;&lt;process ...&gt;&lt;inputbuf&gt;...
-    ///                 &lt;blocking-process&gt;&lt;process ...&gt;&lt;inputbuf&gt;...
-    /// </summary>
-    private static ParsedBlockedProcessReport? ParseBlockedProcessReportXml(string xml, DateTime? eventTime)
-    {
-        try
-        {
-            var doc = XElement.Parse(xml);
-
-            var blockedProcess = doc.Element("blocked-process")?.Element("process");
-            var blockingProcess = doc.Element("blocking-process")?.Element("process");
-
-            if (blockedProcess == null)
-            {
-                return null;
-            }
-
-            return new ParsedBlockedProcessReport
-            {
-                EventTime = eventTime,
-                // Lite's stored XML is rooted at <blocked-process-report>, so monitorLoop is a root attribute.
-                MonitorLoop = int.TryParse(doc.Attribute("monitorLoop")?.Value, out var ml) ? ml : (int?)null,
-                DatabaseName = blockedProcess.Attribute("currentdbname")?.Value,
-                BlockedSpid = int.TryParse(blockedProcess.Attribute("spid")?.Value, out var bs) ? bs : 0,
-                BlockedEcid = int.TryParse(blockedProcess.Attribute("ecid")?.Value, out var be) ? be : 0,
-                BlockingSpid = int.TryParse(blockingProcess?.Attribute("spid")?.Value, out var bks) ? bks : 0,
-                BlockingEcid = int.TryParse(blockingProcess?.Attribute("ecid")?.Value, out var bke) ? bke : 0,
-                WaitTimeMs = long.TryParse(blockedProcess.Attribute("waittime")?.Value, out var wt) ? wt : 0,
-                WaitResource = blockedProcess.Attribute("waitresource")?.Value,
-                LockMode = blockedProcess.Attribute("lockMode")?.Value,
-                BlockedStatus = blockedProcess.Attribute("status")?.Value,
-                BlockedIsolationLevel = blockedProcess.Attribute("isolationlevel")?.Value,
-                BlockedLogUsed = long.TryParse(blockedProcess.Attribute("logused")?.Value, out var lu) ? lu : 0,
-                BlockedTransactionCount = int.TryParse(blockedProcess.Attribute("trancount")?.Value, out var tc) ? tc : 0,
-                BlockedClientApp = blockedProcess.Attribute("clientapp")?.Value,
-                BlockedHostName = blockedProcess.Attribute("hostname")?.Value,
-                BlockedLoginName = blockedProcess.Attribute("loginname")?.Value,
-                BlockedSqlText = blockedProcess.Element("inputbuf")?.Value?.Trim(),
-                BlockedTransactionName = blockedProcess.Attribute("transactionname")?.Value,
-                BlockedLastTranStarted = DateTime.TryParse(blockedProcess.Attribute("lasttranstarted")?.Value, out var blts) ? blts : null,
-                BlockedLastBatchStarted = DateTime.TryParse(blockedProcess.Attribute("lastbatchstarted")?.Value, out var blbs) ? blbs : null,
-                BlockedLastBatchCompleted = DateTime.TryParse(blockedProcess.Attribute("lastbatchcompleted")?.Value, out var blbc) ? blbc : null,
-                BlockedPriority = int.TryParse(blockedProcess.Attribute("priority")?.Value, out var bp) ? bp : 0,
-                BlockingStatus = blockingProcess?.Attribute("status")?.Value,
-                BlockingIsolationLevel = blockingProcess?.Attribute("isolationlevel")?.Value,
-                BlockingClientApp = blockingProcess?.Attribute("clientapp")?.Value,
-                BlockingHostName = blockingProcess?.Attribute("hostname")?.Value,
-                BlockingLoginName = blockingProcess?.Attribute("loginname")?.Value,
-                BlockingSqlText = blockingProcess?.Element("inputbuf")?.Value?.Trim(),
-                BlockingTransactionName = blockingProcess?.Attribute("transactionname")?.Value,
-                BlockingLastTranStarted = DateTime.TryParse(blockingProcess?.Attribute("lasttranstarted")?.Value, out var bklts) ? bklts : null,
-                BlockingLastBatchStarted = DateTime.TryParse(blockingProcess?.Attribute("lastbatchstarted")?.Value, out var bklbs) ? bklbs : null,
-                BlockingLastBatchCompleted = DateTime.TryParse(blockingProcess?.Attribute("lastbatchcompleted")?.Value, out var bklbc) ? bklbc : null,
-                BlockingPriority = int.TryParse(blockingProcess?.Attribute("priority")?.Value, out var bkp) ? bkp : 0
-            };
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Internal model for parsed blocked process report XML data.
-    /// </summary>
-    private class ParsedBlockedProcessReport
-    {
-        public DateTime? EventTime { get; set; }
-        public int? MonitorLoop { get; set; }
-        public string? DatabaseName { get; set; }
-        public int BlockedSpid { get; set; }
-        public int BlockedEcid { get; set; }
-        public int BlockingSpid { get; set; }
-        public int BlockingEcid { get; set; }
-        public long WaitTimeMs { get; set; }
-        public string? WaitResource { get; set; }
-        public string? LockMode { get; set; }
-        public string? BlockedStatus { get; set; }
-        public string? BlockedIsolationLevel { get; set; }
-        public long BlockedLogUsed { get; set; }
-        public int BlockedTransactionCount { get; set; }
-        public string? BlockedClientApp { get; set; }
-        public string? BlockedHostName { get; set; }
-        public string? BlockedLoginName { get; set; }
-        public string? BlockedSqlText { get; set; }
-        public string? BlockingStatus { get; set; }
-        public string? BlockingIsolationLevel { get; set; }
-        public string? BlockingClientApp { get; set; }
-        public string? BlockingHostName { get; set; }
-        public string? BlockingLoginName { get; set; }
-        public string? BlockingSqlText { get; set; }
-        public string? BlockedTransactionName { get; set; }
-        public string? BlockingTransactionName { get; set; }
-        public DateTime? BlockedLastTranStarted { get; set; }
-        public DateTime? BlockingLastTranStarted { get; set; }
-        public DateTime? BlockedLastBatchStarted { get; set; }
-        public DateTime? BlockingLastBatchStarted { get; set; }
-        public DateTime? BlockedLastBatchCompleted { get; set; }
-        public DateTime? BlockingLastBatchCompleted { get; set; }
-        public int BlockedPriority { get; set; }
-        public int BlockingPriority { get; set; }
     }
 }

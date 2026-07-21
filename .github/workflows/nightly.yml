@@ -65,6 +65,7 @@ jobs:
           dotnet restore Lite/PerformanceMonitorLite.csproj --locked-mode
           dotnet restore Installer/PerformanceMonitorInstaller.csproj --locked-mode
           dotnet restore Lite.Tests/Lite.Tests.csproj --locked-mode
+          dotnet restore Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj --locked-mode
 
       - name: Run tests
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --verbosity normal
@@ -77,6 +78,34 @@ jobs:
 
       - name: Publish CLI Installer
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
+
+      - name: Publish Darling Service
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj -c Release -o publish/DarlingService
+
+      - name: Publish Darling Viewer
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
+
+      # Self-contained viewer publish that feeds the remote-seat Velopack Setup.exe (#1555), the same
+      # publish shape build.yml uses for the Dashboard/Lite Velopack packs. This is IN ADDITION to the
+      # framework-dependent "Publish Darling Viewer" above, which still feeds the co-located viewer\
+      # folder inside PerformanceMonitorDarling-*.zip — that zip is unchanged.
+      - name: Publish Darling Viewer (self-contained for Velopack)
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -r win-x64 --self-contained -o publish/DarlingViewer-velopack
+
+      # Same cache key as build.yml's release path: the fetch script's content hash (the SHA256
+      # pins live inside it). The ~340MB EDB/TimescaleDB fetch runs at most once per pin-set per
+      # branch; nightly and release runs share the assembled zip whenever the cache is visible.
+      - name: Cache Darling pg-runtime.zip
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip
+        if: steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
 
       - name: Package artifacts
         shell: pwsh
@@ -102,10 +131,39 @@ jobs:
 
           Compress-Archive -Path 'publish/Installer/*' -DestinationPath "releases/PerformanceMonitorInstaller-$version.zip" -Force
 
+          # Same layout as the release zip (build.yml "Package Darling (signed)"): service at the
+          # archive root with darling.sample.json alongside, viewer under viewer\, pg-runtime.zip
+          # beside the service exe where DarlingManagedPostgres extracts it on first run. Nightly
+          # zips are unsigned across the board, so this stages from publish/ instead of signed/.
+          $darlingDir = 'publish/Darling'
+          New-Item -ItemType Directory -Force -Path "$darlingDir/viewer" | Out-Null
+          Copy-Item 'publish/DarlingService/*' $darlingDir -Recurse
+          Copy-Item 'publish/DarlingViewer/*' "$darlingDir/viewer" -Recurse
+          Copy-Item 'Darling/artifacts/pg-runtime.zip' $darlingDir
+
+          Compress-Archive -Path 'publish/Darling/*' -DestinationPath "releases/PerformanceMonitorDarling-$version.zip" -Force
+
+      # Darling viewer remote-seat installer (#1555). Nightly ships it UNSIGNED like every other nightly
+      # artifact. Mirrors build.yml's release vpk pack (same pack id / exe / channel) but packs from the
+      # raw self-contained publish (no SignPath), and deliberately does NOT touch the Velopack update
+      # feed: the nightly GitHub release is deleted + recreated each night, so there is no persistent
+      # delta chain to `vpk download`/`vpk upload` from — we ship a standalone full Setup.exe as a plain
+      # release asset. Copied to a deterministic name so the checksum + upload steps below pick it up.
+      # Purely additive: the co-located viewer inside PerformanceMonitorDarling-*.zip is untouched.
+      - name: Create Darling Viewer Setup.exe (Velopack, unsigned)
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          dotnet tool install -g vpk --version 1.2.0
+          New-Item -ItemType Directory -Force -Path releases/velopack-darlingviewer
+          vpk pack -u PerformanceMonitorDarlingViewer -v $version -p publish/DarlingViewer-velopack -e PerformanceMonitor.Darling.Viewer.exe -o releases/velopack-darlingviewer --channel darlingviewer
+          $setup = Get-ChildItem releases/velopack-darlingviewer/*Setup.exe | Select-Object -First 1
+          Copy-Item $setup.FullName "releases/PerformanceMonitorDarlingViewer-$version-Setup.exe"
+
       - name: Generate checksums
         shell: pwsh
         run: |
-          $checksums = Get-ChildItem releases/*.zip | ForEach-Object {
+          $checksums = Get-ChildItem releases/*.zip, releases/*.exe | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"
           }
@@ -142,4 +200,123 @@ jobs:
             --title "Nightly Build ($version)" `
             --notes $body `
             --prerelease `
-            releases/*.zip releases/SHA256SUMS.txt
+            releases/*.zip releases/*.exe releases/SHA256SUMS.txt
+
+  # Darling.Tests has live-PostgreSQL tests gated on env vars that the per-PR/push build never
+  # sets, so regular CI runs only the ungated subset. This job stands up a throwaway PostgreSQL
+  # from the bundled pg-runtime and runs the full Darling suite against it nightly, so the
+  # Postgres + managed-bootstrap paths get real coverage. The one live-SQL-Server E2E stays
+  # skipped (no SQL Server on the runner) — expected. Gated like the build job so it only runs
+  # when dev actually changed (or on manual dispatch).
+  darling-pg:
+    name: Darling PostgreSQL tests
+    needs: check
+    if: needs.check.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+
+    steps:
+      # Scheduled runs always test dev (schedules execute from the default branch, so ref_name
+      # would be main). A manual dispatch tests the DISPATCHED ref — the only way to validate a
+      # branch's gated-pg test changes before merge; the artifact-publishing build job stays
+      # pinned to dev either way, so a branch dispatch can never ship branch binaries.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || 'dev' }}
+
+      - name: Setup .NET 10.0
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # Darling bundles a PostgreSQL 18 + TimescaleDB runtime (pg-runtime.zip). The fetch script
+      # pulls ~340MB of pinned EDB/TimescaleDB archives, so cache the assembled zip on the SAME
+      # key build.yml's release job uses (the fetch script's own content hash) — nightly and
+      # release share one cache entry, so a warm cache means no download here.
+      - name: Cache Darling pg-runtime.zip
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip (cache miss only)
+        if: steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
+
+      # One uniform path for hit and miss: we always have the zip (restored or freshly built),
+      # so always extract it — simpler than branching on the script's -KeepWork assembled tree.
+      # ExtractToDirectory mirrors the fetch script's own API and reads any zip it writes.
+      - name: Extract pg-runtime
+        shell: pwsh
+        run: |
+          $zip  = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime.zip"
+          $dest = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          if (-not (Test-Path "$dest\pgsql\bin\pg_ctl.exe")) { throw "pg-runtime missing pgsql\bin\pg_ctl.exe" }
+
+      - name: Restore Darling.Tests
+        run: dotnet restore Darling/Darling.Tests/Darling.Tests.csproj --locked-mode
+
+      - name: Build Darling.Tests
+        run: dotnet build Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-restore
+
+      # Stand up a throwaway cluster from the bundled runtime. initdb TRUST auth is acceptable
+      # ONLY here: an ephemeral CI runner, loopback-only, throwaway data. The PRODUCT default is
+      # the opposite (scram-sha-256 + a generated credential; see DarlingManagedPostgres). The
+      # appended settings mirror DarlingManagedPostgres.BuildConfAppend (timescaledb preload —
+      # the Timescale-gated tests detect and use it — plus the port and loopback bind). Port 5541
+      # is fixed and distinct; the managed-bootstrap E2E starts its OWN postgres on a random free
+      # port, so there is no collision.
+      - name: Initialize and start throwaway PostgreSQL
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          $logFile = "$env:RUNNER_TEMP\darling-pg.log"
+          # The bootstrap superuser is named "darling", not "postgres": the V8 schema-split
+          # migration runs CREATE SCHEMA ... AUTHORIZATION darling (PgSchemaGenerator.OwnerRole),
+          # so a cluster without that role fails every fresh-store migration. Matching managed
+          # mode's shape (DarlingManagedPostgres also initdbs its owner as "darling").
+          & "$bin\initdb.exe" -D $dataDir -U darling -A trust --encoding=UTF8
+          if ($LASTEXITCODE -ne 0) { throw "initdb failed ($LASTEXITCODE)" }
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "shared_preload_libraries = 'timescaledb'"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "port = 5541"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "listen_addresses = '127.0.0.1'"
+          & "$bin\pg_ctl.exe" -D $dataDir -l $logFile -w start
+          if ($LASTEXITCODE -ne 0) { if (Test-Path $logFile) { Get-Content $logFile -Tail 50 }; throw "pg_ctl start failed ($LASTEXITCODE)" }
+          & "$bin\createdb.exe" -h 127.0.0.1 -p 5541 -U darling darling
+          if ($LASTEXITCODE -ne 0) { throw "createdb failed ($LASTEXITCODE)" }
+
+      # DARLING_TEST_PG lights up the [Collection("live-postgres")] classes; DARLING_TEST_PGRUNTIME
+      # lights up the managed-bootstrap E2E. DARLING_TEST_SQL is intentionally unset — the one
+      # live-SQL-Server E2E stays skipped (no SQL Server on the runner).
+      - name: Run Darling PG tests
+        shell: pwsh
+        env:
+          DARLING_TEST_PG: "Host=127.0.0.1;Port=5541;Username=darling;Database=darling"
+          DARLING_TEST_PGRUNTIME: ${{ github.workspace }}\Darling\artifacts\pg-runtime
+        run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal --logger "trx;LogFileName=darling-nightly.trx" --results-directory TestResults
+
+      - name: Stop PostgreSQL
+        if: always()
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          if (Test-Path "$bin\pg_ctl.exe") { & "$bin\pg_ctl.exe" -D $dataDir -m fast -w stop }
+          exit 0
+
+      - name: Upload PG log and test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: darling-pg-failure
+          path: |
+            ${{ runner.temp }}/darling-pg.log
+            TestResults/
+          if-no-files-found: ignore

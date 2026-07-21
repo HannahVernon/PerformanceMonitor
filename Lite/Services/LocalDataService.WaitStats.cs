@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 
+using PerformanceMonitor.Ui;
+
 namespace PerformanceMonitorLite.Services;
 
 public partial class LocalDataService
@@ -123,7 +125,7 @@ WITH raw AS
         delta_wait_time_ms,
         delta_signal_wait_time_ms,
         delta_waiting_tasks,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   wait_type = $2
@@ -132,9 +134,9 @@ WITH raw AS
 )
 SELECT
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
-    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
+    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
 FROM raw
 ORDER BY collection_time";
 
@@ -185,7 +187,7 @@ WITH raw AS
         delta_wait_time_ms,
         delta_signal_wait_time_ms,
         delta_waiting_tasks,
-        date_diff('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (PARTITION BY wait_type ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -195,9 +197,9 @@ WITH raw AS
 SELECT
     wait_type,
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
-    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
-    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second,
+    CASE WHEN interval_seconds > 0 THEN CAST(delta_signal_wait_time_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS signal_wait_time_ms_per_second,
+    CASE WHEN delta_waiting_tasks > 0 THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / delta_waiting_tasks ELSE 0 END AS avg_ms_per_wait
 FROM raw
 ORDER BY wait_type, collection_time";
 
@@ -247,7 +249,7 @@ WITH per_collection AS
     SELECT
         collection_time,
         SUM(delta_wait_time_ms) AS total_delta_ms,
-        date_diff('second', LAG(collection_time) OVER (ORDER BY collection_time), collection_time) AS interval_seconds
+        extract(epoch FROM (date_trunc('second', collection_time) - date_trunc('second', LAG(collection_time) OVER (ORDER BY collection_time)))) AS interval_seconds
     FROM v_wait_stats
     WHERE server_id = $1
     AND   collection_time >= $2
@@ -257,7 +259,7 @@ WITH per_collection AS
 )
 SELECT
     collection_time,
-    CASE WHEN interval_seconds > 0 THEN CAST(total_delta_ms AS DOUBLE) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
+    CASE WHEN interval_seconds > 0 THEN CAST(total_delta_ms AS DOUBLE PRECISION) / interval_seconds ELSE 0 END AS wait_time_ms_per_second
 FROM per_collection
 ORDER BY collection_time";
 
@@ -294,7 +296,7 @@ SELECT
     delta_wait_time_ms AS delta_ms,
     delta_waiting_tasks AS delta_tasks,
     CASE WHEN delta_waiting_tasks > 0
-    THEN CAST(delta_wait_time_ms AS DOUBLE) / delta_waiting_tasks
+    THEN CAST(delta_wait_time_ms AS DOUBLE PRECISION) / delta_waiting_tasks
     ELSE 0 END AS avg_ms_per_wait
 FROM v_wait_stats
 WHERE server_id = $1
@@ -337,39 +339,61 @@ LIMIT 3";
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
         command.CommandText = @"
+WITH blocked_counts AS (
+    SELECT collection_time, blocking_session_id AS blocker_session_id, COUNT(*) AS blocked_session_count
+    FROM v_query_snapshots
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   blocking_session_id > 0
+    GROUP BY collection_time, blocking_session_id
+)
 SELECT
-    session_id,
-    database_name,
-    elapsed_time_formatted,
-    query_text,
-    status,
-    blocking_session_id,
-    wait_type,
-    wait_time_ms,
-    wait_resource,
-    cpu_time_ms,
-    total_elapsed_time_ms,
-    reads,
-    writes,
-    logical_reads,
-    granted_query_memory_gb,
-    transaction_isolation_level,
-    dop,
-    parallel_worker_count,
-    query_plan,
-    live_query_plan,
-    collection_time,
-    login_name,
-    host_name,
-    program_name,
-    open_transaction_count,
-    percent_complete
-FROM v_query_snapshots
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-AND   wait_type = $4
-ORDER BY wait_time_ms DESC
+    q.session_id,
+    q.database_name,
+    q.elapsed_time_formatted,
+    q.query_text,
+    q.status,
+    q.blocking_session_id,
+    q.wait_type,
+    q.wait_time_ms,
+    q.wait_resource,
+    q.cpu_time_ms,
+    q.total_elapsed_time_ms,
+    q.reads,
+    q.writes,
+    q.logical_reads,
+    q.granted_query_memory_gb,
+    q.transaction_isolation_level,
+    q.dop,
+    q.parallel_worker_count,
+    q.query_plan,
+    q.live_query_plan,
+    q.collection_time,
+    q.login_name,
+    q.host_name,
+    q.program_name,
+    q.open_transaction_count,
+    q.percent_complete,
+    q.query_hash,
+    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count,
+    q.requested_memory_mb,
+    q.used_memory_mb,
+    q.max_used_memory_mb,
+    q.tempdb_current_mb,
+    q.tempdb_allocations_mb,
+    q.tran_log_used_mb,
+    q.tran_start_time,
+    q.request_id
+FROM v_query_snapshots q
+LEFT JOIN blocked_counts bc
+  ON  bc.collection_time = q.collection_time
+  AND bc.blocker_session_id = q.session_id
+WHERE q.server_id = $1
+AND   q.collection_time >= $2
+AND   q.collection_time <= $3
+AND   q.wait_type = $4
+ORDER BY q.wait_time_ms DESC
 LIMIT 500";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -408,7 +432,17 @@ LIMIT 500";
                 HostName = reader.IsDBNull(22) ? "" : reader.GetString(22),
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
-                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25))
+                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27)),
+                RequestedMemoryMb = reader.IsDBNull(28) ? 0 : ToDouble(reader.GetValue(28)),
+                UsedMemoryMb = reader.IsDBNull(29) ? 0 : ToDouble(reader.GetValue(29)),
+                MaxUsedMemoryMb = reader.IsDBNull(30) ? 0 : ToDouble(reader.GetValue(30)),
+                TempdbCurrentMb = reader.IsDBNull(31) ? 0 : ToDouble(reader.GetValue(31)),
+                TempdbAllocationsMb = reader.IsDBNull(32) ? 0 : ToDouble(reader.GetValue(32)),
+                TranLogUsedMb = reader.IsDBNull(33) ? 0 : ToDouble(reader.GetValue(33)),
+                TranStartTime = reader.IsDBNull(34) ? (DateTime?)null : reader.GetDateTime(34),
+                RequestId = reader.IsDBNull(35) ? 0 : reader.GetInt32(35)
             });
         }
 
@@ -429,38 +463,60 @@ LIMIT 500";
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
         command.CommandText = @"
+WITH blocked_counts AS (
+    SELECT collection_time, blocking_session_id AS blocker_session_id, COUNT(*) AS blocked_session_count
+    FROM v_query_snapshots
+    WHERE server_id = $1
+    AND   collection_time >= $2
+    AND   collection_time <= $3
+    AND   blocking_session_id > 0
+    GROUP BY collection_time, blocking_session_id
+)
 SELECT
-    session_id,
-    database_name,
-    elapsed_time_formatted,
-    query_text,
-    status,
-    blocking_session_id,
-    wait_type,
-    wait_time_ms,
-    wait_resource,
-    cpu_time_ms,
-    total_elapsed_time_ms,
-    reads,
-    writes,
-    logical_reads,
-    granted_query_memory_gb,
-    transaction_isolation_level,
-    dop,
-    parallel_worker_count,
-    query_plan,
-    live_query_plan,
-    collection_time,
-    login_name,
-    host_name,
-    program_name,
-    open_transaction_count,
-    percent_complete
-FROM v_query_snapshots
-WHERE server_id = $1
-AND   collection_time >= $2
-AND   collection_time <= $3
-ORDER BY collection_time DESC
+    q.session_id,
+    q.database_name,
+    q.elapsed_time_formatted,
+    q.query_text,
+    q.status,
+    q.blocking_session_id,
+    q.wait_type,
+    q.wait_time_ms,
+    q.wait_resource,
+    q.cpu_time_ms,
+    q.total_elapsed_time_ms,
+    q.reads,
+    q.writes,
+    q.logical_reads,
+    q.granted_query_memory_gb,
+    q.transaction_isolation_level,
+    q.dop,
+    q.parallel_worker_count,
+    q.query_plan,
+    q.live_query_plan,
+    q.collection_time,
+    q.login_name,
+    q.host_name,
+    q.program_name,
+    q.open_transaction_count,
+    q.percent_complete,
+    q.query_hash,
+    COALESCE(bc.blocked_session_count, 0) AS blocked_session_count,
+    q.requested_memory_mb,
+    q.used_memory_mb,
+    q.max_used_memory_mb,
+    q.tempdb_current_mb,
+    q.tempdb_allocations_mb,
+    q.tran_log_used_mb,
+    q.tran_start_time,
+    q.request_id
+FROM v_query_snapshots q
+LEFT JOIN blocked_counts bc
+  ON  bc.collection_time = q.collection_time
+  AND bc.blocker_session_id = q.session_id
+WHERE q.server_id = $1
+AND   q.collection_time >= $2
+AND   q.collection_time <= $3
+ORDER BY q.collection_time DESC
 LIMIT 2000";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
@@ -498,7 +554,17 @@ LIMIT 2000";
                 HostName = reader.IsDBNull(22) ? "" : reader.GetString(22),
                 ProgramName = reader.IsDBNull(23) ? "" : reader.GetString(23),
                 OpenTransactionCount = reader.IsDBNull(24) ? 0 : reader.GetInt32(24),
-                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25))
+                PercentComplete = reader.IsDBNull(25) ? 0m : Convert.ToDecimal(reader.GetValue(25)),
+                QueryHash = reader.IsDBNull(26) ? "" : reader.GetString(26),
+                BlockedSessionCount = reader.IsDBNull(27) ? 0 : Convert.ToInt32(reader.GetValue(27)),
+                RequestedMemoryMb = reader.IsDBNull(28) ? 0 : ToDouble(reader.GetValue(28)),
+                UsedMemoryMb = reader.IsDBNull(29) ? 0 : ToDouble(reader.GetValue(29)),
+                MaxUsedMemoryMb = reader.IsDBNull(30) ? 0 : ToDouble(reader.GetValue(30)),
+                TempdbCurrentMb = reader.IsDBNull(31) ? 0 : ToDouble(reader.GetValue(31)),
+                TempdbAllocationsMb = reader.IsDBNull(32) ? 0 : ToDouble(reader.GetValue(32)),
+                TranLogUsedMb = reader.IsDBNull(33) ? 0 : ToDouble(reader.GetValue(33)),
+                TranStartTime = reader.IsDBNull(34) ? (DateTime?)null : reader.GetDateTime(34),
+                RequestId = reader.IsDBNull(35) ? 0 : reader.GetInt32(35)
             });
         }
 
@@ -549,7 +615,8 @@ LIMIT 2000";
                     r.writes,
                     r.wait_type,
                     r.blocking_session_id,
-                    r.query_hash
+                    r.query_hash,
+                    r.program_name
                 FROM v_query_snapshots AS r
                 WHERE r.server_id = $1
                     AND r.collection_time = (SELECT MAX(vqs.collection_time) FROM v_query_snapshots AS vqs WHERE vqs.server_id = $1)
@@ -583,7 +650,11 @@ LIMIT 2000";
                 Writes = reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
                 WaitType = reader.IsDBNull(7) ? null : reader.GetString(7),
                 BlockingSessionId = reader.IsDBNull(8) ? null : (int?)reader.GetInt32(8),
-                QueryHash = reader.IsDBNull(9) ? null : reader.GetString(9)
+                QueryHash = reader.IsDBNull(9) ? null : reader.GetString(9),
+                /* Phase-5 A reconciliation: populate ProgramName so the shared
+                   BuildLongRunningQueryContext renders the ("Program", ...) detail item the
+                   Dashboard's alert already had. */
+                ProgramName = reader.IsDBNull(10) ? "" : reader.GetString(10)
             });
         }
 
@@ -591,28 +662,8 @@ LIMIT 2000";
     }
 }
 
-public class LongRunningQueryInfo
-{
-    public int SessionId { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public string QueryText { get; set; } = "";
-    public string ProgramName { get; set; } = "";
-    public long ElapsedSeconds { get; set; }
-    public long CpuTimeMs { get; set; }
-    public long Reads { get; set; }
-    public long Writes { get; set; }
-    public string? WaitType { get; set; }
-    public int? BlockingSessionId { get; set; }
-    public string? QueryHash { get; set; }
-}
-
-public class PoisonWaitDelta
-{
-    public string WaitType { get; set; } = "";
-    public long DeltaMs { get; set; }
-    public long DeltaTasks { get; set; }
-    public double AvgMsPerWait { get; set; }
-}
+/* LongRunningQueryInfo and PoisonWaitDelta moved to PerformanceMonitor.Alerting (Phase-5 A0);
+   the bare names resolve through the global using aliases in GlobalUsings.cs. */
 
 public class WaitStatsRow
 {
@@ -628,7 +679,6 @@ public class WaitStatsRow
     public string SignalWaitTimeFormatted => FormatMs(TotalSignalWaitTimeMs);
     public string ResourceWaitTimeFormatted => FormatMs(ResourceWaitTimeMs);
     public double SignalWaitPercent => TotalWaitTimeMs > 0 ? (double)TotalSignalWaitTimeMs / TotalWaitTimeMs * 100 : 0;
-    public bool IsHighWait => TotalWaitTimeMs > 60000;
 
     private static string FormatMs(long ms)
     {
@@ -637,12 +687,6 @@ public class WaitStatsRow
         if (ms < 3600000) return $"{ms / 60000.0:F1} min";
         return $"{ms / 3600000.0:F1} hr";
     }
-}
-
-public class SelectableItem
-{
-    public string DisplayName { get; set; } = "";
-    public bool IsSelected { get; set; }
 }
 
 public class WaitStatsTrendPoint

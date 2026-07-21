@@ -521,7 +521,9 @@ WITH
                 COUNT_BIG(*)
             FROM collect.cpu_utilization_stats AS cus
             CROSS JOIN yesterday_boundary AS yb
-            WHERE cus.sqlserver_cpu_utilization >= 80
+            /* Linux: total_cpu_utilization is NULL (#1048); fall back to the SQL-only figure.
+               Matches report.daily_summary.high_cpu_events so both surfaces agree. */
+            WHERE ISNULL(cus.total_cpu_utilization, cus.sqlserver_cpu_utilization) >= 80
             AND   cus.collection_time >= yb.start_time
             AND   cus.collection_time < yb.end_time
         )
@@ -556,7 +558,9 @@ WITH
                 COUNT_BIG(*)
             FROM collect.cpu_utilization_stats AS cus
             CROSS JOIN today_boundary AS tb
-            WHERE cus.sqlserver_cpu_utilization >= 80
+            /* Linux: total_cpu_utilization is NULL (#1048); fall back to the SQL-only figure.
+               Matches report.daily_summary.high_cpu_events so both surfaces agree. */
+            WHERE ISNULL(cus.total_cpu_utilization, cus.sqlserver_cpu_utilization) >= 80
             AND   cus.collection_time >= tb.start_time
         ),
         memory_pressure_count =

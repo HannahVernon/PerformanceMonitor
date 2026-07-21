@@ -17,9 +17,8 @@ public sealed class McpSchedulerTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {

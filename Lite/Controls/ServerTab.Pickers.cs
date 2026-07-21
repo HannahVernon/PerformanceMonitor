@@ -307,14 +307,6 @@ public partial class ServerTab : UserControl
             ApplyTheme(MemoryClerksChart);
             _memoryClerksHover?.Clear();
 
-            if (selected.Count == 0)
-            {
-                MemoryClerksTotalText.Text = "--";
-                MemoryClerksTopText.Text = "--";
-                MemoryClerksChart.Refresh();
-                return;
-            }
-
             var hoursBack = GetHoursBack();
             DateTime? fromDate = null;
             DateTime? toDate = null;
@@ -327,6 +319,21 @@ public partial class ServerTab : UserControl
                     fromDate = ServerTimeHelper.DisplayTimeToServerTime(fromLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                     toDate = ServerTimeHelper.DisplayTimeToServerTime(toLocal.Value, ServerTimeHelper.CurrentDisplayMode);
                 }
+            }
+            DateTime rangeEnd = toDate ?? DateTime.UtcNow.AddMinutes(UtcOffsetMinutes);
+            DateTime rangeStart = fromDate ?? rangeEnd.AddHours(-hoursBack);
+            double xMin = rangeStart.ToOADate();
+            double xMax = rangeEnd.ToOADate();
+
+            if (selected.Count == 0)
+            {
+                MemoryClerksTotalText.Text = "--";
+                MemoryClerksTopText.Text = "--";
+                MemoryClerksChart.Plot.Axes.DateTimeTicksBottomDateChange();
+                MemoryClerksChart.Plot.Axes.SetLimitsX(xMin, xMax);
+                ReapplyAxisColors(MemoryClerksChart);
+                MemoryClerksChart.Refresh();
+                return;
             }
 
             double globalMax = 0;
@@ -367,6 +374,7 @@ public partial class ServerTab : UserControl
             }
 
             MemoryClerksChart.Plot.Axes.DateTimeTicksBottomDateChange();
+            MemoryClerksChart.Plot.Axes.SetLimitsX(xMin, xMax);
             ReapplyAxisColors(MemoryClerksChart);
             MemoryClerksChart.Plot.YLabel("Memory (MB)");
             SetChartYLimitsWithLegendPadding(MemoryClerksChart, 0, globalMax > 0 ? globalMax : 100);

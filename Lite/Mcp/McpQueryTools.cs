@@ -20,11 +20,8 @@ public sealed class McpQueryTools
         [Description("If true, only return queries that used parallelism (max_dop > 1).")] bool parallel_only = false,
         [Description("Minimum DOP to filter on. Implies parallel filtering.")] int min_dop = 0)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -34,7 +31,7 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetTopQueriesByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
+            var rows = await dataService.GetTopQueriesByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseNames: string.IsNullOrEmpty(database_name) ? null : new[] { database_name });
             if (rows.Count == 0)
             {
                 return McpHelpers.Status("unavailable", "No query stats available for the specified time range.");
@@ -94,11 +91,8 @@ public sealed class McpQueryTools
         [Description("Number of top procedures. Default 20.")] int top = 20,
         [Description("Filter to a specific database.")] string? database_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -108,7 +102,7 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetTopProceduresByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
+            var rows = await dataService.GetTopProceduresByCpuAsync(resolved.Value.ServerId, hours_back, top, databaseNames: string.IsNullOrEmpty(database_name) ? null : new[] { database_name });
             if (rows.Count == 0)
             {
                 return McpHelpers.Status(
@@ -161,11 +155,8 @@ public sealed class McpQueryTools
         [Description("Number of top queries. Default 20.")] int top = 20,
         [Description("Filter to a specific database.")] string? database_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -175,7 +166,7 @@ public sealed class McpQueryTools
             var topError = McpHelpers.ValidateTop(top, "top");
             if (topError != null) return topError;
 
-            var rows = await dataService.GetQueryStoreTopQueriesAsync(resolved.Value.ServerId, hours_back, top, databaseName: database_name);
+            var rows = await dataService.GetQueryStoreTopQueriesAsync(resolved.Value.ServerId, hours_back, top, databaseNames: string.IsNullOrEmpty(database_name) ? null : new[] { database_name });
             if (rows.Count == 0)
             {
                 return McpHelpers.Status("unavailable", "No Query Store data available. Query Store may not be enabled on target databases.");
@@ -219,11 +210,8 @@ public sealed class McpQueryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -260,11 +248,8 @@ public sealed class McpQueryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {

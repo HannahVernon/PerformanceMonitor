@@ -39,6 +39,7 @@ public class CollectionBackgroundService : BackgroundService
     private DateTime _lastArchiveTime = DateTime.UtcNow;
     private DateTime _lastRetentionTime = DateTime.UtcNow;
     private DateTime _lastAnalysisTime = DateTime.UtcNow;
+    private DateTime _lastFindingsCleanupTime = DateTime.UtcNow;
 
     /* Server IDs whose scheduled analysis is currently running — prevents relaunching
        analysis for a server whose previous (possibly hung) pass has not finished. */
@@ -47,6 +48,9 @@ public class CollectionBackgroundService : BackgroundService
     /* Archive every hour, retention once per day */
     private static readonly TimeSpan ArchiveInterval = TimeSpan.FromHours(1);
     private static readonly TimeSpan RetentionInterval = TimeSpan.FromHours(24);
+    /* Analysis-findings retention purge — daily, matching the parquet-retention cadence
+       above and Darling's daily findings-cleanup horizon. */
+    private static readonly TimeSpan FindingsCleanupInterval = TimeSpan.FromHours(24);
 
     /* Size-based trigger — when the database exceeds this size, archive ALL data
        to parquet and reset the database. INSERT performance degrades badly with
@@ -128,6 +132,9 @@ public class CollectionBackgroundService : BackgroundService
                 /* Periodic retention cleanup */
                 RunRetentionIfDue();
 
+                /* Periodic analysis-findings retention (rolling 30-day purge) */
+                await RunFindingsCleanupIfDueAsync();
+
                 /* Periodic scheduled analysis + high-severity finding notifications */
                 await RunAnalysisIfDueAsync(stoppingToken);
 
@@ -202,6 +209,35 @@ public class CollectionBackgroundService : BackgroundService
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Retention cleanup failed");
+        }
+    }
+
+    /// <summary>
+    /// Purges analysis findings past the 30-day retention window on a daily cadence.
+    /// FindingStore has always declared CleanupOldFindingsAsync, but nothing scheduled it,
+    /// so analysis_findings grew until a size-triggered ArchiveAllAndResetAsync incidentally
+    /// wiped the WHOLE DuckDB (losing ALL findings, not just aged ones — analysis_findings is
+    /// not in ArchiveService.ArchivableTables, so routine archival never touched it). This
+    /// applies the same rolling 30-day retention the other editions intend (Darling's daily
+    /// purge rides the same horizon). Gated on _duckDb — the dependency the cleanup needs —
+    /// so it is independent of the parquet RetentionService. Never throws: logs and degrades
+    /// like the archival/retention ticks above.
+    /// </summary>
+    private async Task RunFindingsCleanupIfDueAsync()
+    {
+        if (_duckDb == null || DateTime.UtcNow - _lastFindingsCleanupTime < FindingsCleanupInterval)
+        {
+            return;
+        }
+
+        try
+        {
+            await new AnalysisService(_duckDb).CleanupAsync(retentionDays: 30);
+            _lastFindingsCleanupTime = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Findings cleanup failed");
         }
     }
 

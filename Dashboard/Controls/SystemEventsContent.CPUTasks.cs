@@ -38,7 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserCPUTasksAsync(_cpuTasksHoursBack, _cpuTasksFromDate, _cpuTasksToDate);
-                // Grid removed per todo.md #15 - chart + summary only
                 LoadCPUTasksChart(data, _cpuTasksHoursBack, _cpuTasksFromDate, _cpuTasksToDate);
                 UpdateCPUTasksSummaryPanel(data);
             }
@@ -222,20 +221,6 @@ namespace PerformanceMonitorDashboard.Controls
             var pendingNoBlockCount = dataList.Count(d => (d.PendingTasks ?? 0) > 0 && d.DidBlockingOccur != true);
             CPUTasksPendingNoBlockText.Text = pendingNoBlockCount.ToString("N0", CultureInfo.CurrentCulture);
         }
-
-        // CPUTasksFilter_Click removed - grid removed per todo.md #15
-
-        // ApplyCPUTasksFilters removed - grid removed per todo.md #15
-
-        // UpdateCPUTasksFilterButtonStyles removed - grid removed per todo.md #15
-
-        // CPUTasksFilterTextBox_TextChanged removed - grid removed per todo.md #15
-
-        // CPUTasksNumericFilterTextBox_TextChanged removed - grid removed per todo.md #15
-
-        // CPUTasksBoolFilter_Changed removed - grid removed per todo.md #15
-
-        // ApplyCPUTasksFilter removed - grid removed per todo.md #15
 
         #endregion
     }

@@ -142,6 +142,15 @@ public class ServerConnection : INotifyPropertyChanged
     public System.Collections.Generic.List<string> ExcludedDatabases { get; set; } = new();
 
     /// <summary>
+    /// #1319: the per-server global database FILTER (display-only). When non-empty, database-scoped
+    /// views (query grids, blocking, per-DB config, trends/slicers/heatmap) show only these databases;
+    /// empty = "All" (today's behavior). Distinct from <see cref="ExcludedDatabases"/>, which is
+    /// collector-side ("don't COLLECT these") — this changes nothing about what is collected, only what
+    /// the viewer displays. Persisted in servers.json so a chosen subset stays sticky per server.
+    /// </summary>
+    public System.Collections.Generic.List<string> ViewFilterDatabases { get; set; } = new();
+
+    /// <summary>
     /// Server name with "(Read-Only)" suffix when ReadOnlyIntent is enabled.
     /// Used for sidebar subtitle and status text.
     /// </summary>

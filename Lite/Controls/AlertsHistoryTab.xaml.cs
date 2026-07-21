@@ -23,6 +23,7 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
 using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Controls;
@@ -404,129 +405,14 @@ public partial class AlertsHistoryTab : UserControl
 
     #region Context Menu Handlers
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.CurrentCell.Column == null || grid.CurrentItem == null) return;
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-        var value = GetCellValue(grid.CurrentCell.Column, grid.CurrentItem);
-        if (value.Length > 0) Clipboard.SetDataObject(value, false);
-    }
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-    private void CopyRow_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.CurrentItem == null) return;
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
-        var sb = new StringBuilder();
-        foreach (var col in grid.Columns)
-        {
-            sb.Append(GetCellValue(col, grid.CurrentItem));
-            sb.Append('\t');
-        }
-        Clipboard.SetDataObject(sb.ToString().TrimEnd('\t'), false);
-    }
-
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.Items == null) return;
-
-        var sb = new StringBuilder();
-
-        foreach (var col in grid.Columns)
-        {
-            sb.Append(DataGridClipboardBehavior.GetHeaderText(col));
-            sb.Append('\t');
-        }
-        sb.AppendLine();
-
-        foreach (var item in grid.Items)
-        {
-            foreach (var col in grid.Columns)
-            {
-                sb.Append(GetCellValue(col, item));
-                sb.Append('\t');
-            }
-            sb.AppendLine();
-        }
-
-        Clipboard.SetDataObject(sb.ToString(), false);
-    }
-
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.Items == null || grid.Items.Count == 0) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
-            DefaultExt = ".csv",
-            FileName = $"alert_history_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        var sb = new StringBuilder();
-
-        var headers = new List<string>();
-        foreach (var col in grid.Columns)
-            headers.Add(CsvEscape(DataGridClipboardBehavior.GetHeaderText(col)));
-        sb.AppendLine(string.Join(",", headers));
-
-        foreach (var item in grid.Items)
-        {
-            var values = new List<string>();
-            foreach (var col in grid.Columns)
-                values.Add(CsvEscape(GetCellValue(col, item)));
-            sb.AppendLine(string.Join(",", values));
-        }
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, sb.ToString(), Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to export: {ex.Message}", "Export Error",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    #endregion
-
-    #region Helpers
-
-    private static DataGrid? FindParentDataGrid(MenuItem menuItem)
-    {
-        var contextMenu = menuItem.Parent as ContextMenu;
-        var target = contextMenu?.PlacementTarget as FrameworkElement;
-        while (target != null && target is not DataGrid)
-            target = System.Windows.Media.VisualTreeHelper.GetParent(target) as FrameworkElement;
-        return target as DataGrid;
-    }
-
-    private static string GetCellValue(DataGridColumn col, object item)
-    {
-        if (col is DataGridBoundColumn boundCol && boundCol.Binding is Binding binding)
-        {
-            var prop = item.GetType().GetProperty(binding.Path.Path);
-            return prop?.GetValue(item)?.ToString() ?? "";
-        }
-        return "";
-    }
-
-    private static string CsvEscape(string value)
-    {
-        if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
-        return value;
-    }
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+        DataGridExport.ExportToCsv(sender, "alert_history", App.CsvSeparator);
 
     #endregion
 

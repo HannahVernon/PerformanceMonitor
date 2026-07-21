@@ -1,0 +1,330 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Xml.Linq;
+using Npgsql;
+using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Darling.Service;
+using PerformanceMonitor.Darling.Storage;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// M2 slice C: the Darling collector runner. The ungated tests pin the target-detection query
+/// (verbatim from Lite's ServerManager, so both SKUs classify a server identically). The full
+/// SQL Server → runner → Postgres E2E runs only when BOTH DARLING_TEST_PG (Postgres connection
+/// string) and DARLING_TEST_SQL (SQL Server host; optional DARLING_TEST_SQL_USER /
+/// DARLING_TEST_SQL_PASSWORD for sql auth) are set — it collects real wait_stats through the
+/// shared WaitStatsCollector definition twice, proving watermarks, deltas, and binary COPY
+/// against live engines.
+/// </summary>
+/* Live-fixture tests share one Postgres store; the collection serializes them so
+   cross-test row churn (inserts/purges/deletes) cannot race another class's assertions. */
+[Collection("live-postgres")]
+public sealed class DarlingCollectorRunnerTests
+{
+    [Fact]
+    public void DetectionQuery_MatchesLiteServerManagerProbe()
+    {
+        Assert.Contains("SERVERPROPERTY('ProductMajorVersion')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+        Assert.Contains("SERVERPROPERTY('EngineEdition')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+        Assert.Contains("DB_ID('rdsadmin')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+        Assert.Contains("HAS_DBACCESS(N'msdb')", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+
+        // #1535: edition detection must NOT depend on sys.dm_os_sys_info. On Azure SQL DB that DMV
+        // requires VIEW DATABASE STATE; a monitoring login without it made the whole probe throw and
+        // silently mis-detect Azure as on-prem (EngineEdition left 0). The detection query is now
+        // permission-free scalars only - no DMV, and no sqlserver_start_time (its one DMV-bound column,
+        // which the service never surfaced).
+        Assert.DoesNotContain("dm_os_sys_info", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("sqlserver_start_time", DarlingServerConnector.DetectionQueryText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #1556 M1: the Darling Azure per-database read resolves its command timeout as
+    /// <c>definition.CommandTimeoutSecondsOverride ?? CommandTimeoutSeconds</c> — the resolution the runner's
+    /// Azure branch now applies (it previously passed the constant 60s cap, where Lite's twin already honored
+    /// the override). index_object_stats declares a 300s per-database budget, so without the override its Azure
+    /// per-database read would have timed out at 60s on a large database. This pins the resolution contract and
+    /// the values it depends on; the runner's per-database read passes the resolved value verbatim.
+    /// </summary>
+    [Fact]
+    public void PerDatabaseTimeout_HonorsCollectorOverride_FixingTheLatentSixtySecondCap()
+    {
+        Assert.Equal(60, DarlingCollectorRunner.CommandTimeoutSeconds);
+
+        Assert.Equal(300, IndexObjectStatsCollector.Instance.CommandTimeoutSecondsOverride);
+        Assert.Equal(300, IndexObjectStatsCollector.Instance.CommandTimeoutSecondsOverride ?? DarlingCollectorRunner.CommandTimeoutSeconds);
+
+        /* A collector with no override falls back to the 60s default — the same resolution, unchanged. */
+        Assert.Null(WaitStatsCollector.Instance.CommandTimeoutSecondsOverride);
+        Assert.Equal(60, WaitStatsCollector.Instance.CommandTimeoutSecondsOverride ?? DarlingCollectorRunner.CommandTimeoutSeconds);
+    }
+
+    [Fact]
+    public async Task EndToEnd_CollectWaitStats_FromLiveSqlServer_IntoLivePostgres()
+    {
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        var sqlHost = Environment.GetEnvironmentVariable("DARLING_TEST_SQL");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg) || string.IsNullOrEmpty(sqlHost),
+            "Set DARLING_TEST_PG and DARLING_TEST_SQL to run the live collection E2E.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var sqlUser = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_USER");
+        var config = new MonitoredServer
+        {
+            Name = "darling-e2e",
+            Host = sqlHost!,
+            Auth = string.IsNullOrEmpty(sqlUser) ? "integrated" : "sql",
+            Username = sqlUser,
+            Password = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_PASSWORD"),
+            TrustServerCertificate = true,
+        };
+
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runtime = await DarlingServerConnector.ConnectAsync(config, null, ct);
+        Assert.True(runtime.Target.SqlMajorVersion > 0, "probe should detect a real major version");
+        Assert.Equal(PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode(config.StorageName), runtime.ServerId);
+
+        var runner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator());
+
+        /* Pre-clean: a prior service smoke against the same store leaves rows for this same
+           server_id, and the exact-count assertion below would misread them as COPY errors. */
+        await using (var precleanConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            using var preclean = new NpgsqlCommand("DELETE FROM wait_stats WHERE server_id = $1", precleanConnection);
+            preclean.Parameters.AddWithValue(runtime.ServerId);
+            await preclean.ExecuteNonQueryAsync(ct);
+        }
+
+        try
+        {
+            /* First cycle: baselines — every wait row's deltas are 0 but rows land. */
+            var first = await runner.RunAsync(WaitStatsCollector.Instance, runtime, ct);
+            Assert.True(first.Rows > 0, "a live server always has wait stats");
+
+            /* Second cycle: real deltas through the shared CollectorDeltaCalculator. */
+            var second = await runner.RunAsync(WaitStatsCollector.Instance, runtime, ct);
+            Assert.True(second.Rows > 0);
+
+            await using var verifyConnection = await dataSource.OpenConnectionAsync(ct);
+            using var count = new NpgsqlCommand("SELECT COUNT(*) FROM wait_stats WHERE server_id = $1", verifyConnection);
+            count.Parameters.AddWithValue(runtime.ServerId);
+            Assert.Equal((long)(first.Rows + second.Rows), await count.ExecuteScalarAsync(ct));
+
+            /* The watermark helper sees what was just written. */
+            var lastCollected = await runner.GetLastCollectedTimeAsync(runtime.ServerId, "wait_stats", "collection_time", ct);
+            Assert.NotNull(lastCollected);
+        }
+        finally
+        {
+            await using var cleanupConnection = await dataSource.OpenConnectionAsync(ct);
+            using var cleanup = new NpgsqlCommand("DELETE FROM wait_stats WHERE server_id = $1", cleanupConnection);
+            cleanup.Parameters.AddWithValue(runtime.ServerId);
+            await cleanup.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    [Fact]
+    public async Task EndToEnd_QueryStats_PlanCaptureFlag_TogglesStoredPlanXml()
+    {
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        var sqlHost = Environment.GetEnvironmentVariable("DARLING_TEST_SQL");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg) || string.IsNullOrEmpty(sqlHost),
+            "Set DARLING_TEST_PG and DARLING_TEST_SQL to run the live plan-capture E2E.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var config = MakeLiveConfig("darling-plan-qs-e2e", sqlHost!);
+
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runtime = await DarlingServerConnector.ConnectAsync(config, null, ct);
+        await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
+
+        try
+        {
+            /* Flag OFF (Lite parity): rows land, every query_plan_xml is NULL. */
+            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => false);
+            var off = await offRunner.RunAsync(QueryStatsCollector.Instance, runtime, ct);
+            Assert.SkipWhen(off.Rows == 0, "No recent query_stats activity on the target to capture; skipping.");
+            Assert.Equal(0L, await CountNonEmptyAsync(dataSource, "query_stats", "query_plan_xml", runtime.ServerId, ct));
+
+            /* Reset so the flag-on cycle re-collects the same plans (query_stats has no watermark,
+               but row-hash dedup on the store side would otherwise skip unchanged rows). */
+            await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
+
+            /* Flag ON (Darling): at least one captured row carries a query_plan_xml that parses. */
+            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => true);
+            var on = await onRunner.RunAsync(QueryStatsCollector.Instance, runtime, ct);
+            Assert.True(on.Rows > 0, "flag-on cycle should still land rows");
+
+            var planXml = await FirstNonEmptyAsync(dataSource, "query_stats", "query_plan_xml", runtime.ServerId, ct);
+            Assert.False(string.IsNullOrEmpty(planXml), "flag-on capture should store at least one non-empty plan");
+            Assert.Equal("ShowPlanXML", XDocument.Parse(planXml!).Root!.Name.LocalName);
+        }
+        finally
+        {
+            await CleanServerRowsAsync(dataSource, "query_stats", runtime.ServerId, ct);
+        }
+    }
+
+    [Fact]
+    public async Task EndToEnd_QueryStore_PlanCaptureFlag_CapturesPlanText_WhenQueryStoreEnabled()
+    {
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        var sqlHost = Environment.GetEnvironmentVariable("DARLING_TEST_SQL");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg) || string.IsNullOrEmpty(sqlHost),
+            "Set DARLING_TEST_PG and DARLING_TEST_SQL to run the live plan-capture E2E.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var config = MakeLiveConfig("darling-plan-qds-e2e", sqlHost!);
+
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runtime = await DarlingServerConnector.ConnectAsync(config, null, ct);
+        await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
+
+        try
+        {
+            /* Flag ON: probe by collecting. Zero rows => no Query Store-enabled database with recent
+               activity on the target — skip with reason rather than fail. */
+            var onRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => true);
+            var on = await onRunner.RunAsync(QueryStoreCollector.Instance, runtime, ct);
+            Assert.SkipWhen(on.Rows == 0, "No Query Store-enabled database with recent activity on the target; skipping.");
+
+            var planText = await FirstNonEmptyAsync(dataSource, "query_store_stats", "query_plan_text", runtime.ServerId, ct);
+            Assert.False(string.IsNullOrEmpty(planText), "flag-on capture should store at least one non-empty Query Store plan");
+            Assert.Equal("ShowPlanXML", XDocument.Parse(planText!).Root!.Name.LocalName);
+
+            /* Flag OFF (Lite parity): reset, re-collect the same window, every plan is NULL. */
+            await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
+            var offRunner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator(), null, capturePlans: () => false);
+            var off = await offRunner.RunAsync(QueryStoreCollector.Instance, runtime, ct);
+            Assert.True(off.Rows > 0, "the same window should re-collect after the reset");
+            Assert.Equal(0L, await CountNonEmptyAsync(dataSource, "query_store_stats", "query_plan_text", runtime.ServerId, ct));
+        }
+        finally
+        {
+            await CleanServerRowsAsync(dataSource, "query_store_stats", runtime.ServerId, ct);
+        }
+    }
+
+    [Fact]
+    public async Task GetLastCollectedInstanceIdAsync_ReturnsMaxInstanceId_ScopedPerServer()
+    {
+        /* The numeric (bigint) watermark helper behind job_history's instance_id dedup (#1433). Gated on
+           Postgres only — it seeds job_history rows directly and reads MAX(instance_id), proving per-server
+           scoping and the first-run null, the numeric twin of GetLastCollectedTimeAsync (line 102). */
+        var pg = Environment.GetEnvironmentVariable("DARLING_TEST_PG");
+        Assert.SkipWhen(string.IsNullOrEmpty(pg), "Set DARLING_TEST_PG to run the numeric-watermark read.");
+
+        var ct = TestContext.Current.CancellationToken;
+        await using var dataSource = NpgsqlDataSource.Create(pg!);
+        await using (var migrateConnection = await dataSource.OpenConnectionAsync(ct))
+        {
+            await PgMigrations.MigrateAsync(migrateConnection, ct);
+        }
+
+        var runner = new DarlingCollectorRunner(dataSource, new CollectorDeltaCalculator());
+        const int serverId = -880088;
+        const int otherServerId = -880099;
+
+        await CleanServerRowsAsync(dataSource, "job_history", serverId, ct);
+        await CleanServerRowsAsync(dataSource, "job_history", otherServerId, ct);
+        try
+        {
+            /* First run: no rows for the server yet → null (caller collects all history). */
+            Assert.Null(await runner.GetLastCollectedInstanceIdAsync(serverId, "job_history", "instance_id", ct));
+
+            /* Two rows for the server + a higher instance_id for a DIFFERENT server, to prove per-server scoping. */
+            await InsertJobHistoryInstanceAsync(dataSource, ct, serverId, jobHistoryId: 9_100_001, instanceId: 100);
+            await InsertJobHistoryInstanceAsync(dataSource, ct, serverId, jobHistoryId: 9_100_002, instanceId: 250);
+            await InsertJobHistoryInstanceAsync(dataSource, ct, otherServerId, jobHistoryId: 9_100_003, instanceId: 9999);
+
+            var max = await runner.GetLastCollectedInstanceIdAsync(serverId, "job_history", "instance_id", ct);
+            Assert.Equal(250L, max);
+        }
+        finally
+        {
+            await CleanServerRowsAsync(dataSource, "job_history", serverId, ct);
+            await CleanServerRowsAsync(dataSource, "job_history", otherServerId, ct);
+        }
+    }
+
+    private static async Task InsertJobHistoryInstanceAsync(
+        NpgsqlDataSource dataSource, CancellationToken ct, int serverId, long jobHistoryId, long instanceId)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand(@"
+INSERT INTO job_history (job_history_id, collection_time, server_id, server_name, instance_id)
+VALUES ($1, $2, $3, $4, $5)", connection);
+        command.Parameters.AddWithValue(jobHistoryId);
+        command.Parameters.AddWithValue(DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified));
+        command.Parameters.AddWithValue(serverId);
+        command.Parameters.AddWithValue("NUM-WM-SRV");
+        command.Parameters.AddWithValue(instanceId);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static MonitoredServer MakeLiveConfig(string name, string sqlHost)
+    {
+        var sqlUser = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_USER");
+        return new MonitoredServer
+        {
+            Name = name,
+            Host = sqlHost,
+            Auth = string.IsNullOrEmpty(sqlUser) ? "integrated" : "sql",
+            Username = sqlUser,
+            Password = Environment.GetEnvironmentVariable("DARLING_TEST_SQL_PASSWORD"),
+            TrustServerCertificate = true,
+        };
+    }
+
+    private static async Task CleanServerRowsAsync(NpgsqlDataSource dataSource, string table, int serverId, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand($"DELETE FROM {table} WHERE server_id = $1", connection);
+        command.Parameters.AddWithValue(serverId);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<long> CountNonEmptyAsync(NpgsqlDataSource dataSource, string table, string column, int serverId, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand(
+            $"SELECT COUNT(*) FROM {table} WHERE server_id = $1 AND {column} IS NOT NULL AND {column} <> ''", connection);
+        command.Parameters.AddWithValue(serverId);
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    private static async Task<string?> FirstNonEmptyAsync(NpgsqlDataSource dataSource, string table, string column, int serverId, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        using var command = new NpgsqlCommand(
+            $"SELECT {column} FROM {table} WHERE server_id = $1 AND {column} IS NOT NULL AND {column} <> '' LIMIT 1", connection);
+        command.Parameters.AddWithValue(serverId);
+        return await command.ExecuteScalarAsync(ct) as string;
+    }
+}

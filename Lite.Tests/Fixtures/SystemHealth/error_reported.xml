@@ -1,0 +1,11 @@
+<event name="error_reported" package="sqlserver" timestamp="2026-07-05T12:00:05.500Z">
+  <data name="error_number"><value>823</value></data>
+  <data name="severity"><value>24</value></data>
+  <data name="state"><value>2</value></data>
+  <data name="user_defined"><value>false</value></data>
+  <data name="category"><type name="error_reported_category" package="sqlserver" /><value>2</value><text>SERVER</text></data>
+  <data name="destination"><value>0x00000002</value><text>ERRORLOG</text></data>
+  <data name="is_intercepted"><value>false</value></data>
+  <data name="database_id"><value>6</value></data>
+  <data name="message"><value>The operating system returned error 21 to SQL Server during a read at offset 0x00000c60000 in file 'D:\data\prod.mdf'.</value></data>
+</event>

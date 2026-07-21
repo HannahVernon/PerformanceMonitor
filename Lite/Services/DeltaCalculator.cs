@@ -7,27 +7,22 @@
  */
 
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitorLite.Database;
 
 namespace PerformanceMonitorLite.Services;
 
 /// <summary>
-/// Calculates delta values for cumulative metrics between collection intervals.
-/// Caches previous values in memory for efficient delta calculation.
-/// Seeds from DuckDB on startup to survive application restarts.
+/// Lite's delta calculator: the shared <see cref="CollectorDeltaCalculator"/> core (baseline /
+/// counter-reset / gap-policy semantics live there, identical across SKUs) plus the DuckDB
+/// seeding that lets the first collection after an app restart produce accurate deltas instead
+/// of returning 0 for everything.
 /// </summary>
-public class DeltaCalculator
+public class DeltaCalculator : CollectorDeltaCalculator
 {
-    /// <summary>
-    /// Cache structure: serverId -> collectorName -> key -> (previousValue, timestamp)
-    /// </summary>
-    private readonly ConcurrentDictionary<int, ConcurrentDictionary<string, ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>>> _cache = new();
-
     private readonly ILogger? _logger;
 
     public DeltaCalculator(ILogger? logger = null)
@@ -57,72 +52,6 @@ public class DeltaCalculator
         {
             _logger?.LogWarning(ex, "Failed to seed delta calculator from database, first collection will return 0 deltas");
         }
-    }
-
-    /// <summary>
-    /// Removes all cached entries for a server (e.g., when the server tab is closed).
-    /// Next collection will re-seed from database if needed.
-    /// </summary>
-    public void ClearServer(int serverId)
-    {
-        _cache.TryRemove(serverId, out _);
-    }
-
-    /// <summary>
-    /// Calculates the delta between the current value and the previous cached value.
-    /// First-ever sighting (no baseline): returns currentValue so single-execution queries appear.
-    /// Counter reset (value decreased): returns 0 to avoid inflated deltas from plan cache churn.
-    /// Gap detection: if collectionTime and maxGapSeconds are provided and the gap since the
-    /// last cached value exceeds maxGapSeconds, returns 0 to avoid inflated deltas after restarts.
-    /// Thread-safe via atomic AddOrUpdate.
-    /// </summary>
-    public long CalculateDelta(int serverId, string collectorName, string key, long currentValue,
-        bool baselineOnly = false, DateTime? collectionTime = null, int maxGapSeconds = 0)
-    {
-        var serverCache = _cache.GetOrAdd(serverId, _ => new ConcurrentDictionary<string, ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>>());
-        var collectorCache = serverCache.GetOrAdd(collectorName, _ => new ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>());
-
-        long delta = 0;
-
-        collectorCache.AddOrUpdate(
-            key,
-            /* Add: first time seeing this key.
-               baselineOnly = true: store baseline only, return 0 (for cumulative counters like perfmon).
-               baselineOnly = false: use current value as delta so single-execution queries surface. */
-            _ =>
-            {
-                delta = baselineOnly ? 0 : currentValue;
-                return (currentValue, collectionTime);
-            },
-            /* Update: compute delta atomically */
-            (_, previous) =>
-            {
-                /* Gap detection: if too much time has passed since the last cached value,
-                   treat this as a new baseline to avoid inflated deltas after app restarts */
-                if (maxGapSeconds > 0 && collectionTime.HasValue && previous.Timestamp.HasValue
-                    && (collectionTime.Value - previous.Timestamp.Value).TotalSeconds > maxGapSeconds)
-                {
-                    delta = 0;
-                    return (currentValue, collectionTime);
-                }
-
-                delta = currentValue < previous.Value
-                    ? 0              /* counter reset (plan cache eviction/re-entry) — not real new work */
-                    : currentValue - previous.Value;
-                return (currentValue, collectionTime);
-            });
-
-        return delta;
-    }
-
-    /// <summary>
-    /// Seeds a single value into the cache without computing a delta.
-    /// </summary>
-    private void Seed(int serverId, string collectorName, string key, long value, DateTime? timestamp = null)
-    {
-        var serverCache = _cache.GetOrAdd(serverId, _ => new ConcurrentDictionary<string, ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>>());
-        var collectorCache = serverCache.GetOrAdd(collectorName, _ => new ConcurrentDictionary<string, (long Value, DateTime? Timestamp)>());
-        collectorCache[key] = (value, timestamp);
     }
 
     private async Task SeedWaitStatsAsync(DuckDBConnection connection)
@@ -238,5 +167,4 @@ WHERE (server_id, collection_time) IN (
             /* Table may not exist on first run after schema migration */
         }
     }
-
 }

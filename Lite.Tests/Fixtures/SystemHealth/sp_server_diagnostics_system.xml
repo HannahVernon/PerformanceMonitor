@@ -1,0 +1,10 @@
+<event name="sp_server_diagnostics_component_result" package="sqlserver" timestamp="2026-07-05T12:07:00.000Z">
+  <data name="component"><type name="sql_server_diagnostics_component" package="sqlserver" /><value>0</value><text>SYSTEM</text></data>
+  <data name="state"><value>1</value><text>CLEAN</text></data>
+  <data name="data">
+    <type name="xml" package="package0" />
+    <value>
+      <system spinlockBackoffs="12345" sickSpinlockType="SOS_CACHESTORE" sickSpinlockTypeAfterAv="SOS_SUSPEND_QUEUE" latchWarnings="7" isAccessViolationOccurred="1" writeAccessViolationCount="3" totalDumpRequests="9" intervalDumpRequests="2" nonYieldingTasksReported="4" pageFaults="654321" systemCpuUtilization="65" sqlCpuUtilization="40" BadPagesDetected="6" BadPagesFixed="5" LastBadPageAddress="0x0" />
+    </value>
+  </data>
+</event>

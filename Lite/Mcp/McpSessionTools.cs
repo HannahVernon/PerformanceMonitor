@@ -19,9 +19,8 @@ public sealed class McpSessionTools
         [Description("Show only queries involved in blocking (blocking_session_id > 0 or is a head blocker).")] bool blocking_only = false,
         [Description("Maximum number of rows to return. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -88,9 +87,8 @@ public sealed class McpSessionTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {

@@ -63,14 +63,7 @@ namespace PerformanceMonitorDashboard
             await Task.WhenAll(tasks);
         }
 
-        private static string NormalizeVersion(string version)
-        {
-            int plusIndex = version.IndexOf('+');
-            string trimmed = plusIndex >= 0 ? version[..plusIndex] : version;
-            return Version.TryParse(trimmed, out var v)
-                ? new Version(v.Major, v.Minor, v.Build).ToString()
-                : trimmed;
-        }
+        private static string NormalizeVersion(string version) => VersionText.Normalize(version);
 
         private void ServersDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
@@ -260,24 +253,13 @@ namespace PerformanceMonitorDashboard
                 string appVersion = Assembly.GetExecutingAssembly()
                     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                     ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
-                /* Strip git hash suffix if present (e.g., "2.5.0+abc123" → "2.5.0") */
-                int plusIndex = appVersion.IndexOf('+');
-                if (plusIndex >= 0) appVersion = appVersion[..plusIndex];
 
-                /* Normalize both to 3-part for comparison */
-                string Normalize(string v)
-                {
-                    if (Version.TryParse(v, out var parsed))
-                        return new Version(parsed.Major, parsed.Minor, parsed.Build).ToString();
-                    return v;
-                }
+                string normalizedInstalled = VersionText.Normalize(installedVersion);
+                string normalizedApp = VersionText.Normalize(appVersion);
 
-                string normalizedInstalled = Normalize(installedVersion);
-                string normalizedApp = Normalize(appVersion);
-
-                if (Version.TryParse(normalizedInstalled, out var installed) &&
-                    Version.TryParse(normalizedApp, out var app) &&
-                    installed < app)
+                Version? installed = VersionText.Parse(installedVersion);
+                Version? app = VersionText.Parse(appVersion);
+                if (installed != null && app != null && installed < app)
                 {
                     var result = MessageBox.Show(
                         $"'{server.DisplayNameWithIntent}' has v{normalizedInstalled} installed.\n\nv{normalizedApp} is available. Open the server editor to upgrade?",
@@ -419,79 +401,14 @@ namespace PerformanceMonitorDashboard
             }
         }
 
-        private void CopyCell_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = Helpers.TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-                {
-                    var cellContent = Helpers.TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                    if (!string.IsNullOrEmpty(cellContent))
-                        Clipboard.SetDataObject(cellContent, false);
-                }
-            }
-        }
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = Helpers.TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid?.SelectedItem != null)
-                    Clipboard.SetDataObject(Helpers.TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem), false);
-            }
-        }
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-        private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = Helpers.TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var sb = new System.Text.StringBuilder();
-                    var headers = new System.Collections.Generic.List<string>();
-                    foreach (var column in dataGrid.Columns)
-                        headers.Add(DataGridClipboardBehavior.GetHeaderText(column));
-                    sb.AppendLine(string.Join("\t", headers));
-                    foreach (var item in dataGrid.Items)
-                        sb.AppendLine(Helpers.TabHelpers.GetRowAsText(dataGrid, item));
-                    Clipboard.SetDataObject(sb.ToString(), false);
-                }
-            }
-        }
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = Helpers.TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var dialog = new Microsoft.Win32.SaveFileDialog
-                    {
-                        FileName = $"servers_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                        DefaultExt = ".csv",
-                        Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                    };
-                    if (dialog.ShowDialog() == true)
-                    {
-                        var sb = new System.Text.StringBuilder();
-                        var headers = new System.Collections.Generic.List<string>();
-                        foreach (var column in dataGrid.Columns)
-                            headers.Add(Helpers.TabHelpers.EscapeCsvField(DataGridClipboardBehavior.GetHeaderText(column)));
-                        sb.AppendLine(string.Join(",", headers));
-                        foreach (var item in dataGrid.Items)
-                        {
-                            var values = Helpers.TabHelpers.GetRowValues(dataGrid, item);
-                            sb.AppendLine(string.Join(",", values.Select(v => Helpers.TabHelpers.EscapeCsvField(v))));
-                        }
-                        System.IO.File.WriteAllText(dialog.FileName, sb.ToString());
-                    }
-                }
-            }
-        }
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+            DataGridExport.ExportToCsv(sender, "servers", Helpers.TabHelpers.CsvSeparator);
 
         private void Close_Click(object sender, RoutedEventArgs e)
         {

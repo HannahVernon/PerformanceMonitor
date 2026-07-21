@@ -1926,7 +1926,7 @@
                     </Expander>
 
                     <!-- Tempdb Pressure -->
-                    <Expander Header="Tempdb Pressure" IsExpanded="True" Margin="0,0,0,8">
+                    <Expander Header="tempdb Pressure" IsExpanded="True" Margin="0,0,0,8">
                         <StackPanel>
                             <DataGrid x:Name="TempdbPressureDataGrid" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                       AutoGenerateColumns="False"
@@ -2770,6 +2770,24 @@
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="HorizontalAlignment" Value="Right"/>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <!-- Non-alarming note when the sys.dm_os_sys_info hardware read was denied (e.g. Azure SQL DB
+                                 login without VIEW DATABASE STATE). Empty for servers whose hardware inventory is available. (#1535) -->
+                            <DataGridTextColumn Binding="{Binding HardwareUnavailableReason}" Width="220">
+                                <DataGridTextColumn.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="HardwareUnavailableReason" Click="FinOpsFilter_Click" Margin="0,0,4,0"/>
+                                        <TextBlock Text="Hardware Note" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </DataGridTextColumn.Header>
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="#F39C12"/>
+                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                        <Setter Property="ToolTip" Value="{Binding HardwareUnavailableReason}"/>
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>

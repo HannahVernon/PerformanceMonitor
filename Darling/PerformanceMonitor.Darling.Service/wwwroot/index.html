@@ -1,0 +1,38 @@
+<!doctype html>
+<!--
+  Darling Web (#1562) — the read-only browser dashboard served by the Darling service's web host on port 5153.
+  Fully self-contained / air-gapped: no CDN, no fonts, no remote anything (a CI scan enforces it). All markup,
+  style, and behavior ship from this wwwroot. The shell below is static; js/app.js routes the pages into #main.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Darling Web</title>
+    <link rel="stylesheet" href="css/theme.css" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="css/editor.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <div class="brand">
+          <h1>Darling Web</h1>
+          <div class="sub">SQL Server fleet monitor</div>
+        </div>
+        <nav class="nav">
+          <a data-route="fleet" href="#/fleet">Fleet Overview</a>
+          <a data-route="alerts" href="#/alerts">Alert History</a>
+          <a data-route="views" href="#/views">Custom Views</a>
+        </nav>
+        <div class="server-list-header">Servers</div>
+        <div id="server-list"></div>
+        <div class="server-list-header">Views</div>
+        <div id="view-list"></div>
+      </aside>
+      <main id="main"></main>
+    </div>
+    <footer id="statusbar"></footer>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

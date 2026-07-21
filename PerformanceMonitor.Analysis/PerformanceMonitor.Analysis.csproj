@@ -17,5 +17,13 @@
     <InternalsVisibleTo Include="PerformanceMonitorDashboard" />
     <InternalsVisibleTo Include="Lite.Tests" />
     <InternalsVisibleTo Include="Dashboard.Tests" />
+    <!-- Darling's PgFactCollector reconstructs blocking chains through the same internal
+         BlockingPairRow/BlockingChainReconstructor/BlockingPairRowMerge seam both apps use. -->
+    <InternalsVisibleTo Include="PerformanceMonitor.Darling.Analysis" />
+    <!-- The Darling viewer's Blocking tab (W1e) reconstructs the block-chain the same way Lite/Dashboard
+         do: it fetches internal BlockingPairRow rows and calls BlockingChainReconstructor, then bridges
+         the internal reconstruction to the shared Common BlockingChainModel through its own copied
+         BlockingChainViewerProjection (the same per-app pattern Lite and Dashboard use). -->
+    <InternalsVisibleTo Include="PerformanceMonitor.Darling.Viewer" />
   </ItemGroup>
 </Project>

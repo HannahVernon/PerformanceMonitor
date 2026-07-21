@@ -29,42 +29,56 @@ public class ScheduleManager
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    public static readonly string[] PresetNames = ["Low-Impact", "Balanced", "Aggressive"];
-
-    private static readonly Dictionary<string, Dictionary<string, int>> s_presets = new(StringComparer.OrdinalIgnoreCase)
+    // Single source of truth for the schedule-editor presets. Exposed (internal) so
+    // CollectorScheduleEditorWindow reads/applies these instead of holding its own copy — the two
+    // preset tables previously drifted (the editor's fell ~8 collectors behind). See
+    // SharedCollectorDefaultsPinTests for the integrity guard.
+    internal static readonly Dictionary<string, Dictionary<string, int>> s_presets = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Aggressive"] = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["wait_stats"] = 1, ["query_stats"] = 1, ["procedure_stats"] = 1,
+            ["wait_stats"] = 1, ["latch_stats"] = 1, ["spinlock_stats"] = 1,
+            ["cpu_scheduler_stats"] = 1, ["plan_cache_stats"] = 2,
+            ["query_stats"] = 1, ["procedure_stats"] = 1,
             ["query_store"] = 2, ["query_snapshots"] = 1, ["cpu_utilization"] = 1,
             ["file_io_stats"] = 1, ["memory_stats"] = 1, ["memory_clerks"] = 2,
             ["memory_pressure_events"] = 5,
             ["tempdb_stats"] = 1, ["perfmon_stats"] = 1, ["deadlocks"] = 1,
             ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
             ["dmv_blocking_snapshot"] = 1,
-            ["blocked_process_report"] = 1, ["running_jobs"] = 2
+            ["blocked_process_report"] = 1, ["running_jobs"] = 2,
+            ["session_summary_stats"] = 2, ["system_health_events"] = 2,
+            ["default_trace_events"] = 2, ["job_history"] = 2, ["agent_status"] = 2
         },
         ["Balanced"] = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["wait_stats"] = 1, ["query_stats"] = 1, ["procedure_stats"] = 1,
+            ["wait_stats"] = 1, ["latch_stats"] = 1, ["spinlock_stats"] = 1,
+            ["cpu_scheduler_stats"] = 1, ["plan_cache_stats"] = 5,
+            ["query_stats"] = 1, ["procedure_stats"] = 1,
             ["query_store"] = 5, ["query_snapshots"] = 1, ["cpu_utilization"] = 1,
             ["file_io_stats"] = 1, ["memory_stats"] = 1, ["memory_clerks"] = 5,
             ["memory_pressure_events"] = 5,
             ["tempdb_stats"] = 1, ["perfmon_stats"] = 1, ["deadlocks"] = 1,
             ["memory_grant_stats"] = 1, ["waiting_tasks"] = 1,
             ["dmv_blocking_snapshot"] = 1,
-            ["blocked_process_report"] = 1, ["running_jobs"] = 5
+            ["blocked_process_report"] = 1, ["running_jobs"] = 5,
+            ["session_summary_stats"] = 5, ["system_health_events"] = 5,
+            ["default_trace_events"] = 5, ["job_history"] = 5, ["agent_status"] = 5
         },
         ["Low-Impact"] = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["wait_stats"] = 5, ["query_stats"] = 10, ["procedure_stats"] = 10,
+            ["wait_stats"] = 5, ["latch_stats"] = 5, ["spinlock_stats"] = 5,
+            ["cpu_scheduler_stats"] = 5, ["plan_cache_stats"] = 15,
+            ["query_stats"] = 10, ["procedure_stats"] = 10,
             ["query_store"] = 30, ["query_snapshots"] = 5, ["cpu_utilization"] = 5,
             ["file_io_stats"] = 10, ["memory_stats"] = 10, ["memory_clerks"] = 30,
             ["memory_pressure_events"] = 15,
             ["tempdb_stats"] = 5, ["perfmon_stats"] = 5, ["deadlocks"] = 5,
             ["memory_grant_stats"] = 5, ["waiting_tasks"] = 5,
             ["dmv_blocking_snapshot"] = 5,
-            ["blocked_process_report"] = 5, ["running_jobs"] = 30
+            ["blocked_process_report"] = 5, ["running_jobs"] = 30,
+            ["session_summary_stats"] = 15, ["system_health_events"] = 15,
+            ["default_trace_events"] = 15, ["job_history"] = 15, ["agent_status"] = 15
         }
     };
 
@@ -92,90 +106,8 @@ public class ScheduleManager
     }
 
     // ──────────────────────────────────────────────────────────────────
-    //  Existing public API — operates on the default schedule.
-    //  These methods are unchanged from v1 so existing callers keep working.
+    //  Default-schedule public API.
     // ──────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Gets all configured collector schedules (default schedule).
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetAllSchedules()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets only enabled and scheduled collectors (default schedule).
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetEnabledSchedules()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.Where(s => s.Enabled && s.IsScheduled).ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets collectors that are due to run (default schedule, global run state).
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetDueCollectors()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.Where(s => s.IsDue).ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets on-load only collectors (frequency = 0) from the default schedule.
-    /// </summary>
-    public IReadOnlyList<CollectorSchedule> GetOnLoadCollectors()
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.Where(s => s.Enabled && !s.IsScheduled).ToList();
-        }
-    }
-
-    /// <summary>
-    /// Gets a specific collector schedule by name (default schedule).
-    /// </summary>
-    public CollectorSchedule? GetSchedule(string collectorName)
-    {
-        lock (_lock)
-        {
-            return _defaultSchedule.FirstOrDefault(s =>
-                s.Name.Equals(collectorName, StringComparison.OrdinalIgnoreCase));
-        }
-    }
-
-    /// <summary>
-    /// Marks a collector as having been run (default schedule, global run state).
-    /// </summary>
-    public void MarkCollectorRun(string collectorName, DateTime runTime)
-    {
-        lock (_lock)
-        {
-            var schedule = _defaultSchedule.FirstOrDefault(s =>
-                s.Name.Equals(collectorName, StringComparison.OrdinalIgnoreCase));
-
-            if (schedule != null)
-            {
-                schedule.LastRunTime = runTime;
-
-                if (schedule.IsScheduled)
-                {
-                    schedule.NextRunTime = runTime.AddMinutes(schedule.FrequencyMinutes);
-                }
-
-                _logger?.LogDebug("Marked collector '{Name}' as run at {Time}, next run at {NextTime}",
-                    collectorName, runTime, schedule.NextRunTime);
-            }
-        }
-    }
 
     /// <summary>
     /// Updates a collector's schedule settings (default schedule).
@@ -222,26 +154,6 @@ public class ScheduleManager
         lock (_lock)
         {
             return DetectPreset(_defaultSchedule);
-        }
-    }
-
-    /// <summary>
-    /// Applies a named preset to the default schedule.
-    /// Does not modify enabled/disabled state or on-load (frequency=0) collectors.
-    /// </summary>
-    public void ApplyPreset(string presetName)
-    {
-        if (!s_presets.TryGetValue(presetName, out var intervals))
-        {
-            throw new ArgumentException($"Unknown preset: {presetName}");
-        }
-
-        lock (_lock)
-        {
-            ApplyPresetToList(_defaultSchedule, intervals);
-            SaveSchedules();
-
-            _logger?.LogInformation("Applied collection preset '{Preset}' to default schedule", presetName);
         }
     }
 
@@ -406,40 +318,6 @@ public class ScheduleManager
     }
 
     /// <summary>
-    /// Applies a preset to a single server's schedule.
-    /// Creates an override if one doesn't exist (copies default first).
-    /// </summary>
-    public void ApplyPresetForServer(string serverId, string presetName)
-    {
-        if (!s_presets.TryGetValue(presetName, out var intervals))
-        {
-            throw new ArgumentException($"Unknown preset: {presetName}");
-        }
-
-        lock (_lock)
-        {
-            if (!_serverOverrides.TryGetValue(serverId, out var over))
-            {
-                over = new ServerScheduleOverride { Collectors = CloneScheduleList(_defaultSchedule) };
-                _serverOverrides[serverId] = over;
-            }
-
-            ApplyPresetToList(over.Collectors, intervals);
-            SaveSchedules();
-
-            _logger?.LogInformation("Applied preset '{Preset}' to server {ServerId}", presetName, serverId);
-        }
-    }
-
-    /// <summary>
-    /// Applies a preset to the default schedule (alias for ApplyPreset).
-    /// </summary>
-    public void ApplyPresetToDefault(string presetName)
-    {
-        ApplyPreset(presetName);
-    }
-
-    /// <summary>
     /// Detects which preset matches a server's active schedule.
     /// </summary>
     public string GetActivePresetForServer(string serverId)
@@ -451,31 +329,6 @@ public class ScheduleManager
                 : _defaultSchedule;
 
             return DetectPreset(schedules);
-        }
-    }
-
-    /// <summary>
-    /// Removes orphaned overrides for servers that no longer exist.
-    /// </summary>
-    public void CleanupRemovedServers(IEnumerable<string> activeServerIds)
-    {
-        lock (_lock)
-        {
-            var activeSet = new HashSet<string>(activeServerIds);
-            var orphaned = _serverOverrides.Keys.Where(id => !activeSet.Contains(id)).ToList();
-
-            if (orphaned.Count == 0)
-                return;
-
-            foreach (var id in orphaned)
-            {
-                _serverOverrides.Remove(id);
-                _serverRunState.Remove(id);
-            }
-
-            SaveSchedules();
-
-            _logger?.LogInformation("Cleaned up {Count} orphaned server schedule override(s)", orphaned.Count);
         }
     }
 
@@ -668,9 +521,11 @@ public class ScheduleManager
     // ──────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Detects which preset matches a list of collector schedules.
+    /// Detects which preset matches a list of collector schedules, or "Custom". This is the single
+    /// source of preset logic; <see cref="ApplyPreset"/> and the collector-schedule editor window both
+    /// call these static methods rather than keeping a second preset table, so the two cannot drift.
     /// </summary>
-    private static string DetectPreset(List<CollectorSchedule> schedules)
+    internal static string DetectPreset(List<CollectorSchedule> schedules)
     {
         foreach (var (presetName, intervals) in s_presets)
         {
@@ -691,10 +546,17 @@ public class ScheduleManager
     }
 
     /// <summary>
-    /// Applies preset intervals to a collector list. Does not touch enabled/disabled or on-load collectors.
+    /// Applies a named preset's intervals to a schedule list in place (frequencies only; enabled and
+    /// retention are untouched). An unknown preset name is a no-op. Shared with the editor window so the
+    /// preset table lives exactly once.
     /// </summary>
-    private static void ApplyPresetToList(List<CollectorSchedule> schedules, Dictionary<string, int> intervals)
+    internal static void ApplyPreset(List<CollectorSchedule> schedules, string presetName)
     {
+        if (!s_presets.TryGetValue(presetName, out var intervals))
+        {
+            return;
+        }
+
         foreach (var (collector, freq) in intervals)
         {
             var schedule = schedules.FirstOrDefault(s =>
@@ -730,13 +592,19 @@ public class ScheduleManager
     }
 
     /// <summary>
-    /// Gets the default collector schedules.
+    /// Gets the default collector schedules. Internal so the identity-pin test can assert this
+    /// table matches the shared <see cref="PerformanceMonitor.Collectors.CollectorScheduleDefaults"/>
+    /// (which the Darling service schedules by) — the two cannot drift.
     /// </summary>
-    private static List<CollectorSchedule> GetDefaultSchedules()
+    internal static List<CollectorSchedule> GetDefaultSchedules()
     {
         return new List<CollectorSchedule>
         {
             new() { Name = "wait_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Wait statistics from sys.dm_os_wait_stats" },
+            new() { Name = "latch_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Latch statistics from sys.dm_os_latch_stats" },
+            new() { Name = "spinlock_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Spinlock statistics from sys.dm_os_spinlock_stats" },
+            new() { Name = "cpu_scheduler_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "CPU scheduler, workload group, NUMA, and OS memory pressure snapshot (not collected on Azure SQL DB)" },
+            new() { Name = "plan_cache_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Plan cache composition (single-use vs multi-use bloat) from sys.dm_exec_cached_plans" },
             new() { Name = "query_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Query statistics from sys.dm_exec_query_stats" },
             new() { Name = "procedure_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Stored procedure statistics from sys.dm_exec_procedure_stats" },
             new() { Name = "query_store", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Query Store data (top 100 queries per database)" },
@@ -746,7 +614,7 @@ public class ScheduleManager
             new() { Name = "memory_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Memory statistics from sys.dm_os_sys_memory and performance counters" },
             new() { Name = "memory_clerks", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Memory clerk allocations from sys.dm_os_memory_clerks" },
             new() { Name = "memory_pressure_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Memory pressure notifications from RING_BUFFER_RESOURCE_MONITOR" },
-            new() { Name = "tempdb_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "TempDB space usage from sys.dm_db_file_space_usage" },
+            new() { Name = "tempdb_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "tempdb space usage from sys.dm_db_file_space_usage" },
             new() { Name = "perfmon_stats", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Key performance counters from sys.dm_os_performance_counters" },
             new() { Name = "deadlocks", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Deadlocks from a dedicated PerformanceMonitor_Deadlock XE session (xml_deadlock_report)" },
             new() { Name = "server_config", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Server configuration (on-load only)" },
@@ -755,13 +623,19 @@ public class ScheduleManager
             new() { Name = "waiting_tasks", Enabled = true, FrequencyMinutes = 1, RetentionDays = 7, Description = "Point-in-time waiting tasks from sys.dm_os_waiting_tasks" },
             new() { Name = "dmv_blocking_snapshot", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Always-on point-in-time blocking snapshot from DMVs (BPR-independent fallback; works when blocked process threshold is unset, e.g. AWS RDS)" },
             new() { Name = "blocked_process_report", Enabled = true, FrequencyMinutes = 1, RetentionDays = 30, Description = "Blocked process reports from XE ring buffer session (opt-out)" },
+            new() { Name = "long_query_completions", Enabled = false, FrequencyMinutes = 1, RetentionDays = 30, Description = "Long-running query completions (rpc_completed/sql_batch_completed >= threshold, plus attention/cancels) from a dedicated XE ring buffer session. OPT-IN, default OFF: enabling creates the session on monitored servers, disabling drops it (#1496)" },
             new() { Name = "database_scoped_config", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Database-scoped configurations (on-load only)" },
             new() { Name = "trace_flags", Enabled = true, FrequencyMinutes = 0, RetentionDays = 30, Description = "Active trace flags via DBCC TRACESTATUS (on-load only)" },
             new() { Name = "running_jobs", Enabled = true, FrequencyMinutes = 5, RetentionDays = 7, Description = "Currently running SQL Agent jobs with duration comparison" },
             new() { Name = "database_size_stats", Enabled = true, FrequencyMinutes = 60, RetentionDays = 90, Description = "Database file sizes for growth trending and capacity planning" },
             new() { Name = "index_object_stats", Enabled = true, FrequencyMinutes = 1440, RetentionDays = 90, Description = "Per-object table/index size, usage, and locking stats for growth, unused-index, and contention analysis (daily collection)" },
             new() { Name = "server_properties", Enabled = true, FrequencyMinutes = 0, RetentionDays = 365, Description = "Server edition, licensing, CPU/memory hardware metadata (on-load only)" },
-            new() { Name = "session_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Per-application session counts from sys.dm_exec_sessions" }
+            new() { Name = "session_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Per-application session counts from sys.dm_exec_sessions" },
+            new() { Name = "session_summary_stats", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Server-wide session summary (idle/leak signal): total/running/sleeping/idle-over-30min counts, memory waits, top app/host from sys.dm_exec_sessions + sys.dm_exec_requests" },
+            new() { Name = "system_health_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Raw system_health Extended Events (memory broker/OOM, scheduler monitor, sp_server_diagnostics, severe errors, significant waits) captured as XML for health-parser analysis (not collected on Azure SQL DB)" },
+            new() { Name = "default_trace_events", Enabled = true, FrequencyMinutes = 5, RetentionDays = 30, Description = "Built-in Default Trace events via sys.fn_trace_gettable: file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits, and Server Memory Change (not collected on Azure SQL DB)" },
+            new() { Name = "job_history", Enabled = true, FrequencyMinutes = 5, RetentionDays = 365, Description = "Retained SQL Agent job-run history from msdb.dbo.sysjobhistory (per-step results, retries, durations, failures) deduped on the instance_id high-water mark; up to a year retained for the Job History tab (not collected on Azure SQL DB)" },
+            new() { Name = "agent_status", Enabled = true, FrequencyMinutes = 5, RetentionDays = 7, Description = "SQL Agent service status (Running/Stopped from sys.dm_server_services) and next scheduled run from msdb; drives the Job History tab header and the Agent Not Running alert (not collected on Azure SQL DB)" }
         };
     }
 

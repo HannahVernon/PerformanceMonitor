@@ -59,12 +59,5 @@ ORDER BY MIN(volume_free_mb) / MAX(volume_total_mb)";
     }
 }
 
-public class VolumeFreeSpaceInfo
-{
-    public string MountPoint { get; set; } = "";
-    public double TotalMb { get; set; }
-    public double FreeMb { get; set; }
-
-    public double FreePercent => TotalMb > 0 ? FreeMb / TotalMb * 100 : 0;
-    public double FreeGb => FreeMb / 1024.0;
-}
+/* VolumeFreeSpaceInfo moved to PerformanceMonitor.Alerting (Phase-5 A0);
+   the bare name resolves through the global using alias in GlobalUsings.cs. */

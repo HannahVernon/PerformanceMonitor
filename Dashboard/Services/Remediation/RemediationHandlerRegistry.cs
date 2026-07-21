@@ -14,8 +14,8 @@ namespace PerformanceMonitorDashboard.Services.Remediation
     /// <summary>
     /// Maps a finding's fact key to its remediation handler. A fact key with no
     /// registered handler yields no Apply affordance (mirrors
-    /// <c>FactRemediation.BuildAction</c> returning null). v1 registers exactly
-    /// one handler: <see cref="ForcePlanHandler"/> for PLAN_REGRESSION.
+    /// <c>FactRemediation.BuildAction</c> returning null). The handler set is
+    /// supplied at construction (see RemediationApplyService.CreateDefaultHandlers).
     /// </summary>
     public sealed class RemediationHandlerRegistry
     {

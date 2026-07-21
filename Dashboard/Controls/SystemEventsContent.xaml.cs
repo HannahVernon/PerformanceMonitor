@@ -74,25 +74,11 @@ namespace PerformanceMonitorDashboard.Controls
         private DateTime? _memoryNodeOOMFromDate;
         private DateTime? _memoryNodeOOMToDate;
 
-        // Filter state dictionaries for each DataGrid
-        private Dictionary<string, ColumnFilterState> _systemHealthFilters = new();
+        // Filter state dictionary for the SevereErrors DataGrid
         private Dictionary<string, ColumnFilterState> _severeErrorsFilters = new();
-        private Dictionary<string, ColumnFilterState> _ioIssuesFilters = new();
-        // Scheduler Issues filter removed - grid removed per todo.md #13
-        // Memory Conditions filter removed - grid removed per todo.md #14
-        // CPU Tasks filter removed - grid removed per todo.md #15
-        private Dictionary<string, ColumnFilterState> _memoryBrokerFilters = new();
-        private Dictionary<string, ColumnFilterState> _memoryNodeOOMFilters = new();
 
-        // Unfiltered data caches
-        private List<HealthParserSystemHealthItem>? _systemHealthUnfilteredData;
+        // Unfiltered data cache
         private List<HealthParserSevereErrorItem>? _severeErrorsUnfilteredData;
-        private List<HealthParserIOIssueItem>? _ioIssuesUnfilteredData;
-        // Scheduler Issues unfiltered data cache removed - grid removed per todo.md #13
-        // Memory Conditions unfiltered data cache removed - grid removed per todo.md #14
-        // CPU Tasks unfiltered data cache removed - grid removed per todo.md #15
-        private List<HealthParserMemoryBrokerItem>? _memoryBrokerUnfilteredData;
-        private List<HealthParserMemoryNodeOOMItem>? _memoryNodeOOMUnfilteredData;
 
         // Shared popup controls
         private Popup? _filterPopup;
@@ -230,24 +216,12 @@ namespace PerformanceMonitorDashboard.Controls
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
             // Apply minimum column widths based on header text
-            // SystemHealthDataGrid removed - chart only per todo.md #18
             TabHelpers.AutoSizeColumnMinWidths(SevereErrorsDataGrid);
-            // IOIssuesDataGrid removed - chart only per todo.md #19
-            // SchedulerIssuesDataGrid removed - chart + summary only per todo.md #13
-            // MemoryConditionsDataGrid removed - chart only per todo.md #14
-            // CPUTasksDataGrid AutoSizeColumnMinWidths removed - chart + summary only per todo.md #15
             TabHelpers.AutoSizeColumnMinWidths(MemoryBrokerDataGrid);
-            // MemoryNodeOOMDataGrid removed - chart only per GitHub issue #13
 
             // Freeze time column for easier horizontal scrolling
-            // SystemHealthDataGrid FreezeColumns removed - chart only per todo.md #18
             TabHelpers.FreezeColumns(SevereErrorsDataGrid, 1);
-            // IOIssuesDataGrid FreezeColumns removed - chart only per todo.md #19
-            // SchedulerIssuesDataGrid FreezeColumns removed - chart + summary only per todo.md #13
-
-            // CPUTasksDataGrid FreezeColumns removed - chart + summary only per todo.md #15
             TabHelpers.FreezeColumns(MemoryBrokerDataGrid, 1);
-            // MemoryNodeOOMDataGrid FreezeColumns removed - chart only per GitHub issue #13
         }
 
         private void SetupChartContextMenus()

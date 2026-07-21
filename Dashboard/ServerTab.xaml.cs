@@ -130,6 +130,7 @@ namespace PerformanceMonitorDashboard
             PerformanceTab.ActualPlanFinished += _actualPlanFinishedHandler;
             PerformanceTab.DrillDownTimeRangeRequested += _drillDownTimeRangeHandler;
             PerformanceTab.SubTabChanged += _subTabChangedHandler;
+            PerformanceTab.ChartDrillDownRequested += OnChildChartDrillDown;
             SystemEventsContent.Initialize(_databaseService);
             _baselineProvider = new Analysis.SqlServerBaselineProvider(_databaseService.ConnectionString);
             ResourceMetricsContent.Initialize(_databaseService, _baselineProvider);
@@ -251,6 +252,7 @@ namespace PerformanceMonitorDashboard
 
             MemoryTab.ChartDrillDownRequested -= OnChildChartDrillDown;
             ResourceMetricsContent.ChartDrillDownRequested -= OnChildChartDrillDown;
+            PerformanceTab.ChartDrillDownRequested -= OnChildChartDrillDown;
 
             if (_viewPlanHandler != null) PerformanceTab.ViewPlanRequested -= _viewPlanHandler;
             if (_actualPlanStartedHandler != null) PerformanceTab.ActualPlanStarted -= _actualPlanStartedHandler;

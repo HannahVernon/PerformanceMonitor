@@ -8,13 +8,10 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using DuckDB.NET.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitorLite.Models;
 
 namespace PerformanceMonitorLite.Services;
@@ -40,98 +37,10 @@ public partial class RemoteCollectorService
     }
 
     /// <summary>
-    /// Collects wait statistics from sys.dm_os_wait_stats.
+    /// Collects wait statistics from sys.dm_os_wait_stats via the shared
+    /// <see cref="WaitStatsCollector"/> definition (query text, ignored-wait filtering, delta
+    /// rules, and payload order live there — the cross-SKU parity contract).
     /// </summary>
-    private async Task<int> CollectWaitStatsAsync(ServerConnection server, CancellationToken cancellationToken)
-    {
-        const string query = @"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-SELECT
-    wait_type = ws.wait_type,
-    waiting_tasks_count = ws.waiting_tasks_count,
-    wait_time_ms = ws.wait_time_ms,
-    signal_wait_time_ms = ws.signal_wait_time_ms
-FROM sys.dm_os_wait_stats AS ws
-WHERE ws.wait_time_ms > 0
-OPTION(RECOMPILE);";
-
-        var ignoredWaits = _ignoredWaitTypes.Value;
-        var serverId = GetServerId(server);
-        var collectionTime = DateTime.UtcNow;
-        var rowsCollected = 0;
-        _lastSqlMs = 0;
-        _lastDuckDbMs = 0;
-
-        var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
-
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-        /* Collect all rows first, then batch insert into DuckDB */
-        var waitStats = new List<(string WaitType, long WaitingTasks, long WaitTimeMs, long SignalWaitTimeMs)>();
-
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var waitType = reader.GetString(0);
-
-            /* Skip ignored wait types */
-            if (ignoredWaits.Contains(waitType))
-            {
-                continue;
-            }
-
-            waitStats.Add((
-                WaitType: waitType,
-                WaitingTasks: reader.GetInt64(1),
-                WaitTimeMs: reader.GetInt64(2),
-                SignalWaitTimeMs: reader.GetInt64(3)
-            ));
-        }
-        sqlSw.Stop();
-        _lastSqlMs = sqlSw.ElapsedMilliseconds;
-
-        /* Insert into DuckDB with delta calculations using Appender for bulk performance */
-        var duckSw = Stopwatch.StartNew();
-
-        using (var duckConnection = _duckDb.CreateConnection())
-        {
-            await duckConnection.OpenAsync(cancellationToken);
-
-            using (var appender = duckConnection.CreateAppender("wait_stats"))
-            {
-                foreach (var stat in waitStats)
-                {
-                    var deltaKey = stat.WaitType;
-                    var deltaWaitingTasks = _deltaCalculator.CalculateDelta(serverId, "wait_stats_tasks", deltaKey, stat.WaitingTasks, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaWaitTimeMs = _deltaCalculator.CalculateDelta(serverId, "wait_stats_time", deltaKey, stat.WaitTimeMs, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-                    var deltaSignalWaitTimeMs = _deltaCalculator.CalculateDelta(serverId, "wait_stats_signal", deltaKey, stat.SignalWaitTimeMs, baselineOnly: true, collectionTime: collectionTime, maxGapSeconds: 300);
-
-                    var row = appender.CreateRow();
-                    row.AppendValue(GenerateCollectionId())    /* collection_id BIGINT */
-                       .AppendValue(collectionTime)            /* collection_time TIMESTAMP */
-                       .AppendValue(serverId)                  /* server_id INTEGER */
-                       .AppendValue(GetServerNameForStorage(server))         /* server_name VARCHAR */
-                       .AppendValue(stat.WaitType)             /* wait_type VARCHAR */
-                       .AppendValue(stat.WaitingTasks)         /* waiting_tasks_count BIGINT */
-                       .AppendValue(stat.WaitTimeMs)           /* wait_time_ms BIGINT */
-                       .AppendValue(stat.SignalWaitTimeMs)     /* signal_wait_time_ms BIGINT */
-                       .AppendValue(deltaWaitingTasks)         /* delta_waiting_tasks BIGINT */
-                       .AppendValue(deltaWaitTimeMs)           /* delta_wait_time_ms BIGINT */
-                       .AppendValue(deltaSignalWaitTimeMs)     /* delta_signal_wait_time_ms BIGINT */
-                       .EndRow();
-
-                    rowsCollected++;
-                }
-            }
-        }
-
-        duckSw.Stop();
-        _lastDuckDbMs = duckSw.ElapsedMilliseconds;
-
-        _logger?.LogDebug("Collected {RowCount} wait stats for server '{Server}'", rowsCollected, server.DisplayName);
-        return rowsCollected;
-    }
+    private Task<int> CollectWaitStatsAsync(ServerConnection server, CancellationToken cancellationToken)
+        => RunCollectorDefinitionAsync(WaitStatsCollector.Instance, server, cancellationToken);
 }

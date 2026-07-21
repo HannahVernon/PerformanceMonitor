@@ -1,0 +1,246 @@
+{
+  // Copy this file to darling.json next to the service binary (or point the
+  // DARLING_CONFIG environment variable at it) and edit. Comments are allowed.
+  //
+  // FIRST-RUN SEED, then the store is authoritative: on first start the service seeds the
+  // config.* control-plane tables from this file (servers, alerts, analysis, smtp, webhooks,
+  // capturePlans, mcp) and thereafter reads its LIVE operational config from the store. Edits the
+  // Viewer makes to the store win over this file across restarts; this file is only re-consulted
+  // for a config section that is still empty in the store (and always for the postgres bootstrap +
+  // the SQL-auth secrets, which are never written to the store). If the store is unreachable the
+  // service falls back to this file — never worse than a file-only config.
+  //
+  // The Postgres store has TWO modes:
+  //
+  // 1) Managed (the shipped default, below): the service runs its own bundled
+  //    PostgreSQL 18 + TimescaleDB — on first run it unpacks pg-runtime.zip (shipped beside
+  //    the binary), initializes a cluster with scram-sha-256 auth and a generated password
+  //    (DPAPI-protected in pg-credential.dpapi beside the data directory; never trust auth,
+  //    even on localhost), preloads TimescaleDB, and starts the server on 127.0.0.1 by default
+  //    (see the opt-in "network" block below to reach the store from the LAN over TLS).
+  //    The connection string is DERIVED — do NOT also set connectionString (validation error).
+  //    "port" 5641 is deliberately uncommon so the bundled instance coexists with any
+  //    PostgreSQL (5432) already on the machine. "dataDirectory" null means
+  //    %ProgramData%\PerformanceMonitorDarling\pg. The service stops the server on shutdown
+  //    only when it started it. Windows-only.
+  //
+  //    Least-privilege roles: the service owns the store as the "darling" superuser, but it
+  //    provisions two login roles the Viewer connects as instead — "admin" (reads everything +
+  //    writes the mute-rule / alert-dismiss / analysis-mute config tables) and "viewer"
+  //    (read-only). Their credentials are generated + DPAPI-protected (pg-admin-credential.dpapi /
+  //    pg-viewer-credential.dpapi) beside the data directory, same as the owner's. "connectAs"
+  //    (below) picks which one the Viewer uses; the data schemas live in "collect" (read-only) and
+  //    "config" (admin-writable), resolved by search_path so bare table names still work.
+  //
+  // 2) Bring-your-own PostgreSQL: remove "managed"/"port"/"dataDirectory"/"connectAs" and set
+  //    "connectionString" instead, e.g.
+  //      "postgres": {
+  //        "connectionString": "Host=localhost;Port=5432;Username=darling;Database=darling"
+  //      },
+  //    The service never touches that server's lifecycle; TimescaleDB is detected and used
+  //    automatically when present, plain PostgreSQL works too. The collect/config schema split
+  //    still applies (it is a migration); provision the least-privilege roles yourself with
+  //    Darling/tools/provision-roles.sql and point a read-only Viewer's connectionString at the
+  //    "viewer" role.
+  "postgres": {
+    "managed": true,
+    "port": 5641,
+    "dataDirectory": null,
+    // Which least-privilege role the Viewer connects as OVER LOOPBACK (managed mode): "admin"
+    // (default — can dismiss alerts and manage mute rules) or "viewer" (read-only; those actions
+    // are hidden/disabled). Ignored in bring-your-own mode (the connectionString picks the role).
+    // This is the LOCAL VM viewer's role; it is INDEPENDENT of network.role below (the REMOTE
+    // pg_hba role, default "viewer") — note the opposite defaults.
+    "connectAs": "admin",
+
+    // OPT-IN NETWORK EXPOSURE for the store (managed mode only) — omit this whole block for the
+    // secure default (loopback-only, byte-for-byte today's behavior: no pg_hba network rule, no
+    // firewall rule, ssl=off). When present with a non-loopback "listen", the service reconciles it
+    // on every start: it adds the bind IP to listen_addresses, generates a self-signed TLS cert for
+    // verify-full, writes a marked `hostssl darling <role> <allowFrom> scram-sha-256` pg_hba rule +
+    // reloads, and best-effort adds a firewall rule (also add the exact scoped rule yourself; see
+    // Darling/README.md). Reconciliation is symmetric (delete the block to close the box) and
+    // fail-closed: any invalid/incomplete field degrades the store to loopback + a critical log line,
+    // never exposed. Get the remote viewer's paste-ready connection string + the server cert with:
+    //   PerformanceMonitor.Darling.Service.exe --print-viewer-connection
+    // Uncomment (a comma already follows connectAs above):
+    // "network": {
+    //   "listen": "192.168.1.205",      // the specific bind IP (preferred; = the cert's iPAddress SAN).
+    //                                    // "0.0.0.0" = all interfaces (then connect by a cert SAN name).
+    //   "allowFrom": "192.168.1.0/24",  // pg_hba + firewall CIDR (its address family must match "listen").
+    //   "role": "viewer"                // "viewer" (default, read-only remote — the secure default) or
+    //                                    // "admin" (full remote WRITES; the service warns, because admin
+    //                                    // holds the config-table service-credential pivot). Never the superuser.
+    // }
+  },
+  "servers": [
+    {
+      // Integrated auth (recommended): grant the service account VIEW SERVER STATE etc.
+      "name": "SQL2022",
+      "host": "SQL2022",
+      "auth": "integrated",
+      // Optional per-server monthly cost/budget in USD for the Viewer's FinOps tab. Every FinOps cost
+      // figure is proportional math on this one number (a database's share = its size fraction x budget).
+      // Omit or 0 (the default) to hide all cost columns/cards, exactly like Performance Monitor Lite.
+      "monthlyCostUsd": 0,
+      // Optional per-server override of the global alerts.deliveryMode: "Summary" or "PerEvent" forces
+      // that mode for THIS server (e.g. Per-event for one noisy prod box while the fleet stays Summary);
+      // omit (or null) to inherit the global setting.
+      "alertDeliveryModeOverride": null,
+      "excludedDatabases": []
+    },
+    {
+      // SQL auth: run `PerformanceMonitor.Darling.Service --encrypt-password` on THIS
+      // machine and paste the output below. Plaintext "password" also works for dev,
+      // but the service logs a warning. The blob is machine-bound (DPAPI LocalMachine).
+      "name": "PROD1",
+      "host": "prod1.example.com",
+      "auth": "sql",
+      "username": "monitor",
+      "encryptedPassword": "<output of --encrypt-password>",
+      "trustServerCertificate": false,
+      "encryptMode": "Mandatory",
+      "excludedDatabases": [ "StageDb" ]
+    }
+  ],
+
+  // Capture execution plans into query_stats.query_plan_xml and query_store_stats.query_plan_text
+  // (default true). PostgreSQL TOAST compresses the plan text transparently (pglz) and TimescaleDB
+  // chunk compression squeezes it further, so plans are cheap to keep here — unlike Performance
+  // Monitor Lite, which stores to DuckDB/parquet and deliberately never captures them. Set false to
+  // skip plan capture (e.g. to shave storage across a very large fleet).
+  "capturePlans": true,
+
+  // Record Object:Created / Object:Altered / Object:Deleted schema-change (DDL) events in the built-in
+  // default-trace collector (default true = today's behavior). Set false on a NOISY or BENCHMARK box where
+  // a create/drop-happy workload floods the viewer's System Events > Default Trace tab -- e.g. HammerDB's
+  // TPC-H Query 15 creates and drops a "revenue" view thousands of times, and the collector faithfully
+  // records every create/delete. Only the Object DDL slice is suppressed; file auto-grow/shrink, ErrorLog,
+  // and security-audit events are still collected. This is the shared collector's equivalent of the full
+  // Dashboard's @include_object_events. A file-only knob (not stored in the control plane): edit + restart.
+  "collectSchemaChangeEvents": true,
+
+  // The alert engine (optional section). Every default mirrors Performance Monitor Lite's:
+  // cpu 80% (total mode), blocking 1, deadlock 1, poison wait 500 ms, long-running query
+  // 30 min, tempdb 80%, low disk 10% / 5 GB, job multiplier 3x, failed-job lookback 60 min,
+  // cooldown 5 min. Omit the whole section (or any key) for those defaults.
+  "alerts": {
+    "enabled": true,
+    // Deliver the Server-Unreachable / Server-Restored alerts when a monitored server's reachability flips
+    // (the headless twin of Lite's connection-change toasts). Default true; gated together with "enabled".
+    "notifyConnectionChanges": true,
+    "cpuThresholdPercent": 80,
+    "cpuMode": "total", // "total" (SQL + other processes) or "sql" (SQL process only)
+    // How deadlock/blocking alerts are delivered: "Summary" (one batched card per cycle, the default)
+    // or "PerEvent" (one notification per distinct incident, so downstream automation can open one
+    // ticket per incident). A per-server "alertDeliveryModeOverride" (see servers[]) wins over this.
+    "deliveryMode": "Summary",
+    // Per-event mode's cap on incidents delivered individually per cycle before a trailing "+N more"
+    // batch (so no incident is ever silently dropped). Clamped 1-100.
+    "perEventMax": 5,
+    // Long-running-query alert read shape: the row cap (clamped 1-1000) and the five noise-filter opt-outs
+    // (skip SP_SERVER_DIAGNOSTICS / WAITFOR / backup / XE-live-target / CDC-capture sessions). Defaults 5 /
+    // all true suppress the usual always-on noise; set a filter false to include those sessions.
+    "longRunningQueryMaxResults": 5,
+    "longRunningQueryExcludeSpServerDiagnostics": true,
+    "longRunningQueryExcludeWaitFor": true,
+    "longRunningQueryExcludeBackups": true,
+    "longRunningQueryExcludeMiscWaits": true,
+    "longRunningQueryExcludeCdc": true,
+    "excludedDatabases": []
+  },
+
+  // Scheduled analysis (optional section). The engine analyzes each server on a cadence and persists
+  // its findings; notifications are delivered independently when a finding's severity meets the floor.
+  // Defaults: enabled, every 30 minutes (clamped 5-360), notifications on, severity floor 1.5 (0-2) with
+  // a fixed 6-hour per-finding re-notify cooldown. Omit the section (or any key) for the defaults.
+  "analysis": {
+    "enabled": true,
+    "intervalMinutes": 30,
+    "notificationsEnabled": true,
+    "notifySeverity": 1.5
+  },
+
+  // SMTP alert delivery (optional). Enabled when host + from + to are all set. For an
+  // authenticated relay, set username and run --encrypt-password for the password blob.
+  "smtp": {
+    "host": "",
+    "port": 587,
+    "useSsl": true,
+    "username": "",
+    "encryptedPassword": "",
+    "from": "",
+    "to": "dba-team@example.com",
+    "emailCooldownMinutes": 15
+  },
+
+  // Teams / Slack incoming webhooks (optional). A channel is enabled by a non-empty URL.
+  "webhooks": {
+    "teamsUrl": "",
+    "slackUrl": ""
+  },
+
+  // Embedded MCP server (optional): the SAME ~72-tool surface Lite and the Dashboard expose — the
+  // six analysis tools (analyze_server, get_analysis_facts, compare_analysis, audit_config,
+  // get_analysis_findings, mute_analysis_finding) PLUS the plan-analysis tools and the ~60 STORED
+  // data-read tools (every read is served from the collected store, never a live query against a
+  // monitored server). Over Streamable HTTP at http://localhost:{port}; see Darling/README.md for the
+  // full tool list. Default OFF; port 5152 avoids the Dashboard (5150) and Lite (5151) defaults so all
+  // three can run on one machine.
+  //
+  // OPT-IN NETWORK EXPOSURE for MCP (managed mode only) — omit "network" for the secure default
+  // (loopback-only, tokenless HTTP, today's behavior). When present with a non-loopback "listen", the
+  // MCP host binds the LAN interface behind a REQUIRED bearer token + an in-app CIDR check, fail-closed
+  // (any missing precondition — token / valid allowFrom / managed mode — keeps it loopback-only).
+  // THREAT MODEL: the token gates the whole read surface AND analyze_server, which opens LIVE outbound
+  // connections to your monitored SQL Servers — so this is a trusted-LAN opt-in, NEVER internet-exposed.
+  // There is deliberately NO TLS on MCP (a self-signed cert breaks real MCP clients), so the token
+  // travels cleartext on-segment: the MITM control is a TLS REVERSE PROXY in front of the endpoint
+  // (the in-app CIDR only bounds WHO can route to it, not the wire).
+  // "enabled"/"port" here are the SEED; after first start they live in the control plane and the
+  // Viewer's Settings toggles them LIVE (the service starts/stops/rebinds the endpoint within
+  // seconds - no restart). The "network" exposure block below stays file-defined and restart-only
+  // on purpose; the Viewer toggle still stops an exposed endpoint instantly (a kill switch).
+  "mcp": {
+    "enabled": false,
+    "port": 5152,
+
+    // Uncomment to expose MCP on the LAN (a comma already follows "port" above):
+    // "network": {
+    //   "listen": "192.168.1.205",                     // specific bind IP preferred; "0.0.0.0" = all interfaces.
+    //   "allowFrom": "192.168.1.0/24",                 // in-app RemoteIpAddress check + firewall CIDR (loopback always allowed).
+    //   "encryptedToken": "<output of --encrypt-password>"  // REQUIRED to expose; or a plaintext "token" (dev only, warned).
+    // }
+  },
+
+  // Embedded WEB DASHBOARD (optional): a read-only, browser-based view of the monitoring store, served by
+  // the Darling service on its OWN port (default 5153, avoiding the MCP family: Dashboard 5150, Lite 5151,
+  // Darling MCP 5152). A SEPARATE surface from "mcp" above -- its own enable flag, port, token, and exposure
+  // block -- because the two gate different blast radii (the MCP token guards analyze_server's LIVE outbound
+  // connections to your monitored SQL Servers; the web dashboard is read-only over the collected store).
+  // Default OFF.
+  //
+  // OPT-IN NETWORK EXPOSURE for the dashboard (managed mode only) -- omit "network" for the secure default
+  // (loopback-only HTTP, today's behavior). When present with a non-loopback "listen", the web host binds the
+  // LAN interface behind an in-app CIDR check and a token gate: a browser presents the token ONCE via
+  // ?token=, which is exchanged for an HMAC-signed session cookie (then the token is stripped from the URL).
+  // LOOPBACK stays TOKENLESS even while exposed (the surface is read-only). Fail-closed: any missing
+  // precondition (token / valid allowFrom / managed mode) keeps it loopback-only. There is deliberately NO
+  // TLS (a browser over plain HTTP on a trusted LAN); the MITM control is a TLS REVERSE PROXY in front of the
+  // port, same as MCP -- so this is a trusted-LAN opt-in, NEVER internet-exposed.
+  // "enabled"/"port" here are the SEED; after first start they live in the control plane and the Viewer's
+  // Settings toggles them LIVE (the service starts/stops/rebinds the endpoint within seconds - no restart).
+  // The "network" exposure block below stays file-defined and restart-only; the Viewer toggle still stops an
+  // exposed dashboard instantly (a kill switch).
+  "web": {
+    "enabled": false,
+    "port": 5153,
+
+    // Uncomment to expose the dashboard on the LAN (a comma already follows "port" above):
+    // "network": {
+    //   "listen": "192.168.1.205",                     // specific bind IP preferred; "0.0.0.0" = all interfaces.
+    //   "allowFrom": "192.168.1.0/24",                 // in-app RemoteIpAddress check + firewall CIDR (loopback always allowed).
+    //   "encryptedToken": "<output of --encrypt-password>"  // REQUIRED to expose; or a plaintext "token" (dev only, warned).
+    // }
+  }
+}

@@ -21,6 +21,8 @@ using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Services;
 using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.DataGridHelpers;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -33,9 +35,6 @@ public partial class FinOpsTab : UserControl
     private DateTime _serverInventoryCacheTime;
 
     private readonly Dictionary<DataGrid, IDataGridFilterManager> _filterManagers = new();
-    private Popup? _filterPopup;
-    private ColumnFilterPopup? _filterPopupContent;
-    private DataGrid? _currentFilterGrid;
 
     private DataGridFilterManager<DatabaseResourceUsageRow>? _dbResourcesFilterMgr;
     private DataGridFilterManager<StorageGrowthRow>? _storageGrowthFilterMgr;
@@ -123,7 +122,8 @@ public partial class FinOpsTab : UserControl
         Window.GetWindow(this)!,
         (xml, label, qt) => Windows.PlanViewerWindow.ShowPlanAsync(Window.GetWindow(this)!, xml, label, qt),
         (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
-            GetSelectedConnectionString() ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            GetSelectedConnectionString() ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct,
+            productName: "SQL Server Performance Monitor Lite"),
         "the monitored server");
 
     private string? GetSelectedConnectionString()
@@ -417,18 +417,7 @@ public partial class FinOpsTab : UserControl
         empty.Width = new GridLength(Math.Max(100 - clamped, 0.1), GridUnitType.Star);
     }
 
-    private int GetResourceUsageHoursBack()
-    {
-        return ResourceUsageTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
+    private int HoursBackFromIndex(System.Windows.Controls.ComboBox combo) => combo.SelectedIndex switch { 0 => 1, 1 => 4, 2 => 12, 3 => 24, 4 => 168, _ => 24 };
 
     private async void ResourceUsageTimeRange_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
@@ -444,7 +433,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var hoursBack = GetResourceUsageHoursBack();
+            var hoursBack = HoursBackFromIndex(ResourceUsageTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetDatabaseResourceUsageAsync(serverId, hoursBack));
             _dbResourcesFilterMgr!.UpdateData(data);
             NoDatabaseResourcesMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -647,26 +636,13 @@ public partial class FinOpsTab : UserControl
         }
     }
 
-    private int GetHighImpactHoursBack()
-    {
-        return HighImpactTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
-
     private async System.Threading.Tasks.Task LoadHighImpactQueriesAsync(int serverId)
     {
         if (_dataService == null) return;
 
         try
         {
-            var hoursBack = GetHighImpactHoursBack();
+            var hoursBack = HoursBackFromIndex(HighImpactTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetHighImpactQueriesAsync(serverId, hoursBack));
             _highImpactFilterMgr!.UpdateData(data);
             HighImpactNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -678,39 +654,13 @@ public partial class FinOpsTab : UserControl
         }
     }
 
-    private int GetWaitStatsHoursBack()
-    {
-        return WaitStatsTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
-
-    private int GetExpensiveQueriesHoursBack()
-    {
-        return ExpensiveQueriesTimeRangeCombo.SelectedIndex switch
-        {
-            0 => 1,
-            1 => 4,
-            2 => 12,
-            3 => 24,
-            4 => 168,
-            _ => 24
-        };
-    }
-
     private async System.Threading.Tasks.Task LoadWaitCategorySummaryAsync(int serverId)
     {
         if (_dataService == null) return;
 
         try
         {
-            var hoursBack = GetWaitStatsHoursBack();
+            var hoursBack = HoursBackFromIndex(WaitStatsTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetWaitCategorySummaryAsync(serverId, hoursBack));
 
             // Compute proportional cost shares — scaled to time window
@@ -740,7 +690,7 @@ public partial class FinOpsTab : UserControl
 
         try
         {
-            var hoursBack = GetExpensiveQueriesHoursBack();
+            var hoursBack = HoursBackFromIndex(ExpensiveQueriesTimeRangeCombo);
             var data = await Task.Run(() => _dataService.GetExpensiveQueriesAsync(serverId, hoursBack));
 
             // Compute proportional cost shares — scaled to time window
@@ -948,66 +898,18 @@ public partial class FinOpsTab : UserControl
 
     #region Context Menu Handlers
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.CurrentCell.Column == null || grid.CurrentItem == null) return;
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-        var value = GetCellValue(grid.CurrentCell.Column, grid.CurrentItem);
-        if (value.Length > 0) Clipboard.SetDataObject(value, false);
-    }
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-    private void CopyRow_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.CurrentItem == null) return;
-
-        var sb = new StringBuilder();
-        foreach (var col in grid.Columns)
-        {
-            sb.Append(GetCellValue(col, grid.CurrentItem));
-            sb.Append('\t');
-        }
-        Clipboard.SetDataObject(sb.ToString().TrimEnd('\t'), false);
-    }
-
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.Items == null) return;
-
-        var sb = new StringBuilder();
-
-        foreach (var col in grid.Columns)
-        {
-            sb.Append(DataGridClipboardBehavior.GetHeaderText(col));
-            sb.Append('\t');
-        }
-        sb.AppendLine();
-
-        foreach (var item in grid.Items)
-        {
-            foreach (var col in grid.Columns)
-            {
-                sb.Append(GetCellValue(col, item));
-                sb.Append('\t');
-            }
-            sb.AppendLine();
-        }
-
-        Clipboard.SetDataObject(sb.ToString(), false);
-    }
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
     private void ExportToCsv_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem menuItem) return;
-        var grid = FindParentDataGrid(menuItem);
-        if (grid?.Items == null || grid.Items.Count == 0) return;
-
-        var prefix = grid.Name switch
+        // FinOps shares one handler across several grids, so the file-name prefix is chosen
+        // from the originating grid's name (resolved the same way the shared exporter does).
+        var grid = sender is MenuItem menuItem ? FindParentDataGrid(menuItem) : null;
+        var prefix = grid?.Name switch
         {
             nameof(DatabaseSizesDataGrid) => "database_sizes",
             nameof(ServerInventoryDataGrid) => "server_inventory",
@@ -1015,40 +917,7 @@ public partial class FinOpsTab : UserControl
             nameof(ApplicationConnectionsDataGrid) => "application_connections",
             _ => "finops_export"
         };
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
-            DefaultExt = ".csv",
-            FileName = $"{prefix}_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        var sb = new StringBuilder();
-
-        var headers = new List<string>();
-        foreach (var col in grid.Columns)
-            headers.Add(CsvEscape(DataGridClipboardBehavior.GetHeaderText(col)));
-        sb.AppendLine(string.Join(",", headers));
-
-        foreach (var item in grid.Items)
-        {
-            var values = new List<string>();
-            foreach (var col in grid.Columns)
-                values.Add(CsvEscape(GetCellValue(col, item)));
-            sb.AppendLine(string.Join(",", values));
-        }
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, sb.ToString(), Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to export: {ex.Message}", "Export Error",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        DataGridExport.ExportToCsv(sender, prefix, App.CsvSeparator);
     }
 
     #endregion
@@ -1088,102 +957,12 @@ public partial class FinOpsTab : UserControl
         _filterManagers[IndexLockingDataGrid] = _indexLockingFilterMgr;
     }
 
-    private void EnsureFilterPopup()
-    {
-        if (_filterPopup == null)
-        {
-            _filterPopupContent = new ColumnFilterPopup();
-            _filterPopup = new Popup
-            {
-                Child = _filterPopupContent,
-                StaysOpen = false,
-                Placement = PlacementMode.Bottom,
-                AllowsTransparency = true
-            };
-        }
-    }
+    /* Host/apply plumbing lives in the shared Ui controller. Lazy (a field initializer can't reference the
+       instance field _filterManagers); the XAML-wired FilterButton_Click forwards to it. */
+    private ColumnFilterPopupController? _filterPopupControllerField;
+    private ColumnFilterPopupController FilterPopupController => _filterPopupControllerField ??= new ColumnFilterPopupController(_filterManagers);
 
-    private void FilterButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button button || button.Tag is not string columnName) return;
-
-        var dataGrid = FindParentDataGridFromElement(button);
-        if (dataGrid == null || !_filterManagers.TryGetValue(dataGrid, out var manager)) return;
-
-        _currentFilterGrid = dataGrid;
-
-        EnsureFilterPopup();
-
-        _filterPopupContent!.FilterApplied -= FilterPopup_FilterApplied;
-        _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
-        _filterPopupContent.FilterApplied += FilterPopup_FilterApplied;
-        _filterPopupContent.FilterCleared += FilterPopup_FilterCleared;
-
-        manager.Filters.TryGetValue(columnName, out var existingFilter);
-        _filterPopupContent.Initialize(columnName, existingFilter);
-
-        _filterPopup!.PlacementTarget = button;
-        _filterPopup.IsOpen = true;
-    }
-
-    private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
-    {
-        if (_filterPopup != null)
-            _filterPopup.IsOpen = false;
-
-        if (_currentFilterGrid != null && _filterManagers.TryGetValue(_currentFilterGrid, out var manager))
-        {
-            manager.SetFilter(e.FilterState);
-        }
-    }
-
-    private void FilterPopup_FilterCleared(object? sender, EventArgs e)
-    {
-        if (_filterPopup != null)
-            _filterPopup.IsOpen = false;
-    }
-
-    private static DataGrid? FindParentDataGridFromElement(DependencyObject element)
-    {
-        var current = element;
-        while (current != null)
-        {
-            if (current is DataGrid dg)
-                return dg;
-            current = VisualTreeHelper.GetParent(current);
-        }
-        return null;
-    }
-
-    #endregion
-
-    #region Helpers
-
-    private static DataGrid? FindParentDataGrid(MenuItem menuItem)
-    {
-        var contextMenu = menuItem.Parent as ContextMenu;
-        var target = contextMenu?.PlacementTarget as FrameworkElement;
-        while (target != null && target is not DataGrid)
-            target = VisualTreeHelper.GetParent(target) as FrameworkElement;
-        return target as DataGrid;
-    }
-
-    private static string GetCellValue(DataGridColumn col, object item)
-    {
-        if (col is DataGridBoundColumn boundCol && boundCol.Binding is Binding binding)
-        {
-            var prop = item.GetType().GetProperty(binding.Path.Path);
-            return prop?.GetValue(item)?.ToString() ?? "";
-        }
-        return "";
-    }
-
-    private static string CsvEscape(string value)
-    {
-        if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
-        return value;
-    }
+    private void FilterButton_Click(object sender, RoutedEventArgs e) => FilterPopupController.HandleFilterButtonClick(sender);
 
     #endregion
 }

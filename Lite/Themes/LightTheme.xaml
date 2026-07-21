@@ -23,7 +23,10 @@
     <!-- Text Colors (dark on light backgrounds) -->
     <Color x:Key="ForegroundColor">#1A1D23</Color>
     <Color x:Key="ForegroundDimColor">#1A1D23</Color>
-    <Color x:Key="ForegroundMutedColor">#718096</Color>
+    <!-- Muted (tertiary) text. #1441: the old #718096 was only 3.38:1 on the light wells and
+         failed WCAG AA. #5A6472 is ~6:1 on #FFFFFF / ~5.6:1 on #F5F7FA — a readable secondary
+         tone that still reads quieter than primary, mirroring the Dark muted tier. -->
+    <Color x:Key="ForegroundMutedColor">#5A6472</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#DEE2E6</Color>
@@ -60,7 +63,9 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <!-- #1441: use the (now readable) muted color so Light has a real 3-tier text hierarchy
+         like Dark, instead of collapsing muted onto the primary foreground. -->
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
@@ -645,6 +650,7 @@
     <!-- ============================================ -->
     <Style TargetType="DataGrid">
         <Setter Property="helpers:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+        <Setter Property="helpers:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
         <Setter Property="helpers:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
         <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}"/>
@@ -1275,6 +1281,18 @@
         <Setter Property="Padding" Value="10,8"/>
     </Style>
 
+
+    <!-- Time Range Slicer (light values; #1441 completeness — these 10 keys existed only in Dark) -->
+    <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="{StaticResource BackgroundDarkColor}"/>
+    <SolidColorBrush x:Key="SlicerChartLineBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#332EAEF1"/>
+    <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#40000000"/>
+    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#222EAEF1"/>
+    <SolidColorBrush x:Key="SlicerHandleBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="SlicerBorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="SlicerLabelBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerToggleBrush" Color="{StaticResource ForegroundColor}"/>
 
     <!-- ============================================ -->
     <!-- Plan Viewer Resources                        -->

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace PerformanceMonitor.Analysis;
 
@@ -22,8 +21,6 @@ public class AnalysisContext
     /// (the window is then host-UTC — the prior behavior).
     /// </summary>
     public TimeSpan ServerUtcOffset { get; set; }
-
-    public List<AnalysisExclusion> Exclusions { get; set; } = [];
 
     /// <summary>
     /// Duration of the examined period in milliseconds.

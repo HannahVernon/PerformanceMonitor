@@ -17,16 +17,18 @@ namespace PerformanceMonitorLite.Services;
 public partial class LocalDataService
 {
     /// <summary>
-    /// Queries a SQL Server directly for its properties via SERVERPROPERTY + sys.dm_os_sys_info.
-    /// Works from any database context — no PerformanceMonitor DB required.
+    /// Inventory facts: edition, product version/level, storage, HADR/cluster flags, host OS, and AG
+    /// replica role. Every value comes from SERVERPROPERTY scalars or OBJECT_ID-guarded dynamic SQL
+    /// that needs NO special permission, so this succeeds for any connected login — even an Azure SQL
+    /// DB login lacking VIEW DATABASE STATE. The five hardware columns (reader indices 4, 5, 6, 8, 9)
+    /// are typed-NULL placeholders here, filled by a separate <see cref="HardwareQueryText"/> read;
+    /// keeping them preserves the reader column order. sys.dm_os_sys_info is deliberately NOT
+    /// referenced so a permission gap can never sink the whole inventory row (#1535).
+    /// Columns: 0 edition, 1 product_version, 2 product_level, 3 product_update_level, 4 cpu_count,
+    /// 5 physical_memory_mb, 6 sqlserver_start_time, 7 storage_gb, 8 socket_count, 9 cores_per_socket,
+    /// 10 engine_edition, 11 is_hadr_enabled, 12 is_clustered, 13 host_os, 14 ag_replica_role.
     /// </summary>
-    public static async Task<ServerPropertyRow> GetServerPropertiesLiveAsync(string connectionString)
-    {
-        using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync();
-
-        // sys.master_files doesn't exist on Azure SQL DB — dynamic SQL picks the right catalog view
-        const string query = @"
+    internal const string InventoryQueryText = @"
 DECLARE
     @storage_sql nvarchar(MAX) =
         CASE
@@ -88,23 +90,50 @@ SELECT
     CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')),
     CONVERT(nvarchar(128), SERVERPROPERTY('ProductLevel')),
     CONVERT(nvarchar(128), SERVERPROPERTY('ProductUpdateLevel')),
-    si.cpu_count,
-    si.physical_memory_kb / 1024,
-    si.sqlserver_start_time,
+    CONVERT(int, NULL),
+    CONVERT(bigint, NULL),
+    CONVERT(datetime, NULL),
     @storage_gb,
-    si.socket_count,
-    si.cores_per_socket,
+    CONVERT(int, NULL),
+    CONVERT(int, NULL),
     CONVERT(int, SERVERPROPERTY('EngineEdition')),
     CONVERT(int, SERVERPROPERTY('IsHadrEnabled')),
     CONVERT(int, SERVERPROPERTY('IsClustered')),
     @host_os,
-    @ag_role
-FROM sys.dm_os_sys_info AS si;";
+    @ag_role;";
 
-        using var command = new SqlCommand(query, connection) { CommandTimeout = 30 };
-        using var reader = await command.ExecuteReaderAsync();
-        if (await reader.ReadAsync())
+    /// <summary>
+    /// Hardware facts from sys.dm_os_sys_info: CPU count, physical memory (MB), start time, and
+    /// socket/core topology. That DMV needs VIEW SERVER STATE (VIEW DATABASE STATE on Azure SQL DB),
+    /// so it runs in its OWN best-effort read — a permission gap loses only these fields, never the
+    /// inventory row above (#1535). Columns: 0 cpu_count, 1 physical_memory_mb, 2 sqlserver_start_time,
+    /// 3 socket_count, 4 cores_per_socket.
+    /// </summary>
+    internal const string HardwareQueryText =
+        "SELECT cpu_count, physical_memory_kb / 1024, sqlserver_start_time, socket_count, cores_per_socket FROM sys.dm_os_sys_info;";
+
+    /// <summary>
+    /// Queries a SQL Server directly for its properties. Inventory facts (edition, version, storage)
+    /// come from a permission-free query; hardware facts (CPU/memory/sockets) come from a separate
+    /// best-effort read of sys.dm_os_sys_info, so a login without VIEW DATABASE STATE still gets the
+    /// inventory row with <see cref="ServerPropertyRow.HardwareUnavailableReason"/> set.
+    /// Works from any database context — no PerformanceMonitor DB required.
+    /// </summary>
+    public static async Task<ServerPropertyRow> GetServerPropertiesLiveAsync(string connectionString)
+    {
+        using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        ServerPropertyRow result;
+
+        // Inventory read. Scoped closed in a using(...) block BEFORE the hardware read opens: the
+        // connection has no MARS, so an overlapping second reader would throw (#1535/#1589).
+        using (var command = new SqlCommand(InventoryQueryText, connection) { CommandTimeout = 30 })
+        using (var reader = await command.ExecuteReaderAsync())
         {
+            if (!await reader.ReadAsync())
+                return new ServerPropertyRow();
+
             var version = reader.IsDBNull(1) ? "" : reader.GetString(1);
             var level = reader.IsDBNull(2) ? "" : reader.GetString(2);
             var updateLevel = reader.IsDBNull(3) ? null : reader.GetString(3);
@@ -112,7 +141,7 @@ FROM sys.dm_os_sys_info AS si;";
                 ? $"{version} - {updateLevel}"
                 : $"{version} - {level}";
 
-            return new ServerPropertyRow
+            result = new ServerPropertyRow
             {
                 Edition = reader.IsDBNull(0) ? "" : reader.GetString(0),
                 ProductVersion = versionDisplay,
@@ -131,7 +160,30 @@ FROM sys.dm_os_sys_info AS si;";
             };
         }
 
-        return new ServerPropertyRow();
+        // Hardware read: best-effort in its OWN try/catch. sys.dm_os_sys_info needs VIEW SERVER STATE
+        // (VIEW DATABASE STATE on Azure SQL DB); a login without it loses only these fields, and the
+        // inventory row above still renders edition/version/storage (#1535).
+        try
+        {
+            using var hardwareCommand = new SqlCommand(HardwareQueryText, connection) { CommandTimeout = 30 };
+            using var hardwareReader = await hardwareCommand.ExecuteReaderAsync();
+            if (await hardwareReader.ReadAsync())
+            {
+                result.CpuCount = hardwareReader.IsDBNull(0) ? 0 : Convert.ToInt32(hardwareReader.GetValue(0));
+                result.PhysicalMemoryMb = hardwareReader.IsDBNull(1) ? 0L : Convert.ToInt64(hardwareReader.GetValue(1));
+                result.SqlServerStartTime = hardwareReader.IsDBNull(2) ? null : hardwareReader.GetDateTime(2);
+                result.SocketCount = hardwareReader.IsDBNull(3) ? null : Convert.ToInt32(hardwareReader.GetValue(3));
+                result.CoresPerSocket = hardwareReader.IsDBNull(4) ? null : Convert.ToInt32(hardwareReader.GetValue(4));
+            }
+        }
+        catch (SqlException ex)
+        {
+            result.HardwareUnavailableReason =
+                "Hardware inventory (CPU, memory, sockets) unavailable - the monitoring login likely lacks VIEW DATABASE STATE on this database.";
+            AppLogger.Warn("FinOps", $"Hardware inventory unavailable for '{connection.DataSource}': {ex.Message}");
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -234,160 +286,5 @@ LEFT JOIN idle_dbs id ON true";
         }
 
         return (null, null, null, null);
-    }
-
-    /// <summary>
-    /// Gets the latest server properties snapshot per server (cross-server) from DuckDB.
-    /// Fallback for when live query is not available.
-    /// </summary>
-    public async Task<List<ServerPropertyRow>> GetServerPropertiesLatestAsync(IEnumerable<int>? activeServerIds = null)
-    {
-        using var connection = await OpenConnectionAsync();
-        using var command = connection.CreateCommand();
-
-        var cpuCutoff = DateTime.UtcNow.AddHours(-24);
-        var idleCutoff = DateTime.UtcNow.AddDays(-7);
-        var recentCutoff = DateTime.UtcNow.AddHours(-24);
-
-        // Build server ID filter — integers only, safe to inline
-        var serverFilter = "";
-        if (activeServerIds != null)
-        {
-            var idList = string.Join(",", activeServerIds);
-            if (!string.IsNullOrEmpty(idList))
-                serverFilter = $"AND server_id IN ({idList})";
-        }
-
-        command.CommandText = $@"
-WITH active_servers AS (
-    SELECT DISTINCT server_id, server_name
-    FROM v_cpu_utilization_stats
-    WHERE collection_time >= $3
-    {serverFilter}
-),
-latest_props AS (
-    SELECT *
-    FROM v_server_properties
-    WHERE (server_id, collection_time) IN (
-        SELECT server_id, MAX(collection_time)
-        FROM v_server_properties
-        GROUP BY server_id
-    )
-),
-cpu_24h AS (
-    SELECT
-        server_id,
-        AVG(CAST(sqlserver_cpu_utilization AS DECIMAL(5,2))) AS avg_cpu_pct,
-        MAX(sqlserver_cpu_utilization) AS max_cpu_pct,
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY sqlserver_cpu_utilization) AS p95_cpu_pct
-    FROM v_cpu_utilization_stats
-    WHERE collection_time >= $1
-    GROUP BY server_id
-),
-mem_latest AS (
-    SELECT
-        server_id,
-        CAST(total_server_memory_mb AS DECIMAL(10,2)) / NULLIF(target_server_memory_mb, 0) AS memory_ratio
-    FROM v_memory_stats
-    WHERE (server_id, collection_time) IN (
-        SELECT server_id, MAX(collection_time)
-        FROM v_memory_stats
-        GROUP BY server_id
-    )
-),
-storage_totals AS (
-    SELECT
-        server_id,
-        SUM(total_size_mb) / 1024.0 AS total_storage_gb
-    FROM v_database_size_stats
-    WHERE (server_id, collection_time) IN (
-        SELECT server_id, MAX(collection_time)
-        FROM v_database_size_stats
-        GROUP BY server_id
-    )
-    GROUP BY server_id
-),
-idle_dbs AS (
-    SELECT
-        server_id,
-        COUNT(DISTINCT database_name) AS idle_db_count
-    FROM (
-        SELECT server_id, database_name
-        FROM v_database_size_stats
-        WHERE (server_id, collection_time) IN (
-            SELECT server_id, MAX(collection_time)
-            FROM v_database_size_stats
-            GROUP BY server_id
-        )
-        AND database_name NOT IN ('master', 'model', 'msdb', 'tempdb', 'PerformanceMonitor')
-        EXCEPT
-        SELECT DISTINCT server_id, database_name
-        FROM v_query_stats
-        WHERE collection_time >= $2
-        AND   delta_execution_count > 0
-    ) AS idle
-    GROUP BY server_id
-)
-SELECT
-    a.server_name,
-    sp.edition,
-    sp.product_version,
-    sp.product_level,
-    sp.product_update_level,
-    sp.engine_edition,
-    COALESCE(sp.vcore_count, sp.cpu_count) AS cpu_count,
-    sp.physical_memory_mb,
-    sp.socket_count,
-    sp.cores_per_socket,
-    sp.is_hadr_enabled,
-    sp.is_clustered,
-    c.avg_cpu_pct,
-    st.total_storage_gb,
-    id.idle_db_count,
-    CASE
-        WHEN c.avg_cpu_pct < 15 AND c.max_cpu_pct < 40 AND COALESCE(m.memory_ratio, 0) < 0.5
-        THEN 'OVER_PROVISIONED'
-        WHEN c.p95_cpu_pct > 85 OR COALESCE(m.memory_ratio, 0) > 0.95
-        THEN 'UNDER_PROVISIONED'
-        ELSE 'RIGHT_SIZED'
-    END AS provisioning_status
-FROM active_servers a
-LEFT JOIN latest_props sp ON sp.server_id = a.server_id
-LEFT JOIN cpu_24h c ON c.server_id = a.server_id
-LEFT JOIN mem_latest m ON m.server_id = a.server_id
-LEFT JOIN storage_totals st ON st.server_id = a.server_id
-LEFT JOIN idle_dbs id ON id.server_id = a.server_id
-ORDER BY a.server_name";
-
-        command.Parameters.Add(new DuckDBParameter { Value = cpuCutoff });
-        command.Parameters.Add(new DuckDBParameter { Value = idleCutoff });
-        command.Parameters.Add(new DuckDBParameter { Value = recentCutoff });
-
-        var items = new List<ServerPropertyRow>();
-        using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-        {
-            items.Add(new ServerPropertyRow
-            {
-                ServerName = reader.IsDBNull(0) ? "" : reader.GetString(0),
-                Edition = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                ProductVersion = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                ProductLevel = reader.IsDBNull(3) ? null : reader.GetString(3),
-                ProductUpdateLevel = reader.IsDBNull(4) ? null : reader.GetString(4),
-                EngineEdition = reader.IsDBNull(5) ? 0 : Convert.ToInt32(reader.GetValue(5)),
-                CpuCount = reader.IsDBNull(6) ? 0 : Convert.ToInt32(reader.GetValue(6)),
-                PhysicalMemoryMb = reader.IsDBNull(7) ? 0L : ToInt64(reader.GetValue(7)),
-                SocketCount = reader.IsDBNull(8) ? null : Convert.ToInt32(reader.GetValue(8)),
-                CoresPerSocket = reader.IsDBNull(9) ? null : Convert.ToInt32(reader.GetValue(9)),
-                IsHadrEnabled = reader.IsDBNull(10) ? null : reader.GetBoolean(10),
-                IsClustered = reader.IsDBNull(11) ? null : reader.GetBoolean(11),
-                AvgCpuPct = reader.IsDBNull(12) ? null : Convert.ToDecimal(reader.GetValue(12)),
-                StorageTotalGb = reader.IsDBNull(13) ? null : Convert.ToDecimal(reader.GetValue(13)),
-                IdleDbCount = reader.IsDBNull(14) ? null : Convert.ToInt32(reader.GetValue(14)),
-                ProvisioningStatus = reader.IsDBNull(15) ? null : reader.GetString(15)
-            });
-        }
-
-        return items;
     }
 }

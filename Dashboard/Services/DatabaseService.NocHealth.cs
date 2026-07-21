@@ -10,8 +10,10 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitor.Alerting;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 
@@ -587,41 +589,17 @@ namespace PerformanceMonitorDashboard.Services
 
         private async Task GetBlockingStatusAsync(SqlConnection connection, ServerHealthStatus status)
         {
-            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+            // Delegates to GetBlockingValuesAsync, the single source of the sys.sysprocesses LCK
+            // blocking query, so the health-status and alert paths can never drift. Empty exclusions
+            // reproduces this path's historical no-database-filter behavior (the query is then
+            // byte-identical to the old inline one). GetBlockingValuesAsync already swallows failures
+            // and returns (0, 0), so no try/catch is needed here.
+            var (totalBlocked, longestSeconds) = await GetBlockingValuesAsync(connection, Array.Empty<string>());
 
-                SELECT
-                    total_blocked = COUNT_BIG(*),
-                    longest_blocked_seconds = ISNULL(MAX(s.waittime), 0) / 1000.0
-                FROM sys.sysprocesses AS s
-                WHERE s.blocked <> 0
-                AND   s.lastwaittype LIKE N'LCK%'
-                OPTION(MAXDOP 1, RECOMPILE);";
+            status.TotalBlocked = totalBlocked;
+            status.LongestBlockedSeconds = longestSeconds;
 
-            try
-            {
-                using var cmd = new SqlCommand(query, connection);
-                cmd.CommandTimeout = 10;
-                using var reader = await cmd.ExecuteReaderAsync();
-
-                if (await reader.ReadAsync())
-                {
-                    // Use GetValue + Convert for safety with varying SQL types
-                    var totalBlockedValue = reader.GetValue(0);
-                    var longestSecondsValue = reader.GetValue(1);
-                    
-                    var totalBlocked = Convert.ToInt64(totalBlockedValue, System.Globalization.CultureInfo.InvariantCulture);
-                    var longestSeconds = Convert.ToDecimal(longestSecondsValue, System.Globalization.CultureInfo.InvariantCulture);
-                    
-                    status.TotalBlocked = totalBlocked;
-                    status.LongestBlockedSeconds = longestSeconds;
-                    
-                    Logger.Info($"Blocking status: {totalBlocked} blocked, longest {longestSeconds}s");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning($"Failed to get blocking status: {ex.Message}");
-            }
+            Logger.Info($"Blocking status: {totalBlocked} blocked, longest {longestSeconds}s");
         }
 
         private async Task GetThreadStatusAsync(SqlConnection connection, ServerHealthStatus status)
@@ -1088,71 +1066,27 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
-        /// Live query against the monitored server's msdb for SQL Agent job runs (step_id = 0
-        /// outcome row, run_status = 0 = Failed) that failed within the lookback window.
-        /// run_date/run_time integers are converted to a server-local datetime and filtered to the
-        /// last N minutes. Degrades gracefully: a login without msdb / SQLAgentReaderRole access
-        /// raises a catchable SqlException (916/229/297/300) that returns an empty list rather than
-        /// failing the alert cycle. Azure SQL DB (no Agent) is skipped by the caller.
+        /// Live query against the monitored server's msdb for SQL Agent job runs that FAILED within
+        /// the lookback window — the SQL text and row mapping live in the shared
+        /// <see cref="FailedJobsQuery"/> (Phase-5 slice E; see its doc for the query semantics and
+        /// the server-local RunDateTime note). Runs at alert-check time — failure outcomes are not
+        /// part of the collected running_jobs snapshot. Degrades gracefully: a login without msdb /
+        /// SQLAgentReaderRole access raises a catchable SqlException (916/229/297/300) that returns
+        /// an empty list rather than failing the alert cycle. Azure SQL DB (no Agent) is skipped by
+        /// the caller.
         /// </summary>
         private async Task<List<FailedJobInfo>> GetRecentlyFailedJobsAsync(SqlConnection connection, int lookbackMinutes)
         {
             var results = new List<FailedJobInfo>();
 
-            const string query = @"SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-                SELECT TOP (50)
-                    job_name = j.name,
-                    job_id = CONVERT(varchar(36), j.job_id),
-                    run_datetime =
-                        DATEADD
-                        (
-                            SECOND,
-                            (jh.run_time / 10000) * 3600 +
-                            ((jh.run_time / 100) % 100) * 60 +
-                            (jh.run_time % 100),
-                            CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
-                        ),
-                    step_id = jh.step_id,
-                    step_name = jh.step_name,
-                    message = jh.message
-                FROM msdb.dbo.sysjobhistory AS jh
-                JOIN msdb.dbo.sysjobs AS j
-                  ON j.job_id = jh.job_id
-                WHERE jh.step_id = 0
-                AND   jh.run_status = 0
-                AND   jh.run_date >= CONVERT(integer, CONVERT(varchar(8), DATEADD(MINUTE, -@lookback_minutes, GETDATE()), 112))
-                AND   DATEADD
-                      (
-                          SECOND,
-                          (jh.run_time / 10000) * 3600 +
-                          ((jh.run_time / 100) % 100) * 60 +
-                          (jh.run_time % 100),
-                          CONVERT(datetime, CONVERT(varchar(8), jh.run_date))
-                      ) >= DATEADD(MINUTE, -@lookback_minutes, GETDATE())
-                ORDER BY
-                    run_datetime DESC
-                OPTION(RECOMPILE);";
-
             try
             {
-                using var cmd = new SqlCommand(query, connection);
+                using var cmd = new SqlCommand(FailedJobsQuery.Sql, connection);
                 cmd.CommandTimeout = 10;
-                cmd.Parameters.Add(new SqlParameter("@lookback_minutes", SqlDbType.Int) { Value = lookbackMinutes });
+                cmd.Parameters.Add(new SqlParameter(FailedJobsQuery.LookbackMinutesParameter, SqlDbType.Int) { Value = lookbackMinutes });
                 using var reader = await cmd.ExecuteReaderAsync();
 
-                while (await reader.ReadAsync())
-                {
-                    results.Add(new FailedJobInfo
-                    {
-                        JobName = reader.GetString(0),
-                        JobId = reader.IsDBNull(1) ? "" : reader.GetString(1),
-                        RunDateTime = reader.GetDateTime(2),
-                        StepId = reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3), System.Globalization.CultureInfo.InvariantCulture),
-                        StepName = reader.IsDBNull(4) ? "" : reader.GetString(4),
-                        Message = reader.IsDBNull(5) ? "" : reader.GetString(5)
-                    });
-                }
+                results = await FailedJobsQuery.ReadAsync(reader, CancellationToken.None);
             }
             catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 229 or 297 or 300 or 916)
             {

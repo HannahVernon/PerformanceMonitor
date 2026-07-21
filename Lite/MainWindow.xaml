@@ -162,6 +162,8 @@
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
                     <StackPanel>
                         <Button x:Name="AddServerButton" Content="+ Add Server" Click="AddServerButton_Click"/>
+                        <Button x:Name="AddMultipleServersButton" Content="Add Multiple Servers…" Click="AddMultipleServersButton_Click" Margin="0,8,0,0"
+                                ToolTip="Paste a list of servers and add them all at once with shared credentials"/>
                         <Button x:Name="ManageServersButton" Content="Manage Servers" Click="ManageServersButton_Click" Margin="0,8,0,0"/>
                         <Button Click="OpenPlanViewerButton_Click" Margin="0,8,0,0"
                                 ToolTip="Open or paste an execution plan (independent of any server)">
@@ -239,6 +241,17 @@
                 <!-- Server Tab Control (hidden until servers are connected) -->
                 <TabControl x:Name="ServerTabControl" Visibility="Collapsed" Background="Transparent" BorderThickness="0">
                     <TabItem Header="Overview" x:Name="OverviewTab">
+                        <DockPanel LastChildFill="True">
+                        <StackPanel x:Name="OverviewSortToolbar" DockPanel.Dock="Top" Orientation="Horizontal"
+                                    Margin="14,10,14,0" Visibility="Collapsed">
+                            <TextBlock Text="Sort:" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,8,0"/>
+                            <ComboBox x:Name="OverviewSortCombo" Width="120" VerticalAlignment="Center"
+                                      SelectionChanged="OverviewSortCombo_SelectionChanged">
+                                <ComboBoxItem Content="CPU %" Tag="Cpu"/>
+                                <ComboBoxItem Content="Name" Tag="Name"/>
+                            </ComboBox>
+                        </StackPanel>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="8">
                             <ItemsControl x:Name="OverviewItemsControl">
                                 <ItemsControl.ItemsPanel>
@@ -293,9 +306,9 @@
                                                 <Border Background="#80000000" CornerRadius="6"
                                                         Visibility="{Binding IsOffline, Converter={StaticResource BoolToVisibility}}">
                                                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                        <TextBlock Text="&#x2717;" FontSize="28" Foreground="#E57373"
+                                                        <TextBlock Text="&#x2717;" FontSize="28" Foreground="{DynamicResource ErrorBrush}"
                                                                    HorizontalAlignment="Center"/>
-                                                        <TextBlock Text="Offline" FontSize="13" Foreground="#E57373"
+                                                        <TextBlock Text="Offline" FontSize="13" Foreground="{DynamicResource ErrorBrush}"
                                                                    FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
                                                     </StackPanel>
                                                 </Border>
@@ -305,9 +318,13 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </ScrollViewer>
+                        </DockPanel>
                     </TabItem>
                     <TabItem Header="Alert History" x:Name="AlertsTab">
                         <controls:AlertsHistoryTab x:Name="AlertsHistoryContent"/>
+                    </TabItem>
+                    <TabItem Header="Job History" x:Name="JobHistoryTabItem">
+                        <controls:JobHistoryTab x:Name="JobHistoryContent"/>
                     </TabItem>
                     <TabItem Header="FinOps" x:Name="FinOpsTab">
                         <controls:FinOpsTab x:Name="FinOpsContent"/>

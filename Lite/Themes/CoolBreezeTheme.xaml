@@ -23,7 +23,10 @@
     <!-- Text Colors (dark on light backgrounds) -->
     <Color x:Key="ForegroundColor">#1A2A3A</Color>
     <Color x:Key="ForegroundDimColor">#1A2A3A</Color>
-    <Color x:Key="ForegroundMutedColor">#5B7A90</Color>
+    <!-- Muted (tertiary) text. #1441: the old #5B7A90 was only 2.87:1 on the light-blue wells and
+         failed WCAG AA. #4A5D72 is ~6.5:1 on #EEF4FA — a readable secondary tone that keeps the
+         cool blue character while reading quieter than primary, mirroring the Dark muted tier. -->
+    <Color x:Key="ForegroundMutedColor">#4A5D72</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#A8BDD0</Color>
@@ -60,7 +63,9 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <!-- #1441: use the (now readable) muted color so CoolBreeze has a real 3-tier text hierarchy
+         like Dark, instead of collapsing muted onto the primary foreground. -->
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
@@ -645,6 +650,7 @@
     <!-- ============================================ -->
     <Style TargetType="DataGrid">
         <Setter Property="helpers:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+        <Setter Property="helpers:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
         <Setter Property="helpers:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
         <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}"/>
@@ -1275,6 +1281,18 @@
         <Setter Property="Padding" Value="10,8"/>
     </Style>
 
+
+    <!-- Time Range Slicer (cool-breeze values; #1441 completeness — these 10 keys existed only in Dark) -->
+    <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="{StaticResource BackgroundDarkColor}"/>
+    <SolidColorBrush x:Key="SlicerChartLineBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#331E6FA8"/>
+    <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#40000000"/>
+    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#221E6FA8"/>
+    <SolidColorBrush x:Key="SlicerHandleBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="SlicerBorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="SlicerLabelBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerToggleBrush" Color="{StaticResource ForegroundColor}"/>
 
     <!-- ============================================ -->
     <!-- Plan Viewer Resources                        -->

@@ -1,0 +1,213 @@
+<UserControl x:Class="PerformanceMonitor.Darling.Viewer.JobHistoryTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="900">
+    <!-- Fleet-wide retained SQL Agent job-run history (issue #1433), a structural sibling of
+         AlertsHistoryTab rewired to Postgres via ViewerDataService.GetJobHistoryAsync. Time-range + Server
+         + Status + Category filters, per-column filter headers, failure / long-runtime / retry row
+         color-coding, and CSV export. Job history is a durable record, so there is no dismiss/mute surface.
+         run_datetime is de-skewed to naive-UTC in SQL and rendered in the viewer's local time. -->
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+                </MenuItem>
+            </ContextMenu>
+
+            <Style x:Key="DefaultRowStyle" TargetType="DataGridRow">
+                <Setter Property="ContextMenu" Value="{StaticResource DataGridContextMenu}"/>
+            </Style>
+
+            <!-- Color-coding: canceled (gray), retry (yellow), long-running (amber), failed (red) — later
+                 triggers win, so failed red takes precedence. Disabled jobs are dimmed/italic. -->
+            <Style x:Key="JobHistoryRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource DefaultRowStyle}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding JobEnabled}" Value="False">
+                        <Setter Property="Opacity" Value="0.6"/>
+                        <Setter Property="FontStyle" Value="Italic"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsCanceled}" Value="True">
+                        <Setter Property="Background" Value="#33808080"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsRetry}" Value="True">
+                        <Setter Property="Background" Value="#33EAB308"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsLongRunning}" Value="True">
+                        <Setter Property="Background" Value="#33D97706"/>
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding IsFailed}" Value="True">
+                        <Setter Property="Background" Value="#33DC2626"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header Controls -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10,8" Height="36">
+            <TextBlock Text="Job History" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" FontSize="14"
+                       Foreground="{DynamicResource ForegroundBrush}"/>
+            <TextBlock Text="Time Range:" VerticalAlignment="Center" Margin="5,0,4,0"
+                       Foreground="{DynamicResource ForegroundMutedBrush}"/>
+            <ComboBox x:Name="TimeRangeComboBox" Width="100" VerticalAlignment="Center"
+                      SelectionChanged="Filter_SelectionChanged">
+                <ComboBoxItem Content="Last 24 Hours" Tag="24" IsSelected="True"/>
+                <ComboBoxItem Content="Last 7 Days" Tag="168"/>
+                <ComboBoxItem Content="Last 30 Days" Tag="720"/>
+                <ComboBoxItem Content="Last 90 Days" Tag="2160"/>
+                <ComboBoxItem Content="Last Year" Tag="8760"/>
+            </ComboBox>
+            <TextBlock Text="Server:" VerticalAlignment="Center" Margin="12,0,4,0"
+                       Foreground="{DynamicResource ForegroundMutedBrush}"/>
+            <ComboBox x:Name="ServerFilterComboBox" Width="150" VerticalAlignment="Center"
+                      SelectionChanged="Filter_SelectionChanged">
+                <ComboBoxItem Content="All Servers" Tag="" IsSelected="True"/>
+            </ComboBox>
+            <TextBlock Text="Status:" VerticalAlignment="Center" Margin="12,0,4,0"
+                       Foreground="{DynamicResource ForegroundMutedBrush}"/>
+            <ComboBox x:Name="StatusFilterComboBox" Width="110" VerticalAlignment="Center"
+                      SelectionChanged="Filter_SelectionChanged">
+                <ComboBoxItem Content="All Statuses" Tag="" IsSelected="True"/>
+                <ComboBoxItem Content="Failed" Tag="0"/>
+                <ComboBoxItem Content="Succeeded" Tag="1"/>
+                <ComboBoxItem Content="Retry" Tag="2"/>
+                <ComboBoxItem Content="Canceled" Tag="3"/>
+            </ComboBox>
+            <TextBlock Text="Category:" VerticalAlignment="Center" Margin="12,0,4,0"
+                       Foreground="{DynamicResource ForegroundMutedBrush}"/>
+            <ComboBox x:Name="CategoryFilterComboBox" Width="150" VerticalAlignment="Center"
+                      SelectionChanged="Filter_SelectionChanged">
+                <ComboBoxItem Content="All Categories" Tag="" IsSelected="True"/>
+            </ComboBox>
+            <Button Content="Refresh" Click="RefreshButton_Click" Margin="12,0,0,0" Padding="10,4" MinWidth="70"/>
+            <TextBlock x:Name="JobCountIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
+                       FontStyle="Italic" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+            <TextBlock x:Name="AgentStatusIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
+                       FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+            <TextBlock x:Name="LastRefreshedIndicator" Text="" Margin="12,0,0,0" VerticalAlignment="Center"
+                       FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}"/>
+        </StackPanel>
+
+        <!-- DataGrid -->
+        <Grid Grid.Row="1" Margin="10,0,10,10">
+            <DataGrid x:Name="JobHistoryDataGrid"
+                      AutoGenerateColumns="False"
+                      IsReadOnly="True"
+                      CanUserSortColumns="True"
+                      GridLinesVisibility="Horizontal"
+                      CanUserResizeColumns="True"
+                      HeadersVisibility="Column"
+                      SelectionMode="Extended"
+                      RowStyle="{StaticResource JobHistoryRowStyle}">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Binding="{Binding RunTimeLocal}" Width="150" SortMemberPath="RunDateTimeUtc" SortDirection="Descending">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RunTimeLocal" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Run Time" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding ServerName}" Width="130">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="ServerName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Server" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding JobName}" Width="180">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="JobName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Job" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding CategoryName}" Width="120">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="CategoryName" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Category" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding StepDisplay}" Width="150">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="StepDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Step" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding RunStatusDesc}" Width="90">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RunStatusDesc" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Status" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding DurationFormatted}" Width="90">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="DurationFormatted" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Duration" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding RetriesDisplay}" Width="65">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="RetriesDisplay" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Retries" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding LastSuccessfulRunLocal}" Width="150">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="LastSuccessfulRunLocal" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Last Success" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding Message}" Width="*" MinWidth="200">
+                        <DataGridTextColumn.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Style="{DynamicResource ColumnFilterButtonStyle}" Tag="Message" Click="FilterButton_Click" Margin="0,0,4,0"/>
+                                <TextBlock Text="Message" FontWeight="Bold" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <!-- Empty State -->
+            <TextBlock x:Name="NoJobsMessage"
+                       Text="No job runs recorded in the selected time range"
+                       FontSize="14" Foreground="{DynamicResource ForegroundMutedBrush}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Visibility="Collapsed"/>
+        </Grid>
+    </Grid>
+</UserControl>

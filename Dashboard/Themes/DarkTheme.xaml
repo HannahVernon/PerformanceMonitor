@@ -22,8 +22,8 @@
 
     <!-- Text Colors (off-white to reduce eye strain) -->
     <Color x:Key="ForegroundColor">#E4E6EB</Color>
-    <Color x:Key="ForegroundDimColor">#E4E6EB</Color>
-    <Color x:Key="ForegroundMutedColor">#6B7280</Color>
+    <Color x:Key="ForegroundDimColor">#C7CBD4</Color>
+    <Color x:Key="ForegroundMutedColor">#A8AEBA</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#2a2d35</Color>
@@ -60,7 +60,7 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
@@ -718,6 +718,7 @@
     <!-- ============================================ -->
     <Style TargetType="DataGrid">
         <Setter Property="helpers:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+        <Setter Property="helpers:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
         <Setter Property="helpers:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
         <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}"/>

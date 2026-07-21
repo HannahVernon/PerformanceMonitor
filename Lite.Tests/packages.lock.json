@@ -886,12 +886,23 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "performancemonitor.alerting": {
+        "type": "Project",
+        "dependencies": {
+          "PerformanceMonitor.Notifications": "[1.0.0, )"
+        }
+      },
       "performancemonitor.analysis": {
+        "type": "Project"
+      },
+      "performancemonitor.collectors": {
         "type": "Project"
       },
       "performancemonitor.common": {
         "type": "Project",
         "dependencies": {
+          "CredentialManagement": "[1.0.2, )",
+          "Microsoft.Extensions.Logging.Abstractions": "[10.0.9, )",
           "ModelContextProtocol": "[1.4.0, )"
         }
       },
@@ -905,6 +916,7 @@
       "performancemonitor.plananalysis": {
         "type": "Project",
         "dependencies": {
+          "Microsoft.Data.SqlClient": "[7.0.1, )",
           "PerformanceMonitor.Common": "[1.0.0, )"
         }
       },
@@ -929,7 +941,9 @@
           "Microsoft.Extensions.Logging": "[10.0.9, )",
           "ModelContextProtocol": "[1.4.0, )",
           "ModelContextProtocol.AspNetCore": "[1.4.0, )",
+          "PerformanceMonitor.Alerting": "[1.0.0, )",
           "PerformanceMonitor.Analysis": "[1.0.0, )",
+          "PerformanceMonitor.Collectors": "[1.0.0, )",
           "PerformanceMonitor.Common": "[1.0.0, )",
           "PerformanceMonitor.Notifications": "[1.0.0, )",
           "PerformanceMonitor.PlanAnalysis": "[1.0.0, )",

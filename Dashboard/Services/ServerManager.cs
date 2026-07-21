@@ -39,6 +39,28 @@ namespace PerformanceMonitorDashboard.Services
         /// </summary>
         private const int ConnectionCheckTimeoutSeconds = 5;
 
+        /// <summary>
+        /// Detection query for the connectivity check - UTC offset, engine edition and RDS flag from
+        /// scalar functions that need NO special permission. Deliberately carries NO
+        /// <c>FROM sys.dm_os_sys_info</c>: that DMV requires VIEW DATABASE STATE, which an Azure SQL
+        /// DB login often lacks, so coupling edition detection to it let a permission-starved Azure
+        /// DB throw the probe and mis-detect as on-prem instead of being correctly rejected as
+        /// unsupported (#1535). Columns: 0 utc_offset, 1 engine_edition, 2 is_aws_rds.
+        /// </summary>
+        internal const string DetectionQueryText = @"
+            SELECT
+                DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
+                CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
+                CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds";
+
+        /// <summary>
+        /// Best-effort start-time read - <c>sqlserver_start_time</c> is the only probe fact that
+        /// needs <c>sys.dm_os_sys_info</c>. Run in its OWN try/catch so a permission failure leaves
+        /// ServerStartTime unset without flipping IsOnline.
+        /// </summary>
+        internal const string ServerStartTimeQueryText =
+            "SELECT sqlserver_start_time FROM sys.dm_os_sys_info";
+
         public ServerManager()
         {
             _configFilePath = ResolveSharedServersJsonPath();
@@ -153,9 +175,12 @@ namespace PerformanceMonitorDashboard.Services
                 SaveServersInternal();
             }
 
-            if (server.AuthenticationType == AuthenticationTypes.SqlServer && !string.IsNullOrEmpty(username) && password != null)
+            if ((server.AuthenticationType == AuthenticationTypes.SqlServer ||
+                 server.AuthenticationType == AuthenticationTypes.ServicePrincipal) &&
+                !string.IsNullOrEmpty(username) && password != null)
             {
-                // For SQL Server auth, save both username and password
+                // SQL Server auth (username + password) and Service Principal (client id + client secret)
+                // both persist a secret in Windows Credential Manager.
                 if (!_credentialService.SaveCredential(server.Id, username, password))
                 {
                     throw new InvalidOperationException("Failed to save credentials to Windows Credential Manager");
@@ -169,6 +194,7 @@ namespace PerformanceMonitorDashboard.Services
                     throw new InvalidOperationException("Failed to save username to Windows Credential Manager");
                 }
             }
+            // ManagedIdentity stores no credential.
 
             // Initialize status as unknown for new server
             _connectionStatuses[server.Id] = new ServerConnectionStatus { ServerId = server.Id };
@@ -189,25 +215,40 @@ namespace PerformanceMonitorDashboard.Services
                 SaveServersInternal();
             }
 
-            if (server.AuthenticationType == AuthenticationTypes.SqlServer && !string.IsNullOrEmpty(username) && password != null)
+            if ((server.AuthenticationType == AuthenticationTypes.SqlServer ||
+                 server.AuthenticationType == AuthenticationTypes.ServicePrincipal) &&
+                !string.IsNullOrEmpty(username) && password != null)
             {
-                // For SQL Server auth, update both username and password
+                // SQL Server auth (username + password) and Service Principal (client id + client secret)
+                // both persist a secret in Windows Credential Manager.
                 if (!_credentialService.UpdateCredential(server.Id, username, password))
                 {
                     throw new InvalidOperationException("Failed to update credentials in Windows Credential Manager");
                 }
             }
-            else if (server.AuthenticationType == AuthenticationTypes.EntraMFA && !string.IsNullOrEmpty(username))
+            else if (server.AuthenticationType == AuthenticationTypes.EntraMFA)
             {
-                // For MFA auth, update username hint only (no password needed)
-                if (!_credentialService.UpdateCredential(server.Id, username, string.Empty))
+                if (!string.IsNullOrEmpty(username))
                 {
-                    throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
+                    // For MFA auth, update the username hint only (no password needed).
+                    if (!_credentialService.UpdateCredential(server.Id, username, string.Empty))
+                    {
+                        throw new InvalidOperationException("Failed to update username in Windows Credential Manager");
+                    }
+                }
+                else
+                {
+                    // No username hint to store. Remove any credential left over from a previous
+                    // secret-bearing mode (SqlServer/ServicePrincipal) so the old secret can't linger
+                    // orphaned when a server is switched to MFA with a blank username.
+                    _credentialService.DeleteCredential(server.Id);
                 }
             }
-            else if (server.AuthenticationType == AuthenticationTypes.Windows)
+            else if (server.AuthenticationType == AuthenticationTypes.Windows ||
+                     server.AuthenticationType == AuthenticationTypes.ManagedIdentity)
             {
-                // For Windows auth, remove any stored credentials
+                // Windows and Managed Identity use no stored secret — remove any credential left over
+                // from a previous auth mode so it can't linger orphaned in Credential Manager.
                 _credentialService.DeleteCredential(server.Id);
             }
         }
@@ -253,15 +294,35 @@ namespace PerformanceMonitorDashboard.Services
             jobCmd.CommandTimeout = 30;
             await jobCmd.ExecuteNonQueryAsync();
 
-            // Close active connections before dropping
+            // Close active connections before dropping.
+            // EngineEdition 8 = Azure SQL Managed Instance, where SINGLE_USER is non-modifiable (the batch
+            // would die on that line); gate it to box SQL Server and let MI DROP directly. Mirrors
+            // InstallationService.CleanInstallAsync.
             using var killCmd = new SqlCommand(@"
                 IF DB_ID('PerformanceMonitor') IS NOT NULL
                 BEGIN
-                    ALTER DATABASE [PerformanceMonitor] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                    IF SERVERPROPERTY('EngineEdition') <> 8
+                        ALTER DATABASE [PerformanceMonitor] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
                     DROP DATABASE [PerformanceMonitor];
                 END", connection);
             killCmd.CommandTimeout = 30;
-            await killCmd.ExecuteNonQueryAsync();
+            try
+            {
+                await killCmd.ExecuteNonQueryAsync();
+            }
+            catch
+            {
+                // A DROP that fails or times out after SINGLE_USER committed strands the database
+                // semi-bricked. Un-brick best-effort on a fresh connection, then re-raise the original error.
+                connection.Close();
+                bool restored = await InstallationService.TryRestoreDatabaseAccessAsync(builder.ConnectionString);
+                if (!restored)
+                {
+                    Logger.Warning($"Drop failed on '{server.DisplayName}' and the database may be left in " +
+                        "SINGLE_USER mode; re-run the clean install to recover, or ALTER DATABASE ... SET MULTI_USER manually.");
+                }
+                throw;
+            }
 
             Logger.Info($"Dropped PerformanceMonitor database and Agent jobs on '{server.DisplayName}'");
         }
@@ -546,37 +607,54 @@ ORDER BY e.database_name;", connection);
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                // Query server start time and UTC offset to verify connectivity
-                using var command = new SqlCommand(@"
-                    SELECT
-                        sqlserver_start_time,
-                        DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
-                        CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
-                        CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds
-                    FROM sys.dm_os_sys_info", connection);
-                command.CommandTimeout = ConnectionCheckTimeoutSeconds;
-
-                using var reader = await command.ExecuteReaderAsync();
-                status.IsOnline = true;
-                status.ErrorMessage = null;
-                if (await reader.ReadAsync())
+                // Detection query (UTC offset, engine edition, RDS) - permission-free scalars, NO
+                // sys.dm_os_sys_info, so a permission-starved Azure SQL DB login still returns
+                // EngineEdition 5 and is correctly rejected below instead of mis-detected as
+                // on-prem (#1535).
+                // Scope the detection command + reader in their own block so BOTH are disposed before the
+                // best-effort start-time read below opens a second reader on this connection - Dashboard
+                // connection strings do not enable MARS, so an overlapping reader would throw (#1535).
+                using (var command = new SqlCommand(DetectionQueryText, connection))
                 {
-                    if (!reader.IsDBNull(0))
+                    command.CommandTimeout = ConnectionCheckTimeoutSeconds;
+
+                    using var reader = await command.ExecuteReaderAsync();
+                    status.IsOnline = true;
+                    status.ErrorMessage = null;
+                    if (await reader.ReadAsync())
                     {
-                        status.ServerStartTime = reader.GetDateTime(0);
+                        if (!reader.IsDBNull(0))
+                        {
+                            status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(0));
+                        }
+                        if (!reader.IsDBNull(1))
+                        {
+                            status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(1));
+                        }
+                        if (!reader.IsDBNull(2))
+                        {
+                            status.IsAwsRds = Convert.ToInt32(reader.GetValue(2)) == 1;
+                        }
                     }
-                    if (!reader.IsDBNull(1))
+                }
+
+                // Best-effort start-time read (its OWN try/catch): sqlserver_start_time is the only
+                // fact that needs sys.dm_os_sys_info, so a permission gap here leaves ServerStartTime
+                // unset without flipping IsOnline or failing the detection above (#1535).
+                try
+                {
+                    using var startCommand = new SqlCommand(ServerStartTimeQueryText, connection);
+                    startCommand.CommandTimeout = ConnectionCheckTimeoutSeconds;
+
+                    using var startReader = await startCommand.ExecuteReaderAsync();
+                    if (await startReader.ReadAsync() && !startReader.IsDBNull(0))
                     {
-                        status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(1));
+                        status.ServerStartTime = startReader.GetDateTime(0);
                     }
-                    if (!reader.IsDBNull(2))
-                    {
-                        status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(2));
-                    }
-                    if (!reader.IsDBNull(3))
-                    {
-                        status.IsAwsRds = Convert.ToInt32(reader.GetValue(3)) == 1;
-                    }
+                }
+                catch (SqlException startEx)
+                {
+                    Logger.Info($"Server '{server.DisplayName}' start time unavailable (server is still online): {startEx.Message}");
                 }
 
                 /* Azure SQL DB not supported for Full Dashboard (no full system catalog access)

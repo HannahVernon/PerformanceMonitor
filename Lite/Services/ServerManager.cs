@@ -36,6 +36,33 @@ public class ServerManager
     /// </summary>
     private static int ConnectionCheckTimeoutSeconds => App.ConnectionTimeoutSeconds;
 
+    /// <summary>
+    /// Detection query for the connectivity check - engine edition, version, UTC offset, RDS and
+    /// msdb access, all from scalar functions that need NO special permission. Deliberately carries
+    /// NO <c>FROM sys.dm_os_sys_info</c>: that DMV requires VIEW DATABASE STATE, which an Azure SQL
+    /// DB monitoring login often lacks, and coupling edition detection to it made the whole probe
+    /// throw and silently mis-detect Azure SQL DB (EngineEdition 5) as on-prem (#1535). Must
+    /// succeed for any connected login. Columns: 0 sql_version, 1 major_version, 2 utc_offset,
+    /// 3 engine_edition, 4 is_aws_rds, 5 has_msdb_access.
+    /// </summary>
+    internal const string DetectionQueryText = @"
+        SELECT
+            @@VERSION AS sql_version,
+            CONVERT(integer, SERVERPROPERTY('ProductMajorVersion')) AS major_version,
+            DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
+            CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
+            CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds,
+            HAS_DBACCESS(N'msdb') AS has_msdb_access";
+
+    /// <summary>
+    /// Best-effort start-time read - <c>sqlserver_start_time</c> is the ONLY probe fact that
+    /// genuinely needs <c>sys.dm_os_sys_info</c> (VIEW SERVER/DATABASE STATE). Run in its OWN
+    /// try/catch so a permission failure leaves ServerStartTime unset without flipping IsOnline or
+    /// failing platform detection.
+    /// </summary>
+    internal const string ServerStartTimeQueryText =
+        "SELECT sqlserver_start_time FROM sys.dm_os_sys_info";
+
     public ServerManager(string configDirectory, ILogger<ServerManager>? logger = null)
     {
         _configFilePath = Path.Combine(configDirectory, "servers.json");
@@ -227,6 +254,29 @@ public class ServerManager
     }
 
     /// <summary>
+    /// Persists an in-place change to an existing server's NON-credential settings (e.g. the #1319
+    /// per-server view database filter) by re-serializing servers.json. Unlike <see cref="UpdateServer"/>
+    /// this NEVER touches Windows Credential Manager, so it is safe to call for settings unrelated to
+    /// auth (calling UpdateServer with no username/password would delete an EntraMFA server's stored
+    /// username). The passed instance is normally the same reference already in the list, mutated in place.
+    /// </summary>
+    public void UpdateServerSettings(ServerConnection server)
+    {
+        lock (_serversLock)
+        {
+            var existing = _servers.FirstOrDefault(s => s.Id == server.Id);
+            if (existing == null)
+            {
+                return;
+            }
+
+            var index = _servers.IndexOf(existing);
+            _servers[index] = server;
+            SaveServers();
+        }
+    }
+
+    /// <summary>
     /// Deletes a server by its ID.
     /// </summary>
     public void DeleteServer(string id)
@@ -391,49 +441,58 @@ public class ServerManager
             status.ErrorMessage = null;
             status.UserCancelledMfa = false; // Clear cancellation flag on successful connection
 
-            // Query server metadata (version, start time, UTC offset).
-            // Wrapped in its own try/catch: a permissions failure on sys.dm_os_sys_info
-            // must NOT flip IsOnline back to false — the login itself worked.
+            // Detection query: platform/version/UTC-offset/RDS/msdb facts from scalar functions
+            // that need NO permission (no sys.dm_os_sys_info), so an Azure SQL DB login lacking
+            // VIEW DATABASE STATE still classifies correctly instead of mis-detecting as on-prem
+            // (#1535). In its own try/catch: a failure must NOT flip IsOnline back to false.
             try
             {
-                using var command = new SqlCommand(@"
-                    SELECT
-                        sqlserver_start_time,
-                        @@VERSION AS sql_version,
-                        CONVERT(integer, SERVERPROPERTY('ProductMajorVersion')) AS major_version,
-                        DATEDIFF(MINUTE, GETUTCDATE(), GETDATE()) AS utc_offset_minutes,
-                        CONVERT(integer, SERVERPROPERTY('EngineEdition')) AS engine_edition,
-                        CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS is_aws_rds,
-                        HAS_DBACCESS(N'msdb') AS has_msdb_access
-                    FROM sys.dm_os_sys_info", connection);
+                using var command = new SqlCommand(DetectionQueryText, connection);
                 command.CommandTimeout = ConnectionCheckTimeoutSeconds;
 
                 using var reader = await command.ExecuteReaderAsync();
                 if (await reader.ReadAsync())
                 {
                     if (!reader.IsDBNull(0))
-                        status.ServerStartTime = reader.GetDateTime(0);
+                        status.SqlServerVersion = reader.GetString(0);
                     if (!reader.IsDBNull(1))
-                        status.SqlServerVersion = reader.GetString(1);
+                        status.SqlMajorVersion = Convert.ToInt32(reader.GetValue(1));
                     if (!reader.IsDBNull(2))
-                        status.SqlMajorVersion = Convert.ToInt32(reader.GetValue(2));
+                        status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(2));
                     if (!reader.IsDBNull(3))
-                        status.UtcOffsetMinutes = Convert.ToInt32(reader.GetValue(3));
+                        status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(3));
                     if (!reader.IsDBNull(4))
-                        status.SqlEngineEdition = Convert.ToInt32(reader.GetValue(4));
+                        status.IsAwsRds = Convert.ToInt32(reader.GetValue(4)) == 1;
                     if (!reader.IsDBNull(5))
-                        status.IsAwsRds = Convert.ToInt32(reader.GetValue(5)) == 1;
-                    if (!reader.IsDBNull(6))
-                        status.HasMsdbAccess = Convert.ToInt32(reader.GetValue(6)) == 1;
+                        status.HasMsdbAccess = Convert.ToInt32(reader.GetValue(5)) == 1;
                 }
             }
             catch (SqlException metaEx)
             {
-                // Metadata query failed (e.g. no VIEW SERVER STATE permission) but the
-                // server IS reachable — keep IsOnline = true, just record the warning.
+                // Detection query failed (unexpected - it needs no special permission) but the
+                // server IS reachable - keep IsOnline = true, just record the warning.
                 status.ErrorMessage = $"Connected, but metadata query failed: {metaEx.Message}";
                 _logger?.LogWarning("Metadata query failed for server '{DisplayName}' (server is still online): {Message}",
                     server.DisplayName, metaEx.Message);
+            }
+
+            // Best-effort start-time read in its OWN try/catch: sqlserver_start_time is the only
+            // probe fact that genuinely needs sys.dm_os_sys_info (VIEW SERVER/DATABASE STATE), so a
+            // permission gap here leaves ServerStartTime unset without flipping IsOnline or failing
+            // the detection above (#1535).
+            try
+            {
+                using var startCommand = new SqlCommand(ServerStartTimeQueryText, connection);
+                startCommand.CommandTimeout = ConnectionCheckTimeoutSeconds;
+
+                using var startReader = await startCommand.ExecuteReaderAsync();
+                if (await startReader.ReadAsync() && !startReader.IsDBNull(0))
+                    status.ServerStartTime = startReader.GetDateTime(0);
+            }
+            catch (SqlException startEx)
+            {
+                _logger?.LogDebug("Start-time query unavailable for server '{DisplayName}' (server is still online): {Message}",
+                    server.DisplayName, startEx.Message);
             }
 
             _logger?.LogDebug("Connectivity check passed for server '{DisplayName}'", server.DisplayName);
@@ -525,10 +584,6 @@ public class ServerManager
             try { File.Copy(_configFilePath, _configFilePath + ".bak", overwrite: true); }
             catch { /* best effort */ }
 
-            // MIGRATION: Backward compatibility for existing servers.json files
-            // Migration from old UseWindowsAuth property happens automatically during deserialization
-            MigrateServerAuthentication(_servers);
-
             // Initialize status tracking for all loaded servers
             foreach (var server in _servers)
             {
@@ -550,9 +605,6 @@ public class ServerManager
                     string bakJson = File.ReadAllText(bakPath);
                     var bakConfig = JsonSerializer.Deserialize<ServersConfig>(bakJson);
                     _servers = bakConfig?.Servers ?? new List<ServerConnection>();
-                    
-                    // MIGRATION: Backward compatibility
-                    MigrateServerAuthentication(_servers);
                     
                     foreach (var server in _servers)
                     {
@@ -641,22 +693,6 @@ public class ServerManager
                 _logger?.LogError(ex, "Failed to save servers.json");
                 throw;
             }
-        }
-    }
-
-    /// <summary>
-    /// Migrates server authentication configuration for backward compatibility.
-    /// Note: Migration from old UseWindowsAuth property happens automatically via
-    /// the UseWindowsAuth setter during JSON deserialization.
-    /// </summary>
-    private void MigrateServerAuthentication(List<ServerConnection> servers)
-    {
-        // Migration is now automatic via UseWindowsAuth property setter
-        // Just log the loaded servers for debugging
-        foreach (var server in servers)
-        {
-            _logger?.LogDebug("Server '{DisplayName}' loaded with AuthenticationType={AuthType}", 
-                server.DisplayName, server.AuthenticationType);
         }
     }
 

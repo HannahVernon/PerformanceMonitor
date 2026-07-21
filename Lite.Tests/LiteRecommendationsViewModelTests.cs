@@ -26,7 +26,6 @@ public class LiteRecommendationsViewModelTests
             Database = database,
             CopyPasteSql = sql,
             AdviceText = advice,
-            RootFactKey = "CPU_SQL_PERCENT",
             IncidentId = incidentId,
             ServerName = serverName,
             WindowStartUtc = new DateTime(2026, 6, 1, 10, 0, 0, DateTimeKind.Utc),
