@@ -258,7 +258,7 @@ public sealed class DarlingSecuritySplitLiveTests
     }
 
     [Fact]
-    public async Task McpRole_DeniedSecretColumns_GrantedAnalysisInsertsAndCustomViewsWrite()
+    public async Task McpRole_DeniedSecretColumns_GrantedAnalysisInserts_CustomViews_AndAlertTuningWrites()
     {
         var connectionString = RequireLivePostgres();
         var ct = TestContext.Current.CancellationToken;
@@ -310,17 +310,45 @@ public sealed class DarlingSecuritySplitLiveTests
             await ExecAsync(mcp,
                 $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
 
-            /* But mcp is STILL denied a write to any OTHER config table (42501) — the custom_views grant did not
-               widen into a schema-wide config write. */
+            /* The MCP alert-tuning writes: full CRUD on the mute rules + UPDATE on the SINGLETON alert-settings
+               row (never INSERT/DELETE on it), plus the two beacon columns of config_service. */
+            Assert.True(await HasPrivAsync(mcp, "config.config_mute_rules", "INSERT", ct));
+            Assert.True(await HasPrivAsync(mcp, "config.config_mute_rules", "UPDATE", ct));
+            Assert.True(await HasPrivAsync(mcp, "config.config_mute_rules", "DELETE", ct));
+            Assert.True(await HasPrivAsync(mcp, "config.config_alert_settings", "UPDATE", ct));
+            Assert.False(await HasPrivAsync(mcp, "config.config_alert_settings", "INSERT", ct));
+            Assert.False(await HasPrivAsync(mcp, "config.config_alert_settings", "DELETE", ct));
+
+            /* Real round-trip as the mcp role: create + delete a mute rule (own-scoped id). */
+            await ExecAsync(mcp, "INSERT INTO config.config_mute_rules (id, enabled, created_at_utc) VALUES ('sec-mcp-mute', true, now())", ct);
+            await ExecAsync(mcp, "DELETE FROM config.config_mute_rules WHERE id = 'sec-mcp-mute'", ct);
+
+            /* The load-bearing beacon proof: an UPDATE on config_alert_settings as the mcp role fires the
+               statement-level bump trigger, which UPDATEs config_service.config_version AS the mcp role (the
+               trigger function is SECURITY INVOKER). Without the column-level config_service beacon grant this
+               would throw 42501 in production — and the superuser-run gated-live suites would never catch it.
+               Seed both singletons first (owner, no-op if present), then a value-preserving UPDATE as mcp. */
+            await ExecAsync(owner, "INSERT INTO config.config_service (id) VALUES (1) ON CONFLICT (id) DO NOTHING", ct);
+            await ExecAsync(owner, "INSERT INTO config.config_alert_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING", ct);
+            await ExecAsync(mcp, "UPDATE config.config_alert_settings SET enabled = enabled WHERE id = 1", ct);
+
+            /* But mcp is STILL denied a write to a config table it was NOT granted (42501) — config_command is
+               the service-credential pivot; the alert-tuning grants did not widen into a schema-wide config write. */
             var stillDenied = await Assert.ThrowsAsync<PostgresException>(async () =>
-                await ExecAsync(mcp,
-                    "INSERT INTO config_mute_rules (id, enabled, created_at_utc) VALUES ('cv-sec-mcp', true, now())", ct));
+                await ExecAsync(mcp, "INSERT INTO config.config_command (command_type) VALUES ('sec-mcp-noop')", ct));
             Assert.Equal("42501", stillDenied.SqlState);
+
+            /* And the config_service beacon grant is strictly COLUMN-level: mcp can bump config_version/updated_at
+               (proven above) but CANNOT flip a real service flag like paused. */
+            var beaconOnly = await Assert.ThrowsAsync<PostgresException>(async () =>
+                await ExecAsync(mcp, "UPDATE config.config_service SET paused = NOT paused WHERE id = 1", ct));
+            Assert.Equal("42501", beaconOnly.SqlState);
         }
         finally
         {
-            /* Belt-and-suspenders cleanup (the DELETE above already removed it on the happy path). */
+            /* Belt-and-suspenders cleanup (the DELETEs above already removed these on the happy path). */
             await ExecAsync(owner, $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
+            await ExecAsync(owner, "DELETE FROM config.config_mute_rules WHERE id = 'sec-mcp-mute'", ct);
             await DropTestRolesAsync(owner, ct);
         }
     }
@@ -461,7 +489,13 @@ GRANT INSERT ON collect.analysis_findings TO {McpRole};
 GRANT INSERT ON config.analysis_muted TO {McpRole};
 -- The mcp custom_views write (#1599): the MCP custom-view tools CRUD config.custom_views, so mcp gets the SAME
 -- single-table write viewer has (DarlingManagedRoles section 7). Never widens to a schema-wide config write.
-GRANT INSERT, UPDATE, DELETE ON config.custom_views TO {McpRole};";
+GRANT INSERT, UPDATE, DELETE ON config.custom_views TO {McpRole};
+-- The mcp alert-tuning writes: CRUD on config_mute_rules + UPDATE on the singleton config_alert_settings + the
+-- two config_service beacon columns (so the settings write's SECURITY-INVOKER bump trigger can UPDATE
+-- config_service.config_version AS the mcp role). Mirrors DarlingManagedRoles section 8.
+GRANT INSERT, UPDATE, DELETE ON config.config_mute_rules TO {McpRole};
+GRANT UPDATE ON config.config_alert_settings TO {McpRole};
+GRANT UPDATE (config_version, updated_at) ON config.config_service TO {McpRole};";
         await ExecAsync(owner, ddl, ct);
     }
 

@@ -53,9 +53,11 @@ public static class DarlingWebEndpoints
 {
     /// <summary>The tool names deliberately absent from the <c>/api/read/*</c> 1:1 read surface. <c>analyze_server</c>
     /// makes a live monitored-server connection; <c>mute_analysis_finding</c> writes; the <c>analyze_*_plan</c> family
-    /// is the compute-heavy plan-analysis phase-2 work; and the Custom Views tools (#1599) are served by their OWN
+    /// is the compute-heavy plan-analysis phase-2 work; the Custom Views tools (#1599) are served by their OWN
     /// richer web endpoints (<c>/api/views</c> CRUD + <c>/api/compose/run</c> + the <c>/api/catalog</c> compose
-    /// vocabulary that <c>describe_custom_view_catalog</c> mirrors), not a <c>/api/read/{tool}</c> query-string mirror.</summary>
+    /// vocabulary that <c>describe_custom_view_catalog</c> mirrors), not a <c>/api/read/{tool}</c> query-string mirror;
+    /// and the alert-tuning tools (<c>update_alert_settings</c> / <c>create_mute_rule</c> / <c>delete_mute_rule</c>)
+    /// WRITE the alert config, so — like <c>mute_analysis_finding</c> — they have no read endpoint.</summary>
     public static readonly IReadOnlySet<string> ExcludedToolNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "analyze_server",
@@ -72,6 +74,9 @@ public static class DarlingWebEndpoints
         "update_custom_view",
         "delete_custom_view",
         "run_custom_view_panel",
+        "update_alert_settings",
+        "create_mute_rule",
+        "delete_mute_rule",
     };
 
     /// <summary>The window (hours) the fleet card blocking / deadlock counts default to — the WPF Overview's window.</summary>

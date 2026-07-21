@@ -10,9 +10,9 @@ namespace PerformanceMonitor.Darling.Service.Mcp;
 
 /// <summary>
 /// Server instructions sent to MCP clients during initialization — Lite's McpInstructions
-/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~73
-/// analysis + plan-analysis + data-read tools this headless service exposes (the <see cref="Text"/>
-/// body enumerates them).
+/// framing (read-only posture, collection-freshness notes, tool reference) scoped to the ~85
+/// analysis + plan-analysis + data-read tools (plus the Custom Views + alert-tuning write surfaces)
+/// this headless service exposes (the <see cref="Text"/> body enumerates them).
 /// </summary>
 internal static class DarlingMcpInstructions
 {
@@ -28,7 +28,7 @@ internal static class DarlingMcpInstructions
         - Modify, insert, or delete any collected data
         - Run any ad-hoc diagnostics beyond what the collectors have already captured
 
-        The writes this server performs are all to the MONITORING store, never a monitored SQL Server: mute_analysis_finding records a mute rule, analyze_server persists its findings, and the custom-view management tools (create_custom_view / update_custom_view / delete_custom_view) save user-authored dashboard/notebook definitions to config.custom_views (the same store the web viewer's editor writes). None of these touches a monitored SQL Server or the collected performance data itself.
+        The writes this server performs are all to the MONITORING store, never a monitored SQL Server: mute_analysis_finding records a mute rule, analyze_server persists its findings, the custom-view management tools (create_custom_view / update_custom_view / delete_custom_view) save user-authored dashboard/notebook definitions to config.custom_views, and the alert-tuning tools (update_alert_settings / create_mute_rule / delete_mute_rule) change the shared alert configuration the service delivers on (all the same store the web viewer / Settings window writes). None of these touches a monitored SQL Server or the collected performance data itself.
 
         ## How Data Is Collected
 
@@ -41,7 +41,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes eighty-two tools. Seventy-four are the same names Performance Monitor Lite and the Dashboard expose: six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty-one diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. The remaining eight are the Custom Views tools (unique to Darling's central store): seven manage the saved views (the one view-authoring write surface), and `describe_custom_view_catalog` returns the read-only compose vocabulary those authoring tools draw from. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes eighty-five tools. Seventy-four are the same names Performance Monitor Lite and the Dashboard expose: six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty-one diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. The remaining eleven are unique to Darling's central store: eight are the Custom Views tools (seven manage the saved views — the one view-authoring write surface — and `describe_custom_view_catalog` returns the read-only compose vocabulary those authoring tools draw from), and three are alert-tuning write tools (`update_alert_settings` tunes the alert engine's thresholds; `create_mute_rule` / `delete_mute_rule` manage the mute rules) that write only the shared alert configuration in the monitoring store. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -169,6 +169,16 @@ internal static class DarlingMcpInstructions
         | `get_mute_rules` | The alert mute rules in force, so a suppressed server is distinguishable from a healthy-quiet one | `enabled_only` (default true) |
         | `get_server_summary` | One-shot per-server health: current CPU %, memory, recent blocking count, recent deadlock count | `server_name` |
         | `get_daily_summary` | A day's composite health band (Healthy / Warning / Critical) plus the signals behind it (waits, deadlocks, blocking, high CPU, memory pressure, alerts) | `server_name`, `summary_date` (yyyy-MM-dd, default today) |
+
+        **Tuning the alerting (write).** Three Darling-only tools change the shared alert configuration the service delivers on — the SAME config `get_alert_settings` / `get_mute_rules` read, and the same the Viewer's Settings window writes. They are the only alert writes here; none touches a monitored server or the collected data, and a change hot-reloads into the running service within one collection sweep.
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `update_alert_settings` | Tunes the alert engine — a PARTIAL update of the single global settings row. **Read-modify-write**: call `get_alert_settings` FIRST, change only the fields you want, and pass THOSE back in the same nested shape (e.g. `{"cpu":{"threshold_percent":90},"cooldown_minutes":10}`); everything you omit is left unchanged. Each field is validated (thresholds in range, `cpu.mode` `sql`/`total`, `delivery.mode` `Summary`/`PerEvent`); a bad value or an unknown field returns `{status:"invalid"}` and writes nothing. SMTP/webhook credentials cannot be set here | `settings_json` (required — the partial settings object) |
+        | `create_mute_rule` | Adds a mute rule that suppresses matching alerts (still logged, just not delivered). Any combination of scope/pattern fields; NO fields set = mute every alert (a whole-fleet silence). Returns the stored rule with its generated id | `server_name`, `metric_name`, `database_pattern`, `query_text_pattern`, `wait_type_pattern`, `job_name_pattern`, `reason`, `expires_at` (all optional) |
+        | `delete_mute_rule` | Deletes a mute rule by id (from `get_mute_rules` / `create_mute_rule`); returns `{status:"deleted"}` or `{status:"not_found"}` | `rule_id` (required) |
+
+        Because `update_alert_settings` only touches the fields you send, always `get_alert_settings` FIRST to read the current values, change what you need, then send just those back — never guess the full row.
 
         ### Default Trace events
 

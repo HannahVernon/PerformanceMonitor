@@ -37,13 +37,17 @@ namespace PerformanceMonitor.Darling.Service;
 /// views).</item>
 /// <item><b><c>mcp</c></b> — the (optionally network-exposed) MCP host's store identity
 /// (darling-network-endpoints, D3-role): the SAME read surface as <c>viewer</c> (SELECT on
-/// <c>collect</c> + <c>config</c>-minus-the-secret-columns) PLUS exactly two narrow writes — INSERT
-/// on <c>collect.analysis_findings</c> and <c>config.analysis_muted</c> (what <c>analyze_server</c>
-/// persists + the <c>mute</c> tool need, and nothing else). Deliberately NOT <c>admin</c>: a
-/// token-holder reachable over the network must never get the <c>config_command</c> service-credential
-/// pivot or the secret columns. Its INSERT grants are EXPLICIT single-table statements with NO
-/// <c>ALTER DEFAULT PRIVILEGES</c> (ADP has no per-table form -> it would broaden <c>mcp</c> to all of
-/// <c>collect</c>); a dropped/recreated table re-grants because provisioning re-runs every start.</item>
+/// <c>collect</c> + <c>config</c>-minus-the-secret-columns) PLUS a NARROW, enumerated set of writes —
+/// INSERT on <c>collect.analysis_findings</c> and <c>config.analysis_muted</c> (what <c>analyze_server</c>
+/// persists + the <c>mute</c> tool need), INSERT/UPDATE/DELETE on <c>config.custom_views</c> (the
+/// custom-view tools, #1599), and the alert-tuning writes (INSERT/UPDATE/DELETE on
+/// <c>config.config_mute_rules</c> + UPDATE on the singleton <c>config.config_alert_settings</c>, plus the
+/// two beacon columns of <c>config.config_service</c> so the settings write's self-bump trigger can fire).
+/// Deliberately NOT <c>admin</c>: a token-holder reachable over the network must never get the
+/// <c>config_command</c> service-credential pivot or the secret columns. Every write grant is an EXPLICIT
+/// single-table (or single-column) statement with NO <c>ALTER DEFAULT PRIVILEGES</c> (ADP has no per-table
+/// form -> it would broaden <c>mcp</c> to all of a schema); a dropped/recreated table re-grants because
+/// provisioning re-runs every start.</item>
 /// </list>
 ///
 /// <para>On every managed startup (after migration, before TimescaleDB conversion), for each role:
@@ -191,7 +195,7 @@ public static class DarlingManagedRoles
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         logger.LogInformation(
-            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted + write config.custom_views) — the Viewer and MCP host no longer connect as the superuser");
+            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted + write config.custom_views + tune alerting (config_mute_rules, config_alert_settings, config_service reload beacon)) — the Viewer and MCP host no longer connect as the superuser");
     }
 
     /// <summary>
@@ -425,6 +429,24 @@ GRANT CONNECT ON DATABASE {database} TO {mcp};
 --    no sequence USAGE grant.
 GRANT INSERT, UPDATE, DELETE ON {config}.custom_views TO {viewer};
 GRANT INSERT, UPDATE, DELETE ON {config}.custom_views TO {mcp};
+
+-- 8. Alert tuning (the MCP alert-tuning write tools): the mcp role's alert-config writes, mirroring section 7's
+--    custom_views grant model (EXPLICIT single-table statements, NO ALTER DEFAULT PRIVILEGES). update_alert_settings
+--    / create_mute_rule / delete_mute_rule let a token-holder tune the SAME alert engine the Viewer's Settings
+--    window drives: INSERT/UPDATE/DELETE on config_mute_rules (the mute rules the delivery paths honor) and UPDATE
+--    on the SINGLETON config_alert_settings row (id=1 -- UPDATE only, never INSERT/DELETE: the row is a fixed
+--    singleton the service seeds). Still NARROW -- never the config_command service-credential pivot, the
+--    monitored-servers/notification secret tables, or a schema-wide config write.
+--    The beacon caveat: a config_alert_settings write fires the existing statement-level bump trigger
+--    (trg_bump_alert_settings -> config_bump_version), which UPDATEs config_service.config_version AS THE CURRENT
+--    ROLE (the trigger function is SECURITY INVOKER). So mcp ALSO needs UPDATE on JUST the two beacon columns of
+--    config_service, or every update_alert_settings write would fail 42501 in production -- and the superuser-run
+--    gated-live tests would never catch it (they connect as the owner). A COLUMN-level grant lets mcp bump the
+--    reload beacon but NOT flip paused / capture_plans / mcp_enabled / mcp_port. The targets exist here because
+--    provisioning runs AFTER migration; a recreated table re-grants on the next start (self-heal).
+GRANT INSERT, UPDATE, DELETE ON {config}.config_mute_rules TO {mcp};
+GRANT UPDATE ON {config}.config_alert_settings TO {mcp};
+GRANT UPDATE (config_version, updated_at) ON {config}.config_service TO {mcp};
 ";
     }
 
