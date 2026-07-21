@@ -191,7 +191,7 @@ public static class DarlingManagedRoles
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         logger.LogInformation(
-            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted) — the Viewer and MCP host no longer connect as the superuser");
+            "Least-privilege roles ready (admin: read both schemas + write config; viewer: read-only + write config.custom_views; mcp: viewer's reads + INSERT on analysis_findings/analysis_muted + write config.custom_views) — the Viewer and MCP host no longer connect as the superuser");
     }
 
     /// <summary>
@@ -390,9 +390,12 @@ GRANT CONNECT ON DATABASE {database} TO {admin}, {viewer};
 --    token) from the optional network MCP surface, so it is deliberately NOT admin. It gets viewer's exact
 --    READ surface (SELECT on collect + config-minus-secret-columns) as SEPARATE 'TO mcp' statements -- the
 --    'TO admin, viewer' grant lines above are pinned verbatim by tests, so mcp is never appended to them --
---    PLUS exactly two narrow INSERTs: what analyze_server persists (collect.analysis_findings) and what the
---    mute tool writes (config.analysis_muted). No UPDATE/DELETE (no MCP unmute tool exists; DELETE/unmute is
---    viewer/admin only). EXPLICIT single-table grants with NO ALTER DEFAULT PRIVILEGES: ADP has no per-table
+--    PLUS exactly two narrow analysis INSERTs HERE: what analyze_server persists (collect.analysis_findings)
+--    and what the mute tool writes (config.analysis_muted) -- no UPDATE/DELETE on EITHER analysis target (no
+--    MCP unmute tool exists; DELETE/unmute is viewer/admin only). The mcp role ALSO gets the narrow
+--    config.custom_views write in section 7 (for the MCP custom-view tools) -- likewise a single non-secret
+--    config table, never the config_command pivot or the carved secret columns. EXPLICIT single-table grants
+--    with NO ALTER DEFAULT PRIVILEGES: ADP has no per-table
 --    form, so an ADP INSERT would broaden mcp to ALL of collect -- provisioning re-runs every start, so a
 --    recreated table re-grants (self-heal) without ADP. The two INSERT targets must already exist here, so
 --    provisioning runs AFTER migration (EnsureProvisionedAsync).
@@ -407,17 +410,21 @@ GRANT INSERT ON {config}.analysis_muted TO {mcp};
 -- (the Analysis project cannot reference the Service-project observability writer), so mcp needs no grant on it.
 GRANT CONNECT ON DATABASE {database} TO {mcp};
 
--- 7. Custom views (#1563): the SINGLE exception to viewer-writes-nothing. The web dashboard connects as the
---    least-privilege viewer role, and its custom-view composer INSERT/UPDATE/DELETEs rows in exactly this one
---    config table (non-secret dashboard JSON -- no ViewerRestrictedConfigTables carve). Editing is any
---    AUTHENTICATED seat -- the web surface's normal networked mode, gated server-side by the host's token+CIDR
---    auth (NOT loopback-only); this DB grant is only the narrow floor beneath that gate. EXPLICIT single-table
---    statement with NO ALTER DEFAULT
---    PRIVILEGES, mirroring the mcp section above (ADP has no per-table form -> an ADP write would broaden viewer
---    to ALL of config); provisioning re-runs every start, so a dropped/recreated table re-grants (self-heal).
---    The target must already exist here, so provisioning runs AFTER migration (V31 created config.custom_views).
---    id is GENERATED ALWAYS AS IDENTITY (like config_command), so the INSERT needs no sequence USAGE grant.
+-- 7. Custom views (#1563): the SINGLE exception to viewer-writes-nothing, and the mcp role's ONLY write outside
+--    the two section-6 analysis INSERTs. Both the web dashboard (as the viewer role) and the optional network MCP
+--    surface (as the mcp role) CRUD rows in exactly this one config table (non-secret dashboard/notebook JSON --
+--    no ViewerRestrictedConfigTables carve). The web composer and the MCP custom-view tools share ONE store
+--    (CustomViewStore) + ONE validator (DarlingWebEndpoints.ValidateDefinition), so the two write identities need
+--    the identical narrow grant. Editing is any AUTHENTICATED seat -- the surfaces' normal networked mode, gated
+--    server-side by the host's token+CIDR auth (web token/cookie; MCP bearer token) NOT loopback-only; this DB
+--    grant is only the narrow floor beneath that gate. EXPLICIT single-table statements (one per identity) with
+--    NO ALTER DEFAULT PRIVILEGES, mirroring the narrow analysis-write grants above (ADP has no per-table form ->
+--    an ADP write would broaden the role to ALL of config); provisioning re-runs every start, so a recreated
+--    table re-grants (self-heal). The target must already exist here, so provisioning runs AFTER migration (V31
+--    created config.custom_views). id is GENERATED ALWAYS AS IDENTITY (like config_command), so the INSERT needs
+--    no sequence USAGE grant.
 GRANT INSERT, UPDATE, DELETE ON {config}.custom_views TO {viewer};
+GRANT INSERT, UPDATE, DELETE ON {config}.custom_views TO {mcp};
 ";
     }
 

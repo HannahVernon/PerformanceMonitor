@@ -283,7 +283,7 @@ A channel is enabled by a non-empty URL.
 
 ### mcp
 
-The embedded MCP server, over Streamable HTTP bound to `localhost` by default (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan) to reach it — and the store — from the LAN). It exposes the same tool names Lite and the Dashboard expose:
+The embedded MCP server, over Streamable HTTP bound to `localhost` by default (see [Opt-in Network Endpoints (LAN)](#opt-in-network-endpoints-lan) to reach it — and the store — from the LAN). It exposes the same tool names Lite and the Dashboard expose, plus a small Darling-only Custom Views management surface (the one view-authoring write surface — see the last bullet):
 
 - **Six diagnostic-analysis tools** — `analyze_server`, `get_analysis_facts`, `compare_analysis`, `audit_config`, `get_analysis_findings`, `mute_analysis_finding`.
 - **Five plan-analysis tools** — `analyze_query_plan` (by `query_hash`), `analyze_procedure_plan` (by `sql_handle`), `analyze_query_store_plan` (by `database_name` + `query_id`), `analyze_plan_xml` (raw showplan XML, no fetch), and `get_plan_xml` (raw stored plan XML by `query_hash`). These run the shared execution-plan analyzer over the plan XML the collectors already captured into the store — a stored-plan read, never a live query against the monitored server. `analyze_query_plan`/`get_plan_xml` accept an optional `database_name`, and `analyze_query_store_plan` an optional `plan_id`, to pin the exact stored plan when the caller knows it.
@@ -322,6 +322,14 @@ The embedded MCP server, over Streamable HTTP bound to `localhost` by default (s
 - **Five alert + health-overview tools** — the fleet-triage reads the fleet edition previously lacked, each a stored read over the monitoring store (no live hit):
   - *Alerts* — `get_alert_history` (what fired, value vs threshold, delivery success/failure, muted — fleet-wide by default, or scoped to a server), `get_alert_settings` (the current alert config the service is using — per-alert enable/thresholds, cooldown, excluded databases, delivery mode, analysis cadence), `get_mute_rules` (the alert mute rules in force, so a suppressed server is distinguishable from a healthy-quiet one).
   - *Health overview* — `get_server_summary` (one-shot per-server CPU / memory / recent blocking / recent deadlocks), `get_daily_summary` (a day's composite health band — Healthy / Warning / Critical — folded through the shared `DailyHealthBandCalculator`, plus the signals behind it).
+
+- **Eight Custom Views tools (Darling-only)** — discover, create, and manage the saved dashboards/notebooks a user composes from the curated measure catalog (the same views the web viewer's editor builds), stored in `config.custom_views`. None touches a monitored SQL Server or the collected performance data — the write tools write only view definitions to the monitoring store.
+  - *Discover* — `describe_custom_view_catalog` (the compose vocabulary — measures with their source/kind/valid-aggregates/allowed-dimensions/units/per-server-type availability, dimensions, unit families, aggregates, time buckets, filter ops, and viz types). An MCP client calls this FIRST so a composed panel uses only legal identifiers instead of guessing at names; it returns the SAME `/api/catalog` vocabulary the web composer's picker binds to. Read-only static reference — no store, no server.
+  - *Read* — `list_custom_views` (summaries: id, name, description, kind, version), `get_custom_view` (one view's full definition + version).
+  - *Author* — `validate_custom_view` (dry-run a definition against the catalog + composer rules, no save), `create_custom_view` (validate then save), `update_custom_view` (validate then replace in place, optimistic-concurrency on `version`), `delete_custom_view`.
+  - *Self-test* — `run_custom_view_panel` (compile + run a single composed panel and return `{sql, rows, annotations}` — the composer's live preview, for checking a generated panel's data before saving).
+
+  The create/update/delete tools are the one view-authoring **write** surface; create/update run the SAME `ValidateDefinition` authority as `validate_custom_view`, so an invalid definition is rejected before it stores; every tool routes through the SAME store + validator + compile-and-run + catalog the web viewer's editor uses (no divergent second implementation). This write surface widens what an MCP token can do — see [Blast radius](#opt-in-network-endpoints-lan) below.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -560,8 +568,8 @@ Table names are unchanged — only their schema moved — and the shared SQL kee
 |---|---|---|
 | `darling` | superuser / owner | the service (collection, migration, provisioning) |
 | `admin` | SELECT on both schemas + INSERT/UPDATE/DELETE on `config` only | the Viewer, by default (`connectAs: "admin"`) |
-| `viewer` | SELECT on both schemas, no writes | a locked-down Viewer (`connectAs: "viewer"`) |
-| `mcp` | `viewer`'s exact read surface + INSERT on `collect.analysis_findings` / `config.analysis_muted` only | the store identity the opt-in MCP **network** endpoint connects as (managed only); dormant until MCP is exposed on the LAN |
+| `viewer` | SELECT on both schemas + INSERT/UPDATE/DELETE on `config.custom_views` only (the web composer's saved views) | a locked-down Viewer (`connectAs: "viewer"`) |
+| `mcp` | `viewer`'s exact read surface + INSERT on `collect.analysis_findings` / `config.analysis_muted` + INSERT/UPDATE/DELETE on `config.custom_views` (the custom-view tools) | the store identity the opt-in MCP **network** endpoint connects as (managed only); dormant until MCP is exposed on the LAN |
 
 `admin` cannot `DROP`, alter schema, touch `collect` data, or create objects — it can only do what the Viewer's mute-rule / alert-dismiss surfaces need. The `mcp` role is narrower still: it reads exactly what `viewer` reads (the secret config columns are carved out identically) and its only writes are the two analysis tables `analyze_server` + `mute_analysis_finding` persist — so a token-holder on the network MCP endpoint can never reach the `config`-table service-credential pivot or the secret columns. `ALTER DEFAULT PRIVILEGES` means new collector tables auto-inherit SELECT for `admin`/`viewer`, so the model never drifts as collectors are added (the `mcp` role's two INSERTs are explicit single-table grants, deliberately not schema-wide).
 
@@ -601,6 +609,19 @@ PerformanceMonitor.Darling.Service.exe --configure-network
 ```
 
 It shows the current exposure (read from the service's own resolvers), then walks you through the **store**, **MCP**, or **both** (or a **disable** that removes exposure). Every answer is validated **by delegation to the exact checks the running service fail-closes on**, so the wizard can never write a config the service would refuse — it re-prompts with the resolver's own reason. It generates the MCP bearer token for you (DPAPI-protected; the plaintext is printed once, so save it then), edits `darling.json` **in place preserving every comment** behind a timestamped `darling.json.bak-<timestamp>` backup, prints the scoped firewall command(s) and the `--print-viewer-connection` handoff, and offers to restart the service to apply. `install-darling.ps1 -Network` runs it automatically right after the install reaches Running. The manual field reference below documents exactly what it writes.
+
+### Headless enable/disable + firewall (`--enable-mcp` / `--enable-web`)
+
+On a box with no Viewer, two things are otherwise awkward: the `enabled` flags in the `mcp` / `web` blocks below are only a **first-run seed** — after the first run the store (`config.config_service.mcp_enabled` / `web_enabled`) is authoritative and is normally flipped only from the Viewer's Settings — and the service account (`NT SERVICE\PerformanceMonitor Darling`) **cannot open the firewall itself**. Four verbs, run on the **service host**, close both in one elevated action:
+
+```
+PerformanceMonitor.Darling.Service.exe --enable-mcp
+PerformanceMonitor.Darling.Service.exe --disable-mcp
+PerformanceMonitor.Darling.Service.exe --enable-web
+PerformanceMonitor.Darling.Service.exe --disable-web
+```
+
+Each flips only its endpoint's **live store flag** with a targeted `config_service` write; the service **hot-reloads within one collection sweep — no restart.** If that endpoint's `network` block opts into LAN exposure (a non-loopback `listen`), the verb also reconciles the **same scoped, idempotent-by-name firewall rule the service would**: **run elevated**, it opens (or, on `--disable-*`, removes) the rule; **run non-elevated**, the store toggle still succeeds and it prints the exact elevated firewall command to run by hand (a loopback-only endpoint needs no rule and says so). Managed-mode only, Windows only. So the headless bring-up is: write the `network` block (the wizard above or the manual reference below), then `--enable-mcp` / `--enable-web` from an **elevated** shell.
 
 ### Store endpoint (viewer over the LAN)
 
@@ -670,7 +691,7 @@ When `listen` is a network address **and** a token is present **and** `allowFrom
 New-NetFirewallRule -DisplayName "Darling MCP" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5152 -RemoteAddress 192.168.1.0/24
 ```
 
-**Blast radius, stated honestly.** The token gates the entire ~72-tool read surface *and* `analyze_server`, which opens **live outbound connections to your monitored SQL Servers** (the plan-fetcher). Treat the token as a high-value secret. The store-side identity is the least-privilege `mcp` role (read + only the two analysis-table INSERTs), so a token-holder can never reach the config pivot or the secret columns — but they can read everything collected and trigger analysis.
+**Blast radius, stated honestly.** The token gates the entire ~72-tool read surface, `analyze_server` (which opens **live outbound connections to your monitored SQL Servers** — the plan-fetcher), *and* the seven Custom Views management tools, which **create / modify / delete** the saved dashboards and notebooks in `config.custom_views`. Treat the token as a high-value secret. The store-side identity is still the least-privilege `mcp` role: read, the two analysis-table INSERTs, and INSERT/UPDATE/DELETE on the single `config.custom_views` table (the same narrow write the web composer's `viewer` role has). So a token-holder can read everything collected, trigger analysis, and author custom views — but can never reach the `config_command` service-credential pivot or the carved secret columns, and a stored view is structurally incapable of reading a config control-plane table (a composed query names only `collect.*` collector tables). Custom-view JSON carries no secrets.
 
 **MCP has no TLS — the MITM control is a TLS reverse proxy.** A self-signed cert breaks real MCP clients, so the MCP endpoint is plain HTTP and the bearer token travels **cleartext on the segment**; an active on-path attacker (ARP spoof, rogue DHCP, compromised switch) could capture and replay it. The in-app CIDR bounds *who can route to* the port; it does **not** protect the wire. If your segment is not fully trusted, put a **TLS-terminating reverse proxy** in front of the MCP port and point clients at that — the named MITM control for this endpoint. (The store endpoint needs no such proxy: it has verify-full TLS built in.)
 

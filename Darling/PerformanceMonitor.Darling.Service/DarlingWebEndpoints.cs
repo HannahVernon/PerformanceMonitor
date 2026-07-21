@@ -51,9 +51,11 @@ namespace PerformanceMonitor.Darling.Service;
 /// </summary>
 public static class DarlingWebEndpoints
 {
-    /// <summary>The tool names deliberately absent from the <c>/api/read/*</c> surface: not read-only over the
-    /// store. <c>analyze_server</c> makes a live monitored-server connection; <c>mute_analysis_finding</c> writes;
-    /// the <c>analyze_*_plan</c> family is the compute-heavy plan-analysis phase-2 work.</summary>
+    /// <summary>The tool names deliberately absent from the <c>/api/read/*</c> 1:1 read surface. <c>analyze_server</c>
+    /// makes a live monitored-server connection; <c>mute_analysis_finding</c> writes; the <c>analyze_*_plan</c> family
+    /// is the compute-heavy plan-analysis phase-2 work; and the Custom Views tools (#1599) are served by their OWN
+    /// richer web endpoints (<c>/api/views</c> CRUD + <c>/api/compose/run</c> + the <c>/api/catalog</c> compose
+    /// vocabulary that <c>describe_custom_view_catalog</c> mirrors), not a <c>/api/read/{tool}</c> query-string mirror.</summary>
     public static readonly IReadOnlySet<string> ExcludedToolNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "analyze_server",
@@ -62,6 +64,14 @@ public static class DarlingWebEndpoints
         "analyze_procedure_plan",
         "analyze_query_store_plan",
         "analyze_plan_xml",
+        "describe_custom_view_catalog",
+        "list_custom_views",
+        "get_custom_view",
+        "validate_custom_view",
+        "create_custom_view",
+        "update_custom_view",
+        "delete_custom_view",
+        "run_custom_view_panel",
     };
 
     /// <summary>The window (hours) the fleet card blocking / deadlock counts default to — the WPF Overview's window.</summary>
@@ -287,62 +297,105 @@ public static class DarlingWebEndpoints
                 return ErrorResult("Request body is not valid JSON.", StatusCodes.Status400BadRequest);
             }
 
-            if (root is not JsonObject body || body["panel"] is not JsonObject panel)
+            if (root is not JsonObject body)
             {
                 return ErrorResult("Request body must be a JSON object with a 'panel'.", StatusCodes.Status400BadRequest);
             }
 
-            var (variables, variablesError) = ComposeSpec.ParseVariables(body["variables"]);
-            if (variablesError is not null)
-            {
-                return ErrorResult(variablesError, StatusCodes.Status400BadRequest);
-            }
-
-            var declaredVariables = variables!.Select(v => v.Name).ToHashSet(StringComparer.Ordinal);
-            var (plan, planError) = ComposeSpec.TryParsePanel(panel, declaredVariables);
-            if (planError is not null)
-            {
-                return ErrorResult(planError, StatusCodes.Status400BadRequest);
-            }
-
-            var values = ParseRunValues(body["values"]);
-
-            /* Server scope (Erik's Decision 1 fleet axis): the top-level 'server' (a name or array), else the
-               $server variable value. Absent / "All" / empty => the WHOLE FLEET (no server predicate); one or
-               many names => a bound server_name = ANY filter. */
-            var serverScope = ParseServerScope(body, values);
-
-            var hours = body["hours"] is JsonValue hoursValue && hoursValue.TryGetValue<int>(out var h) ? h : DefaultComposeHours;
-            hours = Math.Clamp(hours, 1, ComposeLimits.MaxWindowHours);
-            var end = DateTime.UtcNow;
-            var start = end.AddHours(-hours);
-
-            var runContext = new ComposeRunContext(serverScope, start, end, values);
-            var (compiled, compileError) = ComposeCompiler.Compile(plan!, runContext);
-            if (compileError is not null)
-            {
-                return ErrorResult(compileError, StatusCodes.Status400BadRequest);
-            }
-
-            try
-            {
-                var rows = await RunComposedQueryAsync(postgres, compiled!, context.RequestAborted);
-                /* Event-annotation overlays (design D5): one bounded, catalog-only event query per requested
-                   source, on the SAME window + server scope, under the same viewer statement_timeout. Additive —
-                   {sql, rows} are unchanged; a panel that requests no annotations returns an empty array. */
-                var annotations = await RunAnnotationsAsync(postgres, plan!, runContext, context.RequestAborted);
-                return JsonNodeResult(new JsonObject { ["sql"] = compiled!.Sql, ["rows"] = rows, ["annotations"] = annotations });
-            }
-            catch (PostgresException ex)
-            {
-                /* A statement_timeout cancel (57014) or any bounded query error — client-correctable. */
-                return ErrorResult($"Query failed: {ex.MessageText}", StatusCodes.Status400BadRequest);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                return ErrorResult($"Error running query: {ex.Message}", StatusCodes.Status500InternalServerError);
-            }
+            /* The compile-and-run itself lives in the shared RunComposedPanelAsync (the ONE runner behind both
+               this endpoint and the MCP run_custom_view_panel tool); this route only adds the web concerns —
+               content-type gate, stream parse — then maps the discriminated outcome onto HTTP status. */
+            var outcome = await RunComposedPanelAsync(postgres, body, context.RequestAborted);
+            return outcome.Payload is not null
+                ? JsonNodeResult(outcome.Payload)
+                : ErrorResult(outcome.Error!, outcome.IsServerError ? StatusCodes.Status500InternalServerError : StatusCodes.Status400BadRequest);
         });
+    }
+
+    /// <summary>The discriminated outcome of <see cref="RunComposedPanelAsync"/>: the <c>{sql, rows,
+    /// annotations}</c> payload on success, or an error the caller maps onto its own surface (HTTP status /
+    /// MCP envelope). <see cref="IsServerError"/> distinguishes a client-correctable error — a bad spec or a
+    /// bounded query failure (statement_timeout / Postgres error), i.e. HTTP 400 — from an unexpected internal
+    /// failure (HTTP 500).</summary>
+    internal readonly record struct ComposeRunOutcome(JsonObject? Payload, string? Error, bool IsServerError)
+    {
+        internal static ComposeRunOutcome Ok(JsonObject payload) => new(payload, null, false);
+
+        internal static ComposeRunOutcome BadRequest(string error) => new(null, error, false);
+
+        internal static ComposeRunOutcome ServerError(string error) => new(null, error, true);
+    }
+
+    /// <summary>
+    /// Compile-and-run a single composed panel spec (Custom Views v2, #1563) against <paramref name="postgres"/>
+    /// — the ONE runner shared by the web <c>/api/compose/run</c> endpoint and the MCP <c>run_custom_view_panel</c>
+    /// tool, so the two surfaces can never diverge on validation, compilation, or query shape. Takes an
+    /// already-parsed request body <c>{panel, variables?, values?, server?, hours?}</c> and returns a
+    /// <see cref="ComposeRunOutcome"/> the caller maps to its surface. The panel is validated by the SAME
+    /// <see cref="ComposeSpec.TryParsePanel"/> authority the write path uses (so a panel that runs here is a
+    /// panel that stores), the compiler emits only catalog identifiers — schema-qualified <c>collect.*</c>, every
+    /// value bound — and the query runs under the pool's role <c>statement_timeout</c> backstop. A cancellation
+    /// (<see cref="OperationCanceledException"/>) is deliberately NOT caught: it propagates to the caller as a
+    /// client-abort, exactly as the endpoint has always done.
+    /// </summary>
+    internal static async Task<ComposeRunOutcome> RunComposedPanelAsync(
+        NpgsqlDataSource postgres, JsonObject body, System.Threading.CancellationToken cancellationToken)
+    {
+        if (body["panel"] is not JsonObject panel)
+        {
+            return ComposeRunOutcome.BadRequest("Request body must be a JSON object with a 'panel'.");
+        }
+
+        var (variables, variablesError) = ComposeSpec.ParseVariables(body["variables"]);
+        if (variablesError is not null)
+        {
+            return ComposeRunOutcome.BadRequest(variablesError);
+        }
+
+        var declaredVariables = variables!.Select(v => v.Name).ToHashSet(StringComparer.Ordinal);
+        var (plan, planError) = ComposeSpec.TryParsePanel(panel, declaredVariables);
+        if (planError is not null)
+        {
+            return ComposeRunOutcome.BadRequest(planError);
+        }
+
+        var values = ParseRunValues(body["values"]);
+
+        /* Server scope (Erik's Decision 1 fleet axis): the top-level 'server' (a name or array), else the
+           $server variable value. Absent / "All" / empty => the WHOLE FLEET (no server predicate); one or
+           many names => a bound server_name = ANY filter. */
+        var serverScope = ParseServerScope(body, values);
+
+        var hours = body["hours"] is JsonValue hoursValue && hoursValue.TryGetValue<int>(out var h) ? h : DefaultComposeHours;
+        hours = Math.Clamp(hours, 1, ComposeLimits.MaxWindowHours);
+        var end = DateTime.UtcNow;
+        var start = end.AddHours(-hours);
+
+        var runContext = new ComposeRunContext(serverScope, start, end, values);
+        var (compiled, compileError) = ComposeCompiler.Compile(plan!, runContext);
+        if (compileError is not null)
+        {
+            return ComposeRunOutcome.BadRequest(compileError);
+        }
+
+        try
+        {
+            var rows = await RunComposedQueryAsync(postgres, compiled!, cancellationToken);
+            /* Event-annotation overlays (design D5): one bounded, catalog-only event query per requested
+               source, on the SAME window + server scope, under the same statement_timeout. Additive —
+               {sql, rows} are unchanged; a panel that requests no annotations returns an empty array. */
+            var annotations = await RunAnnotationsAsync(postgres, plan!, runContext, cancellationToken);
+            return ComposeRunOutcome.Ok(new JsonObject { ["sql"] = compiled!.Sql, ["rows"] = rows, ["annotations"] = annotations });
+        }
+        catch (PostgresException ex)
+        {
+            /* A statement_timeout cancel (57014) or any bounded query error — client-correctable. */
+            return ComposeRunOutcome.BadRequest($"Query failed: {ex.MessageText}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ComposeRunOutcome.ServerError($"Error running query: {ex.Message}");
+        }
     }
 
     /// <summary>Default compose-run window (hours) when the request omits one.</summary>
@@ -473,6 +526,11 @@ public static class DarlingWebEndpoints
     /// <summary>The <c>updated_by</c> stamp for a web edit. The web surface has no per-user identity, so a
     /// constant is honest — it marks the row as web-authored.</summary>
     internal const string WebEditorPrincipal = "web";
+
+    /// <summary>The <c>updated_by</c> stamp for a custom view created/updated over MCP (the
+    /// <c>create_custom_view</c> / <c>update_custom_view</c> tools). Like <see cref="WebEditorPrincipal"/> it is a
+    /// constant — the MCP surface has no per-user identity — and marks the row's provenance as MCP-authored.</summary>
+    internal const string McpEditorPrincipal = "mcp";
 
     /* ── loopback determination (the web host's tokenless-loopback auth arm) ── */
 
@@ -1247,8 +1305,10 @@ public static class DarlingWebEndpoints
         return (new ViewWriteRequest(name.Trim(), description, definitionJson, version), null);
     }
 
-    /// <summary>The full single-view wire shape (definition embedded as JSON, NOT an escaped string).</summary>
-    private static JsonObject BuildFullViewNode(CustomView view) => new()
+    /// <summary>The full single-view wire shape (definition embedded as JSON, NOT an escaped string). Shared by
+    /// the web <c>GET/POST/PUT /api/views</c> responses and the MCP <c>get_custom_view</c> / <c>create_custom_view</c>
+    /// / <c>update_custom_view</c> tools, so the two surfaces return an identical view shape.</summary>
+    internal static JsonObject BuildFullViewNode(CustomView view) => new()
     {
         ["id"] = view.Id,
         ["name"] = view.Name,

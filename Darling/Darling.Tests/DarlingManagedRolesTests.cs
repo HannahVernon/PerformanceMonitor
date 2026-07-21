@@ -228,7 +228,10 @@ public sealed class DarlingManagedRolesTests
         Assert.DoesNotContain("TO admin, viewer, mcp", sql, StringComparison.Ordinal);
         Assert.Contains("GRANT SELECT ON ALL TABLES IN SCHEMA collect TO admin, viewer;", sql, StringComparison.Ordinal);
 
-        /* Exactly the two narrow analysis writes (Round 4 #1: INSERT-only). */
+        /* Exactly the two narrow ANALYSIS writes (Round 4 #1: INSERT-only). The mcp role's ONE other write —
+           INSERT/UPDATE/DELETE on config.custom_views (#1599, the custom-view tools) — is a single-table grant
+           pinned separately by BuildProvisioningSql_McpRole_GrantsCustomViewsWrite_LikeViewer; it does not widen
+           either schema-wide claim below. */
         Assert.Contains("GRANT INSERT ON collect.analysis_findings TO mcp;", sql, StringComparison.Ordinal);
         Assert.Contains("GRANT INSERT ON config.analysis_muted TO mcp;", sql, StringComparison.Ordinal);
 
@@ -245,6 +248,33 @@ public sealed class DarlingManagedRolesTests
         {
             Assert.DoesNotContain("mcp", adpLine, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void BuildProvisioningSql_McpRole_GrantsCustomViewsWrite_LikeViewer()
+    {
+        var sql = DarlingManagedRoles.BuildProvisioningSql("AdminPassword01", "ViewerPassword02", "McpPassword03");
+
+        /* #1599: the mcp role gets the SAME single-table write on config.custom_views the viewer role has, so the
+           MCP custom-view tools can create/update/delete views. An EXPLICIT single-table statement (its own
+           'TO mcp' line, separate from viewer's), mirroring the mcp analysis-write grants. */
+        Assert.Contains("GRANT INSERT, UPDATE, DELETE ON config.custom_views TO mcp;", sql, StringComparison.Ordinal);
+
+        /* Both write identities are pinned side by side and neither is folded into the other's line. */
+        Assert.Contains("GRANT INSERT, UPDATE, DELETE ON config.custom_views TO viewer;", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("ON config.custom_views TO viewer, mcp", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("ON config.custom_views TO mcp, viewer", sql, StringComparison.Ordinal);
+
+        /* The write stays NARROW: it must NOT widen mcp to a schema-wide config write, and NO ALTER DEFAULT
+           PRIVILEGES names mcp (that would broaden it to all of config). */
+        Assert.DoesNotContain("INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA config TO mcp", sql, StringComparison.Ordinal);
+        foreach (var adpLine in sql.Split('\n').Where(l => l.Contains("ALTER DEFAULT PRIVILEGES", StringComparison.Ordinal)))
+        {
+            Assert.DoesNotContain("mcp", adpLine, StringComparison.Ordinal);
+        }
+
+        /* custom_views carries no secret columns, so it is NOT part of the mcp secret-column carve. */
+        Assert.DoesNotContain("REVOKE SELECT ON config.custom_views", sql, StringComparison.Ordinal);
     }
 
     [Fact]

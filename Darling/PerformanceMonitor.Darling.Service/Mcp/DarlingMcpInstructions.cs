@@ -28,7 +28,7 @@ internal static class DarlingMcpInstructions
         - Modify, insert, or delete any collected data
         - Run any ad-hoc diagnostics beyond what the collectors have already captured
 
-        The only writes this server performs are to the MONITORING store: mute_analysis_finding records a mute rule, and analyze_server persists its findings. Neither ever touches a monitored SQL Server.
+        The writes this server performs are all to the MONITORING store, never a monitored SQL Server: mute_analysis_finding records a mute rule, analyze_server persists its findings, and the custom-view management tools (create_custom_view / update_custom_view / delete_custom_view) save user-authored dashboard/notebook definitions to config.custom_views (the same store the web viewer's editor writes). None of these touches a monitored SQL Server or the collected performance data itself.
 
         ## How Data Is Collected
 
@@ -41,7 +41,7 @@ internal static class DarlingMcpInstructions
 
         ## Tool Reference
 
-        This server exposes seventy-four tools (the same names Performance Monitor Lite and the Dashboard expose): six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty-one diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
+        This server exposes eighty-two tools. Seventy-four are the same names Performance Monitor Lite and the Dashboard expose: six diagnostic-analysis tools, five plan-analysis tools, fifteen core data-read tools, twenty-one diagnostic-depth data-read tools, eight resource-contention + jobs data-read tools, five trend data-read tools, eight system-health parse-on-read tools, five alert + health-overview tools, and one Default Trace tool. The remaining eight are the Custom Views tools (unique to Darling's central store): seven manage the saved views (the one view-authoring write surface), and `describe_custom_view_catalog` returns the read-only compose vocabulary those authoring tools draw from. Every data-read tool reads the data the collectors already captured into the store — a stored read, never a live query against the monitored server.
 
         ### Diagnostic-analysis tools
 
@@ -177,6 +177,21 @@ internal static class DarlingMcpInstructions
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
         | `get_default_trace_events` | Significant Default Trace events — auto-grow/shrink stalls, severe ErrorLog, schema DDL, security audits, memory change — each categorized (config-change events excluded) | `server_name`, `hours_back` (default 24), `limit` (default 100) |
+
+        ### Custom Views (create & manage)
+
+        Custom Views are saved dashboards and notebooks a user composes from a curated catalog of measures and dimensions (the same views the web viewer's editor builds). The create/update/delete tools here are the only view-authoring WRITE surface on this server — they store view definitions in the monitoring store's `config.custom_views` table; none of these tools touches a monitored SQL Server or the collected performance data. A view definition is either a dashboard (`{"panels":[...]}`) or a notebook (`{"kind":"notebook","cells":[...]}`); a composed panel names a catalog `source` + `measure` (or `ratio`), an `aggregate`, an optional `timeBucket` (time series) or `topN` (ranked), `filters`, `groupBy`, a `unit`, and a `viz`. **Call `describe_custom_view_catalog` FIRST** to get the exact legal `source`/`measure`/`ratio`/dimension/`aggregate`/`unit`/`viz` names: the compiler accepts ONLY catalog identifiers, and the validation errors do not enumerate the legal names, so composing from the catalog is far faster and more reliable than guessing. Then `validate_custom_view` (and iterate until valid) before `create_custom_view` / `update_custom_view` — create/update run the same validation and reject an invalid definition. Use `run_custom_view_panel` to see the actual data a composed panel produces so a generated view can be checked end-to-end.
+
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `describe_custom_view_catalog` | The compose vocabulary — measures (each with its source, kind, valid aggregates, allowed dimensions, units, and per-server-type availability), dimensions, unit families, aggregates, time buckets, filter ops, and viz types. Call FIRST when authoring a view so panels use only legal identifiers | none |
+        | `list_custom_views` | Lists every saved view (dashboards + notebooks) as summaries — id, name, description, kind, version | none |
+        | `get_custom_view` | Gets one view in full, including its definition JSON and current version | `view_id` (required) |
+        | `validate_custom_view` | Dry-run: validates a definition against the catalog + composer rules WITHOUT saving; returns `{valid, error}` | `definition` (required) |
+        | `create_custom_view` | Validates then saves a new view (returns the stored view at version 1); conflict on a duplicate name | `name` (required), `definition` (required), `description` |
+        | `update_custom_view` | Validates then updates a view in place under optimistic concurrency (pass the `version` you read); conflict on a stale version or duplicate name | `view_id` (required), `name` (required), `definition` (required), `version` (required), `description` |
+        | `delete_custom_view` | Deletes a view by id (permanent) | `view_id` (required) |
+        | `run_custom_view_panel` | Compiles + runs a single composed panel and returns `{sql, rows, annotations}` — the composer's live preview, for checking a panel's data before saving | `spec` (required — a JSON object `{panel, variables?, values?, server?, hours?}`) |
 
         The three config-change tools diff the store's config snapshots. This edition captures configuration WHEN THE SERVICE CONNECTS to a server (not on a fixed schedule), so a change is detected between two connect snapshots and at least two are needed — a stable, always-connected deployment may show no changes until the next connect. They emit only the values the collectors capture; the Dashboard's `requires_restart` / setting `description` / `setting_type` / generated change-narrative enrichment is not collected here and is omitted. `get_blocking_deadlock_stats` (the Dashboard's blocking/deadlock aggregate) is NOT hosted: this edition has no blocking/deadlock rollup table — use `get_blocking` / `get_deadlocks` for the raw events.
 

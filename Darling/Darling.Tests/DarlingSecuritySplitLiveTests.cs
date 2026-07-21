@@ -258,17 +258,20 @@ public sealed class DarlingSecuritySplitLiveTests
     }
 
     [Fact]
-    public async Task McpRole_DeniedSecretColumns_ButGrantedExactlyTheTwoNarrowInserts()
+    public async Task McpRole_DeniedSecretColumns_GrantedAnalysisInsertsAndCustomViewsWrite()
     {
         var connectionString = RequireLivePostgres();
         var ct = TestContext.Current.CancellationToken;
 
         await using var owner = new NpgsqlConnection(connectionString);
         await owner.OpenAsync(ct);
-        /* Applies V17 (creates the credential-bearing config tables + analysis_muted); the carve targets them. */
+        /* Applies V17 (the credential-bearing config tables + analysis_muted; the carve targets them) and V31
+           (config.custom_views, the #1599 mcp write target). */
         await PgMigrations.MigrateAsync(owner, ct);
 
         await CreateTestRolesAndGrantsAsync(owner, ct);
+        /* Own-scoped GUID name so the mcp custom_views round-trip below never clobbers the shared store. */
+        var viewName = "cv_sec_mcp_" + Guid.NewGuid().ToString("N");
         try
         {
             await using var mcp = new NpgsqlConnection(RoleConnectionString(connectionString, McpRole));
@@ -288,17 +291,36 @@ public sealed class DarlingSecuritySplitLiveTests
                 }
             }
 
-            /* Exactly the two narrow analysis INSERTs are granted (has_table_privilege avoids needing the
-               tables' column shapes) — and NOTHING wider: no config_command write (the service-credential
+            /* The two narrow analysis INSERTs are granted (has_table_privilege avoids needing the tables'
+               column shapes) — and NOTHING wider on them: no config_command write (the service-credential
                pivot), no analysis_muted DELETE (no MCP unmute tool), no analysis_findings UPDATE. */
             Assert.True(await HasPrivAsync(mcp, "collect.analysis_findings", "INSERT", ct));
             Assert.True(await HasPrivAsync(mcp, "config.analysis_muted", "INSERT", ct));
             Assert.False(await HasPrivAsync(mcp, "config.config_command", "INSERT", ct));
             Assert.False(await HasPrivAsync(mcp, "config.analysis_muted", "DELETE", ct));
             Assert.False(await HasPrivAsync(mcp, "collect.analysis_findings", "UPDATE", ct));
+
+            /* #1599: mcp gets the SAME single-table custom_views write viewer has (the MCP custom-view tools) —
+               proven by a real INSERT/UPDATE/DELETE round-trip as the mcp role (IDENTITY id needs no sequence
+               grant; definition is jsonb). */
+            await ExecAsync(mcp,
+                $"INSERT INTO config.custom_views (name, definition) VALUES ('{viewName}', '{{\"panels\":[]}}'::jsonb)", ct);
+            await ExecAsync(mcp,
+                $"UPDATE config.custom_views SET description = 'edited', version = version + 1 WHERE name = '{viewName}'", ct);
+            await ExecAsync(mcp,
+                $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
+
+            /* But mcp is STILL denied a write to any OTHER config table (42501) — the custom_views grant did not
+               widen into a schema-wide config write. */
+            var stillDenied = await Assert.ThrowsAsync<PostgresException>(async () =>
+                await ExecAsync(mcp,
+                    "INSERT INTO config_mute_rules (id, enabled, created_at_utc) VALUES ('cv-sec-mcp', true, now())", ct));
+            Assert.Equal("42501", stillDenied.SqlState);
         }
         finally
         {
+            /* Belt-and-suspenders cleanup (the DELETE above already removed it on the happy path). */
+            await ExecAsync(owner, $"DELETE FROM config.custom_views WHERE name = '{viewName}'", ct);
             await DropTestRolesAsync(owner, ct);
         }
     }
@@ -436,7 +458,10 @@ GRANT SELECT ON ALL TABLES IN SCHEMA collect TO {McpRole};
 GRANT SELECT ON ALL TABLES IN SCHEMA config  TO {McpRole};
 {DarlingManagedRoles.BuildViewerColumnAclSql("config", McpRole)}
 GRANT INSERT ON collect.analysis_findings TO {McpRole};
-GRANT INSERT ON config.analysis_muted TO {McpRole};";
+GRANT INSERT ON config.analysis_muted TO {McpRole};
+-- The mcp custom_views write (#1599): the MCP custom-view tools CRUD config.custom_views, so mcp gets the SAME
+-- single-table write viewer has (DarlingManagedRoles section 7). Never widens to a schema-wide config write.
+GRANT INSERT, UPDATE, DELETE ON config.custom_views TO {McpRole};";
         await ExecAsync(owner, ddl, ct);
     }
 

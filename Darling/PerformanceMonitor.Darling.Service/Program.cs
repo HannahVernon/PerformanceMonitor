@@ -108,6 +108,61 @@ if (args.Length > 0 && DarlingCliCommands.IsConfigureNetworkVerb(args[0]))
         configPath, Console.In, Console.Out, Console.Error, CancellationToken.None);
 }
 
+/* CLI verbs: enable/disable the embedded MCP + web-dashboard endpoints on a HEADLESS managed deployment. Each
+   flips the live switch in config.config_service (mcp_enabled/web_enabled — the store is authoritative after the
+   first run; darling.json's enabled is only the seed) via a targeted UPDATE whose self-bump trigger makes the
+   worker hot-reload within one sweep, and — when the endpoint opts into LAN exposure — opens/removes the matching
+   scoped firewall rule if elevated (else prints it as an elevated handoff). They decrypt the managed owner
+   credential + touch the firewall, so they are Windows-only (same guard shape as --print-viewer-connection).
+   Optional second arg = an explicit config path. The IsKnownVerb allow-list mirrors this dispatch (they cannot drift). */
+if (args.Length > 0 && DarlingCliCommands.IsEnableMcpVerb(args[0]))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--enable-mcp requires Windows (DPAPI + firewall).");
+        return 1;
+    }
+
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.EnableMcpAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
+}
+
+if (args.Length > 0 && DarlingCliCommands.IsDisableMcpVerb(args[0]))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--disable-mcp requires Windows (DPAPI + firewall).");
+        return 1;
+    }
+
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.DisableMcpAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
+}
+
+if (args.Length > 0 && DarlingCliCommands.IsEnableWebVerb(args[0]))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--enable-web requires Windows (DPAPI + firewall).");
+        return 1;
+    }
+
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.EnableWebAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
+}
+
+if (args.Length > 0 && DarlingCliCommands.IsDisableWebVerb(args[0]))
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        Console.Error.WriteLine("--disable-web requires Windows (DPAPI + firewall).");
+        return 1;
+    }
+
+    var configPath = args.Length > 1 ? args[1] : null;
+    return await DarlingCliCommands.DisableWebAsync(configPath, Console.Out, Console.Error, CancellationToken.None);
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 /* Windows-service lifetime is a no-op when run from a console, so the same exe
