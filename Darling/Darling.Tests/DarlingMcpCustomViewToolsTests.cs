@@ -23,9 +23,10 @@ using Xunit;
 namespace Darling.Tests;
 
 /// <summary>
-/// Ungated (no-live-store) contract for the #1599 Custom Views MCP MANAGEMENT tools: the tool surface is EXACTLY
-/// the seven names (all static, on a [McpServerToolType] class, returning Task&lt;string&gt;), the advertised
-/// tools/list schema is Gemini-clean (#1074) with the expected required-param set, and validate_custom_view /
+/// Ungated (no-live-store) contract for the #1599 Custom Views MCP tools: the tool surface is EXACTLY the eight
+/// names (seven management tools + describe_custom_view_catalog; all static, on a [McpServerToolType] class,
+/// returning Task&lt;string&gt;), the advertised tools/list schema is Gemini-clean (#1074) with the expected
+/// required-param set, and validate_custom_view /
 /// create_custom_view / update_custom_view run the SAME DarlingWebEndpoints.ValidateDefinition authority BEFORE
 /// any persistence — an invalid definition never reaches the store. The live CRUD + run round-trip is gated below.
 /// </summary>
@@ -49,6 +50,7 @@ public sealed class DarlingMcpCustomViewToolsSurfaceTests
     {
         "create_custom_view",
         "delete_custom_view",
+        "describe_custom_view_catalog",
         "get_custom_view",
         "list_custom_views",
         "run_custom_view_panel",
@@ -62,7 +64,7 @@ public sealed class DarlingMcpCustomViewToolsSurfaceTests
         .ToArray();
 
     [Fact]
-    public void ToolSurface_IsExactlyTheSevenCustomViewTools()
+    public void ToolSurface_IsExactlyTheEightCustomViewTools()
     {
         var toolMethods = ToolMethods();
         var names = toolMethods
@@ -86,15 +88,16 @@ public sealed class DarlingMcpCustomViewToolsSurfaceTests
     }
 
     [Fact]
-    public void AdvertisedSchema_IsGeminiClean_ForAllSevenTools()
+    public void AdvertisedSchema_IsGeminiClean_ForAllEightTools()
     {
         var tools = BuildToolSchemas();
-        Assert.Equal(7, tools.Count);
+        Assert.Equal(8, tools.Count);
         var violations = tools.Values.SelectMany(t => DarlingMcpSchemaAssert.Violations(t.Name, t.InputSchema)).ToList();
         Assert.True(violations.Count == 0, "Gemini-incompatible schema keywords leaked:\n" + string.Join("\n", violations));
     }
 
     [Theory]
+    [InlineData("describe_custom_view_catalog", "")]
     [InlineData("list_custom_views", "")]
     [InlineData("get_custom_view", "view_id")]
     [InlineData("validate_custom_view", "definition")]
@@ -134,6 +137,31 @@ public sealed class DarlingMcpCustomViewToolsSurfaceTests
         using var doc = JsonDocument.Parse(result);
         Assert.False(doc.RootElement.GetProperty("valid").GetBoolean(), result);
         Assert.Contains("unknown measure", doc.RootElement.GetProperty("error").GetString()!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task DescribeCustomViewCatalog_ReturnsTheComposeVocabulary()
+    {
+        /* The catalog tool exists so an LLM composes a valid panel WITHOUT reading source or guessing names — it
+           must surface every vocabulary a panel draws from, plus a known measure with its composable fields. */
+        var result = await DarlingMcpCustomViewTools.DescribeCustomViewCatalog();
+        using var doc = JsonDocument.Parse(result);
+        var root = doc.RootElement;
+
+        foreach (var section in new[] { "measures", "dimensions", "unitFamilies", "aggregates", "timeBuckets", "filterOps", "viz" })
+        {
+            Assert.True(root.TryGetProperty(section, out _), $"catalog is missing the '{section}' vocabulary");
+        }
+
+        /* A known measure is discoverable with the fields a panel binds from it (source + valid aggregates). */
+        var waitTime = root.GetProperty("measures").EnumerateArray()
+            .Single(m => m.GetProperty("key").GetString() == "wait_time_ms");
+        Assert.Equal("wait_stats", waitTime.GetProperty("source").GetString());
+        Assert.Contains("sum", waitTime.GetProperty("validAggregates").EnumerateArray().Select(a => a.GetString()));
+
+        /* The scalar vocabularies the panel's aggregate + viz fields draw from. */
+        Assert.Contains("sum", root.GetProperty("aggregates").EnumerateArray().Select(a => a.GetString()));
+        Assert.Contains("bar", root.GetProperty("viz").EnumerateArray().Select(v => v.GetString()));
     }
 
     [Fact]

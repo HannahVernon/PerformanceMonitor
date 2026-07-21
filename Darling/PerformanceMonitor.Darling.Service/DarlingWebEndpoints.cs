@@ -53,9 +53,9 @@ public static class DarlingWebEndpoints
 {
     /// <summary>The tool names deliberately absent from the <c>/api/read/*</c> 1:1 read surface. <c>analyze_server</c>
     /// makes a live monitored-server connection; <c>mute_analysis_finding</c> writes; the <c>analyze_*_plan</c> family
-    /// is the compute-heavy plan-analysis phase-2 work; and the seven Custom Views MANAGEMENT tools (#1599) are the
-    /// write surface — they are served by their OWN richer web endpoints (<c>/api/views</c> CRUD + <c>/api/compose/run</c>),
-    /// not a <c>/api/read/{tool}</c> query-string mirror.</summary>
+    /// is the compute-heavy plan-analysis phase-2 work; and the Custom Views tools (#1599) are served by their OWN
+    /// richer web endpoints (<c>/api/views</c> CRUD + <c>/api/compose/run</c> + the <c>/api/catalog</c> compose
+    /// vocabulary that <c>describe_custom_view_catalog</c> mirrors), not a <c>/api/read/{tool}</c> query-string mirror.</summary>
     public static readonly IReadOnlySet<string> ExcludedToolNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "analyze_server",
@@ -64,6 +64,7 @@ public static class DarlingWebEndpoints
         "analyze_procedure_plan",
         "analyze_query_store_plan",
         "analyze_plan_xml",
+        "describe_custom_view_catalog",
         "list_custom_views",
         "get_custom_view",
         "validate_custom_view",
