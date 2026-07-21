@@ -443,9 +443,23 @@ LIMIT 1", connection))
         }
 
         /* (1) The detection query is valid SQL against the REAL timescaledb_information job_stats/jobs views
-           (including the `next_start = '-infinity'::timestamptz` comparison), and a healthy freshly-applied
-           compression job is NOT flagged — no false alarm. This is the full ReadStuckCompressionJobsAsync path
-           against the live schema. */
+           (including the `next_start = '-infinity'::timestamptz` comparison), and a healthy compression job is
+           NOT flagged — no false alarm. This is the full ReadStuckCompressionJobsAsync path against the live
+           schema.
+
+           A just-added compression policy job can momentarily read next_start = '-infinity' in job_stats
+           BEFORE TimescaleDB's background scheduler assigns its first real next run — and the detector is
+           CORRECT to flag -infinity — so asserting immediately after ApplyCompressionPolicy raced that window
+           and intermittently false-failed on a slow CI runner. Deterministically settle the job into the
+           healthy state the assertion is actually about: give it a real FUTURE next_start (via the same
+           alter_job the self-heal uses), then wait for the catalog to reflect a non-(-infinity) next_start. */
+        using (var arm = new NpgsqlCommand("SELECT alter_job($1::integer, next_start => now() + interval '1 hour')", connection))
+        {
+            arm.Parameters.Add(new NpgsqlParameter { Value = jobId });
+            await arm.ExecuteNonQueryAsync(ct);
+        }
+        await WaitForSettledNextStartAsync(connection, jobId, ct);
+
         var healthy = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
         Assert.DoesNotContain(healthy, s => s.JobId == jobId);
 
@@ -466,6 +480,39 @@ LIMIT 1", connection))
         /* (3) After a real re-arm (next_start => now()) the job is scheduled/running within bound, not stuck. */
         var afterRearm = await TimescaleSupport.ReadStuckCompressionJobsAsync(connection, DateTime.UtcNow, null, ct);
         Assert.DoesNotContain(afterRearm, s => s.JobId == jobId);
+    }
+
+    /// <summary>
+    /// Wait until a compression policy job's <c>next_start</c> in <c>timescaledb_information.job_stats</c> has
+    /// settled to a real value (not <c>-infinity</c>, and a row exists). A just-added or just-altered
+    /// TimescaleDB job can momentarily read <c>next_start = '-infinity'</c> before its background scheduler
+    /// assigns the real next run; the stuck-job detector is CORRECT to flag <c>-infinity</c>, so a live test
+    /// asserting "healthy, not flagged" must first let that transient window close — else it races the
+    /// scheduler and false-fails intermittently on a slow runner. Bounded; fails loudly if it never settles
+    /// (a job that stays <c>-infinity</c> IS genuinely stuck and the assertion should not silently pass).
+    /// </summary>
+    private static async Task WaitForSettledNextStartAsync(NpgsqlConnection connection, long jobId, System.Threading.CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (true)
+        {
+            using var probe = new NpgsqlCommand(
+                "SELECT next_start = '-infinity'::timestamptz FROM timescaledb_information.job_stats WHERE job_id = $1::integer",
+                connection);
+            probe.Parameters.Add(new NpgsqlParameter { Value = jobId });
+            var negInfinity = await probe.ExecuteScalarAsync(ct);
+
+            /* A present, non-(-infinity) next_start means the scheduler settled the job into its scheduled
+               state. A null result (no job_stats row yet) is also "not settled yet" — keep waiting. */
+            if (negInfinity is bool isNegInfinity && !isNegInfinity)
+            {
+                return;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline,
+                $"compression job {jobId} never settled to a real next_start within 30s (stayed at -infinity).");
+            await Task.Delay(250, ct);
+        }
     }
 
     private static async Task DeleteTestRowsAsync(NpgsqlConnection connection)
