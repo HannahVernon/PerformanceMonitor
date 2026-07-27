@@ -142,43 +142,56 @@ ORDER BY SUM(memory_mb) DESC";
     }
 
     /// <summary>
-    /// Gets memory clerk trend data for a single clerk type for charting.
+    /// Fetches the memory clerk trend for ALL selected clerk types in ONE query
+    /// (replacing an N+1 query-per-clerk loop), grouped by clerk type.
     /// </summary>
-    public async Task<List<MemoryClerkTrendPoint>> GetMemoryClerkTrendAsync(int serverId, string clerkType, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<Dictionary<string, List<MemoryClerkTrendPoint>>> GetMemoryClerkTrendsByTypesAsync(int serverId, List<string> clerkTypes, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
     {
+        using var _q = TimeQuery("GetMemoryClerkTrendsByTypesAsync", "v_memory_clerks trends batched by type");
+        var result = new Dictionary<string, List<MemoryClerkTrendPoint>>();
+        if (clerkTypes.Count == 0) return result;
+
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var typeParams = string.Join(", ", clerkTypes.Select((_, i) => "$" + (i + 4)));
 
-        command.CommandText = @"
+        command.CommandText = $@"
 SELECT
+    clerk_type,
     collection_time,
     memory_mb
 FROM v_memory_clerks
 WHERE server_id = $1
-AND   clerk_type = $2
-AND   collection_time >= $3
-AND   collection_time <= $4
-ORDER BY collection_time";
+AND   collection_time >= $2
+AND   collection_time <= $3
+AND   clerk_type IN ({typeParams})
+ORDER BY clerk_type, collection_time";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
-        command.Parameters.Add(new DuckDBParameter { Value = clerkType });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var ct in clerkTypes)
+            command.Parameters.Add(new DuckDBParameter { Value = ct });
 
-        var items = new List<MemoryClerkTrendPoint>();
         using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            items.Add(new MemoryClerkTrendPoint
+            var ct = reader.GetString(0);
+            if (!result.TryGetValue(ct, out var list))
             {
-                CollectionTime = reader.GetDateTime(0),
-                MemoryMb = reader.IsDBNull(1) ? 0 : ToDouble(reader.GetValue(1))
+                list = new List<MemoryClerkTrendPoint>();
+                result[ct] = list;
+            }
+            list.Add(new MemoryClerkTrendPoint
+            {
+                CollectionTime = reader.GetDateTime(1),
+                MemoryMb = reader.IsDBNull(2) ? 0 : ToDouble(reader.GetValue(2))
             });
         }
 
-        return items;
+        return result;
     }
 
     /// <summary>

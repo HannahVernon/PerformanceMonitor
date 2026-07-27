@@ -19,6 +19,10 @@ using Microsoft.Win32;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
+using static PerformanceMonitor.Ui.FileSaveHelper;
+using static PerformanceMonitor.Ui.DataGridHelpers;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Controls;
 
@@ -39,7 +43,7 @@ public partial class ServerTab : UserControl
             // Try DuckDB first
             try
             {
-                plan = await _dataService.GetCachedQueryPlanAsync(_serverId, row.QueryHash);
+                plan = await Task.Run(() => _dataService.GetCachedQueryPlanAsync(_serverId, row.QueryHash));
             }
             catch
             {
@@ -49,7 +53,7 @@ public partial class ServerTab : UserControl
             // Fall back to live server
             if (string.IsNullOrEmpty(plan))
             {
-                var connStr = _server.GetConnectionString(_credentialService);
+                var connStr = _credentialResolver.GetConnectionString(_server);
                 plan = await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, row.QueryHash);
                 source = "live server";
             }
@@ -93,7 +97,7 @@ public partial class ServerTab : UserControl
             {
                 try
                 {
-                    plan = await _dataService.GetCachedProcedurePlanAsync(_serverId, row.PlanHandle);
+                    plan = await Task.Run(() => _dataService.GetCachedProcedurePlanAsync(_serverId, row.PlanHandle));
                 }
                 catch
                 {
@@ -104,7 +108,7 @@ public partial class ServerTab : UserControl
             // Fall back to live server
             if (string.IsNullOrEmpty(plan))
             {
-                var connStr = _server.GetConnectionString(_credentialService);
+                var connStr = _credentialResolver.GetConnectionString(_server);
                 plan = await LocalDataService.FetchProcedurePlanOnDemandAsync(connStr, row.DatabaseName, row.SchemaName, row.ObjectName);
                 source = "live server";
             }
@@ -183,14 +187,19 @@ public partial class ServerTab : UserControl
             PlanEmptyState.Visibility = Visibility.Visible;
     }
 
-    private void OpenPlanTab(string planXml, string label, string? queryText = null)
+    private async void OpenPlanTab(string planXml, string label, string? queryText = null)
     {
+        HidePlanLoading();
+        var viewer = new PlanViewerControl();
         try
         {
-            System.Xml.Linq.XDocument.Parse(planXml);
+            /* LoadPlan parses+analyzes off the UI thread; it throws XmlException for malformed
+               plan XML, replacing the redundant up-front XDocument.Parse validation. */
+            await viewer.LoadPlan(planXml, label, queryText);
         }
         catch (System.Xml.XmlException ex)
         {
+            viewer.Cleanup();
             MessageBox.Show(
                 $"The plan XML is not valid:\n\n{ex.Message}",
                 "Invalid Plan XML",
@@ -198,10 +207,16 @@ public partial class ServerTab : UserControl
                 MessageBoxImage.Warning);
             return;
         }
-
-        HidePlanLoading();
-        var viewer = new PlanViewerControl();
-        viewer.LoadPlan(planXml, label, queryText);
+        catch (Exception ex)
+        {
+            viewer.Cleanup();
+            MessageBox.Show(
+                $"Failed to load the execution plan:\n\n{ex.Message}",
+                "Plan Load Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
 
         var header = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
         header.Children.Add(new TextBlock
@@ -230,6 +245,7 @@ public partial class ServerTab : UserControl
     {
         if (sender is Button btn && btn.Tag is TabItem tab)
         {
+            (tab.Content as PlanViewerControl)?.Cleanup();
             PlanTabControl.Items.Remove(tab);
             if (PlanTabControl.Items.Count == 0)
             {
@@ -252,7 +268,7 @@ public partial class ServerTab : UserControl
 
         string? planXml = null;
         string? queryText = null;
-        string label = "Estimated Plan";
+        string label = "Stored Plan";
 
         switch (grid.CurrentItem)
         {
@@ -272,15 +288,17 @@ public partial class ServerTab : UserControl
                     planXml = await FetchPlanByHash(stats.QueryHash);
                 break;
             case QueryStatsHistoryRow hist:
-                planXml = hist.QueryPlan;
                 label = "Est Plan - History";
+                // History rows no longer carry per-row plan XML — fetch on demand by hash
+                if (!string.IsNullOrEmpty(hist.QueryHash))
+                    planXml = await FetchPlanByHash(hist.QueryHash);
                 break;
             case ProcedureStatsRow proc:
                 label = $"Est Plan - {proc.FullName}";
                 queryText = proc.FullName;
                 try
                 {
-                    var connStr = _server.GetConnectionString(_credentialService);
+                    var connStr = _credentialResolver.GetConnectionString(_server);
                     planXml = await LocalDataService.FetchProcedurePlanOnDemandAsync(
                         connStr, proc.DatabaseName, proc.SchemaName, proc.ObjectName);
                 }
@@ -293,11 +311,27 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
                     catch { }
                 }
+                break;
+            case QueryStatsComparisonItem comp:
+                queryText = comp.QueryText;
+                label = $"Est Plan - {comp.QueryHash}";
+                if (!string.IsNullOrEmpty(comp.QueryHash))
+                    planXml = await FetchPlanByHash(comp.QueryHash);
+                break;
+            case ProcedureStatsComparisonItem procComp:
+                label = $"Est Plan - {procComp.FullName}";
+                queryText = procComp.FullName;
+                try
+                {
+                    var procConnStr = _credentialResolver.GetConnectionString(_server);
+                    planXml = await LocalDataService.FetchProcedurePlanOnDemandAsync(procConnStr, procComp.DatabaseName, procComp.SchemaName, procComp.ObjectName);
+                }
+                catch { }
                 break;
         }
 
@@ -355,9 +389,19 @@ public partial class ServerTab : UserControl
                 {
                     try
                     {
-                        var connStr = _server.GetConnectionString(_credentialService);
+                        var connStr = _credentialResolver.GetConnectionString(_server);
                         planXml = await LocalDataService.FetchQueryStorePlanAsync(connStr, qs.DatabaseName, qs.PlanId);
                     }
+                    catch { }
+                }
+                break;
+            case QueryStatsComparisonItem comp:
+                queryText = comp.QueryText;
+                databaseName = comp.DatabaseName;
+                label = $"Actual Plan - {comp.QueryHash}";
+                if (!string.IsNullOrEmpty(comp.QueryHash))
+                {
+                    try { planXml = await FetchPlanByHash(comp.QueryHash); }
                     catch { }
                 }
                 break;
@@ -370,12 +414,29 @@ public partial class ServerTab : UserControl
             return;
         }
 
+        /* Data-modification gate: detect from the estimated plan XML (fail-safe to "modifying" when the plan
+           can't be analyzed) and flag it PROMINENTLY — distinct from the normal warning — since re-executing an
+           INSERT/UPDATE/DELETE/MERGE RE-APPLIES those writes to the database. FLAG, don't refuse: the operator
+           decides with eyes open. */
+        var modification = QueryModificationDetector.Detect(planXml, queryText);
+        var modificationWarning = QueryModificationDetector.BuildConsentWarning(modification, databaseName);
+
+        var prompt = new StringBuilder();
+        if (modificationWarning.Length > 0)
+        {
+            prompt.AppendLine(modificationWarning);
+            prompt.AppendLine("──────────────────────────────────────────");
+            prompt.AppendLine();
+        }
+        prompt.AppendLine($"You are about to execute this query against {_server.ServerName} in database [{databaseName ?? "default"}].");
+        prompt.AppendLine();
+        prompt.AppendLine("Make sure you understand what the query does before proceeding.");
+        prompt.AppendLine("The query will execute with SET STATISTICS XML ON to capture the actual plan.");
+        prompt.AppendLine("All data results will be discarded.");
+
         var result = MessageBox.Show(
-            $"You are about to execute this query against {_server.ServerName} in database [{databaseName ?? "default"}].\n\n" +
-            "Make sure you understand what the query does before proceeding.\n" +
-            "The query will execute with SET STATISTICS XML ON to capture the actual plan.\n" +
-            "All data results will be discarded.",
-            "Get Actual Plan",
+            prompt.ToString(),
+            modification.ModifiesData ? "Get Actual Plan (re-run) — DATA WILL BE MODIFIED" : "Get Actual Plan (re-run)",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
 
@@ -388,7 +449,7 @@ public partial class ServerTab : UserControl
 
         try
         {
-            var connectionString = _server.GetConnectionString(_credentialService);
+            var connectionString = _credentialResolver.GetConnectionString(_server);
 
             var actualPlanXml = await ActualPlanExecutor.ExecuteForActualPlanAsync(
                 connectionString,
@@ -398,7 +459,8 @@ public partial class ServerTab : UserControl
                 isolationLevel,
                 isAzureSqlDb: false,
                 timeoutSeconds: 0,
-                _actualPlanCts.Token);
+                _actualPlanCts.Token,
+                productName: "SQL Server Performance Monitor Lite");
 
             if (!string.IsNullOrEmpty(actualPlanXml))
             {
@@ -434,7 +496,7 @@ public partial class ServerTab : UserControl
         // Try DuckDB cache first
         try
         {
-            var plan = await _dataService.GetCachedQueryPlanAsync(_serverId, queryHash);
+            var plan = await Task.Run(() => _dataService.GetCachedQueryPlanAsync(_serverId, queryHash));
             if (!string.IsNullOrEmpty(plan)) return plan;
         }
         catch { }
@@ -442,7 +504,7 @@ public partial class ServerTab : UserControl
         // Fall back to live server
         try
         {
-            var connStr = _server.GetConnectionString(_credentialService);
+            var connStr = _credentialResolver.GetConnectionString(_server);
             return await LocalDataService.FetchQueryPlanOnDemandAsync(connStr, queryHash);
         }
         catch { return null; }
@@ -486,7 +548,7 @@ public partial class ServerTab : UserControl
         string? planXml = null;
         try
         {
-            var connStr = _server.GetConnectionString(_credentialService);
+            var connStr = _credentialResolver.GetConnectionString(_server);
             foreach (var f in frames)
             {
                 planXml = await LocalDataService.FetchPlanBySqlHandleAsync(
@@ -518,10 +580,13 @@ public partial class ServerTab : UserControl
         try
         {
             var doc = System.Xml.Linq.XElement.Parse(bprXml);
-            var processContainer = blockingSide
-                ? doc.Element("blocking-process")
-                : doc.Element("blocked-process");
-            var stack = processContainer?.Element("process")?.Element("executionStack");
+            // The collector stores the <blocked-process-report> element as the root, so the
+            // {blocking|blocked}-process nodes are direct children today — but search by descendant
+            // (matching Dashboard) so this keeps working regardless of how deep the node sits.
+            var processContainer = doc
+                .Descendants(blockingSide ? "blocking-process" : "blocked-process")
+                .FirstOrDefault();
+            var stack = processContainer?.Descendants("executionStack").FirstOrDefault();
             if (stack == null) return empty;
 
             var frames = new List<(string, int, int)>();
@@ -575,7 +640,7 @@ public partial class ServerTab : UserControl
         string? planXml = null;
         try
         {
-            var connStr = _server.GetConnectionString(_credentialService);
+            var connStr = _credentialResolver.GetConnectionString(_server);
             foreach (var f in frames)
             {
                 planXml = await LocalDataService.FetchPlanBySqlHandleAsync(
@@ -649,70 +714,15 @@ public partial class ServerTab : UserControl
         }
     }
 
-    private void SavePlanFile(string planXml, string defaultName)
-    {
-        var dialog = new SaveFileDialog
-        {
-            Filter = "SQL Plan files (*.sqlplan)|*.sqlplan|All files (*.*)|*.*",
-            DefaultExt = ".sqlplan",
-            FileName = $"{defaultName}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, planXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save plan: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private void DownloadDeadlockXml_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.DataContext is not DeadlockProcessDetail row || string.IsNullOrEmpty(row.DeadlockGraphXml)) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            DefaultExt = ".xml",
-            FileName = $"deadlock_{row.DeadlockTime:yyyyMMdd_HHmmss}.xml"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, row.DeadlockGraphXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save deadlock XML: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        SaveXmlToFile(row.DeadlockGraphXml, $"deadlock_{row.DeadlockTime:yyyyMMdd_HHmmss}.xml", "deadlock XML");
     }
 
     private void DownloadBlockedProcessXml_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.DataContext is not BlockedProcessReportRow row || string.IsNullOrEmpty(row.BlockedProcessReportXml)) return;
-
-        var dialog = new SaveFileDialog
-        {
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            DefaultExt = ".xml",
-            FileName = $"blocked_process_{row.EventTime:yyyyMMdd_HHmmss}.xml"
-        };
-
-        if (dialog.ShowDialog() != true) return;
-
-        try
-        {
-            File.WriteAllText(dialog.FileName, row.BlockedProcessReportXml, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save blocked process XML: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        SaveXmlToFile(row.BlockedProcessReportXml, $"blocked_process_{row.EventTime:yyyyMMdd_HHmmss}.xml", "blocked process XML");
     }
 }

@@ -1,0 +1,735 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data.Common;
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
+using Npgsql;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Darling.Storage;
+
+namespace PerformanceMonitor.Darling.Viewer;
+
+/// <summary>
+/// One row of the servers table, as the viewer's server list shows it. Was a positional record; it is now
+/// a class because the ported Lite server-row chrome needs mutable, change-notifying runtime state on each
+/// row — the favorite star (<see cref="IsFavorite"/>, matched from the viewer's registry) and the
+/// collection-freshness status dot (<see cref="IsOnline"/> / <see cref="HasCollectorErrors"/> →
+/// <see cref="DotStatus"/>) update in place on the refresh timers without resetting the list's selection.
+/// The Postgres-sourced fields stay immutable (get-only); only the sidebar overlay state is settable.
+/// Equality is now reference-based, which every consumer already relies on (they key on
+/// <see cref="ServerId"/> or hold the list's own instances).
+/// </summary>
+public sealed class DarlingServer : INotifyPropertyChanged
+{
+    public DarlingServer(
+        int serverId,
+        string serverName,
+        string displayName,
+        bool isEnabled,
+        int? sqlMajorVersion,
+        decimal monthlyCostUsd = 0)
+    {
+        ServerId = serverId;
+        ServerName = serverName;
+        DisplayName = displayName;
+        IsEnabled = isEnabled;
+        SqlMajorVersion = sqlMajorVersion;
+        MonthlyCostUsd = monthlyCostUsd;
+    }
+
+    public int ServerId { get; }
+    public string ServerName { get; }
+    public string DisplayName { get; }
+    public bool IsEnabled { get; }
+    public int? SqlMajorVersion { get; }
+    public decimal MonthlyCostUsd { get; }
+
+    /// <summary>"SQL Server 2022"-style label for the server list; empty when the version is unknown.</summary>
+    public string VersionLabel => ViewerDataService.SqlVersionLabel(SqlMajorVersion);
+
+    // ── Runtime-only sidebar state (not from Postgres; drives the ported Lite server-row chrome) ──
+
+    private bool _isFavorite;
+
+    /// <summary>Whether the user pinned this server (from the viewer's registry, matched by name). Drives the star.</summary>
+    public bool IsFavorite
+    {
+        get => _isFavorite;
+        set
+        {
+            if (_isFavorite != value)
+            {
+                _isFavorite = value;
+                OnPropertyChanged(nameof(IsFavorite));
+            }
+        }
+    }
+
+    private bool? _isOnline;
+
+    /// <summary>Freshness "reachability": true = fresh/stale (dot green/amber), false = offline (red), null = unknown.</summary>
+    public bool? IsOnline
+    {
+        get => _isOnline;
+        set
+        {
+            if (_isOnline != value)
+            {
+                _isOnline = value;
+                OnPropertyChanged(nameof(IsOnline));
+                OnPropertyChanged(nameof(DotStatus));
+            }
+        }
+    }
+
+    private bool _hasCollectorErrors;
+
+    /// <summary>Warning (amber) state — in the viewer this means the collection has gone stale.</summary>
+    public bool HasCollectorErrors
+    {
+        get => _hasCollectorErrors;
+        set
+        {
+            if (_hasCollectorErrors != value)
+            {
+                _hasCollectorErrors = value;
+                OnPropertyChanged(nameof(HasCollectorErrors));
+                OnPropertyChanged(nameof(DotStatus));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sidebar status-dot vocabulary — "Online"/"Warning"/"Offline"/"Unknown", identical to Lite's
+    /// <c>ServerConnection.DotStatus</c> so the ported server-row DataTriggers colour the Ellipse the same way.
+    /// </summary>
+    public string DotStatus => IsOnline switch
+    {
+        true => HasCollectorErrors ? "Warning" : "Online",
+        false => "Offline",
+        _ => "Unknown"
+    };
+
+    /// <summary>
+    /// Sets the dot from the same collection-freshness classification the Overview cards use
+    /// (<see cref="ServerSummaryItem.ClassifyFreshness"/>): Fresh → Online, Stale → the amber Warning,
+    /// Offline → red, NeverCollected → the grey Unknown dot (the service hasn't reached the server yet —
+    /// during a fleet bootstrap that is "queued", not "dead"). Both instants are UTC (the store is naive
+    /// UTC; nowUtc is <see cref="DateTime.UtcNow"/>).
+    /// </summary>
+    public void ApplyFreshness(DateTime? lastCollectionUtc, DateTime nowUtc)
+    {
+        var freshness = ServerSummaryItem.ClassifyFreshness(lastCollectionUtc, nowUtc);
+        IsOnline = freshness == ServerFreshness.NeverCollected ? null : freshness != ServerFreshness.Offline;
+        HasCollectorErrors = freshness == ServerFreshness.Stale;
+    }
+
+    // ── Per-server alert "needs attention" badge state (from the polled alert history, ack-aware) ──
+    // Set by MainWindow.UpdateServerAttention from the ServerAttentionDeriver output, gated through the
+    // viewer-local ViewerAlertStateService (ack-until-worse). Drives the sidebar row badge, mirroring
+    // Lite's per-tab alert badge.
+
+    private int _attentionCount;
+    private bool _attentionIsCritical;
+    private string? _attentionTooltip;
+
+    /// <summary>Active (unacknowledged, un-muted) alert count for this server; 0 hides the badge.</summary>
+    public int AttentionCount => _attentionCount;
+
+    /// <summary>True when the badge should show (there is at least one active alert to surface).</summary>
+    public bool HasAttention => _attentionCount > 0;
+
+    /// <summary>The badge count text, capped like Lite's tab badge ("99+" past 99).</summary>
+    public string AttentionText => _attentionCount > 99
+        ? "99+"
+        : _attentionCount.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Badge severity vocabulary — "Critical" / "Warning" / "None" — so the sidebar row's DataTriggers colour
+    /// the badge (ErrorBrush / WarningBrush) the same way Lite maps deadlock→red, else→orange-red.
+    /// </summary>
+    public string AttentionSeverity => _attentionCount <= 0
+        ? "None"
+        : (_attentionIsCritical ? "Critical" : "Warning");
+
+    /// <summary>The badge tooltip: the metric breakdown for this server (empty when no attention).</summary>
+    public string? AttentionTooltip => _attentionTooltip;
+
+    /// <summary>
+    /// Updates the sidebar alert badge in place (no list reset). Pass <paramref name="count"/> 0 to clear it
+    /// (acknowledged / no alerts). Raises change notifications only when something actually changed.
+    /// </summary>
+    public void SetAttention(int count, bool isCritical, string? tooltip)
+    {
+        if (_attentionCount == count
+            && _attentionIsCritical == isCritical
+            && string.Equals(_attentionTooltip, tooltip, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _attentionCount = count;
+        _attentionIsCritical = isCritical;
+        _attentionTooltip = tooltip;
+
+        OnPropertyChanged(nameof(AttentionCount));
+        OnPropertyChanged(nameof(HasAttention));
+        OnPropertyChanged(nameof(AttentionText));
+        OnPropertyChanged(nameof(AttentionSeverity));
+        OnPropertyChanged(nameof(AttentionTooltip));
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>
+/// The viewer's reads of the Darling Postgres store — the server list, plus the surfaces in the
+/// partials (the Overview lanes' total-wait + memory trends and per-lane baselines in
+/// <c>ViewerDataService.OverviewLanes.cs</c>, the per-tab reads in <c>.Cpu.cs</c>, <c>.Waits.cs</c>,
+/// <c>.BlockingTrends.cs</c>, <c>.FileIo.cs</c>, <c>.TempDb.cs</c>, <c>.Config.cs</c>, and
+/// <c>.RunningJobs.cs</c>, the Daily Summary + Collection Health reads in <c>.DailySummary.cs</c> /
+/// <c>.CollectionHealth.cs</c>, and the wave-2/3 reads in <c>.QueryStats.cs</c>, <c>.Blocking.cs</c>,
+/// <c>.Findings.cs</c>, <c>.AlertHistory.cs</c>, and <c>.MuteRules.cs</c>).
+/// Connections come from a pooled <see cref="NpgsqlDataSource"/>, so the window can run its
+/// per-tab queries concurrently. The SQL lives in public constants so tests can pin the
+/// load-bearing clauses without a live Postgres.
+/// All timestamps in the store are naive UTC (`timestamp without time zone`), so DateTime
+/// parameters are sent with DateTimeKind.Unspecified — since Npgsql 6.0 a Kind=Utc DateTime
+/// maps strictly to timestamptz and throws against naive columns.
+/// </summary>
+public sealed partial class ViewerDataService : IAsyncDisposable
+{
+    public const string ServersSql =
+        "SELECT server_id, server_name, display_name, is_enabled, sql_major_version, COALESCE(monthly_cost_usd, 0) FROM servers ORDER BY display_name";
+
+    /// <summary>
+    /// The authoritative read-only probe (V8 security hardening): does the connected role hold INSERT
+    /// on a <c>config</c> table? True → the admin role (or an owner) — the mute / alert-dismiss /
+    /// analysis-mute writes are available. False → the read-only viewer role — those surfaces degrade.
+    /// This is the source of truth over <c>connectAs</c> (which only picks a credential and doesn't
+    /// apply in BYO mode), because it reflects the connection's ACTUAL privileges. The bare table name
+    /// resolves through search_path to <c>config.config_mute_rules</c>.
+    /// </summary>
+    public const string ReadOnlyProbeSql = "SELECT has_table_privilege('config_mute_rules', 'INSERT')";
+
+    private readonly NpgsqlDataSource _dataSource;
+
+    /// <param name="connectionString">The Postgres connection string (managed-derived or BYO from darling.json).</param>
+    /// <param name="connectionTimeoutSeconds">
+    /// The viewer's "Connection timeout" preference (<see cref="ViewerAppSettings.ConnectionTimeoutSeconds"/>,
+    /// Lite's "increase for VPN/remote" knob). When supplied it is applied to the pooled store connections as
+    /// Npgsql's connect <c>Timeout</c> — set on the managed-derived string (which carries none) and appended to a
+    /// BYO string only when the operator did not already specify one (their explicit Timeout wins). Null leaves
+    /// the string untouched (Npgsql's 15s default). This restores the setting the Settings window has always
+    /// saved but nothing consumed.
+    /// </param>
+    public ViewerDataService(string connectionString, int? connectionTimeoutSeconds = null)
+    {
+        var effectiveConnectionString = connectionTimeoutSeconds is int seconds
+            ? ApplyConnectionTimeout(connectionString, seconds)
+            : connectionString;
+        _dataSource = NpgsqlDataSource.Create(effectiveConnectionString);
+    }
+
+    /// <summary>
+    /// Applies the viewer's connect-timeout preference to a connection string, but ONLY when the string does not
+    /// already specify a <c>Timeout</c> — so an operator's explicit Timeout in a BYO <c>postgres.connectionString</c>
+    /// always wins, while the managed-derived string (which never sets one) and a BYO string that omits it both
+    /// pick up the preference. <paramref name="timeoutSeconds"/> is Npgsql's connect timeout in seconds (the
+    /// caller clamps it to 5–60). Pure + string-only, so it is unit-tested without a live Postgres. Detection
+    /// uses the base <see cref="DbConnectionStringBuilder"/>, whose <c>ContainsKey</c> reflects exactly the keys
+    /// present in the string (NpgsqlConnectionStringBuilder overrides ContainsKey to answer for every KNOWN
+    /// keyword, which can't tell "set" from "settable").
+    /// </summary>
+    internal static string ApplyConnectionTimeout(string connectionString, int timeoutSeconds)
+    {
+        var builder = new DbConnectionStringBuilder { ConnectionString = connectionString };
+        if (!builder.ContainsKey("Timeout"))
+        {
+            builder["Timeout"] = timeoutSeconds;
+        }
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// True when the connected role cannot write the operator-config tables (the read-only
+    /// <c>viewer</c> role, or any connection lacking config INSERT). Set by
+    /// <see cref="DetectReadOnlyAsync"/>; the write surfaces gate on it. Defaults false (writable) until
+    /// probed, then fails safe to true if the probe cannot run.
+    /// </summary>
+    public bool IsReadOnly { get; private set; }
+
+    /// <summary>
+    /// Runs the <see cref="ReadOnlyProbeSql"/> capability probe and records <see cref="IsReadOnly"/>.
+    /// Called once after the service connects, before the write affordances are shown. A probe that
+    /// throws (table missing on a mis-provisioned store, permission quirk, transient error) fails safe
+    /// to read-only, so the UI hides writes rather than dead-clicking into a permission error; the
+    /// reactive 42501 catch in the write paths is the backstop if the probe and reality ever disagree.
+    /// </summary>
+    public async Task<bool> DetectReadOnlyAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var command = _dataSource.CreateCommand(ReadOnlyProbeSql);
+            var canInsert = await command.ExecuteScalarAsync(cancellationToken);
+            IsReadOnly = canInsert is not true;
+        }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            /* Finding B3: a failure to REACH the store is not a read-only seat — surface it as unreachable so
+               the shell shows the "is the service running?" message instead of hiding every write affordance
+               behind a false read-only verdict. */
+            throw new ViewerStoreUnreachableException(ex);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            /* A server RESPONSE we couldn't interpret (a permission quirk, a missing table on a
+               mis-provisioned store, a transient error) fails safe to read-only, so the UI hides writes
+               rather than dead-clicking into a permission error. */
+            IsReadOnly = true;
+        }
+
+        return IsReadOnly;
+    }
+
+    /// <summary>
+    /// Opens one real connection to prove the store is reachable, so the shell can tell an UNREACHABLE store
+    /// (the service down, or a wrong host/port/database in darling.json's postgres section) apart from a legit
+    /// read-only seat — the two the old connect path collapsed into a false "read-only" verdict (finding B3).
+    /// A connection-level failure is rethrown as <see cref="ViewerStoreUnreachableException"/>; a server that
+    /// RESPONDS (even to refuse authentication) is "reachable" and any such error propagates for the caller's
+    /// generic handling. The <see cref="NpgsqlDataSource"/> is lazy, so this is the first live connect.
+    /// </summary>
+    public async Task EnsureStoreReachableAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            throw new ViewerStoreUnreachableException(ex);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is a failure to TALK to Postgres (socket refused, host not found,
+    /// connect timeout) rather than a server error RESPONSE. Npgsql surfaces a server response as a
+    /// <see cref="PostgresException"/> (it carries a SQLSTATE); any other <see cref="NpgsqlException"/> — or a
+    /// bare socket / timeout — means the server was never reached. Drives the unreachable-vs-read-only split
+    /// (finding B3), so a down store shows "is the service running?" not a false read-only verdict.
+    /// </summary>
+    internal static bool IsConnectionFailure(Exception ex) =>
+        (ex is NpgsqlException and not PostgresException)
+        || ex is System.Net.Sockets.SocketException
+        || ex is TimeoutException;
+
+    /// <summary>
+    /// Probes the store's effective schema version through <c>information_schema</c> (plus <c>pg_indexes</c>
+    /// for the one index sentinel) — the version the viewer gates on at connect (finding B1). The authoritative
+    /// <c>darling_schema_version</c> table is owner-only (a viewer/admin role can't read it, and even
+    /// <c>MAX(version)</c> can itself throw 42501), so rather than read the version number this checks whether
+    /// the store carries the schema OBJECTS the recent migrations added — objects any role can see. Newest
+    /// first: V27's <c>deadlocks.database_name</c> column (the Azure per-database watermark key, #1535),
+    /// V26's <c>config_notification.generic_url</c> column (the generic webhook channel, #1506), V25's
+    /// <c>agent_status</c> table, V24's <c>job_history</c> table, V22's <c>idx_index_object_stats_latest</c> index (the FinOps Index Analysis
+    /// supporting index — indexes are not listed in <c>information_schema</c>, so this one reads the
+    /// world-readable <c>pg_indexes</c> catalog), V21's <c>default_trace_events</c> table (the shared Default
+    /// Trace collector), V20's <c>notify_connection_changes</c> column (config_alert_settings), V19's
+    /// <c>analysis_state</c> table, V18's <c>alert_delivery_mode_override</c> column (the very column whose
+    /// absence throws the raw 42703 the finding reproduces on Add/Edit Server), and V17's
+    /// <c>config_monitored_servers</c> table (the config control plane). <see cref="MapProbedSchemaVersion"/>
+    /// reduces the flags to the highest satisfied version. Each sentinel appears only in a store at its
+    /// migration or later: a fresh store gets them all at once (it runs straight through to the latest
+    /// version), an upgraded store gets each exactly at its migration.
+    ///
+    /// <para>The seventh sentinel (V23) is different in kind: V23 makes <c>collection_log</c> a TimescaleDB
+    /// hypertable, and its only schema effect is engine-dependent. So this checks <c>collection_log</c> IS a
+    /// hypertable OR the store has no <c>timescaledb</c> extension — because on plain PostgreSQL V23 is a no-op
+    /// (the guarded migration skips the conversion), so a plain-PG store at V23 is object-identical to V22 and
+    /// must not be gated. <b>Crucially it is written PLAIN-POSTGRESQL-SAFE:</b> it reads the core <c>pg_inherits</c>
+    /// catalog for collection_log's chunk children (TimescaleDB 2.x links chunks to the hypertable root via
+    /// inheritance — note a freshly-converted, still-empty hypertable has no chunks yet, a negligible window since
+    /// collection_log gets a row every collection cycle) rather than <c>timescaledb_information.hypertables</c> — that view does not exist without the
+    /// extension, and referencing it here would make the WHOLE probe throw on plain PG (returning null → the
+    /// gate fails open → EVERY plain-PG store, even genuinely-behind ones, loses connect-time gating). This
+    /// composite is only meaningful once V22's index is present (its <c>NOT EXISTS timescaledb</c> arm is true
+    /// for ALL plain-PG stores regardless of version), so <see cref="MapProbedSchemaVersion"/> gates it behind
+    /// the V22 sentinel rather than treating it as a standalone newest-first arm.
+    /// </summary>
+    public const string StoreSchemaProbeSql = @"
+SELECT
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'config_monitored_servers'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_monitored_servers' AND column_name = 'alert_delivery_mode_override'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'analysis_state'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_alert_settings' AND column_name = 'notify_connection_changes'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'default_trace_events'),
+    EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_index_object_stats_latest'),
+    (
+        EXISTS (SELECT 1 FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhparent
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = 'collection_log' AND n.nspname = 'collect')
+        OR NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')
+    ),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'job_history'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'agent_status'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_notification' AND column_name = 'generic_url'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'deadlocks' AND column_name = 'database_name'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'query_store_stats' AND column_name = 'replica_role'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'long_query_completions'),
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'config_service' AND column_name = 'web_enabled'),
+    EXISTS (SELECT 1 FROM information_schema.tables  WHERE table_name = 'custom_views')";
+
+    /// <summary>The store schema version this viewer build requires — the highest migration it knows
+    /// (<see cref="StorageVersion.SchemaVersion"/>). The connect-time gate blocks a store below this.</summary>
+    public static int RequiredStoreSchemaVersion => StorageVersion.SchemaVersion;
+
+    /// <summary>
+    /// Reads the store's effective schema version via <see cref="StoreSchemaProbeSql"/>. Returns null when it
+    /// can't be determined (any non-cancellation error — an unreachable store, an <c>information_schema</c>
+    /// quirk) so the connect-time gate FAILS OPEN: a possibly-healthy store is never blocked by a probe
+    /// hiccup. A truly-down store is caught first by <see cref="EnsureStoreReachableAsync"/> (finding B3), and
+    /// the executor 42703/42P01 translation (finding B2) is the write-path backstop.
+    /// </summary>
+    public async Task<int?> GetStoreSchemaVersionAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var command = _dataSource.CreateCommand(StoreSchemaProbeSql);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                return MapProbedSchemaVersion(reader.GetBoolean(0), reader.GetBoolean(1), reader.GetBoolean(2), reader.GetBoolean(3), reader.GetBoolean(4), reader.GetBoolean(5), reader.GetBoolean(6), reader.GetBoolean(7), reader.GetBoolean(8), reader.GetBoolean(9), reader.GetBoolean(10), reader.GetBoolean(11), reader.GetBoolean(12), reader.GetBoolean(13), reader.GetBoolean(14));
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Maps the <see cref="StoreSchemaProbeSql"/> sentinels to the store's effective version, newest present
+    /// wins. V23 is folded INTO the V22 arm rather than being a standalone newest-first arm: once the V22 index
+    /// is present, <paramref name="hasCollectionLogHypertableOrPlainPg"/> (collection_log is a hypertable, OR
+    /// the store is plain PostgreSQL where V23 is an object-invisible no-op) → 23, else → 22. It cannot be a
+    /// top arm because its plain-PG side is true for EVERY plain-PG store regardless of version, so it must be
+    /// gated behind V22's engine-agnostic index. Below V22: <paramref name="hasDefaultTraceEvents"/> (V21) → 21,
+    /// else <paramref name="hasAlertTuningKnobs"/> (V20) → 20, else <paramref name="hasAnalysisState"/> (V19) →
+    /// 19, else <paramref name="hasAlertDeliveryOverride"/> (V18) → 18, else
+    /// <paramref name="hasConfigControlPlane"/> (V17) → 17, else 16 — the "older than the V17 config control
+    /// plane" floor (the exact pre-17 version isn't probed, but it is below what the viewer needs). Pure, so it
+    /// is unit-tested without a live store; a schema bump past 29 trips the pinning test that keeps this in step
+    /// with <see cref="StorageVersion.SchemaVersion"/>.
+    /// </summary>
+    internal static int MapProbedSchemaVersion(bool hasConfigControlPlane, bool hasAlertDeliveryOverride, bool hasAnalysisState, bool hasAlertTuningKnobs, bool hasDefaultTraceEvents, bool hasIndexObjectStatsLatestIndex, bool hasCollectionLogHypertableOrPlainPg, bool hasJobHistory, bool hasAgentStatus, bool hasGenericWebhook, bool hasDeadlocksDatabaseName, bool hasQueryStoreReplicaRole, bool hasLongQueryCompletions, bool hasWebDashboardConfig, bool hasCustomViews)
+    {
+        /* V31 (#1563 custom views): engine-agnostic table-existence sentinel, newest-first arm.
+           config.custom_views exists only at V31 or later. */
+        if (hasCustomViews)
+        {
+            return 31;
+        }
+
+        /* V30 (#1562 web dashboard toggle): engine-agnostic column-existence sentinel, newest-first arm.
+           config_service.web_enabled exists only at V30 or later. */
+        if (hasWebDashboardConfig)
+        {
+            return 30;
+        }
+
+        /* V29 (#1496 long-query completion trace): engine-agnostic table-existence sentinel, newest-first
+           arm. The long_query_completions table exists only at V29 or later. */
+        if (hasLongQueryCompletions)
+        {
+            return 29;
+        }
+
+        /* V28 (#1546 Query Store replica attribution): engine-agnostic column-existence sentinel,
+           newest-first arm. query_store_stats.replica_role exists only at V28 or later. */
+        if (hasQueryStoreReplicaRole)
+        {
+            return 28;
+        }
+
+        /* V27 (#1535 Azure per-database deadlock capture): engine-agnostic column-existence sentinel,
+           newest-first arm. deadlocks.database_name exists only at V27 or later. */
+        if (hasDeadlocksDatabaseName)
+        {
+            return 27;
+        }
+
+        /* V26 (#1506 generic webhook): another engine-agnostic column-existence sentinel.
+           config_notification.generic_url exists only at V26 or later. */
+        if (hasGenericWebhook)
+        {
+            return 26;
+        }
+
+        /* V24/V25 (#1433 Job History tab) are engine-agnostic table-existence sentinels, so they ARE
+           standalone newest-first arms (unlike the V23 hypertable composite): agent_status (V25) present →
+           25, else job_history (V24) present → 24, else fall through to the V22/V23 composite below. A
+           fully-migrated store has both. */
+        if (hasAgentStatus)
+        {
+            return 25;
+        }
+
+        if (hasJobHistory)
+        {
+            return 24;
+        }
+
+        if (hasIndexObjectStatsLatestIndex)
+        {
+            /* V22's index is the newest ENGINE-AGNOSTIC sentinel and the floor for V23. V23's only schema
+               effect — collection_log becoming a hypertable — is visible ONLY on a TimescaleDB store; on plain
+               PostgreSQL V23 is a no-op, so a plain-PG store at V23 is object-identical to V22 and the composite
+               is true via its no-extension arm (correctly reporting 23 — nothing for the viewer to gate on). On
+               a Timescale store the hypertable distinguishes a real V23 from a store still at V22. */
+            return hasCollectionLogHypertableOrPlainPg ? 23 : 22;
+        }
+
+        if (hasDefaultTraceEvents)
+        {
+            return 21;
+        }
+
+        if (hasAlertTuningKnobs)
+        {
+            return 20;
+        }
+
+        if (hasAnalysisState)
+        {
+            return 19;
+        }
+
+        if (hasAlertDeliveryOverride)
+        {
+            return 18;
+        }
+
+        if (hasConfigControlPlane)
+        {
+            return 17;
+        }
+
+        return 16;
+    }
+
+    /// <summary>All registered servers, ordered as the server list displays them.</summary>
+    public async Task<List<DarlingServer>> GetServersAsync(CancellationToken cancellationToken = default)
+    {
+        var servers = new List<DarlingServer>();
+
+        await using var command = _dataSource.CreateCommand(ServersSql);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var serverName = reader.GetString(1);
+            servers.Add(new DarlingServer(
+                reader.GetInt32(0),
+                serverName,
+                reader.IsDBNull(2) ? serverName : reader.GetString(2),
+                !reader.IsDBNull(3) && reader.GetBoolean(3),
+                reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                reader.IsDBNull(5) ? 0m : Convert.ToDecimal(reader.GetValue(5))));
+        }
+
+        return servers;
+    }
+
+    /// <summary>
+    /// Product-name label for a sql_major_version (2016+ is what the product supports; older or
+    /// unknown majors fall back to a bare version tag, null to empty).
+    /// </summary>
+    public static string SqlVersionLabel(int? sqlMajorVersion) => sqlMajorVersion switch
+    {
+        null => "",
+        11 => "SQL Server 2012",
+        12 => "SQL Server 2014",
+        13 => "SQL Server 2016",
+        14 => "SQL Server 2017",
+        15 => "SQL Server 2019",
+        16 => "SQL Server 2022",
+        17 => "SQL Server 2025",
+        _ => $"SQL Server v{sqlMajorVersion}",
+    };
+
+    /// <summary>
+    /// The active server's UTC offset in minutes from its most recent <c>server_properties</c> row — the
+    /// value the Server-time display mode adds to the naive-UTC store (UTC + offset = server local). The
+    /// naive-UTC → display conversion every rendered timestamp uses lives in <see cref="ViewerTimeHelper"/>
+    /// (it replaced this class's former fixed <c>ToLocalTime</c>); this only fetches the per-server offset
+    /// that mode feeds into it. Returns null when the column has not been collected yet (an older store
+    /// just migrated, or a server whose properties collector has not re-run since the V16 upgrade); the
+    /// caller then keeps the viewer's machine-local offset so Server mode degrades to ~Local until then.
+    /// </summary>
+    public const string ServerUtcOffsetSql = @"
+SELECT utc_offset_minutes
+FROM server_properties
+WHERE server_id = $1
+AND   utc_offset_minutes IS NOT NULL
+ORDER BY collection_time DESC
+LIMIT 1";
+
+    public async Task<int?> GetServerUtcOffsetMinutesAsync(int serverId, CancellationToken cancellationToken = default)
+    {
+        await using var command = _dataSource.CreateCommand(ServerUtcOffsetSql);
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull
+            ? null
+            : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Binds the standard per-server window parameters shared by the settable-window tab reads:
+    /// $1 server_id, $2 window start, $3 window end. Both bounds are sent Kind=Unspecified because the
+    /// store's columns are naive UTC (<c>timestamp without time zone</c>) — a Kind=Utc DateTime would
+    /// map to timestamptz and throw since Npgsql 6.0 (see the class remarks).
+    /// </summary>
+    internal static void AddWindowParameters(NpgsqlCommand command, int serverId, DateTime startUtc, DateTime endUtc)
+    {
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = serverId });
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
+        {
+            TypedValue = DateTime.SpecifyKind(startUtc, DateTimeKind.Unspecified),
+        });
+        command.Parameters.Add(new NpgsqlParameter<DateTime>
+        {
+            TypedValue = DateTime.SpecifyKind(endUtc, DateTimeKind.Unspecified),
+        });
+    }
+
+    /// <summary>Postgres SQLSTATE 42501 (insufficient_privilege) — a write refused on a read-only connection.</summary>
+    internal const string InsufficientPrivilegeSqlState = "42501";
+
+    /// <summary>Postgres SQLSTATE 42703 (undefined_column) — a write referenced a column a lagging store
+    /// has not migrated in yet (schema skew).</summary>
+    internal const string UndefinedColumnSqlState = "42703";
+
+    /// <summary>Postgres SQLSTATE 42P01 (undefined_table) — a write referenced a table a lagging store has
+    /// not migrated in yet (schema skew).</summary>
+    internal const string UndefinedTableSqlState = "42P01";
+
+    /// <summary>
+    /// Executes a write command, translating a permission-denied failure — a write attempted on the
+    /// read-only viewer role, or after grants changed under a running app — into a
+    /// <see cref="ViewerReadOnlyException"/> the UI shows as a clear "read-only connection" message
+    /// instead of a raw Postgres error. The reactive backstop to the proactive hide/disable; any other
+    /// failure propagates unchanged.
+    /// </summary>
+    internal async Task<int> ExecuteWriteAsync(NpgsqlCommand command, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (PostgresException ex) when (ex.SqlState == InsufficientPrivilegeSqlState)
+        {
+            throw new ViewerReadOnlyException(ex);
+        }
+        catch (PostgresException ex) when (ex.SqlState is UndefinedColumnSqlState or UndefinedTableSqlState)
+        {
+            throw new ViewerSchemaSkewException(ex);
+        }
+    }
+
+    /// <summary>
+    /// The <c>RETURNING</c>-shaped sibling of <see cref="ExecuteWriteAsync"/>: runs a write that yields a
+    /// scalar (e.g. the <c>config_command.command_id</c> a command enqueue returns), translating a 42501 on a
+    /// read-only seat into <see cref="ViewerReadOnlyException"/> the same way. Any other failure propagates.
+    /// </summary>
+    internal async Task<object?> ExecuteWriteScalarAsync(NpgsqlCommand command, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await command.ExecuteScalarAsync(cancellationToken);
+        }
+        catch (PostgresException ex) when (ex.SqlState == InsufficientPrivilegeSqlState)
+        {
+            throw new ViewerReadOnlyException(ex);
+        }
+        catch (PostgresException ex) when (ex.SqlState is UndefinedColumnSqlState or UndefinedTableSqlState)
+        {
+            throw new ViewerSchemaSkewException(ex);
+        }
+    }
+
+    public ValueTask DisposeAsync() => _dataSource.DisposeAsync();
+}
+
+/// <summary>
+/// A write was attempted on a read-only Darling connection (the least-privilege <c>viewer</c> role,
+/// or any connection lacking <c>config</c> INSERT). Thrown by the write paths when Postgres returns
+/// 42501 so the UI shows a clear, actionable message rather than a raw permission error. The proactive
+/// <see cref="ViewerDataService.IsReadOnly"/> gating normally hides the affordances first; this covers
+/// the race where the probe and the live grants disagree.
+/// </summary>
+public sealed class ViewerReadOnlyException : Exception
+{
+    public ViewerReadOnlyException(Exception innerException)
+        : base(
+            "This viewer is connected with a read-only role, so it can't change mute rules, dismiss alerts, " +
+            "or mute findings. Set postgres.connectAs to \"admin\" in darling.json and restart the viewer to " +
+            "enable these actions.",
+            innerException)
+    {
+    }
+}
+
+/// <summary>
+/// The Darling store could not be reached at connect — the service is down, or the postgres section of
+/// darling.json points at the wrong host/port/database (a connection-level failure, not a server error
+/// response). Thrown by <see cref="ViewerDataService.EnsureStoreReachableAsync"/> and, as a backstop, by
+/// <see cref="ViewerDataService.DetectReadOnlyAsync"/> so the shell shows a dedicated "is the service
+/// running?" message instead of misreading an unreachable store as a read-only seat (finding B3).
+/// </summary>
+public sealed class ViewerStoreUnreachableException : Exception
+{
+    public ViewerStoreUnreachableException(Exception innerException)
+        : base(
+            "Can't reach the Darling store — is the Darling service running? Check the postgres section of " +
+            "darling.json (the host, port, and database must point at the running service's store).",
+            innerException)
+    {
+    }
+}
+
+/// <summary>
+/// A control-plane write referenced a column or table the connected store has not migrated in yet — the
+/// store's schema is BEHIND the version this viewer build needs (Postgres 42703 undefined_column / 42P01
+/// undefined_table). Thrown by the write executors so the UI shows a clear "update the service" message
+/// instead of a raw "column ... does not exist" error (finding B2). The connect-time gate
+/// (<see cref="ViewerDataService.GetStoreSchemaVersionAsync"/>, finding B1) normally blocks a skewed store
+/// before any write; this is the write-path backstop for a column referenced ahead of a lagging store.
+/// </summary>
+public sealed class ViewerSchemaSkewException : Exception
+{
+    public ViewerSchemaSkewException(Exception innerException)
+        : base(
+            $"This viewer needs Darling store schema v{ViewerDataService.RequiredStoreSchemaVersion}, but the " +
+            "store is missing an expected column or table. Update or restart the Darling service so it " +
+            "migrates the store, then reopen the viewer.",
+            innerException)
+    {
+    }
+}

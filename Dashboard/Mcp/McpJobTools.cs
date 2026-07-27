@@ -13,6 +13,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -25,18 +26,15 @@ public sealed class McpJobTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetRunningJobsAsync();
             if (rows.Count == 0)
             {
-                return "No running SQL Agent jobs found (or no data in report.running_jobs).";
+                return McpHelpers.Status("empty", "No running SQL Agent jobs found (or no data in report.running_jobs).");
             }
 
             var result = rows.Select(r => new

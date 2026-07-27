@@ -62,6 +62,22 @@ internal static class ServerResolver
         return new ResolvedServer(displayName, match, service);
     }
 
+    /// <summary>
+    /// Resolves a server name, returning either the resolved server or a ready-to-return error
+    /// string listing the available servers. Lets MCP tools collapse the repeated resolve-and-bail
+    /// block to: var (resolved, error) = ResolveOrError(...); if (error != null) return error;
+    /// </summary>
+    public static (ResolvedServer? resolved, string? error) ResolveOrError(
+        ServerManager serverManager,
+        DatabaseServiceRegistry registry,
+        string? serverName)
+    {
+        var resolved = Resolve(serverManager, registry, serverName);
+        return resolved is null
+            ? (null, $"Could not resolve server. Available servers:\n{ListAvailableServers(serverManager)}")
+            : (resolved, null);
+    }
+
     public static string ListAvailableServers(ServerManager serverManager)
     {
         var servers = serverManager.GetAllServers();

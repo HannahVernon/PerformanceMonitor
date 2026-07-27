@@ -18,6 +18,8 @@ using Microsoft.Extensions.Logging;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
+using PerformanceMonitor.Collectors;
+using PerformanceMonitor.Common;
 
 
 namespace PerformanceMonitorLite.Services;
@@ -34,11 +36,8 @@ public class CollectorHealthEntry
     public int ServerId { get; set; }
     public string CollectorName { get; set; } = "";
     public DateTime? LastSuccessTime { get; set; }
-    public DateTime? LastErrorTime { get; set; }
     public string? LastErrorMessage { get; set; }
     public int ConsecutiveErrors { get; set; }
-    public int TotalErrors { get; set; }
-    public int TotalSuccesses { get; set; }
 
     /*
      * Set when a collector hits a non-transient permission error
@@ -48,6 +47,34 @@ public class CollectorHealthEntry
      * permissions get granted later, the next launch retries once.
      */
     public bool IsPermissionRestricted { get; set; }
+
+    /*
+     * Set when the collector's Extended Events session could not be
+     * created or started (issue #1086). Distinct from a query failure:
+     * capture is non-functional even though reads would "succeed" with
+     * zero rows. Cleared on the next successful run. MainWindow raises
+     * a one-time tray notification on the false→true transition.
+     */
+    public bool XeSessionUnavailable { get; set; }
+    public string? XeSessionMessage { get; set; }
+}
+
+/// <summary>
+/// Thrown when an Extended Events session required by a collector cannot
+/// be created or started. Raised before the collect query runs so a missing
+/// session can never be masked by a zero-row "successful" read (issue #1086).
+/// </summary>
+public class XeSessionEnsureException : Exception
+{
+    public string SessionKind { get; }
+
+    public XeSessionEnsureException(string sessionKind, SqlException inner)
+        : base($"Failed to ensure {sessionKind} XE session: {inner.Message}", inner)
+    {
+        SessionKind = sessionKind;
+    }
+
+    public new SqlException InnerException => (SqlException)base.InnerException!;
 }
 
 /// <summary>
@@ -59,6 +86,14 @@ public class CollectorHealthSummary
     public int ErroringCollectors { get; set; }
     public int LoggingFailures { get; set; }
     public List<CollectorHealthEntry> Errors { get; set; } = new();
+
+    /*
+     * Collectors whose XE session couldn't be created/started (#1086).
+     * Tracked separately from Errors because a PERMISSIONS-classified
+     * failure deliberately does not increment ConsecutiveErrors, so it
+     * would otherwise be invisible here.
+     */
+    public List<CollectorHealthEntry> XeSessionFailures { get; set; } = new();
 }
 
 public partial class RemoteCollectorService
@@ -69,10 +104,11 @@ public partial class RemoteCollectorService
     private readonly ILogger<RemoteCollectorService>? _logger;
     private readonly DeltaCalculator _deltaCalculator;
     public DeltaCalculator DeltaCalculator => _deltaCalculator;
-    private static long s_idCounter = DateTime.UtcNow.Ticks;
 
     /// <summary>
-    /// Limits concurrent SQL connections to avoid overwhelming target servers.
+    /// Limits how many SQL connections are <em>opened</em> at once — the semaphore is released
+    /// when OpenAsync returns, not when the connection is disposed — smoothing the login storm
+    /// when many servers are polled together. It does not cap the number of open connections.
     /// </summary>
     private static readonly SemaphoreSlim s_connectionThrottle = new(7, 7);
 
@@ -109,15 +145,34 @@ public partial class RemoteCollectorService
     /// Tracks consecutive failures of the collection_log INSERT itself.
     /// </summary>
     private int _logInsertFailures;
-    private string? _lastLogInsertError;
 
     /// <summary>
-    /// Per-server flag indicating that master DB enumeration has failed with an access-denied
-    /// error and should not be retried. Used on Azure SQL DB where per-database logins may not
-    /// have master access (e.g. Microsoft Dynamics 365 FO). See issue #857.
+    /// Per-server timestamp of the last master-enumeration failure that looked like a permission
+    /// problem, so database-scoped collectors fall back to the connection's own catalog instead of
+    /// re-probing master every cycle. Used on Azure SQL DB where per-database logins may not have
+    /// master access (e.g. Microsoft Dynamics 365 FO). See issue #857.
+    ///
+    /// This is a throttle, NOT a permanent verdict. It expires after <see cref="AzureMasterRecheckInterval"/>,
+    /// and is dropped outright when a server returns from an outage. Both escape hatches exist because
+    /// the original version latched until the process restarted: a login's rights can be granted after
+    /// the fact, and — the reason this changed — a momentary failure must never be able to wedge
+    /// database-scoped collection for the life of the app. See issue #1506.
     /// </summary>
-    private readonly Dictionary<int, bool> _azureMasterInaccessible = new();
-    private readonly object _azureMasterInaccessibleLock = new();
+    private readonly Dictionary<int, DateTime> _azureMasterInaccessibleSince = new();
+    private readonly object _azureMasterLock = new();
+
+    /// <summary>
+    /// How long a master-inaccessible verdict stands before master is probed again. Short enough that
+    /// a misjudged failure costs minutes of database-scoped collection rather than the whole session;
+    /// long enough that a login which genuinely cannot see master (#857) retries only 4x/hour.
+    /// </summary>
+    private static readonly TimeSpan AzureMasterRecheckInterval = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Servers observed offline and not yet seen online again. A server coming back is the signal to
+    /// drop cached judgements about it that its outage could have poisoned (#1506).
+    /// </summary>
+    private readonly HashSet<int> _serversSeenOffline = new();
 
     public RemoteCollectorService(
         DuckDbInitializer duckDb,
@@ -138,11 +193,6 @@ public partial class RemoteCollectorService
     /// Should be called once during application startup.
     /// </summary>
     public Task SeedDeltaCacheAsync() => _deltaCalculator.SeedFromDatabaseAsync(_duckDb);
-
-    /// <summary>
-    /// Runs a manual DuckDB WAL checkpoint during idle time between collection cycles.
-    /// </summary>
-    public Task CheckpointAsync() => _duckDb.CheckpointAsync();
 
     /// <summary>
     /// Gets a summary of collector health for a specific server connection.
@@ -173,6 +223,11 @@ public partial class RemoteCollectorService
                 {
                     summary.ErroringCollectors++;
                     summary.Errors.Add(entry);
+                }
+
+                if (entry.XeSessionUnavailable)
+                {
+                    summary.XeSessionFailures.Add(entry);
                 }
             }
 
@@ -213,7 +268,7 @@ public partial class RemoteCollectorService
     /// <summary>
     /// Records a collector execution result for health tracking.
     /// </summary>
-    private void RecordCollectorResult(int serverId, string collectorName, string status, string? errorMessage = null)
+    internal void RecordCollectorResult(int serverId, string collectorName, string status, string? errorMessage = null, bool xeSessionUnavailable = false)
     {
         lock (_healthLock)
         {
@@ -224,11 +279,13 @@ public partial class RemoteCollectorService
                 _collectorHealth[key] = entry;
             }
 
+            entry.XeSessionUnavailable = xeSessionUnavailable;
+            entry.XeSessionMessage = xeSessionUnavailable ? errorMessage : null;
+
             if (status == "SUCCESS")
             {
                 entry.LastSuccessTime = DateTime.UtcNow;
                 entry.ConsecutiveErrors = 0;
-                entry.TotalSuccesses++;
             }
             else if (status == "PERMISSIONS")
             {
@@ -237,16 +294,13 @@ public partial class RemoteCollectorService
                    Record the error message so the user can see what's wrong,
                    and flag the collector so the scheduler stops retrying for
                    the rest of the app session. */
-                entry.LastErrorTime = DateTime.UtcNow;
                 entry.LastErrorMessage = errorMessage;
                 entry.IsPermissionRestricted = true;
             }
             else
             {
-                entry.LastErrorTime = DateTime.UtcNow;
                 entry.LastErrorMessage = errorMessage;
                 entry.ConsecutiveErrors++;
-                entry.TotalErrors++;
             }
         }
     }
@@ -285,9 +339,12 @@ public partial class RemoteCollectorService
             if (serverStatus.IsOnline == false)
             {
                 skippedOffline++;
-                _logger?.LogDebug("Skipping offline server '{Server}'", server.DisplayName);
+                NoteServerOffline(server);
+                AppLogger.Debug("Scheduler", $"Skipping offline server '{server.DisplayName}'");
                 continue;
             }
+
+            NoteServerOnline(server);
             onlineServers.Add(server);
         }
 
@@ -296,8 +353,7 @@ public partial class RemoteCollectorService
             return;
         }
 
-        _logger?.LogInformation("Checking per-server schedules for {OnlineCount}/{TotalCount} servers ({SkippedCount} offline, skipped)",
-            onlineServers.Count, enabledServers.Count, skippedOffline);
+        AppLogger.Info("Scheduler", $"Checking per-server schedules for {onlineServers.Count}/{enabledServers.Count} servers ({skippedOffline} offline, skipped)");
 
         /* Run servers in parallel, but collectors within each server sequentially.
            DuckDB is single-writer; running all collectors in parallel causes spin-wait
@@ -306,6 +362,12 @@ public partial class RemoteCollectorService
            Each server gets its own due-collector list from per-server schedules. */
         var serverTasks = onlineServers.Select(server => Task.Run(async () =>
         {
+            /* Reconcile the opt-in long-query completion XE session to its enabled flag BEFORE the
+               due-collector loop and regardless of whether it is due — a disabled collector is never
+               dispatched, so the DROP-on-disable (#1496) has nowhere else to run. Cheap when nothing
+               changed (state-tracked); creates on enable, drops on disable. */
+            await ReconcileLongQueryCompletionsXeSessionAsync(server, cancellationToken);
+
             var dueCollectors = _scheduleManager.GetDueCollectorsForServer(server.Id);
             foreach (var collector in dueCollectors)
             {
@@ -329,7 +391,7 @@ public partial class RemoteCollectorService
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Post-collection checkpoint failed (non-critical)");
+            AppLogger.Debug("Collector", $"Post-collection checkpoint failed (non-critical): {ex.Message}");
         }
     }
 
@@ -343,18 +405,19 @@ public partial class RemoteCollectorService
             .Where(s => s.Enabled)
             .ToList();
 
-        /* Ensure XE sessions are set up before collecting */
+        /* XE session setup happens inside RunCollectorAsync so the background
+           collection loop also ensures/retries it, not just tab-open (#1086) */
         var serverStatus = _serverManager.GetConnectionStatus(server.Id);
-        var engineEdition = serverStatus.SqlEngineEdition;
-        await EnsureBlockedProcessXeSessionAsync(server, engineEdition, cancellationToken);
-        await EnsureDeadlockXeSessionAsync(server, engineEdition, cancellationToken);
 
         /* Persist edition/version to DuckDB for the analysis engine */
         await PersistServerMetadataAsync(server, serverStatus);
 
-        AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)})");
-        _logger?.LogInformation("Running {Count} collectors for server '{Server}' (initial load)",
-            enabledSchedules.Count, server.DisplayName);
+        AppLogger.Info("Collector", $"Running {enabledSchedules.Count} collectors for '{server.DisplayName}' (serverId={GetServerId(server)}, initial load)");
+
+        /* Reconcile the opt-in long-query completion XE session (#1496) on tab-open too, so enabling it
+           takes effect promptly rather than waiting for the next scheduled sweep. Unconditional — the
+           DROP-on-disable path must run even though a disabled collector is absent from enabledSchedules. */
+        await ReconcileLongQueryCompletionsXeSessionAsync(server, cancellationToken);
 
         foreach (var schedule in enabledSchedules)
         {
@@ -364,8 +427,7 @@ public partial class RemoteCollectorService
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Initial collector '{Collector}' failed for server '{Server}'",
-                    schedule.Name, server.DisplayName);
+                AppLogger.Error("Collector", $"Initial collector '{schedule.Name}' failed for server '{server.DisplayName}'", ex);
             }
         }
     }
@@ -379,19 +441,30 @@ public partial class RemoteCollectorService
         var status = "SUCCESS";
         string? errorMessage = null;
         int rowsCollected = 0;
+        bool xeSessionUnavailable = false;
 
         try
         {
-            // Version-gate and edition-gate collectors
+            /* Target-gate collectors through the shared AppliesTo — the single authoritative gate surface
+               both SKUs consult. Darling's collector runner calls definition.AppliesTo(target) directly;
+               here it drives Lite's clean pre-dispatch SKIPPED log (a genuine skip with no collection_log
+               row, vs. the SUCCESS/0-rows a gated collector would otherwise record). The gate CONDITION
+               lives ONLY in each definition's AppliesTo override — never re-encoded in the host — so Lite
+               and Darling can't drift on it again (the RDS/msdb/Azure gating-drift class). */
             var serverStatus = _serverManager.GetConnectionStatus(server.Id);
-            var majorVersion = serverStatus.SqlMajorVersion;
             var engineEdition = serverStatus.SqlEngineEdition;
-            var isAwsRds = serverStatus.IsAwsRds;
-            var hasMsdbAccess = serverStatus.HasMsdbAccess;
-
-            if (!IsCollectorSupported(collectorName, majorVersion, engineEdition, isAwsRds, hasMsdbAccess))
+            var target = new CollectorTargetInfo
             {
-                AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED (version {majorVersion}, edition {engineEdition})");
+                IsAzureSqlDb = engineEdition == 5,
+                IsAzureManagedInstance = engineEdition == 8,
+                IsAwsRds = serverStatus.IsAwsRds,
+                SqlMajorVersion = serverStatus.SqlMajorVersion,
+                HasMsdbAccess = serverStatus.HasMsdbAccess,
+            };
+
+            if (!CollectorCatalog.AppliesTo(collectorName, target))
+            {
+                AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED (edition {engineEdition}, version {serverStatus.SqlMajorVersion})");
                 return;
             }
 
@@ -400,8 +473,6 @@ public partial class RemoteCollectorService
             if (server.AuthenticationType == AuthenticationTypes.EntraMFA && serverStatus.UserCancelledMfa)
             {
                 AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} SKIPPED - MFA authentication cancelled by user");
-                _logger?.LogDebug("Skipping collector '{Collector}' for server '{Server}' - user cancelled MFA",
-                    collectorName, server.DisplayName);
                 return;
             }
 
@@ -409,17 +480,33 @@ public partial class RemoteCollectorService
             // this session. Flag is in-memory — next app start retries once (see #857).
             if (IsCollectorPermissionRestricted(GetServerId(server), collectorName))
             {
-                _logger?.LogDebug("Skipping collector '{Collector}' for server '{Server}' - permission denied this session",
-                    collectorName, server.DisplayName);
+                AppLogger.Debug("Collector", $"Skipping collector '{collectorName}' for server '{server.DisplayName}' - permission denied this session");
                 return;
             }
 
-            _logger?.LogDebug("Running collector '{Collector}' for server '{Server}'",
-                collectorName, server.DisplayName);
+            AppLogger.Debug("Collector", $"Running collector '{collectorName}' for server '{server.DisplayName}'");
+
+            /* Ensure the backing XE session exists before reading its ring buffer.
+               Runs on every cycle (cheap existence check when already present) so a
+               failed first attempt self-heals instead of staying broken until a manual
+               tab re-open (#1086). Throws XeSessionEnsureException on failure so the
+               zero-row read below can never record a misleading SUCCESS. */
+            if (collectorName == "blocked_process_report")
+            {
+                await EnsureBlockedProcessXeSessionAsync(server, engineEdition, cancellationToken);
+            }
+            else if (collectorName == "deadlocks")
+            {
+                await EnsureDeadlockXeSessionAsync(server, engineEdition, cancellationToken);
+            }
 
             rowsCollected = collectorName switch
             {
                 "wait_stats" => await CollectWaitStatsAsync(server, cancellationToken),
+                "latch_stats" => await CollectLatchStatsAsync(server, cancellationToken),
+                "spinlock_stats" => await CollectSpinlockStatsAsync(server, cancellationToken),
+                "cpu_scheduler_stats" => await CollectCpuSchedulerStatsAsync(server, cancellationToken),
+                "plan_cache_stats" => await CollectPlanCacheStatsAsync(server, cancellationToken),
                 "cpu_utilization" => await CollectCpuUtilizationAsync(server, cancellationToken),
                 "memory_stats" => await CollectMemoryStatsAsync(server, cancellationToken),
                 "memory_clerks" => await CollectMemoryClerksAsync(server, cancellationToken),
@@ -436,13 +523,21 @@ public partial class RemoteCollectorService
                 "query_store" => await CollectQueryStoreAsync(server, cancellationToken),
                 "memory_grant_stats" => await CollectMemoryGrantStatsAsync(server, cancellationToken),
                 "waiting_tasks" => await CollectWaitingTasksAsync(server, cancellationToken),
+                "dmv_blocking_snapshot" => await CollectDmvBlockingSnapshotAsync(server, cancellationToken),
                 "blocked_process_report" => await CollectBlockedProcessReportsAsync(server, cancellationToken),
+                "long_query_completions" => await CollectLongQueryCompletionsAsync(server, cancellationToken),
                 "database_scoped_config" => await CollectDatabaseScopedConfigAsync(server, cancellationToken),
                 "trace_flags" => await CollectTraceFlagsAsync(server, cancellationToken),
                 "running_jobs" => await CollectRunningJobsAsync(server, cancellationToken),
                 "database_size_stats" => await CollectDatabaseSizeStatsAsync(server, cancellationToken),
+                "index_object_stats" => await CollectIndexObjectStatsAsync(server, cancellationToken),
                 "server_properties" => await CollectServerPropertiesAsync(server, cancellationToken),
                 "session_stats" => await CollectSessionStatsAsync(server, cancellationToken),
+                "session_summary_stats" => await CollectSessionSummaryStatsAsync(server, cancellationToken),
+                "system_health_events" => await CollectSystemHealthEventsAsync(server, cancellationToken),
+                "default_trace_events" => await CollectDefaultTraceEventsAsync(server, cancellationToken),
+                "job_history" => await CollectJobHistoryAsync(server, cancellationToken),
+                "agent_status" => await CollectAgentStatusAsync(server, cancellationToken),
                 _ => throw new ArgumentException($"Unknown collector: {collectorName}")
             };
 
@@ -450,6 +545,19 @@ public partial class RemoteCollectorService
 
             var elapsed = (int)(DateTime.UtcNow - startTime).TotalMilliseconds;
             AppLogger.Info("Collector", $"  [{server.DisplayName}] {collectorName} => {rowsCollected} rows in {elapsed}ms (sql:{_lastSqlMs}ms, duck:{_lastDuckDbMs}ms)");
+        }
+        catch (XeSessionEnsureException ex)
+        {
+            /* XE session couldn't be created/started — capture is dead even though
+               the ring-buffer read would "succeed" with zero rows. Classify like a
+               direct SQL failure so the health indicator stops showing OK (#1086). */
+            var sqlError = ex.InnerException;
+            errorMessage = ex.Message;
+            status = (sqlError.Number == 229 || sqlError.Number == 297 || sqlError.Number == 300)
+                ? "PERMISSIONS"
+                : "ERROR";
+            xeSessionUnavailable = true;
+            AppLogger.Error("Collector", $"  [{server.DisplayName}] {collectorName} {ex.Message}");
         }
         catch (SqlException ex)
         {
@@ -459,24 +567,20 @@ public partial class RemoteCollectorService
 
             if (RetryHelper.IsTransient(ex))
             {
-                _logger?.LogWarning("Collector '{Collector}' transient SQL error #{ErrorNumber} for server '{Server}': {Message}",
-                    collectorName, ex.Number, server.DisplayName, ex.Message);
+                AppLogger.Warn("Collector", $"Collector '{collectorName}' transient SQL error #{ex.Number} for server '{server.DisplayName}': {ex.Message}");
             }
             else if (ex.Number == 207) /* Invalid column name - likely version incompatibility */
             {
-                _logger?.LogWarning("Collector '{Collector}' column not found for server '{Server}' (possible version incompatibility): {Message}",
-                    collectorName, server.DisplayName, ex.Message);
+                AppLogger.Warn("Collector", $"Collector '{collectorName}' column not found for server '{server.DisplayName}' (possible version incompatibility): {ex.Message}");
             }
             else if (ex.Number == 229 || ex.Number == 297 || ex.Number == 300)
             {
                 status = "PERMISSIONS";
-                _logger?.LogWarning("Collector '{Collector}' permission denied for server '{Server}': {Message}",
-                    collectorName, server.DisplayName, ex.Message);
+                AppLogger.Warn("Collector", $"Collector '{collectorName}' permission denied for server '{server.DisplayName}': {ex.Message}");
             }
             else
             {
-                _logger?.LogError(ex, "Collector '{Collector}' SQL error #{ErrorNumber} for server '{Server}'",
-                    collectorName, ex.Number, server.DisplayName);
+                AppLogger.Error("Collector", $"Collector '{collectorName}' SQL error #{ex.Number} for server '{server.DisplayName}'", ex);
             }
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("MFA authentication cancelled"))
@@ -490,19 +594,18 @@ public partial class RemoteCollectorService
         {
             status = "CANCELLED";
             errorMessage = "Collection cancelled";
-            _logger?.LogDebug("Collector '{Collector}' cancelled for server '{Server}'", collectorName, server.DisplayName);
+            AppLogger.Debug("Collector", $"Collector '{collectorName}' cancelled for server '{server.DisplayName}'");
         }
         catch (Exception ex)
         {
             status = "ERROR";
             errorMessage = ex.Message;
             AppLogger.Error("Collector", $"  [{server.DisplayName}] {collectorName} {ex.GetType().Name}: {ex.Message}");
-            _logger?.LogError(ex, "Collector '{Collector}' failed for server '{Server}'",
-                collectorName, server.DisplayName);
+            AppLogger.Error("Collector", $"Collector '{collectorName}' failed for server '{server.DisplayName}'", ex);
         }
 
         // Track collector health
-        RecordCollectorResult(GetServerId(server), collectorName, status, errorMessage);
+        RecordCollectorResult(GetServerId(server), collectorName, status, errorMessage, xeSessionUnavailable);
 
         // Log the collection attempt
         await LogCollectionAsync(GetServerId(server), server.DisplayName, collectorName, startTime, status, errorMessage, rowsCollected, _lastSqlMs, _lastDuckDbMs);
@@ -578,25 +681,65 @@ WHERE server_id = $3";
             {
                 AppLogger.Info("Collector", $"Collection logging recovered after {_logInsertFailures} failure(s)");
                 _logInsertFailures = 0;
-                _lastLogInsertError = null;
             }
         }
         catch (Exception ex)
         {
             _logInsertFailures++;
-            _lastLogInsertError = ex.Message;
 
             if (_logInsertFailures <= 3)
             {
                 /* First few failures: log at Error level with full detail */
                 AppLogger.Error("Collector", $"COLLECTION LOGGING FAILED ({_logInsertFailures}x): {ex.GetType().Name}: {ex.Message}");
-                _logger?.LogError(ex, "Failed to log collection for {Collector} (failure #{Count})", collectorName, _logInsertFailures);
+                AppLogger.Error("Collector", $"Failed to log collection for {collectorName} (failure #{_logInsertFailures})", ex);
             }
             else if (_logInsertFailures % 100 == 0)
             {
                 /* Periodic reminder for ongoing failures */
                 AppLogger.Error("Collector", $"COLLECTION LOGGING STILL BROKEN: {_logInsertFailures} consecutive failures. Last error: {ex.Message}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Records that a server is currently unreachable, so that its return can be recognised.
+    /// </summary>
+    internal void NoteServerOffline(ServerConnection server)
+    {
+        lock (_azureMasterLock)
+        {
+            _serversSeenOffline.Add(GetServerId(server));
+        }
+    }
+
+    /// <summary>
+    /// Handles a server coming back after an outage by dropping the master-inaccessible verdict.
+    ///
+    /// An outage and a permission problem are not distinguishable from the error number alone —
+    /// Azure SQL DB reports a firewall rejection (40615) and a login failure (18456) the same way
+    /// whether the cause is "this login may not read master" or "you cannot reach this server right
+    /// now". So a verdict formed during an outage is untrustworthy by construction, and the moment
+    /// the server answers again is the moment to throw it away and re-probe. Without this, a login
+    /// that CAN read master gets permanently misfiled as one that cannot, and database-scoped
+    /// collection stays broken until the app restarts (issue #1506).
+    /// </summary>
+    internal void NoteServerOnline(ServerConnection server)
+    {
+        var serverId = GetServerId(server);
+
+        bool returnedFromOutage;
+        lock (_azureMasterLock)
+        {
+            returnedFromOutage = _serversSeenOffline.Remove(serverId);
+            if (returnedFromOutage)
+            {
+                _azureMasterInaccessibleSince.Remove(serverId);
+            }
+        }
+
+        if (returnedFromOutage)
+        {
+            AppLogger.Info("Scheduler", $"[{server.DisplayName}] reachable again — re-probing master for database-scoped collectors.");
         }
     }
 
@@ -608,24 +751,24 @@ WHERE server_id = $3";
     /// On Azure SQL DB, logins are sometimes granted access only to a specific user database and
     /// not to master (e.g. Microsoft Dynamics 365 FO). In that case, master enumeration fails with
     /// an access/login error; we fall back to returning the connection's initial catalog as a
-    /// single-database list, and cache that decision per server so we don't retry master each cycle.
+    /// single-database list, and throttle re-probes of master so we don't retry it every cycle.
     /// See issue #857.
     /// </summary>
     protected async Task<List<string>> GetAzureDatabaseListAsync(ServerConnection server, CancellationToken cancellationToken)
     {
         var serverId = GetServerId(server);
-        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var baseConnStr = _serverManager.CredentialResolver.GetConnectionString(server);
         var targetDb = new SqlConnectionStringBuilder(baseConnStr).InitialCatalog;
 
-        bool knownInaccessible;
-        lock (_azureMasterInaccessibleLock)
-        {
-            _azureMasterInaccessible.TryGetValue(serverId, out knownInaccessible);
-        }
+        /* Skip the throttle when there is nothing to fall back TO. With no target database the fallback
+           can only throw, and an error lands in collection_log either way — so honouring the throttle
+           here would buy one saved round-trip at the cost of 15 minutes of guaranteed failure with no
+           attempt to recover. Probe master instead: it might work now. */
+        var hasFallback = SingleDbOrEmpty(targetDb).Count > 0;
 
-        if (knownInaccessible)
+        if (hasFallback && IsMasterProbeThrottled(serverId))
         {
-            return SingleDbOrEmpty(targetDb);
+            return FallbackDatabaseList(server, targetDb, reason: "master previously inaccessible", quiet: true);
         }
 
         var connStr = new SqlConnectionStringBuilder(baseConnStr)
@@ -634,41 +777,132 @@ WHERE server_id = $3";
             InitialCatalog = "master"
         }.ConnectionString;
 
-        var (exclusionClause, exclusionParams) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "name");
-
-        var databases = new List<string>();
         try
         {
-            using var conn = new SqlConnection(connStr);
-            await conn.OpenAsync(cancellationToken);
-            using var cmd = new SqlCommand(
-                $"SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 {exclusionClause} ORDER BY name;",
-                conn)
-            { CommandTimeout = CommandTimeoutSeconds };
-            foreach (var p in exclusionParams) cmd.Parameters.Add(p);
-            using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                databases.Add(reader.GetString(0));
-            return databases;
+            /* Retry transient failures so a blip costs a slower cycle instead of an ERROR row — this
+               path had no retry at all before #1506. Note it cannot prevent a master-inaccessible
+               verdict: RetryHelper only retries errors SqlErrorClassification calls transient, and that
+               set is provably disjoint from the ones that form a verdict. The time-box and the
+               reconnect-clear are what make a wrong verdict survivable; this just makes one less likely
+               to be reached.
+
+               The exclusion filter is rebuilt inside the lambda on purpose: a SqlParameter cannot be
+               added to a second SqlCommand, so reusing one set across retries would throw on attempt 2. */
+            return await RetryHelper.ExecuteWithRetryAsync(
+                async () =>
+                {
+                    var (exclusionClause, exclusionParams) = BuildDatabaseExclusionFilter(server.ExcludedDatabases, "name");
+
+                    var databases = new List<string>();
+                    using var conn = new SqlConnection(connStr);
+                    await conn.OpenAsync(cancellationToken);
+                    using var cmd = new SqlCommand(
+                        $"SELECT name FROM sys.databases WHERE state_desc = N'ONLINE' AND database_id > 0 {exclusionClause} ORDER BY name;",
+                        conn)
+                    { CommandTimeout = CommandTimeoutSeconds };
+                    foreach (var p in exclusionParams) cmd.Parameters.Add(p);
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                        databases.Add(reader.GetString(0));
+
+                    ClearMasterInaccessible(serverId);
+                    return databases;
+                },
+                _logger,
+                $"enumerate databases on {server.DisplayName}",
+                cancellationToken: cancellationToken);
         }
-        catch (SqlException ex) when (IsMasterAccessDeniedError(ex))
+        catch (SqlException ex) when (IsMasterAccessDeniedError(ex.Number))
         {
-            lock (_azureMasterInaccessibleLock)
+            MarkMasterInaccessible(serverId);
+
+            return FallbackDatabaseList(server, targetDb, reason: $"master DB inaccessible (SQL error {ex.Number})");
+        }
+    }
+
+    /// <summary>
+    /// True while a recent master-inaccessible verdict still stands. The verdict expires so that a
+    /// server whose access was restored (or whose login was granted master rights) recovers on its
+    /// own, instead of collecting from a degraded database list until the app is restarted (#1506).
+    /// </summary>
+    internal bool IsMasterProbeThrottled(int serverId)
+    {
+        lock (_azureMasterLock)
+        {
+            if (!_azureMasterInaccessibleSince.TryGetValue(serverId, out var deniedAt))
             {
-                _azureMasterInaccessible[serverId] = true;
+                return false;
             }
 
-            var fallback = SingleDbOrEmpty(targetDb);
-            if (fallback.Count > 0)
+            if (DateTime.UtcNow - deniedAt < AzureMasterRecheckInterval)
             {
-                AppLogger.Info("Collector", $"  [{server.DisplayName}] master DB inaccessible (SQL error {ex.Number}) — collecting from '{targetDb}' only.");
+                return true;
             }
-            else
-            {
-                AppLogger.Warn("Collector", $"  [{server.DisplayName}] master DB inaccessible (SQL error {ex.Number}) and no target database in connection string — no data will be collected for database-scoped collectors.");
-            }
-            return fallback;
+
+            _azureMasterInaccessibleSince.Remove(serverId);
+            return false;
         }
+    }
+
+    private void ClearMasterInaccessible(int serverId)
+    {
+        lock (_azureMasterLock)
+        {
+            _azureMasterInaccessibleSince.Remove(serverId);
+        }
+    }
+
+    /// <summary>
+    /// Records a master-inaccessible verdict, stamped now. Used by the production catch path, and by
+    /// tests to reach the expiry and reconnect logic without a live Azure SQL DB connection —
+    /// deliberately the same method, so the tests exercise what actually ships.
+    /// </summary>
+    internal void MarkMasterInaccessible(int serverId, DateTime? deniedAtUtc = null)
+    {
+        lock (_azureMasterLock)
+        {
+            _azureMasterInaccessibleSince[serverId] = deniedAtUtc ?? DateTime.UtcNow;
+        }
+    }
+
+    /// <summary>
+    /// The database list to use when master cannot be enumerated: the connection's own catalog.
+    ///
+    /// When there isn't one, database-scoped collectors have nowhere to read from. That used to be a
+    /// warning and an empty list, which made every one of them report SUCCESS with zero rows — the
+    /// collection status bar kept saying "Running" while nothing at all was being collected. Throwing
+    /// puts the failure in collection_log where it is visible and actionable (#1506).
+    ///
+    /// The message deliberately avoids the phrase RunCollectorAsync's MFA filter matches, so this
+    /// lands in the general handler and is recorded as an ERROR rather than a silent SKIPPED.
+    /// </summary>
+    /// <param name="quiet">
+    /// Set on the throttled path, which runs for every database-scoped collector on every cycle. The
+    /// interesting event is forming the verdict, not re-reading it — logging both would put four lines
+    /// a minute in the log of a #857 user whose setup is working exactly as intended.
+    /// </param>
+    internal static List<string> FallbackDatabaseList(ServerConnection server, string? targetDb, string reason, bool quiet = false)
+    {
+        var fallback = SingleDbOrEmpty(targetDb);
+
+        if (fallback.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"{reason}, and this connection has no target database to fall back to " +
+                $"(it resolves to master). Set a Database for '{server.DisplayName}' so database-scoped " +
+                $"collectors have something to read.");
+        }
+
+        if (quiet)
+        {
+            AppLogger.Debug("Collector", $"  [{server.DisplayName}] {reason} — collecting from '{targetDb}' only.");
+        }
+        else
+        {
+            AppLogger.Info("Collector", $"  [{server.DisplayName}] {reason} — collecting from '{targetDb}' only.");
+        }
+
+        return fallback;
     }
 
     /// <summary>
@@ -727,30 +961,27 @@ WHERE server_id = $3";
     }
 
     /// <summary>
-    /// Error numbers indicating the login cannot open or read from master on Azure SQL DB.
-    /// Trigger a fallback to single-database mode when we see one of these.
+    /// Whether this error means the login cannot read master, in which case database-scoped collectors
+    /// fall back to the connection's own catalog (#857). The list — and the reason a reachability error
+    /// must never be on it (#1506) — is owned by <see cref="SqlErrorClassification"/>, shared with
+    /// Darling so the two cannot drift.
     /// </summary>
-    private static bool IsMasterAccessDeniedError(SqlException ex)
-    {
-        return ex.Number switch
-        {
-            229   => true, // Permission denied on object
-            230   => true, // Permission denied on column
-            916   => true, // Server principal is not able to access the database under the current security context
-            4060  => true, // Cannot open database requested by the login
-            18456 => true, // Login failed for user
-            40613 => true, // Database 'master' on server is not currently available
-            40615 => true, // Cannot open server — login denied (firewall/auth)
-            _     => false
-        };
-    }
+    internal static bool IsMasterAccessDeniedError(int errorNumber) =>
+        SqlErrorClassification.IsMasterAccessDenied(errorNumber);
 
     /// <summary>
     /// Opens a SQL connection to a specific database on an Azure SQL DB logical server.
+    ///
+    /// Deliberately NOT retried. This runs once per database per database-scoped collector, and the
+    /// caller already skips a database it cannot open. Backing off here would stall the whole cycle
+    /// behind a single unavailable database — an auto-paused serverless database answers 40613, which
+    /// is transient, so a retry would wait out the backoff on every paused database, every collector,
+    /// every minute. The next cycle is the retry, and it costs one minute of that database's data
+    /// rather than delaying every other server's.
     /// </summary>
     protected async Task<SqlConnection> OpenAzureDatabaseConnectionAsync(ServerConnection server, string databaseName, CancellationToken cancellationToken)
     {
-        var baseConnStr = server.GetConnectionString(_serverManager.CredentialService);
+        var baseConnStr = _serverManager.CredentialResolver.GetConnectionString(server);
         var connStr = new SqlConnectionStringBuilder(baseConnStr)
         {
             ConnectTimeout = ConnectionTimeoutSeconds,
@@ -758,8 +989,16 @@ WHERE server_id = $3";
         }.ConnectionString;
 
         var conn = new SqlConnection(connStr);
-        await conn.OpenAsync(cancellationToken);
-        return conn;
+        try
+        {
+            await conn.OpenAsync(cancellationToken);
+            return conn;
+        }
+        catch
+        {
+            conn.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -793,7 +1032,7 @@ WHERE server_id = $3";
             await s_connectionThrottle.WaitAsync(cancellationToken);
             try
             {
-                var connectionString = server.GetConnectionString(_serverManager.CredentialService);
+                var connectionString = _serverManager.CredentialResolver.GetConnectionString(server);
 
             var builder = new SqlConnectionStringBuilder(connectionString)
             {
@@ -818,8 +1057,7 @@ WHERE server_id = $3";
                         {
                             var serverStatus = _serverManager.GetConnectionStatus(server.Id);
                             serverStatus.UserCancelledMfa = true;
-                            AppLogger.Info("Collector", $"  [{server.DisplayName}] MFA authentication cancelled by user");
-                            _logger?.LogInformation("MFA authentication cancelled by user for server '{DisplayName}' - flagging to abort other pending connections", server.DisplayName);
+                            AppLogger.Info("Collector", $"  [{server.DisplayName}] MFA authentication cancelled by user - flagging to abort other pending connections");
                         }
                         throw;
                     }
@@ -841,33 +1079,29 @@ WHERE server_id = $3";
     }
 
     /// <summary>
-    /// Generates a unique collection ID based on timestamp.
+    /// Generates a unique collection ID — forwards to the shared generator so both SKUs stamp
+    /// ids with the same idiom.
     /// </summary>
     protected static long GenerateCollectionId()
     {
-        return Interlocked.Increment(ref s_idCounter);
+        return PerformanceMonitor.Collectors.CollectionIdGenerator.Next();
     }
 
     /// <summary>
-    /// Gets the server name used for DuckDB storage and hashing.
-    /// Appends the database name for Azure SQL Database connections so that
-    /// different databases on the same logical server get distinct server_ids.
-    /// Appends ":RO" for ReadOnlyIntent connections so they get a
-    /// different server_id than read-write connections to the same host.
+    /// Gets the server name used for DuckDB storage and hashing — forwards to the shared
+    /// <see cref="PerformanceMonitor.Common.ServerIdHelper.BuildStorageName"/> (database-name and
+    /// :RO suffixing live there) so every SKU derives the same server_id for the same server.
     /// </summary>
     internal static string GetServerNameForStorage(ServerConnection server)
     {
-        var name = string.IsNullOrWhiteSpace(server.DatabaseName)
-            ? server.ServerName
-            : server.ServerName + ":" + server.DatabaseName;
-
-        return server.ReadOnlyIntent ? name + ":RO" : name;
+        return PerformanceMonitor.Common.ServerIdHelper.BuildStorageName(
+            server.ServerName, server.DatabaseName, server.ReadOnlyIntent);
     }
 
     /// <summary>
     /// Gets the numeric server ID from the server connection.
     /// </summary>
-    protected static int GetServerId(ServerConnection server)
+    protected internal static int GetServerId(ServerConnection server)
     {
         return GetDeterministicHashCode(GetServerNameForStorage(server));
     }
@@ -898,104 +1132,100 @@ WHERE server_id = $3";
     }
 
     /// <summary>
-    /// Safely converts a SQL Server float/real value to decimal.
-    /// Returns 0 for Infinity, NaN, or values outside decimal range.
+    /// The database-scoped twin of <see cref="GetLastCollectedTimeAsync"/>, for definitions that
+    /// declare a <see cref="PerformanceMonitor.Collectors.ICollectorDefinition{TRow}.PerDatabaseWatermarkColumn"/>
+    /// (Azure SQL DB per-database XE capture): the newest already-collected value for ONE database,
+    /// so each database's ring buffer dedups against its own history. Null on first run for that
+    /// database or on failure — the caller falls back to the definition's documented window.
     /// </summary>
-    protected static decimal SafeToDecimal(object value)
+    protected async Task<DateTime?> GetLastCollectedTimeForDatabaseAsync(
+        int serverId, string tableName, string columnName, string databaseColumnName, string databaseName, CancellationToken cancellationToken)
     {
         try
         {
-            if (value is double d)
-            {
-                if (double.IsInfinity(d) || double.IsNaN(d))
-                    return 0m;
-            }
-            else if (value is float f)
-            {
-                if (float.IsInfinity(f) || float.IsNaN(f))
-                    return 0m;
-            }
-            return Convert.ToDecimal(value);
+            using var conn = _duckDb.CreateConnection();
+            await conn.OpenAsync(cancellationToken);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"SELECT MAX({columnName}) FROM {tableName} WHERE server_id = $1 AND {databaseColumnName} = $2";
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = databaseName });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            if (result is DateTime dt)
+                return dt;
         }
-        catch (OverflowException)
+        catch
         {
-            return 0m;
+            /* If DuckDB query fails, caller uses fallback window */
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Gets the most recent value of a monotonic bigint identity column from DuckDB for incremental
+    /// collection — the numeric twin of <see cref="GetLastCollectedTimeAsync"/> (job_history dedups on
+    /// <c>instance_id</c>, sysjobhistory's IDENTITY bigint). Returns null on first run or if the query
+    /// fails (caller uses its documented first-run/fallback path).
+    /// </summary>
+    protected async Task<long?> GetLastCollectedInstanceIdAsync(
+        int serverId, string tableName, string columnName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var conn = _duckDb.CreateConnection();
+            await conn.OpenAsync(cancellationToken);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"SELECT MAX({columnName}) FROM {tableName} WHERE server_id = $1";
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            if (result is not null && result != DBNull.Value)
+                return Convert.ToInt64(result);
+        }
+        catch
+        {
+            /* If DuckDB query fails, caller uses fallback window */
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Whether a prior SUCCESS row exists in collection_log for this collector+server — the "has collected
+    /// before" signal (see <see cref="PerformanceMonitor.Collectors.CollectorContext.HasCollectedBefore"/>),
+    /// consulted only when the watermark is null. Returns false on any failure, which errs toward the
+    /// all-history first run (correct for a genuinely fresh store).
+    /// </summary>
+    protected async Task<bool> HasPriorCollectorSuccessAsync(int serverId, string collectorName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var conn = _duckDb.CreateConnection();
+            await conn.OpenAsync(cancellationToken);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM collection_log WHERE server_id = $1 AND collector_name = $2 AND status = 'SUCCESS'";
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = serverId });
+            cmd.Parameters.Add(new DuckDB.NET.Data.DuckDBParameter { Value = collectorName });
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            return result is not null && result != DBNull.Value && Convert.ToInt64(result) > 0;
+        }
+        catch
+        {
+            /* Fail toward first-run (all-history) — matches a fresh store with no log yet. */
+            return false;
         }
     }
 
     /// <summary>
-    /// Deterministic hash code for a string. .NET Core randomizes string.GetHashCode()
-    /// per process, so we use a simple FNV-1a hash to get a stable value across restarts.
+    /// Deterministic hash code for a string. Forwards to the shared
+    /// <see cref="PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode"/> so Lite,
+    /// Dashboard, and the MCP paths all derive the same server id from a server name. Kept as a
+    /// thin internal wrapper to avoid churning the many existing call sites.
     /// </summary>
-    internal static int GetDeterministicHashCode(string value)
-    {
-        unchecked
-        {
-            var hash = (int)2166136261;
-            foreach (var c in value)
-            {
-                hash = (hash ^ c) * 16777619;
-            }
-            return hash;
-        }
-    }
+    internal static int GetDeterministicHashCode(string value) =>
+        PerformanceMonitor.Common.ServerIdHelper.GetDeterministicHashCode(value);
 
-    /// <summary>
-    /// Checks if a collector is supported on the given SQL Server version and engine edition.
-    /// Version 13 = SQL Server 2016, 14 = 2017, 15 = 2019, 16 = 2022, 17 = 2025.
-    /// Engine edition 5 = Azure SQL DB, 8 = Azure MI.
-    /// </summary>
-    private static bool IsCollectorSupported(string collectorName, int majorVersion, int engineEdition, bool isAwsRds = false, bool hasMsdbAccess = true)
-    {
-        bool isAzureSqlDb = engineEdition == 5;
-        bool isAzureMi = engineEdition == 8;
-
-        /* Version gates — only for on-prem/RDS.
-           Azure SQL DB reports ProductMajorVersion=12 and Azure MI may report similar values,
-           but both fully support dm_exec_query_stats, Query Store, etc. */
-        if (majorVersion > 0 && !isAzureSqlDb && !isAzureMi)
-        {
-            switch (collectorName)
-            {
-                case "query_store":
-                case "query_stats":
-                    if (majorVersion < 13) return false;
-                    break;
-            }
-        }
-
-        /* Azure SQL DB edition gates — skip collectors that use unsupported DMVs */
-        if (isAzureSqlDb)
-        {
-            switch (collectorName)
-            {
-                case "server_config":     /* sys.configurations not available */
-                case "trace_flags":       /* DBCC TRACESTATUS not available */
-                case "running_jobs":      /* msdb.dbo.sysjobs not available */
-                    return false;
-            }
-        }
-
-        /* AWS RDS gates — limited msdb permissions (syssessions not accessible) */
-        if (isAwsRds)
-        {
-            switch (collectorName)
-            {
-                case "running_jobs":      /* msdb.dbo.syssessions not accessible */
-                    return false;
-            }
-        }
-
-        /* msdb access gate — login may not have access to msdb on any edition */
-        if (!hasMsdbAccess)
-        {
-            switch (collectorName)
-            {
-                case "running_jobs":      /* requires msdb.dbo.sysjobs, sysjobactivity, etc. */
-                    return false;
-            }
-        }
-
-        return true;
-    }
+    /* IsCollectorSupported was deleted in the gate-surface collapse: every target gate it re-encoded
+       (query_stats/query_store version, server_config/trace_flags on Azure SQL DB, and the
+       running_jobs/job_history/agent_status Azure/RDS/msdb gates) now lives ONLY in each definition's
+       shared AppliesTo override. RunCollectorAsync consults CollectorCatalog.AppliesTo(name, target)
+       pre-dispatch for the clean SKIPPED log; Darling's runner calls the same AppliesTo. One gate
+       surface, compiler-shared — no second layer to drift. */
 }

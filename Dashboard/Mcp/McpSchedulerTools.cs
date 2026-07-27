@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -16,15 +17,14 @@ public sealed class McpSchedulerTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var item = await resolved.Value.Service.GetCpuPressureAsync();
             if (item == null)
-                return "No CPU scheduler data available. The scheduler collector may not have run yet.";
+                return McpHelpers.Status("unavailable", "No CPU scheduler data available. The scheduler collector may not have run yet.");
 
             return JsonSerializer.Serialize(new
             {

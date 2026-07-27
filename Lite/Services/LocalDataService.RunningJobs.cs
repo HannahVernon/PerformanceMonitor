@@ -121,16 +121,8 @@ LIMIT 5";
     }
 }
 
-public class AnomalousJobInfo
-{
-    public string JobName { get; set; } = "";
-    public string JobId { get; set; } = "";
-    public long CurrentDurationSeconds { get; set; }
-    public long AvgDurationSeconds { get; set; }
-    public long P95DurationSeconds { get; set; }
-    public decimal? PercentOfAverage { get; set; }
-    public DateTime StartTime { get; set; }
-}
+/* FailedJobInfo and AnomalousJobInfo moved to PerformanceMonitor.Alerting (Phase-5 A0);
+   the bare names resolve through the global using aliases in GlobalUsings.cs. */
 
 public class RunningJobRow
 {

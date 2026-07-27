@@ -1,11 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorDashboard.Analysis;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -29,9 +32,8 @@ public sealed class McpAnalysisTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of data to analyze. Default 4.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -39,7 +41,7 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var findings = await analysisService.AnalyzeAsync(serverId, resolved.Value.ServerName, hours_back);
 
             if (analysisService.InsufficientDataMessage != null)
@@ -54,14 +56,18 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    status = "healthy",
-                    message = "No significant findings. All metrics are within normal ranges.",
-                    analysis_time = analysisService.LastAnalysisTime?.ToString("o")
-                }, McpHelpers.JsonOptions);
+                /* A successful analysis that found nothing wrong: a true negative ("all clear"),
+                   surfaced with the shared miss vocabulary so callers branch on it uniformly. */
+                return McpHelpers.Status(
+                    "empty",
+                    "No significant findings. All metrics are within normal ranges.",
+                    new { analysis_time = analysisService.LastAnalysisTime?.ToString("o") });
             }
+
+            // Correlate-and-focus slice 1 (review §1d): each finding's "what else fired this window".
+            var coFiredTitles = new List<(string, double)>(findings.Count);
+            foreach (var wf in findings)
+                coFiredTitles.Add((FactAdvice.GetForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
 
             return JsonSerializer.Serialize(new
             {
@@ -74,20 +80,41 @@ public sealed class McpAnalysisTools
                     start = findings[0].TimeRangeStart?.ToString("o"),
                     end = findings[0].TimeRangeEnd?.ToString("o")
                 },
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    drill_down = f.DrillDown,
-                    next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath)
+                    var advice = FactAdvice.GetForFinding(f);
+                    return new
+                    {
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        drill_down = f.DrillDown,
+                        next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredTitles),
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        },
+                        suggested_remediation_sql = advice?.RemediationTsql,
+                        // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
+                        // remediation — read-only here (no consent gate off-app; consent
+                        // is enforced only by the in-app acknowledge-each-risk dialog).
+                        destructive_risk_disclosure = advice?.Risks is null ? null : new
+                        {
+                            risks_of_changing = advice.Risks.RisksOfChanging.Select(r => r.Text).ToArray(),
+                            risks_of_not_changing = advice.Risks.RisksOfNotChanging.Select(r => r.Text).ToArray()
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
@@ -106,9 +133,8 @@ public sealed class McpAnalysisTools
         [Description("Filter to a specific source category. Omit for all.")] string? source = null,
         [Description("Minimum severity to include. Default 0.")] double min_severity = 0)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -116,17 +142,14 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var facts = await analysisService.CollectAndScoreFactsAsync(serverId, resolved.Value.ServerName, hours_back);
 
             if (facts.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    fact_count = 0,
-                    message = "No facts collected."
-                }, McpHelpers.JsonOptions);
+                /* No scored facts means the underlying collectors produced nothing for the window —
+                   not retrievable now rather than an all-clear (mirrors get_perfmon_trend's empty case). */
+                return McpHelpers.Status("unavailable", "No facts collected.");
             }
 
             var filtered = facts.AsEnumerable();
@@ -181,9 +204,8 @@ public sealed class McpAnalysisTools
         [Description("Hours back for the comparison period. Default 4.")] int hours_back = 4,
         [Description("Hours back for the baseline period start. Default 28.")] int baseline_hours_back = 28)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -196,9 +218,11 @@ public sealed class McpAnalysisTools
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
 
-            var now = DateTime.UtcNow;
+            // Server-local clock so the comparison windows match the collectors' SYSDATETIME rows
+            // (compare returns facts only — it does not persist, so no UTC conversion is needed).
+            var now = await analysisService.GetServerLocalNowAsync();
             var comparisonStart = now.AddHours(-hours_back);
             var baselineEnd = now.AddHours(-baseline_hours_back + hours_back);
             var baselineStart = now.AddHours(-baseline_hours_back);
@@ -206,8 +230,8 @@ public sealed class McpAnalysisTools
             var (baselineFacts, comparisonFacts) = await analysisService.ComparePeriodsAsync(
                 serverId, resolved.Value.ServerName, baselineStart, baselineEnd, comparisonStart, now);
 
-            var baselineByKey = baselineFacts.ToDictionary(f => f.Key, f => f);
-            var comparisonByKey = comparisonFacts.ToDictionary(f => f.Key, f => f);
+            var baselineByKey = baselineFacts.ToFactLookup();
+            var comparisonByKey = comparisonFacts.ToFactLookup();
             var allKeys = baselineByKey.Keys.Union(comparisonByKey.Keys).ToHashSet();
 
             var comparisons = allKeys
@@ -254,20 +278,21 @@ public sealed class McpAnalysisTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var facts = await analysisService.CollectAndScoreFactsAsync(serverId, resolved.Value.ServerName, 1);
 
-            var factsByKey = facts.ToDictionary(f => f.Key, f => f);
+            var factsByKey = facts.ToFactLookup();
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var editionName = edition switch
             {
@@ -276,8 +301,6 @@ public sealed class McpAnalysisTools
                 4 => "Express",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
 
             var recommendations = new System.Collections.Generic.List<object>();
 
@@ -292,8 +315,9 @@ public sealed class McpAnalysisTools
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
-                var suggested = maxdop == 0 ? (isExpress ? 1 : isEnterprise ? 8 : 4) : maxdop;
-                var status = maxdop == 0 ? "warning" : maxdop == 1 && !isExpress ? "review" : "ok";
+                // Topology-based (min(cores-per-socket, 8)), NOT edition-based — see FactRemediation.RecommendedMaxdop.
+                var suggested = maxdop == 0 ? (int)FactRemediation.RecommendedMaxdop(coresPerSocket) : maxdop;
+                var status = maxdop == 0 ? "warning" : maxdop == 1 ? "review" : "ok";
                 recommendations.Add(new { setting = "max degree of parallelism", current_value = maxdop, suggested_value = suggested, status });
             }
 
@@ -324,30 +348,59 @@ public sealed class McpAnalysisTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of finding history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var findings = await analysisService.GetRecentFindingsAsync(serverId, hours_back);
 
             if (findings.Count == 0)
-                return JsonSerializer.Serialize(new { server = resolved.Value.ServerName, finding_count = 0, message = "No findings. Run analyze_server to generate new findings." }, McpHelpers.JsonOptions);
+                return McpHelpers.Status("empty", "No findings. Run analyze_server to generate new findings.");
+
+            // Correlate-and-focus slice 1 (review §1d): "what else fired", scoped per analysis run
+            // (this read can span multiple runs, unlike analyze_server's single run).
+            var coFiredByRun = new Dictionary<DateTime, List<(string, double)>>();
+            foreach (var wf in findings)
+            {
+                if (!coFiredByRun.TryGetValue(wf.AnalysisTime, out var list))
+                    coFiredByRun[wf.AnalysisTime] = list = new List<(string, double)>();
+                list.Add((FactAdvice.GetComposedForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
+            }
 
             return JsonSerializer.Serialize(new
             {
                 server = resolved.Value.ServerName,
                 finding_count = findings.Count,
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    severity = Math.Round(f.Severity, 2),
-                    category = f.Category,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    analysis_time = f.AnalysisTime.ToString("o")
+                    // Persisted findings carry no drill-down (it is ephemeral —
+                    // see AnalysisModels.cs), so generate advice prose only.
+                    // The prose IS value-stated: GetComposedForFinding reads the
+                    // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
+                    // StoryText at analysis time, falling back to the static block.
+                    // suggested_remediation_sql is intentionally omitted: it
+                    // would always be null here. The operator re-runs
+                    // analyze_server when they need the copy-paste T-SQL.
+                    var advice = FactAdvice.GetComposedForFinding(f);
+                    return new
+                    {
+                        severity = Math.Round(f.Severity, 2),
+                        category = f.Category,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        analysis_time = f.AnalysisTime.ToString("o"),
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredByRun[f.AnalysisTime]),
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
@@ -365,14 +418,13 @@ public sealed class McpAnalysisTools
         [Description("Server name.")] string? server_name = null,
         [Description("Optional reason for muting.")] string? reason = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var analysisService = CreateAnalysisService(resolved.Value.Service);
-            var serverId = resolved.Value.ServerName.GetHashCode();
+            var serverId = ServerIdHelper.GetDeterministicHashCode(resolved.Value.ServerName);
             var finding = new AnalysisFinding { ServerId = serverId, StoryPathHash = story_path_hash, StoryPath = story_path_hash };
             await analysisService.MuteFindingAsync(finding, reason);
 
@@ -387,40 +439,237 @@ public sealed class McpAnalysisTools
 
 /// <summary>
 /// Maps fact keys to recommended MCP tools for further investigation.
-/// Shared between Lite and Dashboard — same recommendations.
+/// Used by analyze_server to tell the AI client what to call next. Lite keeps its own
+/// copy (PerformanceMonitorLite.Mcp) because the two apps expose different MCP tool
+/// sets, so the recommendations are app-specific -- NOT a shared/duplicated list.
 /// </summary>
 internal static class ToolRecommendations
 {
     private static readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<ToolRecommendation>> ByFactKey = new()
     {
-        ["SOS_SCHEDULER_YIELD"] = [new("get_cpu_utilization", "Check CPU usage over time"), new("get_top_queries_by_cpu", "Find CPU-expensive queries")],
-        ["CXPACKET"] = [new("get_top_queries_by_cpu", "Find parallel queries", new() { ["parallel_only"] = "true" }), new("audit_config", "Check CTFP and MAXDOP")],
-        ["THREADPOOL"] = [new("get_top_queries_by_cpu", "Find resource-consuming queries"), new("get_blocking", "Check if blocking is holding threads")],
-        ["PAGEIOLATCH_SH"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
-        ["PAGEIOLATCH_EX"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")],
-        ["RESOURCE_SEMAPHORE"] = [new("get_resource_semaphore", "Check memory grants")],
-        ["WRITELOG"] = [new("get_file_io_stats", "Check log file latency")],
-        ["LCK"] = [new("get_blocking", "Get blocking details"), new("get_deadlocks", "Check for deadlocks")],
-        ["LCK_M_S"] = [new("get_blocking", "Get reader/writer blocking details")],
-        ["BLOCKING_EVENTS"] = [new("get_blocking", "Get detailed blocking reports"), new("get_deadlocks", "Check for deadlocks")],
-        ["DEADLOCKS"] = [new("get_deadlocks", "Get deadlock events"), new("get_deadlock_detail", "Get full deadlock XML")],
-        ["CPU_SQL_PERCENT"] = [new("get_cpu_utilization", "See CPU trend"), new("get_top_queries_by_cpu", "Find CPU queries")],
-        ["CPU_SPIKE"] = [new("get_cpu_utilization", "See when spike occurred"), new("get_top_queries_by_cpu", "Find queries that drove the spike")],
-        ["IO_READ_LATENCY_MS"] = [new("get_file_io_stats", "Check per-file latency"), new("get_memory_stats", "Check buffer pool")],
-        ["IO_WRITE_LATENCY_MS"] = [new("get_file_io_stats", "Check per-file latency")],
-        ["TEMPDB_USAGE"] = [new("get_tempdb_trend", "Track TempDB usage")],
-        ["MEMORY_GRANT_PENDING"] = [new("get_resource_semaphore", "Check memory grants")],
-        ["QUERY_SPILLS"] = [new("get_top_queries_by_cpu", "Find queries with spills")],
-        ["QUERY_HIGH_DOP"] = [new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" })],
-        ["PERFMON_PLE"] = [new("get_memory_stats", "Check buffer pool"), new("get_memory_clerks", "See memory allocation")],
-        ["DB_CONFIG"] = [new("audit_config", "Check configuration")],
-        ["DISK_SPACE"] = [new("get_file_io_stats", "Check per-file sizes")],
-        ["LATCH_EX"] = [new("get_latch_stats", "Check latch contention"), new("get_tempdb_trend", "Check TempDB")],
-        ["BAD_ACTOR"] = [new("get_top_queries_by_cpu", "See full query stats"), new("analyze_query_plan", "Analyze the execution plan")],
-        ["ANOMALY_CPU"] = [new("get_cpu_utilization", "See CPU trend"), new("get_active_queries", "Find what ran during spike")],
-        ["ANOMALY_WAIT"] = [new("get_wait_stats", "See wait breakdown"), new("compare_analysis", "Compare current vs baseline")],
-        ["ANOMALY_BLOCKING"] = [new("get_blocking", "Get blocking details"), new("get_deadlocks", "Get deadlock events")],
-        ["ANOMALY_IO"] = [new("get_file_io_stats", "Check I/O latency"), new("get_memory_stats", "Check buffer pool")]
+        ["SOS_SCHEDULER_YIELD"] =
+        [
+            new("get_cpu_utilization", "Check SQL Server vs other-process CPU usage over time"),
+            new("get_top_queries_by_cpu", "Find the most CPU-expensive queries"),
+            new("get_perfmon_trend", "Check batch requests/sec for throughput context", new() { ["counter_name"] = "Batch Requests/sec" })
+        ],
+        ["CXPACKET"] =
+        [
+            new("get_top_queries_by_cpu", "Find parallel queries consuming CPU", new() { ["parallel_only"] = "true" }),
+            new("get_wait_trend", "Track the parallelism wait trend over time", new() { ["wait_type"] = "CXPACKET" }),
+            new("audit_config", "Check CTFP and MAXDOP settings")
+        ],
+        ["THREADPOOL"] =
+        [
+            new("get_cpu_scheduler_pressure", "Check runnable-queue depth and worker-thread exhaustion"),
+            new("get_top_queries_by_cpu", "Find queries consuming the most resources"),
+            new("get_blocking", "Check whether blocking is holding worker threads")
+        ],
+        ["PAGEIOLATCH_SH"] =
+        [
+            new("get_file_io_stats", "Check I/O latency per database file"),
+            new("get_file_io_trend", "Track I/O latency over time"),
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_resource_semaphore", "Check for memory grant pressure competing with the buffer pool")
+        ],
+        ["PAGEIOLATCH_EX"] =
+        [
+            new("get_file_io_stats", "Check I/O latency per database file"),
+            new("get_file_io_trend", "Track I/O latency over time"),
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_tempdb_trend", "Check whether tempdb I/O is driving the EX-mode waits")
+        ],
+        ["RESOURCE_SEMAPHORE"] =
+        [
+            new("get_resource_semaphore", "Check granted vs available workspace memory and waiter counts"),
+            new("get_memory_stats", "Check overall memory allocation"),
+            new("get_top_queries_by_cpu", "Find queries requesting large memory grants")
+        ],
+        ["WRITELOG"] =
+        [
+            new("get_file_io_stats", "Check transaction log file latency"),
+            new("get_file_io_trend", "Track log I/O latency over time"),
+            new("get_perfmon_trend", "Check Transactions/sec to see the commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })
+        ],
+        ["LCK"] =
+        [
+            new("get_blocking", "Get detailed blocking event reports"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time"),
+            new("get_active_queries", "See currently running sessions with their lock/wait detail")
+        ],
+        ["LCK_M_S"] =
+        [
+            new("get_blocking", "Get reader/writer blocking details"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time")
+        ],
+        ["LCK_M_IS"] =
+        [
+            new("get_blocking", "Get reader/writer blocking details"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time")
+        ],
+        ["BLOCKING_EVENTS"] =
+        [
+            new("get_blocking", "Get detailed blocking reports with full query text"),
+            new("get_blocking_deadlock_stats", "Track blocking event frequency over time"),
+            new("get_deadlocks", "Check whether blocking is escalating to deadlocks")
+        ],
+        ["DEADLOCKS"] =
+        [
+            new("get_deadlocks", "Get recent deadlock events with victim info"),
+            new("get_deadlock_detail", "Get the full deadlock graph XML for deep analysis"),
+            new("get_blocking_deadlock_stats", "Track deadlock frequency over time")
+        ],
+        ["SCH_M"] =
+        [
+            new("get_active_queries", "See what's waiting on schema-modification locks"),
+            new("get_blocking", "Check whether DDL operations are causing blocking"),
+            new("get_running_jobs", "See whether maintenance jobs (index rebuilds, stats updates) are taking schema-modification locks")
+        ],
+        ["CPU_SQL_PERCENT"] =
+        [
+            new("get_cpu_utilization", "See the CPU trend over time"),
+            new("get_top_queries_by_cpu", "Find queries consuming the most CPU"),
+            new("get_perfmon_trend", "Check batch requests/sec for throughput context", new() { ["counter_name"] = "Batch Requests/sec" })
+        ],
+        ["CPU_SPIKE"] =
+        [
+            new("get_cpu_utilization", "See the CPU trend to identify when the spike occurred"),
+            new("get_top_queries_by_cpu", "Find the queries that drove the CPU spike"),
+            new("get_active_queries", "Find what was actually running during the spike")
+        ],
+        ["IO_READ_LATENCY_MS"] =
+        [
+            new("get_file_io_stats", "Check per-file read latency"),
+            new("get_file_io_trend", "Track read latency over time"),
+            new("get_memory_stats", "Check whether the buffer pool is undersized")
+        ],
+        ["IO_WRITE_LATENCY_MS"] =
+        [
+            new("get_file_io_stats", "Check per-file write latency"),
+            new("get_file_io_trend", "Track write latency over time")
+        ],
+        ["TEMPDB_USAGE"] =
+        [
+            new("get_tempdb_trend", "Track TempDB usage over time"),
+            new("get_top_queries_by_cpu", "Find queries that may be spilling to TempDB")
+        ],
+        ["MEMORY_GRANT_PENDING"] =
+        [
+            new("get_resource_semaphore", "Check active vs pending memory grants and waiter counts"),
+            new("get_memory_stats", "Check overall memory allocation"),
+            new("get_top_queries_by_cpu", "Find queries requesting large grants")
+        ],
+        ["QUERY_SPILLS"] =
+        [
+            new("get_top_queries_by_cpu", "Find queries with spills"),
+            new("get_resource_semaphore", "Check memory grant pressure"),
+            new("get_tempdb_trend", "Check the TempDB impact from spills")
+        ],
+        ["QUERY_HIGH_DOP"] =
+        [
+            new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" }),
+            new("audit_config", "Check CTFP and MAXDOP settings")
+        ],
+        ["PARAMETER_SENSITIVITY"] =
+        [
+            new("get_top_queries_by_cpu", "Find the sensitive query in the plan cache and see its current cached parameters"),
+            new("analyze_query_plan", "Examine the plan for the operators driving the runtime variance (seek vs scan, grant size, join type)"),
+            new("get_query_trend", "Confirm the bimodal duration pattern across executions over time"),
+            new("get_resource_semaphore", "Check whether the bad-parameter executions are also blowing up memory grants")
+        ],
+        ["PLAN_REGRESSION"] =
+        [
+            new("analyze_query_store_plan", "Compare the regressed plan against the prior plan to see what the optimizer changed"),
+            new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
+            new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
+        ],
+        ["LATCH_EX"] =
+        [
+            new("get_latch_stats", "Check latch contention by class (ACCESS_METHODS_DATASET_PARENT / FGCB_ADD_REMOVE point at TempDB allocation contention)"),
+            new("get_tempdb_trend", "Check TempDB for allocation contention"),
+            new("get_wait_trend", "Track the latch contention trend", new() { ["wait_type"] = "LATCH_EX" })
+        ],
+        ["LATCH_SH"] =
+        [
+            new("get_latch_stats", "Check latch contention by class"),
+            new("get_tempdb_trend", "Check TempDB for allocation contention"),
+            new("get_wait_trend", "Track the latch contention trend", new() { ["wait_type"] = "LATCH_SH" })
+        ],
+        ["DB_CONFIG"] =
+        [
+            new("audit_config", "Check server-level configuration against best practices"),
+            new("get_blocking", "Check whether RCSI-off databases are seeing blocking")
+        ],
+        ["FILE_AUTOGROWTH_PERCENT"] =
+        [
+            new("get_database_sizes", "See per-file sizes and autogrowth settings"),
+            new("get_file_io_stats", "Check per-file growth and latency")
+        ],
+        ["RUNNING_JOBS"] =
+        [
+            new("get_running_jobs", "See currently running jobs with duration vs historical average and p95"),
+            new("get_cpu_utilization", "Check whether long-running jobs are consuming CPU")
+        ],
+        ["DISK_SPACE"] =
+        [
+            new("get_database_sizes", "See per-file sizes and underlying volume free space"),
+            new("get_tempdb_trend", "Check TempDB growth on the volume")
+        ],
+        ["BAD_ACTOR"] =
+        [
+            new("get_top_queries_by_cpu", "See full query stats for this query"),
+            new("analyze_query_plan", "Analyze the execution plan for optimization opportunities"),
+            new("get_query_trend", "Track this query's performance over time")
+        ],
+        ["ANOMALY_CPU"] =
+        [
+            new("get_cpu_utilization", "See the CPU trend to identify when the spike occurred"),
+            new("get_active_queries", "Find what queries were running during the spike"),
+            new("get_top_queries_by_cpu", "Find the most CPU-expensive queries in the period")
+        ],
+        ["ANOMALY_WAIT"] =
+        [
+            new("get_wait_stats", "See the full wait stats breakdown"),
+            new("get_wait_trend", "Track the anomalous wait type over time"),
+            new("compare_analysis", "Compare current vs baseline to see what changed")
+        ],
+        ["ANOMALY_BLOCKING"] =
+        [
+            new("get_blocking", "Get detailed blocking event reports"),
+            new("get_deadlocks", "Get recent deadlock events"),
+            new("get_blocking_deadlock_stats", "Track blocking frequency over time")
+        ],
+        ["ANOMALY_IO"] =
+        [
+            new("get_file_io_stats", "Check per-file I/O latency"),
+            new("get_file_io_trend", "Track I/O latency over time"),
+            new("get_memory_stats", "Check whether the buffer pool is undersized")
+        ],
+        ["ANOMALY_SESSION_SPIKE"] =
+        [
+            new("get_session_stats", "See which application is driving the session-count spike"),
+            new("get_active_queries", "Find what those sessions were doing at the spike"),
+            new("get_cpu_scheduler_pressure", "Check whether the new sessions are exhausting worker threads")
+        ],
+        ["ANOMALY_QUERY_DURATION"] =
+        [
+            new("get_query_trend", "Confirm the duration shift across the analysis window"),
+            new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"),
+            new("analyze_query_plan", "Examine the plan for the queries that slowed down")
+        ],
+        ["ANOMALY_MEMORY_PRESSURE"] =
+        [
+            new("get_memory_stats", "See current memory allocation and target vs total"),
+            new("get_memory_clerks", "Find which clerks are growing"),
+            new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"),
+            new("get_resource_semaphore", "Check whether query grants are competing with the buffer pool")
+        ],
+        ["ANOMALY_BATCH_REQUESTS"] =
+        [
+            new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }),
+            new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"),
+            new("get_active_queries", "See what's actually running at the elevated rate")
+        ]
     };
 
     public static System.Collections.Generic.List<object> GetForStoryPath(string storyPath)
@@ -459,6 +708,7 @@ internal static class ToolRecommendations
 
         return result;
     }
+
 }
 
 internal sealed record ToolRecommendation(

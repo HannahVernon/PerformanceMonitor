@@ -19,8 +19,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Navigation;
+using PerformanceMonitor.Notifications;
 using PerformanceMonitorLite.Mcp;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -214,12 +217,12 @@ public partial class SettingsWindow : Window
         SaveTimeDisplayMode();
         bool alertsValid = SaveAlertSettings();
         SaveSmtpSettings();
-        SaveWebhookSettings();
+        bool webhooksValid = SaveWebhookSettings();
 
         _saved = true;
         if (mcpChanged) McpSettingsChanged = true;
 
-        if (!alertsValid || !mcpValid) return;
+        if (!alertsValid || !mcpValid || !webhooksValid) return;
 
         var message = mcpChanged
             ? "Settings saved. MCP changes take effect after restarting the application."
@@ -315,6 +318,13 @@ public partial class SettingsWindow : Window
         };
     }
 
+    /// <summary>
+    /// Delegates to <see cref="App.WriteSetting"/> — the single read/merge/write/catch home for
+    /// settings.json single-value updates (now shared with MainWindow's Overview sort selector). Kept as a
+    /// thin alias so the existing Save* call sites and their JsonNode mutate lambdas are untouched.
+    /// </summary>
+    private static void WriteSetting(string what, Action<JsonNode> mutate) => App.WriteSetting(what, mutate);
+
     private void SaveDefaultTimeRange()
     {
         var hours = DefaultTimeRangeCombo.SelectedIndex switch
@@ -329,29 +339,7 @@ public partial class SettingsWindow : Window
 
         App.DefaultTimeRangeHours = hours;
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["default_time_range_hours"] = hours;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save default time range: {ex.Message}");
-        }
+        WriteSetting("default time range", root => root["default_time_range_hours"] = hours);
     }
 
     private void CopyMcpCommandButton_Click(object sender, RoutedEventArgs e)
@@ -389,29 +377,7 @@ public partial class SettingsWindow : Window
             App.ConnectionTimeoutSeconds = timeout;
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["connection_timeout_seconds"] = App.ConnectionTimeoutSeconds;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save connection timeout: {ex.Message}");
-        }
+        WriteSetting("connection timeout", root => root["connection_timeout_seconds"] = App.ConnectionTimeoutSeconds);
     }
 
     private void LoadCsvSeparator()
@@ -435,33 +401,11 @@ public partial class SettingsWindow : Window
             App.CsvSeparator = sep;
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["csv_separator"] = App.CsvSeparator;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save CSV separator: {ex.Message}");
-        }
+        WriteSetting("CSV separator", root => root["csv_separator"] = App.CsvSeparator);
     }
 
     private bool _isLoadingTheme;
-    private readonly string _originalTheme = Helpers.ThemeManager.CurrentTheme;
+    private readonly string _originalTheme = ThemeManager.CurrentTheme;
     private bool _saved;
     public bool McpSettingsChanged { get; private set; }
 
@@ -469,7 +413,7 @@ public partial class SettingsWindow : Window
     {
         if (_isLoadingTheme) return;
         if (ColorThemeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string theme)
-            Helpers.ThemeManager.Apply(theme);
+            ThemeManager.Apply(theme);
     }
 
     private void LoadColorTheme()
@@ -493,32 +437,10 @@ public partial class SettingsWindow : Window
         if (ColorThemeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string theme)
         {
             App.ColorTheme = theme;
-            Helpers.ThemeManager.Apply(theme);
+            ThemeManager.Apply(theme);
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["color_theme"] = App.ColorTheme;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save color theme: {ex.Message}");
-        }
+        WriteSetting("color theme", root => root["color_theme"] = App.ColorTheme);
     }
 
     private void LoadTimeDisplayMode()
@@ -540,33 +462,11 @@ public partial class SettingsWindow : Window
         if (TimeDisplayModeCombo.SelectedItem is ComboBoxItem selected && selected.Tag is string mode)
         {
             App.TimeDisplayMode = mode;
-            if (System.Enum.TryParse<Helpers.TimeDisplayMode>(mode, out var tdm))
+            if (System.Enum.TryParse<TimeDisplayMode>(mode, out var tdm))
                 ServerTimeHelper.CurrentDisplayMode = tdm;
         }
 
-        var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
-        try
-        {
-            JsonNode? root;
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                root = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            else
-            {
-                root = new JsonObject();
-            }
-
-            root["time_display_mode"] = App.TimeDisplayMode;
-
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(settingsPath, root.ToJsonString(options));
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("Settings", $"Failed to save time display mode: {ex.Message}");
-        }
+        WriteSetting("time display mode", root => root["time_display_mode"] = App.TimeDisplayMode);
     }
 
     private void LoadAlertSettings()
@@ -590,13 +490,21 @@ public partial class SettingsWindow : Window
         LrqExcludeWaitForCheckBox.IsChecked = App.AlertLongRunningQueryExcludeWaitFor;
         LrqExcludeBackupsCheckBox.IsChecked = App.AlertLongRunningQueryExcludeBackups;
         LrqExcludeMiscWaitsCheckBox.IsChecked = App.AlertLongRunningQueryExcludeMiscWaits;
+        LrqExcludeCdcCheckBox.IsChecked = App.AlertLongRunningQueryExcludeCdc;
         AlertExcludedDatabasesBox.Text = string.Join(", ", App.AlertExcludedDatabases);
         AlertTempDbSpaceCheckBox.IsChecked = App.AlertTempDbSpaceEnabled;
         AlertTempDbSpaceThresholdBox.Text = App.AlertTempDbSpaceThresholdPercent.ToString();
+        AlertLowDiskCheckBox.IsChecked = App.AlertLowDiskEnabled;
+        AlertLowDiskThresholdPercentBox.Text = App.AlertLowDiskThresholdPercent.ToString();
+        AlertLowDiskThresholdGbBox.Text = App.AlertLowDiskThresholdGb.ToString();
         AlertLongRunningJobCheckBox.IsChecked = App.AlertLongRunningJobEnabled;
         AlertLongRunningJobMultiplierBox.Text = App.AlertLongRunningJobMultiplier.ToString();
+        AlertFailedJobCheckBox.IsChecked = App.AlertFailedJobEnabled;
+        AlertFailedJobLookbackBox.Text = App.AlertFailedJobLookbackMinutes.ToString();
         AlertCooldownBox.Text = App.AlertCooldownMinutes.ToString();
         EmailCooldownBox.Text = App.EmailCooldownMinutes.ToString();
+        AlertDeliveryModeBox.SelectedIndex = App.AlertDeliveryMode == AlertNotificationMode.PerEvent ? 1 : 0;
+        AlertPerEventMaxBox.Text = App.AlertPerEventMaxPerCycle.ToString();
         MuteRuleDefaultExpirationCombo.SelectedIndex = App.MuteRuleDefaultExpiration switch
         {
             "1 hour" => 0,
@@ -605,6 +513,10 @@ public partial class SettingsWindow : Window
             _ => 3
         };
         LogAlertDismissalsCheckBox.IsChecked = App.LogAlertDismissals;
+        AnalysisEnabledCheckBox.IsChecked = App.AnalysisEnabled;
+        AnalysisNotificationsCheckBox.IsChecked = App.AnalysisNotificationsEnabled;
+        AnalysisIntervalBox.Text = App.AnalysisIntervalMinutes.ToString();
+        AnalysisNotifySeverityBox.Text = App.AnalysisNotifySeverity.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
         UpdateAlertControlStates();
     }
 
@@ -635,6 +547,7 @@ public partial class SettingsWindow : Window
         App.AlertLongRunningQueryExcludeWaitFor = LrqExcludeWaitForCheckBox.IsChecked == true;
         App.AlertLongRunningQueryExcludeBackups = LrqExcludeBackupsCheckBox.IsChecked == true;
         App.AlertLongRunningQueryExcludeMiscWaits = LrqExcludeMiscWaitsCheckBox.IsChecked == true;
+        App.AlertLongRunningQueryExcludeCdc = LrqExcludeCdcCheckBox.IsChecked == true;
         App.AlertExcludedDatabases = AlertExcludedDatabasesBox.Text
             .Split(',')
             .Select(s => s.Trim())
@@ -643,9 +556,17 @@ public partial class SettingsWindow : Window
         App.AlertTempDbSpaceEnabled = AlertTempDbSpaceCheckBox.IsChecked == true;
         if (int.TryParse(AlertTempDbSpaceThresholdBox.Text, out var tempDb) && tempDb > 0 && tempDb <= 100)
             App.AlertTempDbSpaceThresholdPercent = tempDb;
+        App.AlertLowDiskEnabled = AlertLowDiskCheckBox.IsChecked == true;
+        if (int.TryParse(AlertLowDiskThresholdPercentBox.Text, out var lowDiskPct) && lowDiskPct >= 0 && lowDiskPct <= 100)
+            App.AlertLowDiskThresholdPercent = lowDiskPct;
+        if (int.TryParse(AlertLowDiskThresholdGbBox.Text, out var lowDiskGb) && lowDiskGb >= 0)
+            App.AlertLowDiskThresholdGb = lowDiskGb;
         App.AlertLongRunningJobEnabled = AlertLongRunningJobCheckBox.IsChecked == true;
         if (int.TryParse(AlertLongRunningJobMultiplierBox.Text, out var jobMult) && jobMult >= 2 && jobMult <= 20)
             App.AlertLongRunningJobMultiplier = jobMult;
+        App.AlertFailedJobEnabled = AlertFailedJobCheckBox.IsChecked == true;
+        if (int.TryParse(AlertFailedJobLookbackBox.Text, out var failedJobLookback) && failedJobLookback >= 1 && failedJobLookback <= 1440)
+            App.AlertFailedJobLookbackMinutes = failedJobLookback;
         var validationErrors = new List<string>();
         if (int.TryParse(AlertCooldownBox.Text, out var alertCooldown) && alertCooldown >= 1 && alertCooldown <= 120)
             App.AlertCooldownMinutes = alertCooldown;
@@ -655,8 +576,24 @@ public partial class SettingsWindow : Window
             App.EmailCooldownMinutes = emailCooldown;
         else
             validationErrors.Add("Email alert cooldown must be between 1 and 120 minutes.");
+        App.AlertDeliveryMode = AlertDeliveryModeBox.SelectedIndex == 1 ? AlertNotificationMode.PerEvent : AlertNotificationMode.Summary;
+        if (int.TryParse(AlertPerEventMaxBox.Text, out var perEventMax) && perEventMax >= 1 && perEventMax <= 100)
+            App.AlertPerEventMaxPerCycle = perEventMax;
+        else
+            validationErrors.Add("Per-event max-per-cycle must be between 1 and 100.");
         App.MuteRuleDefaultExpiration = (MuteRuleDefaultExpirationCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "24 hours";
         App.LogAlertDismissals = LogAlertDismissalsCheckBox.IsChecked == true;
+        App.AnalysisEnabled = AnalysisEnabledCheckBox.IsChecked == true;
+        App.AnalysisNotificationsEnabled = AnalysisNotificationsCheckBox.IsChecked == true;
+        if (int.TryParse(AnalysisIntervalBox.Text, out var analysisInterval) && analysisInterval >= 5 && analysisInterval <= 360)
+            App.AnalysisIntervalMinutes = analysisInterval;
+        else
+            validationErrors.Add("Analysis interval must be between 5 and 360 minutes.");
+        if (double.TryParse(AnalysisNotifySeverityBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var analysisSeverity)
+            && analysisSeverity >= 0.0 && analysisSeverity <= 2.0)
+            App.AnalysisNotifySeverity = analysisSeverity;
+        else
+            validationErrors.Add("Analysis notify severity must be between 0.0 and 2.0.");
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
         try
@@ -691,17 +628,29 @@ public partial class SettingsWindow : Window
             root["alert_long_running_query_exclude_waitfor"] = App.AlertLongRunningQueryExcludeWaitFor;
             root["alert_long_running_query_exclude_backups"] = App.AlertLongRunningQueryExcludeBackups;
             root["alert_long_running_query_exclude_misc_waits"] = App.AlertLongRunningQueryExcludeMiscWaits;
+            root["alert_long_running_query_exclude_cdc"] = App.AlertLongRunningQueryExcludeCdc;
             var dbArray = new System.Text.Json.Nodes.JsonArray();
             foreach (var db in App.AlertExcludedDatabases) dbArray.Add(db);
             root["alert_excluded_databases"] = dbArray;
             root["alert_tempdb_space_enabled"] = App.AlertTempDbSpaceEnabled;
             root["alert_tempdb_space_threshold_percent"] = App.AlertTempDbSpaceThresholdPercent;
+            root["alert_low_disk_enabled"] = App.AlertLowDiskEnabled;
+            root["alert_low_disk_threshold_percent"] = App.AlertLowDiskThresholdPercent;
+            root["alert_low_disk_threshold_gb"] = App.AlertLowDiskThresholdGb;
             root["alert_long_running_job_enabled"] = App.AlertLongRunningJobEnabled;
             root["alert_long_running_job_multiplier"] = App.AlertLongRunningJobMultiplier;
+            root["alert_failed_job_enabled"] = App.AlertFailedJobEnabled;
+            root["alert_failed_job_lookback_minutes"] = App.AlertFailedJobLookbackMinutes;
             root["alert_cooldown_minutes"] = App.AlertCooldownMinutes;
             root["email_cooldown_minutes"] = App.EmailCooldownMinutes;
+            root["alert_delivery_mode"] = App.AlertDeliveryMode.ToString();
+            root["alert_per_event_max_per_cycle"] = App.AlertPerEventMaxPerCycle;
             root["mute_rule_default_expiration"] = App.MuteRuleDefaultExpiration;
             root["log_alert_dismissals"] = App.LogAlertDismissals;
+            root["analysis_enabled"] = App.AnalysisEnabled;
+            root["analysis_notifications_enabled"] = App.AnalysisNotificationsEnabled;
+            root["analysis_interval_minutes"] = App.AnalysisIntervalMinutes;
+            root["analysis_notify_severity"] = App.AnalysisNotifySeverity;
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             File.WriteAllText(settingsPath, root.ToJsonString(options));
@@ -737,9 +686,16 @@ public partial class SettingsWindow : Window
         AlertPoisonWaitThresholdBox.Text = "500";
         AlertLongRunningQueryThresholdBox.Text = "30";
         AlertTempDbSpaceThresholdBox.Text = "80";
+        AlertLowDiskThresholdPercentBox.Text = "10";
+        AlertLowDiskThresholdGbBox.Text = "5";
         AlertLongRunningJobMultiplierBox.Text = "3";
+        AlertFailedJobLookbackBox.Text = "60";
         AlertCooldownBox.Text = "5";
         EmailCooldownBox.Text = "15";
+        AlertDeliveryModeBox.SelectedIndex = 0;
+        AlertPerEventMaxBox.Text = "10";
+        AnalysisIntervalBox.Text = "30";
+        AnalysisNotifySeverityBox.Text = "1.5";
         AlertExcludedDatabasesBox.Text = "";
         MuteRuleDefaultExpirationCombo.SelectedIndex = 1; // 24 hours
         UpdateAlertPreviewText();
@@ -770,9 +726,13 @@ public partial class SettingsWindow : Window
         if (AlertLongRunningQueryCheckBox.IsChecked == true)
             parts.Add($"queries > {AlertLongRunningQueryThresholdBox.Text}min");
         if (AlertTempDbSpaceCheckBox.IsChecked == true)
-            parts.Add($"TempDB > {AlertTempDbSpaceThresholdBox.Text}%");
+            parts.Add($"tempdb > {AlertTempDbSpaceThresholdBox.Text}%");
+        if (AlertLowDiskCheckBox.IsChecked == true)
+            parts.Add($"disk free < {AlertLowDiskThresholdPercentBox.Text}% or {AlertLowDiskThresholdGbBox.Text}GB");
         if (AlertLongRunningJobCheckBox.IsChecked == true)
             parts.Add($"jobs > {AlertLongRunningJobMultiplierBox.Text}x avg");
+        if (AlertFailedJobCheckBox.IsChecked == true)
+            parts.Add($"failed jobs (last {AlertFailedJobLookbackBox.Text}m)");
 
         AlertPreviewText.Text = parts.Count > 0
             ? $"Will alert when: {string.Join(", ", parts)}"
@@ -796,8 +756,13 @@ public partial class SettingsWindow : Window
         AlertLongRunningQueryThresholdBox.IsEnabled = enabled;
         AlertTempDbSpaceCheckBox.IsEnabled = enabled;
         AlertTempDbSpaceThresholdBox.IsEnabled = enabled;
+        AlertLowDiskCheckBox.IsEnabled = enabled;
+        AlertLowDiskThresholdPercentBox.IsEnabled = enabled;
+        AlertLowDiskThresholdGbBox.IsEnabled = enabled;
         AlertLongRunningJobCheckBox.IsEnabled = enabled;
         AlertLongRunningJobMultiplierBox.IsEnabled = enabled;
+        AlertFailedJobCheckBox.IsEnabled = enabled;
+        AlertFailedJobLookbackBox.IsEnabled = enabled;
         UpdateAlertPreviewText();
     }
 
@@ -941,7 +906,9 @@ public partial class SettingsWindow : Window
             App.SmtpFromAddress = SmtpFromBox.Text?.Trim() ?? "";
             App.SmtpRecipients = SmtpRecipientsBox.Text?.Trim() ?? "";
 
-            var error = await Services.EmailAlertService.SendTestEmailAsync();
+            /* "Test before save": App.* statics were just set from the live UI above, so
+               new AppAlertSettings() reflects what the user typed (Plan E E3c, MOD-1). */
+            var error = await EmailSendCore.SendTestEmailAsync(new AppAlertSettings(), Services.EmailAlertService.Branding);
             if (error == null)
             {
                 MessageBox.Show("Test email sent successfully!", "Test Email", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -967,7 +934,7 @@ public partial class SettingsWindow : Window
     }
 
     // ============================================
-    // Webhooks (Teams / Slack)
+    // Webhooks (Teams / Slack / Generic)
     // ============================================
 
     private void LoadWebhookSettings()
@@ -978,22 +945,61 @@ public partial class SettingsWindow : Window
         SlackWebhookEnabledCheckBox.IsChecked = App.SlackWebhookEnabled;
         SlackWebhookUrlBox.Text = App.SlackWebhookUrl;
         SlackProxyAddressBox.Text = App.SlackProxyAddress;
+        GenericWebhookEnabledCheckBox.IsChecked = App.GenericWebhookEnabled;
+        GenericWebhookUrlBox.Text = App.GenericWebhookUrl;
+        GenericWebhookHeadersBox.Text = App.GenericWebhookHeadersJson;
+        /* Blank means "use the built-in default" — show it, so the operator has something to edit
+           rather than a blank box they have to guess the shape of. */
+        GenericWebhookBodyBox.Text = string.IsNullOrWhiteSpace(App.GenericWebhookBodyTemplate)
+            ? WebhookAlertService.DefaultGenericBodyTemplate
+            : App.GenericWebhookBodyTemplate;
+        GenericWebhookProxyAddressBox.Text = App.GenericWebhookProxyAddress;
         UpdateTeamsControlStates();
         UpdateSlackControlStates();
+        UpdateGenericControlStates();
     }
 
-    private void SaveWebhookSettings()
+    /// <summary>
+    /// Persists the webhook settings. Returns false when the generic channel is enabled with a headers JSON
+    /// or body template that cannot produce a valid request — the values are still saved (so the operator
+    /// doesn't lose their typing), but they're told, because a broken template silently drops every alert.
+    /// Follows <see cref="SaveAlertSettings"/>'s bool contract: the caller suppresses the "Settings saved" toast.
+    /// </summary>
+    private bool SaveWebhookSettings()
     {
+        /* Cleartext warning (#1506): an http:// generic-webhook URL carrying headers sends the Authorization
+           token in the clear. Confirm before persisting a config that will transmit credentials unencrypted;
+           Yes proceeds, No cancels the webhook save (the typed values stay in the still-open dialog to fix).
+           NOT blocked — a plaintext POST to a trusted LAN listener is legitimate. */
+        if (GenericWebhookEnabledCheckBox.IsChecked == true
+            && WebhookAlertService.IsCleartextHttpWithHeaders(GenericWebhookUrlBox.Text?.Trim(), GenericWebhookHeadersBox.Text?.Trim())
+            && !ConfirmCleartextWebhook("Save"))
+        {
+            return false;
+        }
+
         App.TeamsWebhookEnabled = TeamsWebhookEnabledCheckBox.IsChecked == true;
         App.TeamsWebhookUrl = TeamsWebhookUrlBox.Text?.Trim() ?? "";
         App.TeamsProxyAddress = TeamsProxyAddressBox.Text?.Trim() ?? "";
         App.SlackWebhookEnabled = SlackWebhookEnabledCheckBox.IsChecked == true;
         App.SlackWebhookUrl = SlackWebhookUrlBox.Text?.Trim() ?? "";
         App.SlackProxyAddress = SlackProxyAddressBox.Text?.Trim() ?? "";
+        App.GenericWebhookEnabled = GenericWebhookEnabledCheckBox.IsChecked == true;
+        App.GenericWebhookUrl = GenericWebhookUrlBox.Text?.Trim() ?? "";
+        App.GenericWebhookHeadersJson = GenericWebhookHeadersBox.Text?.Trim() ?? "";
+        /* Persist the empty "use built-in default" sentinel unless the operator actually edited the body box
+           (LoadWebhookSettings pre-fills it with the default), so a future release can still improve it. */
+        App.GenericWebhookBodyTemplate = WebhookAlertService.IsDefaultBodyTemplate(GenericWebhookBodyBox.Text)
+            ? ""
+            : GenericWebhookBodyBox.Text?.Trim() ?? "";
+        App.GenericWebhookProxyAddress = GenericWebhookProxyAddressBox.Text?.Trim() ?? "";
 
-        /* Save webhook URLs to Credential Manager instead of settings.json */
+        /* Save webhook URLs to Credential Manager instead of settings.json. The generic channel's headers
+           JSON goes there too — it carries the Authorization bearer token (#1506). */
         App.SaveWebhookUrl("TeamsWebhook", App.TeamsWebhookUrl);
         App.SaveWebhookUrl("SlackWebhook", App.SlackWebhookUrl);
+        App.SaveWebhookUrl("GenericWebhook", App.GenericWebhookUrl);
+        App.SaveWebhookUrl("GenericWebhookHeaders", App.GenericWebhookHeadersJson);
 
         var settingsPath = Path.Combine(App.ConfigDirectory, "settings.json");
         try
@@ -1014,6 +1020,12 @@ public partial class SettingsWindow : Window
             root["slack_webhook_enabled"] = App.SlackWebhookEnabled;
             root["slack_proxy_address"] = App.SlackProxyAddress;
 
+            /* The generic channel's URL + headers are secrets and live in Credential Manager; only these
+               three are safe to persist in settings.json (#1506). */
+            root["generic_webhook_enabled"] = App.GenericWebhookEnabled;
+            root["generic_proxy_address"] = App.GenericWebhookProxyAddress;
+            root["generic_body_template"] = App.GenericWebhookBodyTemplate;
+
             /* Remove legacy plaintext webhook URLs from settings.json */
             if (root is JsonObject obj)
             {
@@ -1028,6 +1040,22 @@ public partial class SettingsWindow : Window
         {
             AppLogger.Error("Settings", $"Failed to save webhook settings: {ex.Message}");
         }
+
+        if (App.GenericWebhookEnabled)
+        {
+            var configError = WebhookAlertService.ValidateGenericConfig(
+                App.GenericWebhookHeadersJson, App.GenericWebhookBodyTemplate);
+
+            if (configError != null)
+            {
+                MessageBox.Show(
+                    $"The generic webhook is enabled but its configuration is not valid, so it will not deliver alerts:\n\n{configError}",
+                    "Generic Webhook", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void TeamsWebhookEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -1048,6 +1076,21 @@ public partial class SettingsWindow : Window
         TestTeamsButton.IsEnabled = enabled;
     }
 
+    private void GenericWebhookEnabledCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateGenericControlStates();
+    }
+
+    private void UpdateGenericControlStates()
+    {
+        bool enabled = GenericWebhookEnabledCheckBox.IsChecked == true;
+        GenericWebhookUrlBox.IsEnabled = enabled;
+        GenericWebhookHeadersBox.IsEnabled = enabled;
+        GenericWebhookBodyBox.IsEnabled = enabled;
+        GenericWebhookProxyAddressBox.IsEnabled = enabled;
+        TestGenericButton.IsEnabled = enabled;
+    }
+
     private void UpdateSlackControlStates()
     {
         bool enabled = SlackWebhookEnabledCheckBox.IsChecked == true;
@@ -1065,7 +1108,7 @@ public partial class SettingsWindow : Window
         {
             var url = TeamsWebhookUrlBox.Text?.Trim() ?? "";
             var proxy = TeamsProxyAddressBox.Text?.Trim();
-            var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy);
+            var error = await WebhookAlertService.SendTestTeamsAsync(url, proxy, EmailAlertService.Branding);
 
             if (error == null)
             {
@@ -1096,7 +1139,7 @@ public partial class SettingsWindow : Window
         {
             var url = SlackWebhookUrlBox.Text?.Trim() ?? "";
             var proxy = SlackProxyAddressBox.Text?.Trim();
-            var error = await WebhookAlertService.SendTestSlackAsync(url, proxy);
+            var error = await WebhookAlertService.SendTestSlackAsync(url, proxy, EmailAlertService.Branding);
 
             if (error == null)
             {
@@ -1118,6 +1161,67 @@ public partial class SettingsWindow : Window
         }
     }
 
+    /// <summary>
+    /// Non-blocking confirm shown when an http:// generic-webhook URL carries headers — the Authorization
+    /// token would go on the wire in cleartext (#1506). Yes proceeds; No cancels the action. <paramref
+    /// name="action"/> is the verb ("Save" / "Send"). Not blocked outright: a plaintext POST to a trusted LAN
+    /// listener is a legitimate setup.
+    /// </summary>
+    private bool ConfirmCleartextWebhook(string action)
+    {
+        var result = MessageBox.Show(
+            "The webhook URL uses http://, so the Authorization header and any credentials are sent in cleartext " +
+            $"and can be intercepted on the network.\n\n{action} anyway?",
+            "Insecure Webhook URL", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        return result == MessageBoxResult.Yes;
+    }
+
+    /// <summary>
+    /// Tests the generic webhook with the values currently in the boxes (not the saved ones), like the
+    /// Teams/Slack test buttons. A malformed headers JSON or body template comes back as the error message
+    /// rather than an exception, so the operator fixes it here instead of discovering it when a real alert
+    /// silently fails to deliver.
+    /// </summary>
+    private async void TestGenericButton_Click(object sender, RoutedEventArgs e)
+    {
+        var url = GenericWebhookUrlBox.Text?.Trim() ?? "";
+        var headers = GenericWebhookHeadersBox.Text?.Trim();
+
+        /* Warn before a cleartext http:// POST would send the Authorization header unencrypted (#1506). */
+        if (WebhookAlertService.IsCleartextHttpWithHeaders(url, headers) && !ConfirmCleartextWebhook("Send"))
+        {
+            return;
+        }
+
+        TestGenericButton.IsEnabled = false;
+        TestGenericButton.Content = "Sending...";
+
+        try
+        {
+            var body = GenericWebhookBodyBox.Text?.Trim();
+            var proxy = GenericWebhookProxyAddressBox.Text?.Trim();
+            var error = await WebhookAlertService.SendTestGenericAsync(url, headers, body, proxy, EmailAlertService.Branding);
+
+            if (error == null)
+            {
+                MessageBox.Show("Generic webhook test notification sent successfully!", "Test Webhook", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Failed to send generic webhook test notification:\n\n{error}", "Test Webhook Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to send generic webhook test notification:\n\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            TestGenericButton.Content = "Send Test Notification";
+            TestGenericButton.IsEnabled = true;
+        }
+    }
+
     private void Hyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
     {
         try
@@ -1128,22 +1232,22 @@ public partial class SettingsWindow : Window
         e.Handled = true;
     }
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyCell(sender);
-    private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "schedules");
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "schedules", App.CsvSeparator);
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         if (!_saved)
-            Helpers.ThemeManager.Apply(_originalTheme);
+            ThemeManager.Apply(_originalTheme);
         Close();
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (!_saved)
-            Helpers.ThemeManager.Apply(_originalTheme);
+            ThemeManager.Apply(_originalTheme);
         base.OnClosing(e);
     }
 }

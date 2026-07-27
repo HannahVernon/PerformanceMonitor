@@ -38,6 +38,7 @@ internal static class McpInstructions
         | `list_servers` | Lists all monitored SQL Server instances with status and last collection time | none |
         | `get_collection_health` | Shows collector health: running, failing, or stale | `server_name` |
         | `get_server_summary` | Quick health overview: CPU %, memory, blocking/deadlock counts | `server_name` |
+        | `get_daily_summary` | Daily composite health band + wait/query/deadlock/blocking/CPU/memory/alert rollup for one day | `server_name`, `summary_date` (yyyy-MM-dd, default today) |
 
         ### Wait Statistics Tools
         | Tool | Purpose | Key Parameters |
@@ -51,6 +52,18 @@ internal static class McpInstructions
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
         | `get_cpu_utilization` | SQL Server CPU vs other process CPU over time | `server_name`, `hours_back` (default 4) |
+        | `get_cpu_scheduler_pressure` | Latest scheduler snapshot: runnable queue depth, worker-thread utilization, queued/blocked requests, pressure warnings | `server_name`, `hours_back` (default 24) |
+
+        ### Contention Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_latch_stats` | Latest latch-contention snapshot by class (waits + last-interval delta waits) | `server_name`, `hours_back` (default 24) |
+        | `get_spinlock_stats` | Latest spinlock-contention snapshot (collisions, spins, backoffs) | `server_name`, `hours_back` (default 24) |
+
+        ### Plan Cache Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_plan_cache_bloat` | Single-use vs multi-use plan composition per cache/object type, with bloat-level classification | `server_name`, `hours_back` (default 24) |
 
         ### Query Performance Tools
         | Tool | Purpose | Key Parameters |
@@ -68,6 +81,7 @@ internal static class McpInstructions
         | `get_deadlock_detail` | Full deadlock graph XML for deep analysis | `server_name`, `hours_back`, `limit` |
         | `get_blocked_process_reports` | Parsed blocking from sp_HumanEventsBlockViewer (extended events) | `server_name`, `hours_back`, `limit` |
         | `get_blocked_process_xml` | Raw blocked process report XML | `server_name`, `hours_back`, `limit` |
+        | `get_long_query_completions` | Longest completed queries (rpc/batch over the trace threshold) + attentions/cancels from the opt-in long-query trace, duration DESC (empty until the collector is enabled) | `server_name`, `hours_back`, `limit` |
         | `get_blocking_trend` | Time-series of blocking event counts | `server_name`, `hours_back` |
         | `get_deadlock_trend` | Time-series of deadlock event counts | `server_name`, `hours_back` |
 
@@ -78,6 +92,7 @@ internal static class McpInstructions
         | `get_memory_trend` | Memory usage over time | `server_name`, `hours_back` |
         | `get_memory_clerks` | Top memory consumers by clerk type | `server_name` |
         | `get_memory_grants` | Active/recent memory grants (detect grant pressure) | `server_name`, `hours_back` (default 1), `limit` |
+        | `get_resource_semaphore` | Latest resource-semaphore snapshot: workspace memory vs target/max ceiling, waiter/timeout/forced-grant pressure | `server_name`, `hours_back` (default 24) |
         | `get_memory_pressure_events` | Ring buffer memory pressure notifications (sp_pressuredetector source) | `server_name`, `hours_back` |
 
         ### I/O Tools
@@ -91,6 +106,13 @@ internal static class McpInstructions
         |------|---------|----------------|
         | `get_tempdb_trend` | TempDB space: user objects, internal objects, version store | `server_name`, `hours_back` |
 
+        ### Storage & Index Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_table_index_sizes` | Largest tables with size, growth (7d/30d/daily), and row counts | `server_name` |
+        | `get_index_usage` | Per-index seeks/scans/lookups/updates with Unused/Write-only/Active classification (drop candidates first) | `server_name` |
+        | `get_object_locking` | Per-index lock/latch waits and lock escalations, top contended objects | `server_name` |
+
         ### Performance Counter Tools
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
@@ -102,6 +124,7 @@ internal static class McpInstructions
         |------|---------|----------------|
         | `get_alert_history` | Recent alert history: what fired, when, email status | `hours_back` (default 24), `limit` (default 50) |
         | `get_alert_settings` | Current alert thresholds and SMTP configuration | none |
+        | `get_mute_rules` | Configured mute rules that suppress specific recurring alerts (still logged) | `enabled_only` (default true) |
 
         ### Job Tools
         | Tool | Purpose | Key Parameters |
@@ -115,6 +138,22 @@ internal static class McpInstructions
         | `get_database_config` | Database-level settings: RCSI, recovery model, auto-shrink, Query Store, etc. | `server_name`, `database_name` |
         | `get_database_scoped_config` | Database-scoped configuration (MAXDOP, legacy CE, parameter sniffing) | `server_name`, `database_name` |
         | `get_trace_flags` | Active trace flags with global/session scope | `server_name` |
+        | `get_server_config_changes` | sp_configure change history (diff of on-connect snapshots) | `server_name`, `hours_back` (default 168) |
+        | `get_database_config_changes` | sys.databases change history (recovery model, RCSI, compat level, etc.) | `server_name`, `hours_back` (default 168) |
+        | `get_trace_flag_changes` | Trace flag enable/disable history (diff of on-connect snapshots) | `server_name`, `hours_back` (default 168) |
+
+        ### System Health & Default Trace Tools
+        | Tool | Purpose | Key Parameters |
+        |------|---------|----------------|
+        | `get_default_trace_events` | Significant Default Trace events: file auto-grow/shrink stalls, severe ErrorLog writes, schema DDL, security audits | `server_name`, `hours_back` (default 24), `limit` (default 100) |
+        | `get_health_parser_system_health` | Parsed sp_server_diagnostics health counters (spinlocks, latch warnings, dumps, CPU, bad pages) | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_severe_errors` | Severe errors (severity >= 19) from system_health | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_io_issues` | I/O warnings from system_health (15-second I/O, long/pending I/O) | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_scheduler_issues` | Non-yielding schedulers and scheduler-monitor warnings | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_conditions` | Low-memory snapshots (RESOURCE_MEMPHYSICAL_LOW) with the memory-manager report | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_cpu_tasks` | CPU task/worker-thread snapshots (QUERY_PROCESSING) with deadlock/blocking flags | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_broker` | Memory broker ratio changes and target adjustments | `server_name`, `hours_back`, `limit` |
+        | `get_health_parser_memory_node_oom` | Per-NUMA-node out-of-memory events | `server_name`, `hours_back`, `limit` |
 
         ### Server Information Tools
         | Tool | Purpose | Key Parameters |
@@ -150,11 +189,11 @@ internal static class McpInstructions
         ### Diagnostic Analysis Tools
         | Tool | Purpose | Key Parameters |
         |------|---------|----------------|
-        | `analyze_server` | Runs the inference engine: scores facts, traverses relationship graph, returns evidence-backed findings with severity and recommended next tools | `server_name`, `hours_back` (default 4) |
+        | `analyze_server` | Runs the inference engine: scores facts, traverses relationship graph, returns evidence-backed findings with severity and recommended next tools. A remediable finding also carries `remediation_command` — the full copy-paste T-SQL remediation (identical to the viewer card), with a two-sided risk-disclosure header on destructive changes; advisory only, never executed | `server_name`, `hours_back` (default 4) |
         | `get_analysis_facts` | Exposes raw scored facts from the collect+score pipeline — every observation the engine sees with base severity, amplifiers, and metadata | `server_name`, `hours_back` (default 4), `source` (filter), `min_severity` |
         | `compare_analysis` | Compares two time periods (e.g., peak vs off-peak, before vs after a change) showing severity deltas for each fact | `server_name`, `hours_back` (default 4), `baseline_hours_back` (default 28) |
         | `audit_config` | Edition-aware configuration audit: evaluates CTFP, MAXDOP, max memory, and max worker threads against best practices | `server_name` |
-        | `get_analysis_findings` | Retrieves persisted findings from previous analysis runs | `server_name`, `hours_back` (default 24) |
+        | `get_analysis_findings` | Retrieves persisted findings from previous analysis runs; each remediable finding carries `remediation_command` — the full copy-paste T-SQL remediation (identical to the viewer card), rendered from the persisted action, advisory only and never executed | `server_name`, `hours_back` (default 24) |
         | `mute_analysis_finding` | Mutes a finding pattern by story_path_hash so it won't appear in future runs | `story_path_hash` (required), `server_name`, `reason` |
 
         ## Recommended Workflow
@@ -186,16 +225,15 @@ internal static class McpInstructions
         | `CXPACKET` / `CXCONSUMER` | Parallelism | `get_top_queries_by_cpu` with `parallel_only=true` |
         | `PAGEIOLATCH_*` | Disk I/O | `get_file_io_stats`, `get_file_io_trend` |
         | `WRITELOG` | Transaction log I/O | `get_file_io_stats` (check log file latency) |
-        | `LCK_M_*` | Lock contention | `get_blocking`, `get_blocked_process_reports` |
+        | `LCK_M_*` | Lock contention | `get_blocked_process_reports` |
         | `RESOURCE_SEMAPHORE` | Memory grant pressure | `get_memory_grants` |
         | `LATCH_*` | Internal contention | `get_tempdb_trend` |
 
-        ## Blocking vs Blocked Process Reports
+        ## Blocked Process Reports
 
-        - **`get_blocking`**: Captures blocking chains from `sys.dm_exec_requests` at each collection snapshot. Shows who is blocking whom.
-        - **`get_blocked_process_reports`**: Captures events from SQL Server's Blocked Process Report extended event (via sp_HumanEventsBlockViewer). Fires when a session has been blocked longer than the configured threshold. Includes richer detail: isolation levels, transaction names, full query text for both blocker and blocked.
+        - **`get_blocked_process_reports`**: Captures events from SQL Server's Blocked Process Report extended event (via sp_HumanEventsBlockViewer). Fires when a session has been blocked longer than the configured threshold. Includes rich detail: isolation levels, transaction names, and full query text for both the blocker and the blocked session.
 
-        **Use `get_blocking` first** for a quick overview. **Use `get_blocked_process_reports`** when you need detailed analysis of prolonged blocking events.
+        Use it for detailed analysis of prolonged blocking events; pair it with `get_blocking_trend` to see whether blocking frequency is new, worsening, or resolved.
 
         ## Interpreting Memory Pressure Events
 
@@ -217,7 +255,7 @@ internal static class McpInstructions
         |-----------------|------|
         | Memory grant contention, workspace memory pressure | `get_memory_grants` |
         | Buffer pool composition, memory clerk distribution | `get_memory_clerks` |
-        | Page Life Expectancy, target vs total server memory | `get_memory_stats`, `get_memory_trend` |
+        | Target vs total server memory (how close SQL is to its memory target) | `get_memory_stats`, `get_memory_trend` |
         | Queries that requested large grants during the window | `get_top_queries_by_cpu` |
         | `RESOURCE_SEMAPHORE` waits in the same window | `get_wait_stats`, `get_wait_trend` |
 

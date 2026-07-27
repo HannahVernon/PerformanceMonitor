@@ -1,0 +1,316 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Data.Common;
+using System.Globalization;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace PerformanceMonitor.Collectors;
+
+/// <summary>
+/// Per-file database sizes for growth trending and capacity planning. Extracted verbatim from
+/// Lite's RemoteCollectorService.DatabaseSize.cs. On-prem: one batch stages per-database
+/// FILEPROPERTY(SpaceUsed) via a server-side cursor + nested sp_executesql into #file_space, then
+/// joins sys.master_files + sys.dm_os_volume_stats (the exclusion filter splices at BOTH the
+/// cursor and outer SELECT — same parameters referenced twice). Azure SQL DB: per-database
+/// connections (RunsPerDatabase), no volume stats, NULL compatibility_level — as before.
+/// </summary>
+public sealed class DatabaseSizeStatsCollector : CollectorDefinitionBase<DatabaseSizeStatsCollector.Row>
+{
+    public static DatabaseSizeStatsCollector Instance { get; } = new();
+
+    private DatabaseSizeStatsCollector()
+    {
+    }
+
+    public readonly record struct Row(
+        string DatabaseName,
+        int DatabaseId,
+        int FileId,
+        string FileTypeDesc,
+        string FileName,
+        string PhysicalName,
+        decimal TotalSizeMb,
+        decimal? UsedSizeMb,
+        decimal? AutoGrowthMb,
+        decimal? MaxSizeMb,
+        string? RecoveryModel,
+        int? CompatibilityLevel,
+        string? StateDesc,
+        string? VolumeMountPoint,
+        decimal? VolumeTotalMb,
+        decimal? VolumeFreeMb,
+        bool? IsPercentGrowth,
+        int? GrowthPct,
+        int? VlfCount);
+
+    private const string OnPremQueryText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SET NOCOUNT ON;
+
+CREATE TABLE #file_space
+(
+    database_id int NOT NULL,
+    file_id int NOT NULL,
+    used_size_mb decimal(19,2) NULL
+);
+
+DECLARE
+    @db_name sysname,
+    @sql nvarchar(MAX);
+
+DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT
+        d.name
+    FROM sys.databases AS d
+    WHERE d.state_desc = N'ONLINE'
+    AND   d.database_id > 0
+    AND   HAS_DBACCESS(d.name) = 1
+    /*EXCLUSION_FILTER_CURSOR*/
+    ORDER BY
+        d.name;
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @db_name;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    BEGIN TRY
+        SET @sql = N'EXECUTE ' + QUOTENAME(@db_name) + N'.sys.sp_executesql N''
+INSERT #file_space (database_id, file_id, used_size_mb)
+SELECT
+    DB_ID(),
+    df.file_id,
+    CONVERT(decimal(19,2), FILEPROPERTY(df.name, N''''SpaceUsed'''') * 8.0 / 1024.0)
+FROM sys.database_files AS df;'';';
+
+        EXECUTE sys.sp_executesql @sql;
+    END TRY
+    BEGIN CATCH
+    END CATCH;
+
+    FETCH NEXT FROM db_cursor INTO @db_name;
+END;
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+SELECT
+    database_name = d.name,
+    database_id = d.database_id,
+    file_id = mf.file_id,
+    file_type_desc = mf.type_desc,
+    file_name = mf.name,
+    physical_name = mf.physical_name,
+    total_size_mb =
+        CONVERT(decimal(19,2), mf.size * 8.0 / 1024.0),
+    used_size_mb =
+        fs.used_size_mb,
+    auto_growth_mb =
+        CASE
+            WHEN mf.is_percent_growth = 1
+            THEN CONVERT(decimal(19,2), NULL)
+            ELSE CONVERT(decimal(19,2), mf.growth * 8.0 / 1024.0)
+        END,
+    max_size_mb =
+        CASE
+            WHEN mf.max_size = -1
+            THEN CONVERT(decimal(19,2), -1)
+            WHEN mf.max_size = 268435456
+            THEN CONVERT(decimal(19,2), 2097152)
+            ELSE CONVERT(decimal(19,2), mf.max_size * 8.0 / 1024.0)
+        END,
+    recovery_model_desc =
+        d.recovery_model_desc,
+    compatibility_level =
+        CONVERT(int, d.compatibility_level),
+    state_desc =
+        d.state_desc,
+    volume_mount_point =
+        RTRIM(vs.volume_mount_point),
+    volume_total_mb =
+        CONVERT(decimal(19,2), vs.total_bytes / 1048576.0),
+    volume_free_mb =
+        CONVERT(decimal(19,2), vs.available_bytes / 1048576.0),
+    is_percent_growth =
+        mf.is_percent_growth,
+    growth_pct =
+        CASE WHEN mf.is_percent_growth = 1 THEN mf.growth ELSE NULL END,
+    vlf_count =
+        CASE WHEN mf.type = 1 /*LOG*/ THEN (SELECT COUNT(*) FROM sys.dm_db_log_info(mf.database_id) AS li WHERE li.file_id = mf.file_id) ELSE NULL END
+FROM sys.master_files AS mf
+JOIN sys.databases AS d
+  ON d.database_id = mf.database_id
+CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) AS vs
+LEFT JOIN #file_space AS fs
+  ON  fs.database_id = mf.database_id
+  AND fs.file_id = mf.file_id
+WHERE d.state_desc = N'ONLINE'
+/*EXCLUSION_FILTER_OUTER*/
+ORDER BY
+    d.name,
+    mf.file_id
+OPTION(RECOMPILE);";
+
+    private const string AzureSqlDbQueryText = @"
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    database_name = DB_NAME(),
+    database_id = DB_ID(),
+    file_id = df.file_id,
+    file_type_desc = df.type_desc,
+    file_name = df.name,
+    physical_name = df.physical_name,
+    total_size_mb =
+        CONVERT(decimal(19,2), df.size * 8.0 / 1024.0),
+    used_size_mb =
+        CONVERT(decimal(19,2), FILEPROPERTY(df.name, N'SpaceUsed') * 8.0 / 1024.0),
+    auto_growth_mb =
+        CASE
+            WHEN df.is_percent_growth = 1
+            THEN CONVERT(decimal(19,2), NULL)
+            ELSE CONVERT(decimal(19,2), df.growth * 8.0 / 1024.0)
+        END,
+    max_size_mb =
+        CASE
+            WHEN df.max_size = -1
+            THEN CONVERT(decimal(19,2), -1)
+            WHEN df.max_size = 268435456
+            THEN CONVERT(decimal(19,2), 2097152)
+            ELSE CONVERT(decimal(19,2), df.max_size * 8.0 / 1024.0)
+        END,
+    recovery_model_desc =
+        CONVERT(nvarchar(12), DATABASEPROPERTYEX(DB_NAME(), N'Recovery')),
+    compatibility_level =
+        CONVERT(int, NULL),
+    state_desc =
+        N'ONLINE',
+    volume_mount_point =
+        CONVERT(nvarchar(256), NULL),
+    volume_total_mb =
+        CONVERT(decimal(19,2), NULL),
+    volume_free_mb =
+        CONVERT(decimal(19,2), NULL),
+    is_percent_growth =
+        df.is_percent_growth,
+    growth_pct =
+        CASE WHEN df.is_percent_growth = 1 THEN df.growth ELSE NULL END,
+    vlf_count =
+        CASE WHEN df.type = 1 /*LOG*/ THEN (SELECT COUNT(*) FROM sys.dm_db_log_info(DB_ID()) AS li WHERE li.file_id = df.file_id) ELSE NULL END
+FROM sys.database_files AS df
+ORDER BY
+    df.file_id
+OPTION(RECOMPILE);";
+
+    public override string Name => "database_size_stats";
+
+    public override string TargetTable => "database_size_stats";
+
+    /// <summary>Azure SQL DB databases are isolated — one connection per database.</summary>
+    public override bool RunsPerDatabase(CollectorTargetInfo target) => target.IsAzureSqlDb;
+
+    public override CollectorQuery BuildQuery(CollectorContext context)
+    {
+        if (context.Target.IsAzureSqlDb)
+        {
+            /* Database exclusion happens in the host's database enumeration on Azure. */
+            return new CollectorQuery(AzureSqlDbQueryText);
+        }
+
+        /* Both filter sites (cursor SELECT and final SELECT) are in outer T-SQL, not nested dynamic
+           SQL, so parameter bindings work fine and the same @excl_db_N can be referenced twice. */
+        var (exclusionClause, exclusionParameters) = DatabaseExclusionFilter.Build(context.ExcludedDatabases, "d.name");
+        var text = OnPremQueryText
+            .Replace("/*EXCLUSION_FILTER_CURSOR*/", exclusionClause, StringComparison.Ordinal)
+            .Replace("/*EXCLUSION_FILTER_OUTER*/", exclusionClause, StringComparison.Ordinal);
+
+        return new CollectorQuery(text, exclusionParameters);
+    }
+
+    public override IReadOnlyList<CollectorColumn> PayloadColumns { get; } = new[]
+    {
+        new CollectorColumn("database_name", CollectorColumnType.Varchar),
+        new CollectorColumn("database_id", CollectorColumnType.Integer),
+        new CollectorColumn("file_id", CollectorColumnType.Integer),
+        new CollectorColumn("file_type_desc", CollectorColumnType.Varchar),
+        new CollectorColumn("file_name", CollectorColumnType.Varchar),
+        new CollectorColumn("physical_name", CollectorColumnType.Varchar),
+        new CollectorColumn("total_size_mb", CollectorColumnType.Decimal, 19, 2),
+        new CollectorColumn("used_size_mb", CollectorColumnType.Decimal, 19, 2),
+        new CollectorColumn("auto_growth_mb", CollectorColumnType.Decimal, 19, 2),
+        new CollectorColumn("max_size_mb", CollectorColumnType.Decimal, 19, 2),
+        new CollectorColumn("recovery_model_desc", CollectorColumnType.Varchar),
+        new CollectorColumn("compatibility_level", CollectorColumnType.Integer),
+        new CollectorColumn("state_desc", CollectorColumnType.Varchar),
+        new CollectorColumn("volume_mount_point", CollectorColumnType.Varchar),
+        new CollectorColumn("volume_total_mb", CollectorColumnType.Decimal, 19, 2),
+        new CollectorColumn("volume_free_mb", CollectorColumnType.Decimal, 19, 2),
+        new CollectorColumn("is_percent_growth", CollectorColumnType.Boolean),
+        new CollectorColumn("growth_pct", CollectorColumnType.Integer),
+        new CollectorColumn("vlf_count", CollectorColumnType.Integer),
+    };
+
+    public override async ValueTask<List<Row>> ReadAsync(DbDataReader reader, CollectorContext context, CancellationToken cancellationToken)
+    {
+        var rows = new List<Row>();
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new Row(
+                reader.GetString(0),
+                Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture),
+                Convert.ToInt32(reader.GetValue(2), CultureInfo.InvariantCulture),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.GetDecimal(6),
+                reader.IsDBNull(7) ? null : reader.GetDecimal(7),
+                reader.IsDBNull(8) ? null : reader.GetDecimal(8),
+                reader.IsDBNull(9) ? null : reader.GetDecimal(9),
+                reader.IsDBNull(10) ? null : reader.GetString(10),
+                reader.IsDBNull(11) ? null : Convert.ToInt32(reader.GetValue(11), CultureInfo.InvariantCulture),
+                reader.IsDBNull(12) ? null : reader.GetString(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13),
+                reader.IsDBNull(14) ? null : reader.GetDecimal(14),
+                reader.IsDBNull(15) ? null : reader.GetDecimal(15),
+                reader.IsDBNull(16) ? null : (bool?)(Convert.ToInt32(reader.GetValue(16), CultureInfo.InvariantCulture) == 1),
+                reader.IsDBNull(17) ? null : Convert.ToInt32(reader.GetValue(17), CultureInfo.InvariantCulture),
+                reader.IsDBNull(18) ? null : Convert.ToInt32(reader.GetValue(18), CultureInfo.InvariantCulture)));
+        }
+
+        return rows;
+    }
+
+    public override void WritePayload(Row row, ICollectorRowWriter writer, CollectorContext context)
+    {
+        writer
+            .Value(row.DatabaseName)
+            .Value(row.DatabaseId)
+            .Value(row.FileId)
+            .Value(row.FileTypeDesc)
+            .Value(row.FileName)
+            .Value(row.PhysicalName)
+            .Value(row.TotalSizeMb)
+            .Value(row.UsedSizeMb)
+            .Value(row.AutoGrowthMb)
+            .Value(row.MaxSizeMb)
+            .Value(row.RecoveryModel)
+            .Value(row.CompatibilityLevel)
+            .Value(row.StateDesc)
+            .Value(row.VolumeMountPoint)
+            .Value(row.VolumeTotalMb)
+            .Value(row.VolumeFreeMb)
+            .Value(row.IsPercentGrowth)
+            .Value(row.GrowthPct)
+            .Value(row.VlfCount);
+    }
+}

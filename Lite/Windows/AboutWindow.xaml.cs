@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Windows;
 using PerformanceMonitorLite.Services;
 using Velopack;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -19,7 +20,6 @@ public partial class AboutWindow : Window
 {
     private const string GitHubUrl = "https://github.com/erikdarlingdata/PerformanceMonitor";
     private const string IssuesUrl = "https://github.com/erikdarlingdata/PerformanceMonitor/issues";
-    private const string ReleasesUrl = "https://github.com/erikdarlingdata/PerformanceMonitor/releases";
     private const string DarlingDataUrl = "https://www.erikdarling.com";
 
     private string? _updateReleaseUrl;

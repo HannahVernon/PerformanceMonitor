@@ -21,6 +21,8 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 
 
 namespace PerformanceMonitorDashboard.Controls
@@ -36,7 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserMemoryNodeOOMAsync(_memoryNodeOOMHoursBack, _memoryNodeOOMFromDate, _memoryNodeOOMToDate);
-                _memoryNodeOOMUnfilteredData = data;
 
                 // Load charts
                 LoadMemoryNodeOOMUtilChart(data, _memoryNodeOOMHoursBack, _memoryNodeOOMFromDate, _memoryNodeOOMToDate);
@@ -86,9 +87,8 @@ namespace PerformanceMonitorDashboard.Controls
                         grouped.Select(g => (double)g.Count()));
 
                     var scatter = MemoryNodeOOMChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[3];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "OOM Event Count";
                     _memoryNodeOomHover?.Add(scatter, "OOM Event Count");
 
@@ -102,7 +102,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = MemoryNodeOOMChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -140,9 +140,8 @@ namespace PerformanceMonitorDashboard.Controls
                 {
                     hasData = true;
                     var scatter = MemoryNodeOOMUtilChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[0];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                    ChartStyle.StyleScatter(scatter);
                     _memoryNodeOomUtilHover?.Add(scatter, "Memory Utilization %");
                 }
             }
@@ -152,7 +151,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = MemoryNodeOOMUtilChart.Plot.Add.Text("No data", xCenter, 50);
                 noDataText.LabelFontSize = 12;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -191,9 +190,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = targetData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = targetData.Select(d => (double)d.TargetKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[1];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(1));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Target";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Target");
                 }
@@ -206,9 +204,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = committedData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = committedData.Select(d => (double)d.CommittedKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[2];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Committed";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Committed");
                 }
@@ -221,9 +218,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = totalPFData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = totalPFData.Select(d => (double)d.TotalPageFileKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[4];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(4));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Total Page File";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Total Page File");
                 }
@@ -236,9 +232,8 @@ namespace PerformanceMonitorDashboard.Controls
                     var xs = availPFData.Select(d => d.EventTime!.Value.ToOADate()).ToArray();
                     var ys = availPFData.Select(d => (double)d.AvailablePageFileKb!.Value / 1024.0).ToArray();
                     var scatter = MemoryNodeOOMMemoryChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[5];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(5));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Avail Page File";
                     _memoryNodeOomMemoryHover?.Add(scatter, "Avail Page File");
                 }
@@ -255,7 +250,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = MemoryNodeOOMMemoryChart.Plot.Add.Text("No data", xCenter, 0.5);
                 noDataText.LabelFontSize = 12;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -300,8 +295,6 @@ namespace PerformanceMonitorDashboard.Controls
             // Process Virtual Memory Low: Red is bad
             ProcVirtLowIndicator.Fill = procVirtLowCount > 0 ? warningBrush : unknownBrush;
         }
-
-        // MemoryNodeOOM filter methods removed - DataGrid removed per GitHub issue #13
 
         #endregion
     }

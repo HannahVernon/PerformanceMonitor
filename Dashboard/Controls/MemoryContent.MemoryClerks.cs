@@ -21,6 +21,10 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
+// Ui now also defines SelectableItem (the Lite/Darling picker collapse). This deprecated Dashboard keeps its
+// own copy, so alias the unqualified name to it to avoid a CS0104 ambiguity with the shared type.
+using SelectableItem = PerformanceMonitorDashboard.Models.SelectableItem;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -172,9 +176,8 @@ namespace PerformanceMonitorDashboard.Controls
                                 var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                                 var scatter = MemoryClerksChart.Plot.Add.Scatter(xs, ys);
-                                scatter.LineWidth = 2;
-                                scatter.MarkerSize = 5;
                                 scatter.Color = colors[colorIndex % colors.Length];
+                                ChartStyle.StyleScatter(scatter);
                                 var label = clerkType.Length > 20 ? clerkType.Substring(0, 20) + "..." : clerkType;
                                 scatter.LegendText = label;
                                 _memoryClerksHover?.Add(scatter, label);

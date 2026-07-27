@@ -9,6 +9,7 @@
 using System;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
+using PerformanceMonitorDashboard.Helpers;
 
 namespace PerformanceMonitorDashboard.Services
 {
@@ -98,19 +99,31 @@ namespace PerformanceMonitorDashboard.Services
         }
 
         /// <summary>
-        /// Fetches server inventory from config.server_info.
+        /// Inventory facts: edition, product version/level, storage, HADR/cluster flags, and host OS.
+        /// Every value comes from SERVERPROPERTY scalars, OBJECT_ID-guarded dynamic SQL, or an
+        /// engine-edition-aware storage read that needs NO special permission, so this succeeds for any
+        /// connected login — even an Azure SQL DB login lacking VIEW DATABASE STATE. The five hardware
+        /// columns (reader indices 4, 5, 6, 8, 9) are typed-NULL placeholders here, filled by a separate
+        /// <see cref="HardwareQueryText"/> read; keeping them preserves the reader column order. Neither
+        /// sys.dm_os_sys_info nor the Azure-absent sys.master_files is referenced (#1535). Mirrors Lite's
+        /// LocalDataService.FinOps.ServerProperties. Columns: 0 edition, 1 product_version,
+        /// 2 product_level, 3 product_update_level, 4 cpu_count, 5 physical_memory_mb,
+        /// 6 sqlserver_start_time, 7 total_storage_gb, 8 socket_count, 9 cores_per_socket,
+        /// 10 engine_edition, 11 is_hadr_enabled, 12 is_clustered, 13 host_os.
         /// </summary>
-        /// <summary>
-        /// Queries a SQL Server directly for its properties via SERVERPROPERTY + sys.dm_os_sys_info.
-        /// Works from any database context — no PerformanceMonitor DB required.
-        /// </summary>
-        public static async Task<FinOpsServerInventory> GetServerPropertiesLiveAsync(string connectionString)
-        {
-            await using var connection = new SqlConnection(connectionString);
-            await connection.OpenAsync();
+        internal const string InventoryQueryText = @"
+DECLARE
+    @storage_sql nvarchar(MAX) =
+        CASE
+            WHEN CONVERT(int, SERVERPROPERTY('EngineEdition')) = 5
+            THEN N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.database_files'
+            ELSE N'SELECT @gb = SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files'
+        END,
+    @storage_gb decimal(19,2),
+    @host_os nvarchar(256);
 
-            const string query = @"
-DECLARE @host_os nvarchar(256);
+EXEC sys.sp_executesql @storage_sql, N'@gb decimal(19,2) OUTPUT', @gb = @storage_gb OUTPUT;
+
 IF OBJECT_ID(N'sys.dm_os_host_info', N'V') IS NOT NULL
     EXEC sys.sp_executesql N'SELECT @os = host_distribution FROM sys.dm_os_host_info',
         N'@os nvarchar(256) OUTPUT', @os = @host_os OUTPUT;
@@ -126,7 +139,20 @@ END;
 
 SELECT
     edition =
-        CONVERT(nvarchar(256), SERVERPROPERTY('Edition')),
+        /* Azure SQL DB reports the legacy 'SQL Azure' for SERVERPROPERTY('Edition');
+           show the actual product name + service tier instead. Mirrors Lite's
+           LocalDataService.FinOps.ServerProperties. */
+        CASE
+            WHEN CONVERT(int, SERVERPROPERTY('EngineEdition')) = 5
+            THEN N'Azure SQL Database'
+                 + ISNULL(N' (' +
+                     CASE CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Edition'))
+                         WHEN N'GeneralPurpose'   THEN N'General Purpose'
+                         WHEN N'BusinessCritical' THEN N'Business Critical'
+                         ELSE CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Edition'))
+                     END + N')', N'')
+            ELSE CONVERT(nvarchar(256), SERVERPROPERTY('Edition'))
+        END,
     product_version =
         CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')),
     product_level =
@@ -134,17 +160,17 @@ SELECT
     product_update_level =
         CONVERT(nvarchar(128), SERVERPROPERTY('ProductUpdateLevel')),
     cpu_count =
-        si.cpu_count,
+        CONVERT(int, NULL),
     physical_memory_mb =
-        si.physical_memory_kb / 1024,
+        CONVERT(bigint, NULL),
     sqlserver_start_time =
-        si.sqlserver_start_time,
+        CONVERT(datetime, NULL),
     total_storage_gb =
-        (SELECT SUM(CAST(size AS bigint)) * 8.0 / 1024.0 / 1024.0 FROM sys.master_files),
+        @storage_gb,
     socket_count =
-        si.socket_count,
+        CONVERT(int, NULL),
     cores_per_socket =
-        si.cores_per_socket,
+        CONVERT(int, NULL),
     engine_edition =
         CONVERT(int, SERVERPROPERTY('EngineEdition')),
     is_hadr_enabled =
@@ -152,15 +178,41 @@ SELECT
     is_clustered =
         CONVERT(int, SERVERPROPERTY('IsClustered')),
     host_os =
-        @host_os
-FROM sys.dm_os_sys_info AS si;";
+        @host_os;";
 
-            using var command = new SqlCommand(query, connection);
-            command.CommandTimeout = 30;
+        /// <summary>
+        /// Hardware facts from sys.dm_os_sys_info: CPU count, physical memory (MB), start time, and
+        /// socket/core topology. That DMV needs VIEW SERVER STATE (VIEW DATABASE STATE on Azure SQL DB),
+        /// so it runs in its OWN best-effort read — a permission gap loses only these fields, never the
+        /// inventory row above (#1535). Columns: 0 cpu_count, 1 physical_memory_mb, 2 sqlserver_start_time,
+        /// 3 socket_count, 4 cores_per_socket.
+        /// </summary>
+        internal const string HardwareQueryText =
+            "SELECT cpu_count, physical_memory_kb / 1024, sqlserver_start_time, socket_count, cores_per_socket FROM sys.dm_os_sys_info;";
 
-            using var reader = await command.ExecuteReaderAsync();
-            if (await reader.ReadAsync())
+        /// <summary>
+        /// Queries a SQL Server directly for its properties. Inventory facts (edition, version, storage)
+        /// come from a permission-free query; hardware facts (CPU/memory/sockets) come from a separate
+        /// best-effort read of sys.dm_os_sys_info, so a login without VIEW DATABASE STATE still gets the
+        /// inventory row with <see cref="FinOpsServerInventory.HardwareUnavailableReason"/> set.
+        /// Works from any database context — no PerformanceMonitor DB required.
+        /// </summary>
+        public static async Task<FinOpsServerInventory> GetServerPropertiesLiveAsync(string connectionString)
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            FinOpsServerInventory result;
+
+            // Inventory read. Scoped closed in a using(...) block BEFORE the hardware read opens: the
+            // Dashboard connection string has no MARS, so an overlapping second reader would throw
+            // (#1535/#1589).
+            using (var command = new SqlCommand(InventoryQueryText, connection) { CommandTimeout = 30 })
+            using (var reader = await command.ExecuteReaderAsync())
             {
+                if (!await reader.ReadAsync())
+                    return new FinOpsServerInventory();
+
                 var version = reader.IsDBNull(1) ? "" : reader.GetString(1);
                 var level = reader.IsDBNull(2) ? "" : reader.GetString(2);
                 var updateLevel = reader.IsDBNull(3) ? null : reader.GetString(3);
@@ -168,7 +220,7 @@ FROM sys.dm_os_sys_info AS si;";
                     ? $"{version} - {updateLevel}"
                     : $"{version} - {level}";
 
-                return new FinOpsServerInventory
+                result = new FinOpsServerInventory
                 {
                     Edition = reader.IsDBNull(0) ? "" : reader.GetString(0),
                     SqlVersion = versionDisplay,
@@ -186,7 +238,30 @@ FROM sys.dm_os_sys_info AS si;";
                 };
             }
 
-            return new FinOpsServerInventory();
+            // Hardware read: best-effort in its OWN try/catch. sys.dm_os_sys_info needs VIEW SERVER STATE
+            // (VIEW DATABASE STATE on Azure SQL DB); a login without it loses only these fields, and the
+            // inventory row above still renders edition/version/storage (#1535).
+            try
+            {
+                using var hardwareCommand = new SqlCommand(HardwareQueryText, connection) { CommandTimeout = 30 };
+                using var hardwareReader = await hardwareCommand.ExecuteReaderAsync();
+                if (await hardwareReader.ReadAsync())
+                {
+                    result.CpuCount = hardwareReader.IsDBNull(0) ? 0 : Convert.ToInt32(hardwareReader.GetValue(0));
+                    result.PhysicalMemoryMb = hardwareReader.IsDBNull(1) ? 0L : Convert.ToInt64(hardwareReader.GetValue(1));
+                    result.SqlServerStartTime = hardwareReader.IsDBNull(2) ? null : hardwareReader.GetDateTime(2);
+                    result.SocketCount = hardwareReader.IsDBNull(3) ? null : Convert.ToInt32(hardwareReader.GetValue(3));
+                    result.CoresPerSocket = hardwareReader.IsDBNull(4) ? null : Convert.ToInt32(hardwareReader.GetValue(4));
+                }
+            }
+            catch (SqlException ex)
+            {
+                result.HardwareUnavailableReason =
+                    "Hardware inventory (CPU, memory, sockets) unavailable - the monitoring login likely lacks VIEW DATABASE STATE on this database.";
+                Logger.Warning($"FinOps: hardware inventory unavailable for '{connection.DataSource}': {ex.Message}");
+            }
+
+            return result;
         }
 
         /// <summary>

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -19,9 +20,8 @@ public sealed class McpActiveQueryTools
         [Description("Hours of data to retrieve. Default 1.")] int hours_back = 1,
         [Description("Maximum number of rows to return. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -30,7 +30,7 @@ public sealed class McpActiveQueryTools
         {
             var rows = await resolved.Value.Service.GetQuerySnapshotsAsync(hours_back);
             if (rows.Count == 0)
-                return "No active query snapshots found in the requested time range.";
+                return McpHelpers.Status("empty", "No active query snapshots found in the requested time range.");
 
             var result = rows.Take(limit).Select(r => new
             {

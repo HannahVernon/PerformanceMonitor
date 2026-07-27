@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -18,11 +19,8 @@ public sealed class McpMemoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -32,14 +30,14 @@ public sealed class McpMemoryTools
             var rows = await resolved.Value.Service.GetMemoryStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No memory stats available.";
+                return McpHelpers.Status("unavailable", "No memory stats available.");
             }
 
             /* Return only the latest snapshot */
             var stats = rows.OrderByDescending(r => r.CollectionTime).FirstOrDefault();
             if (stats == null)
             {
-                return "No memory stats available.";
+                return McpHelpers.Status("unavailable", "No memory stats available.");
             }
 
             return JsonSerializer.Serialize(new
@@ -70,11 +68,8 @@ public sealed class McpMemoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -84,7 +79,7 @@ public sealed class McpMemoryTools
             var rows = await resolved.Value.Service.GetMemoryStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No memory trend data available.";
+                return McpHelpers.Status("unavailable", "No memory trend data available.");
             }
 
             var result = rows.Select(r => new
@@ -116,11 +111,8 @@ public sealed class McpMemoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -130,7 +122,7 @@ public sealed class McpMemoryTools
             var rows = await resolved.Value.Service.GetMemoryClerksAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No memory clerk data available.";
+                return McpHelpers.Status("unavailable", "No memory clerk data available.");
             }
 
             /* Return latest snapshot only */
@@ -165,11 +157,8 @@ public sealed class McpMemoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -179,7 +168,7 @@ public sealed class McpMemoryTools
             var rows = await resolved.Value.Service.GetMemoryGrantStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No memory grant data available.";
+                return McpHelpers.Status("unavailable", "No memory grant data available.");
             }
 
             /* Return latest snapshot */

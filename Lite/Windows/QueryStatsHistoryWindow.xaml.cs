@@ -13,9 +13,14 @@ using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using Microsoft.Win32;
+using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -27,9 +32,15 @@ public partial class QueryStatsHistoryWindow : Window
     private readonly string _queryHash;
     private readonly int _hoursBack;
     private readonly string? _connectionString;
+    private readonly string? _queryText;
+    private readonly PlanNavigationController _planActions;
     private List<QueryStatsHistoryRow> _historyData = new();
+    private ChartHoverHelper? _chartHover;
+    private DataGridFilterManager<QueryStatsHistoryRow>? _filterManager;
+    private Popup? _filterPopup;
+    private ColumnFilterPopup? _filterPopupContent;
 
-    public QueryStatsHistoryWindow(LocalDataService dataService, int serverId, string databaseName, string queryHash, int hoursBack, string? connectionString = null)
+    public QueryStatsHistoryWindow(LocalDataService dataService, int serverId, string databaseName, string queryHash, int hoursBack, string? queryText = null, string? connectionString = null)
     {
         InitializeComponent();
         _dataService = dataService;
@@ -37,12 +48,25 @@ public partial class QueryStatsHistoryWindow : Window
         _databaseName = databaseName;
         _queryHash = queryHash;
         _hoursBack = hoursBack;
+        _queryText = queryText;
         _connectionString = connectionString;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct,
+                productName: "SQL Server Performance Monitor Lite"),
+            "the monitored server");
+
+        _filterManager = new DataGridFilterManager<QueryStatsHistoryRow>(HistoryDataGrid);
+        DataGridFilterColumns.AddFilterButtons(HistoryDataGrid, Filter_Click);
+        _filterManager.UpdateFilterButtonStyles();
 
         QueryIdentifierText.Text = $"Query Stats History: {queryHash} in [{databaseName}]";
         Loaded += async (_, _) => await LoadHistoryAsync();
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+        Closed += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private async System.Threading.Tasks.Task LoadHistoryAsync()
@@ -50,7 +74,7 @@ public partial class QueryStatsHistoryWindow : Window
         try
         {
             _historyData = await _dataService.GetQueryStatsHistoryAsync(_serverId, _databaseName, _queryHash, _hoursBack);
-            HistoryDataGrid.ItemsSource = _historyData;
+            _filterManager!.UpdateData(_historyData);
 
             if (_historyData.Count > 0)
             {
@@ -93,10 +117,17 @@ public partial class QueryStatsHistoryWindow : Window
         var ys = _historyData.Select(r => GetMetricValue(r, tag)).ToArray();
 
         var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
-        scatter.LineWidth = 2;
-        scatter.MarkerSize = 5;
-        scatter.Color = ScottPlot.Color.FromHex("#4FC3F7");
+        scatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
+        ChartStyle.StyleScatter(scatter);
         scatter.LegendText = label;
+
+        var unit = tag.Contains("Ms") ? "ms" : "";
+        if (_chartHover == null)
+            _chartHover = new ChartHoverHelper(HistoryChart, unit);
+        else
+            _chartHover.Unit = unit;
+        _chartHover.Clear();
+        _chartHover.Add(scatter, label);
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
         ApplyTheme(HistoryChart);
@@ -112,7 +143,7 @@ public partial class QueryStatsHistoryWindow : Window
         "DeltaExecutions" => row.DeltaExecutions,
         "DeltaCpuMs" => row.DeltaCpuMs,
         "DeltaLogicalReads" => row.DeltaLogicalReads,
-        "TotalSpills" => row.DeltaSpills,
+        "DeltaSpills" => row.DeltaSpills,
         _ => row.AvgCpuMs
     };
 
@@ -177,48 +208,87 @@ public partial class QueryStatsHistoryWindow : Window
         }
     }
 
-    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
-    {
-        ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
-        {
-            figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
-            dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
-            textColor        = ScottPlot.Color.FromHex("#1A2A3A");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else if (Helpers.ThemeManager.HasLightBackground)
-        {
-            figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
-            dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
-            textColor        = ScottPlot.Color.FromHex("#1A1D23");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else
-        {
-            figureBackground = ScottPlot.Color.FromHex("#22252b");
-            dataBackground   = ScottPlot.Color.FromHex("#111217");
-            textColor        = ScottPlot.Color.FromHex("#E4E6EB");
-            gridColor        = ScottPlot.Colors.White.WithAlpha(40);
-        }
-        chart.Plot.FigureBackground.Color = figureBackground;
-        chart.Plot.DataBackground.Color = dataBackground;
-        chart.Plot.Axes.Color(textColor);
-        chart.Plot.Grid.MajorLineColor = gridColor;
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-    }
+    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart) => ChartStyle.ApplyMinimalChartTheme(chart);
 
     private void OnThemeChanged(string _)
     {
         ApplyTheme(HistoryChart);
         HistoryChart.Refresh();
+        _filterManager?.UpdateFilterButtonStyles();
     }
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyCell(sender);
-    private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "query_stats_history");
+    #region Column Filter Popup
+
+    private void EnsureFilterPopup()
+    {
+        if (_filterPopup == null)
+        {
+            _filterPopupContent = new ColumnFilterPopup();
+            _filterPopup = new Popup
+            {
+                Child = _filterPopupContent,
+                StaysOpen = false,
+                Placement = PlacementMode.Bottom,
+                AllowsTransparency = true
+            };
+        }
+    }
+
+    private void Filter_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string columnName) return;
+        if (_filterManager == null) return;
+
+        EnsureFilterPopup();
+
+        _filterPopupContent!.FilterApplied -= FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
+        _filterPopupContent.FilterApplied += FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared += FilterPopup_FilterCleared;
+
+        _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
+        _filterPopupContent.Initialize(columnName, existingFilter);
+
+        _filterPopup!.PlacementTarget = button;
+        _filterPopup.IsOpen = true;
+    }
+
+    private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+        _filterManager?.SetFilter(e.FilterState);
+    }
+
+    private void FilterPopup_FilterCleared(object? sender, EventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+    }
+
+    #endregion
+
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "query_stats_history", App.CsvSeparator);
+
+    private async System.Threading.Tasks.Task<string?> FetchPlanAsync()
+    {
+        if (string.IsNullOrEmpty(_queryHash)) return null;
+        string? plan = null;
+        try { plan = await _dataService.GetCachedQueryPlanAsync(_serverId, _queryHash); }
+        catch { /* DuckDB lookup failed — fall through to the live server */ }
+        if (string.IsNullOrEmpty(plan) && !string.IsNullOrEmpty(_connectionString))
+            plan = await LocalDataService.FetchQueryPlanOnDemandAsync(_connectionString, _queryHash);
+        return plan;
+    }
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.ViewPlanAsync(FetchPlanAsync, $"Est Plan - {_queryHash}", _queryText);
+
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - {_queryHash}");
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

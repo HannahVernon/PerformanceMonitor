@@ -2,13 +2,14 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
 [McpServerToolType]
 public sealed class McpPerfmonTools
 {
-    [McpServerTool(Name = "get_perfmon_stats"), Description("Gets the latest SQL Server performance counter values: batch requests/sec, compilations/sec, page life expectancy, deadlocks/sec, and more. Provides throughput context to distinguish a busy server from a sick one. Use counter_name or instance_name to filter results.")]
+    [McpServerTool(Name = "get_perfmon_stats"), Description("Gets the latest SQL Server performance counter values: batch requests/sec, compilations/sec, deadlocks/sec, and more. Provides throughput context to distinguish a busy server from a sick one. Use counter_name or instance_name to filter results.")]
     public static async Task<string> GetPerfmonStats(
         LocalDataService dataService,
         ServerManager serverManager,
@@ -16,18 +17,15 @@ public sealed class McpPerfmonTools
         [Description("Filter to a specific counter name, e.g. 'Batch Requests/sec'.")] string? counter_name = null,
         [Description("Filter to a specific instance name, e.g. a database name.")] string? instance_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetLatestPerfmonStatsAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
             {
-                return "No perfmon stats available.";
+                return McpHelpers.Status("unavailable", "No perfmon stats available.");
             }
 
             IEnumerable<PerfmonRow> filtered = rows;
@@ -64,11 +62,8 @@ public sealed class McpPerfmonTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -78,7 +73,33 @@ public sealed class McpPerfmonTools
             var points = await dataService.GetPerfmonTrendAsync(resolved.Value.ServerId, counter_name, hours_back);
             if (points.Count == 0)
             {
-                return $"No trend data for counter '{counter_name}'.";
+                /* No points can mean three different things to a caller. Distinguish them so an LLM
+                   doesn't read a bad counter name as "this metric looks fine." */
+                var collected = await dataService.GetDistinctPerfmonCountersAsync(resolved.Value.ServerId, hours_back);
+
+                /* Page Life Expectancy is the counter people reach for by habit; it is intentionally
+                   not collected, so an empty trend would otherwise be misread as "PLE looks fine." */
+                if (IsPageLifeExpectancy(counter_name))
+                    return McpHelpers.Status(
+                        "not_collected",
+                        $"No trend data for counter '{counter_name}'. Page Life Expectancy is a legacy metric and is intentionally not collected. " +
+                        "Use get_memory_stats for buffer pool / memory pressure instead.",
+                        new { collected_counters = collected });
+
+                /* Nothing collected at all for this server in the window: the collector likely hasn't
+                   produced perfmon data yet (delta counters need two cycles). Not retrievable now. */
+                if (collected.Count == 0)
+                    return McpHelpers.Status(
+                        "unavailable",
+                        $"No trend data for counter '{counter_name}'. No perfmon counters have been collected for this server in the last {hours_back}h yet " +
+                        "(the collector may not have run, or delta counters need a second collection cycle).");
+
+                /* Other counters exist but not this one: the name is almost certainly wrong. Hand back
+                   the collected names so the caller can correct it. */
+                return McpHelpers.Status(
+                    "not_collected",
+                    $"No trend data for counter '{counter_name}'. It may not be a counter this server collects — see hints.collected_counters for the {collected.Count} that are.",
+                    new { collected_counters = collected });
             }
 
             var result = points.Select(p => new
@@ -101,4 +122,13 @@ public sealed class McpPerfmonTools
             return McpHelpers.FormatError("get_perfmon_trend", ex);
         }
     }
+
+    /// <summary>
+    /// True when the caller asked for Page Life Expectancy by any common spelling. Matches the full
+    /// counter name (case-insensitive) or an exact "PLE" — but not "PLE" as a substring, so counters
+    /// like "samples" don't false-positive.
+    /// </summary>
+    private static bool IsPageLifeExpectancy(string counterName) =>
+        counterName.Contains("page life expectancy", StringComparison.OrdinalIgnoreCase) ||
+        counterName.Trim().Equals("PLE", StringComparison.OrdinalIgnoreCase);
 }

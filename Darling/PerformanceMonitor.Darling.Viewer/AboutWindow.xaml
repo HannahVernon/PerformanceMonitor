@@ -1,0 +1,87 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.AboutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="About Performance Monitor Darling"
+        Height="380" Width="460"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Icon="EDD.ico"
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
+    <!-- Mirrors Lite's AboutWindow (Lite/Windows/AboutWindow.xaml), dark-styled via the shared
+         ViewerDarkTheme resource dictionary like the viewer's other dialogs (Manage Mute Rules).
+         Includes Lite's "Check for Updates" affordance: the remote-seat viewer ships as its own
+         Velopack Setup.exe (#1555) and self-updates from the releases feed; on the co-located viewer
+         inside the service zip the Velopack path no-ops and it falls back to opening the releases page.
+         The version is read from the viewer assembly (csproj 3.1.0). -->
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ViewerDarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <Style TargetType="Hyperlink">
+                <Setter Property="Foreground" Value="#6CB6FF"/>
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="SQL Server Performance Monitor Darling"
+                   FontSize="18" FontWeight="Bold" Foreground="{DynamicResource ForegroundBrush}"
+                   TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="1" x:Name="VersionText" Text="Version 3.1.0"
+                   Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,16"/>
+
+        <TextBlock Grid.Row="2" TextWrapping="Wrap" Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,0,8">
+            The desktop viewer for the Performance Monitor Darling service. Connects to the central
+            Postgres store to show per-server dashboards, recommendations, and alerts across every
+            monitored SQL Server.
+        </TextBlock>
+
+        <StackPanel Grid.Row="3" Margin="0,0,0,8">
+            <TextBlock Foreground="{DynamicResource ForegroundBrush}" FontSize="12">
+                © 2026 Erik Darling, Darling Data LLC
+            </TextBlock>
+            <TextBlock Foreground="{DynamicResource ForegroundMutedBrush}" FontSize="12">
+                Licensed under the MIT License
+            </TextBlock>
+        </StackPanel>
+
+        <!-- Links -->
+        <StackPanel Grid.Row="4">
+            <TextBlock FontSize="12" Margin="0,0,0,5">
+                <Hyperlink Click="GitHubLink_Click">
+                    GitHub Repository
+                </Hyperlink>
+            </TextBlock>
+            <TextBlock FontSize="12" Margin="0,0,0,5">
+                <Hyperlink Click="ReportIssueLink_Click">
+                    Report an Issue
+                </Hyperlink>
+            </TextBlock>
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,5">
+                <Button Content="Check for Updates" Click="CheckUpdatesLink_Click" Padding="10,4" FontSize="12"/>
+                <TextBlock x:Name="UpdateStatusText" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"
+                           Foreground="{DynamicResource ForegroundMutedBrush}" Visibility="Collapsed"/>
+            </StackPanel>
+            <TextBlock FontSize="12">
+                <Hyperlink Click="DarlingDataLink_Click">
+                    www.erikdarling.com
+                </Hyperlink>
+            </TextBlock>
+        </StackPanel>
+
+        <Button Grid.Row="5" Content="Close" Click="CloseButton_Click"
+                HorizontalAlignment="Right" Padding="16,4"/>
+    </Grid>
+</Window>

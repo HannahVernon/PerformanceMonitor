@@ -11,7 +11,7 @@ public static class AnalysisSchema
     /// <summary>
     /// Analysis schema version. Independent of main schema version.
     /// </summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 4;
 
     public const string CreateAnalysisFindingsTable = @"
 CREATE TABLE IF NOT EXISTS analysis_findings (
@@ -22,17 +22,19 @@ CREATE TABLE IF NOT EXISTS analysis_findings (
     database_name VARCHAR,
     time_range_start TIMESTAMP,
     time_range_end TIMESTAMP,
-    severity DOUBLE NOT NULL,
-    confidence DOUBLE NOT NULL,
+    severity DOUBLE PRECISION NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
     category VARCHAR NOT NULL,
     story_path VARCHAR NOT NULL,
     story_path_hash VARCHAR NOT NULL,
     story_text VARCHAR NOT NULL,
     root_fact_key VARCHAR NOT NULL,
-    root_fact_value DOUBLE,
+    root_fact_value DOUBLE PRECISION,
     leaf_fact_key VARCHAR,
-    leaf_fact_value DOUBLE,
-    fact_count INTEGER NOT NULL
+    leaf_fact_value DOUBLE PRECISION,
+    fact_count INTEGER NOT NULL,
+    incident_id VARCHAR,
+    remediation_action_json VARCHAR
 )";
 
     public const string CreateAnalysisMutedTable = @"
@@ -44,31 +46,6 @@ CREATE TABLE IF NOT EXISTS analysis_muted (
     story_path VARCHAR NOT NULL,
     muted_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     reason VARCHAR
-)";
-
-    public const string CreateAnalysisExclusionsTable = @"
-CREATE TABLE IF NOT EXISTS analysis_exclusions (
-    exclusion_id BIGINT PRIMARY KEY,
-    exclusion_type VARCHAR NOT NULL,
-    exclusion_value VARCHAR NOT NULL,
-    server_id INTEGER,
-    database_name VARCHAR,
-    is_enabled BOOLEAN NOT NULL DEFAULT true,
-    created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    description VARCHAR
-)";
-
-    public const string CreateAnalysisThresholdsTable = @"
-CREATE TABLE IF NOT EXISTS analysis_thresholds (
-    threshold_id BIGINT PRIMARY KEY,
-    category VARCHAR NOT NULL,
-    fact_key VARCHAR NOT NULL,
-    threshold_type VARCHAR NOT NULL,
-    threshold_value DOUBLE NOT NULL,
-    server_id INTEGER,
-    database_name VARCHAR,
-    is_enabled BOOLEAN NOT NULL DEFAULT true,
-    modified_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 )";
 
     public const string CreateAnalysisFindingsTimeIndex = @"
@@ -83,10 +60,6 @@ CREATE INDEX IF NOT EXISTS idx_analysis_findings_hash
 CREATE INDEX IF NOT EXISTS idx_analysis_muted_hash
     ON analysis_muted(story_path_hash)";
 
-    public const string CreateAnalysisThresholdsLookupIndex = @"
-CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
-    ON analysis_thresholds(category, fact_key)";
-
     /// <summary>
     /// Returns all analysis table creation statements.
     /// </summary>
@@ -94,8 +67,6 @@ CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
     {
         yield return CreateAnalysisFindingsTable;
         yield return CreateAnalysisMutedTable;
-        yield return CreateAnalysisExclusionsTable;
-        yield return CreateAnalysisThresholdsTable;
     }
 
     /// <summary>
@@ -109,6 +80,23 @@ CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
             yield return "ALTER TABLE servers ADD COLUMN IF NOT EXISTS sql_engine_edition INTEGER DEFAULT 0";
             yield return "ALTER TABLE servers ADD COLUMN IF NOT EXISTS sql_major_version INTEGER DEFAULT 0";
         }
+
+        if (fromVersion < 3)
+        {
+            // v3: incident grouping (correlate-and-focus slice 2). Nullable — DuckDB ADD COLUMN
+            // cannot be NOT NULL; the writer always supplies a value (empty for healthy runs).
+            yield return "ALTER TABLE analysis_findings ADD COLUMN IF NOT EXISTS incident_id VARCHAR";
+        }
+
+        if (fromVersion < 4)
+        {
+            // v4: the built RemediationAction persisted as JSON (remediation copy-paste command,
+            // mirroring Darling's remediation_action_json). Nullable — DuckDB ADD COLUMN cannot be
+            // NOT NULL; the writer supplies NULL for findings that carry no execution shape. On
+            // read-back the Recommendations reader deserializes it and the shared renderer turns it
+            // into the copy-paste T-SQL, so a Lite card produces the SAME command a Darling card does.
+            yield return "ALTER TABLE analysis_findings ADD COLUMN IF NOT EXISTS remediation_action_json VARCHAR";
+        }
     }
 
     /// <summary>
@@ -119,6 +107,5 @@ CREATE INDEX IF NOT EXISTS idx_analysis_thresholds_lookup
         yield return CreateAnalysisFindingsTimeIndex;
         yield return CreateAnalysisFindingsHashIndex;
         yield return CreateAnalysisMutedHashIndex;
-        yield return CreateAnalysisThresholdsLookupIndex;
     }
 }

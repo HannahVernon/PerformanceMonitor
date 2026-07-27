@@ -18,11 +18,17 @@ public partial class LocalDataService
     /// <summary>
     /// Gets recent waiting task snapshots for a server.
     /// </summary>
-    public async Task<List<WaitingTaskRow>> GetWaitingTasksAsync(int serverId, int hoursBack = 1)
+    public async Task<List<WaitingTaskRow>> GetWaitingTasksAsync(int serverId, int hoursBack = 1, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
-        command.CommandText = @"
+
+        /* #1240 parity: exclude the user's ignored (benign) wait types at DISPLAY time too, so waiting
+           tasks already in the DuckDB (collected before a type was ignored) don't surface here — the same
+           BuildExclusionClause the wait-stats reads use. */
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 3, out var dbValues);
+        command.CommandText = $@"
 SELECT
     collection_time,
     session_id,
@@ -33,11 +39,14 @@ SELECT
     database_name
 FROM v_waiting_tasks
 WHERE server_id = $1
-AND   collection_time >= $2
+AND   collection_time >= $2{dbClause}
+{exclude}
 ORDER BY collection_time DESC, wait_duration_ms DESC";
 
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow.AddHours(-hoursBack) });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<WaitingTaskRow>();
         using var reader = await command.ExecuteReaderAsync();
@@ -68,7 +77,10 @@ ORDER BY collection_time DESC, wait_duration_ms DESC";
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
 
-        command.CommandText = @"
+        /* #1240 parity: exclude the user's ignored (benign) wait types at DISPLAY time (mirrors the
+           wait-stats reads) so the Current Waits duration chart matches the Wait Stats tab. */
+        var exclude = IgnoredWaitTypes.BuildExclusionClause(_ignoredWaitTypes.Value);
+        command.CommandText = $@"
 SELECT
     collection_time,
     wait_type,
@@ -78,6 +90,7 @@ WHERE server_id = $1
 AND   collection_time >= $2
 AND   collection_time <= $3
 AND   wait_type IS NOT NULL
+{exclude}
 GROUP BY
     collection_time,
     wait_type
@@ -106,12 +119,13 @@ ORDER BY
     /// <summary>
     /// Gets blocked session count trend grouped by database for charting.
     /// </summary>
-    public async Task<List<BlockedSessionTrendPoint>> GetBlockedSessionTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null)
+    public async Task<List<BlockedSessionTrendPoint>> GetBlockedSessionTrendAsync(int serverId, int hoursBack = 24, DateTime? fromDate = null, DateTime? toDate = null, IReadOnlyList<string>? databaseNames = null)
     {
         using var connection = await OpenConnectionAsync();
         using var command = connection.CreateCommand();
 
         var (startTime, endTime) = GetTimeRange(hoursBack, fromDate, toDate);
+        var dbClause = BuildDbInClause(databaseNames, "database_name", 4, out var dbValues);
 
         command.CommandText = @"
 SELECT
@@ -122,7 +136,7 @@ FROM v_waiting_tasks
 WHERE server_id = $1
 AND   blocking_session_id > 0
 AND   collection_time >= $2
-AND   collection_time <= $3
+AND   collection_time <= $3" + dbClause + @"
 AND   database_name IS NOT NULL
 GROUP BY
     collection_time,
@@ -134,6 +148,8 @@ ORDER BY
         command.Parameters.Add(new DuckDBParameter { Value = serverId });
         command.Parameters.Add(new DuckDBParameter { Value = startTime });
         command.Parameters.Add(new DuckDBParameter { Value = endTime });
+        foreach (var db in dbValues)
+            command.Parameters.Add(new DuckDBParameter { Value = db });
 
         var items = new List<BlockedSessionTrendPoint>();
         using var reader = await command.ExecuteReaderAsync();

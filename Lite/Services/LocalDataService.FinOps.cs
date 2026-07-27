@@ -112,6 +112,20 @@ public class ApplicationConnectionRow
     public string ApplicationName { get; set; } = "";
     public int AvgConnections { get; set; }
     public int MaxConnections { get; set; }
+    public int AvgRunning { get; set; }
+    public int MaxRunning { get; set; }
+    public int AvgSleeping { get; set; }
+    public int MaxSleeping { get; set; }
+    public int AvgDormant { get; set; }
+    public int MaxDormant { get; set; }
+    public long AvgCpuTimeMs { get; set; }
+    public long MaxCpuTimeMs { get; set; }
+    public long AvgReads { get; set; }
+    public long MaxReads { get; set; }
+    public long AvgWrites { get; set; }
+    public long MaxWrites { get; set; }
+    public long AvgLogicalReads { get; set; }
+    public long MaxLogicalReads { get; set; }
     public long SampleCount { get; set; }
     public DateTime FirstSeen { get; set; }
     public DateTime LastSeen { get; set; }
@@ -178,6 +192,14 @@ public class ServerPropertyRow
     public DateTime? LastUpdated { get; set; }
     public bool? IsHadrEnabled { get; set; }
     public bool? IsClustered { get; set; }
+    public string AgReplicaRole { get; set; } = "Standalone";
+
+    /// <summary>
+    /// Set when the sys.dm_os_sys_info hardware read failed (e.g. an Azure SQL DB monitoring login
+    /// without VIEW DATABASE STATE). Null when hardware inventory is available. Surfaced as a
+    /// non-alarming note in the FinOps Server Inventory grid (#1535).
+    /// </summary>
+    public string? HardwareUnavailableReason { get; set; }
 
     public decimal? AvgCpuPct { get; set; }
     public decimal? StorageTotalGb { get; set; }
@@ -195,6 +217,7 @@ public class ServerPropertyRow
     }
     public string HadrDisplay => IsHadrEnabled.HasValue ? (IsHadrEnabled.Value ? "Yes" : "No") : "";
     public string ClusteredDisplay => IsClustered.HasValue ? (IsClustered.Value ? "Yes" : "No") : "";
+    public string AgReplicaRoleDisplay => string.Equals(AgReplicaRole, "Standalone", StringComparison.OrdinalIgnoreCase) ? "—" : AgReplicaRole;
     public string ProvisioningDisplay => ProvisioningStatus?.Replace("_", " ") ?? "";
 
     // FinOps cost — from server config
@@ -217,13 +240,6 @@ public class ServerPropertyRow
     // Health score (Increment 6)
     public int HealthScore { get; set; }
     public string HealthScoreColor => FinOpsHealthCalculator.ScoreColor(HealthScore);
-}
-
-public class DatabaseSizeTrendPoint
-{
-    public DateTime CollectionTime { get; set; }
-    public string DatabaseName { get; set; } = "";
-    public decimal TotalSizeMb { get; set; }
 }
 
 public class StorageGrowthRow

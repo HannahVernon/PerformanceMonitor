@@ -17,68 +17,18 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.PlanAnalysis;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Controls
 {
     public partial class QueryPerformanceContent : UserControl
     {
-        private void CopyCell_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-                {
-                    var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                    if (!string.IsNullOrEmpty(cellContent))
-                    {
-                        Clipboard.SetDataObject(cellContent, false);
-                    }
-                }
-            }
-        }
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.SelectedItem != null)
-                {
-                    var rowText = TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem);
-                    Clipboard.SetDataObject(rowText, false);
-                }
-            }
-        }
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-        private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var sb = new StringBuilder();
-
-                    var headers = new List<string>();
-                    foreach (var column in dataGrid.Columns)
-                    {
-                        if (column is DataGridBoundColumn)
-                        {
-                            headers.Add(Helpers.DataGridClipboardBehavior.GetHeaderText(column));
-                        }
-                    }
-                    sb.AppendLine(string.Join("\t", headers));
-
-                    foreach (var item in dataGrid.Items)
-                    {
-                        sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-                    }
-
-                    Clipboard.SetDataObject(sb.ToString(), false);
-                }
-            }
-        }
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
         private void CopyReproScript_Click(object sender, RoutedEventArgs e)
         {
@@ -143,52 +93,7 @@ namespace PerformanceMonitorDashboard.Controls
             }
         }
 
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var saveFileDialog = new SaveFileDialog
-                    {
-                        FileName = $"query_performance_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                        DefaultExt = ".csv",
-                        Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                    };
-
-                    if (saveFileDialog.ShowDialog() == true)
-                    {
-                        try
-                        {
-                            var sb = new StringBuilder();
-
-                            var headers = new List<string>();
-                            foreach (var column in dataGrid.Columns)
-                            {
-                                if (column is DataGridBoundColumn)
-                                {
-                                    headers.Add(TabHelpers.EscapeCsvField(Helpers.DataGridClipboardBehavior.GetHeaderText(column), TabHelpers.CsvSeparator));
-                                }
-                            }
-                            sb.AppendLine(string.Join(TabHelpers.CsvSeparator, headers));
-
-                            foreach (var item in dataGrid.Items)
-                            {
-                                var values = TabHelpers.GetRowValues(dataGrid, item);
-                                sb.AppendLine(string.Join(TabHelpers.CsvSeparator, values.Select(v => TabHelpers.EscapeCsvField(v, TabHelpers.CsvSeparator))));
-                            }
-
-                            File.WriteAllText(saveFileDialog.FileName, sb.ToString());
-                            MessageBox.Show($"Data exported successfully to:\n{saveFileDialog.FileName}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show($"Error exporting data:\n\n{ex.Message}", "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
-                    }
-                }
-            }
-        }
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+            DataGridExport.ExportToCsv(sender, "query_performance", TabHelpers.CsvSeparator);
     }
 }

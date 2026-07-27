@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -19,11 +20,8 @@ public sealed class McpBlockingTools
         [Description("Hours of history. Default 24.")] int hours_back = 24,
         [Description("Maximum rows. Default 30.")] int limit = 30)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -36,7 +34,7 @@ public sealed class McpBlockingTools
             var rows = await resolved.Value.Service.GetBlockingEventsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No blocking events found in the specified time range.";
+                return McpHelpers.Status("empty", "No blocking events found in the specified time range.");
             }
 
             var result = rows.Take(limit).Select(r => new
@@ -85,11 +83,8 @@ public sealed class McpBlockingTools
         [Description("Hours of history. Default 24.")] int hours_back = 24,
         [Description("Maximum rows. Default 20.")] int limit = 20)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -102,7 +97,7 @@ public sealed class McpBlockingTools
             var rows = await resolved.Value.Service.GetDeadlocksAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No deadlocks found in the specified time range.";
+                return McpHelpers.Status("empty", "No deadlocks found in the specified time range.");
             }
 
             var result = rows.Take(limit).Select(r => new
@@ -153,11 +148,8 @@ public sealed class McpBlockingTools
         [Description("Hours of history. Default 24.")] int hours_back = 24,
         [Description("Maximum deadlocks to return. Default 5.")] int limit = 5)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -171,7 +163,7 @@ public sealed class McpBlockingTools
             var withXml = rows.Where(r => !string.IsNullOrEmpty(r.DeadlockGraph)).Take(limit).ToList();
             if (withXml.Count == 0)
             {
-                return "No deadlock XML available in the specified time range.";
+                return McpHelpers.Status("empty", "No deadlock XML available in the specified time range.");
             }
 
             var result = withXml.Select(r => new
@@ -203,11 +195,8 @@ public sealed class McpBlockingTools
         [Description("Hours of history. Default 24.")] int hours_back = 24,
         [Description("Maximum reports to return. Default 5.")] int limit = 5)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -221,7 +210,7 @@ public sealed class McpBlockingTools
             var withXml = rows.Where(r => !string.IsNullOrEmpty(r.BlockedProcessReportXml)).Take(limit).ToList();
             if (withXml.Count == 0)
             {
-                return "No blocked process report XML available in the specified time range.";
+                return McpHelpers.Status("empty", "No blocked process report XML available in the specified time range.");
             }
 
             var result = withXml.Select(r => new
@@ -253,11 +242,8 @@ public sealed class McpBlockingTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -267,7 +253,7 @@ public sealed class McpBlockingTools
             var rows = await resolved.Value.Service.GetBlockingDeadlockStatsAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No blocking/deadlock statistics available.";
+                return McpHelpers.Status("unavailable", "No blocking/deadlock statistics available.");
             }
 
             return JsonSerializer.Serialize(new

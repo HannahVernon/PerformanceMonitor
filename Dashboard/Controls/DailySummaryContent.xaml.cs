@@ -19,6 +19,8 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Controls
 {
@@ -29,6 +31,7 @@ namespace PerformanceMonitorDashboard.Controls
     public partial class DailySummaryContent : UserControl
     {
         private DatabaseService? _databaseService;
+        private UserPreferencesService? _preferencesService;
         private DateTime? _dailySummaryDate = null; // null means today
 
         // Daily Summary filter state
@@ -52,10 +55,10 @@ namespace PerformanceMonitorDashboard.Controls
         /// <summary>
         /// Initializes the control with required dependencies.
         /// </summary>
-        /// <param name="databaseService">The database service for data retrieval.</param>
-        public void Initialize(DatabaseService databaseService)
+        public void Initialize(DatabaseService databaseService, UserPreferencesService preferencesService)
         {
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
+            _preferencesService = preferencesService ?? throw new ArgumentNullException(nameof(preferencesService));
         }
 
         /// <summary>
@@ -86,7 +89,8 @@ namespace PerformanceMonitorDashboard.Controls
                     DailySummaryNoDataMessage.Visibility = Visibility.Collapsed;
                 }
 
-                var data = await _databaseService.GetDailySummaryAsync(_dailySummaryDate);
+                var mode = _preferencesService?.GetPreferences().CpuAlertMode ?? CpuAlertMode.Total;
+                var data = await _databaseService.GetDailySummaryAsync(_dailySummaryDate, mode);
 
                 // Store unfiltered data and reset filters when new data is loaded
                 _dailySummaryUnfilteredData = data;
@@ -172,16 +176,6 @@ namespace PerformanceMonitorDashboard.Controls
                     return result;
             }
             return null;
-        }
-
-        private void DailySummaryFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(DailySummaryDataGrid, sender as TextBox);
-        }
-
-        private void DailySummaryNumericFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(DailySummaryDataGrid, sender as TextBox);
         }
 
         private async void DailySummary_Refresh_Click(object sender, RoutedEventArgs e)
@@ -339,121 +333,15 @@ namespace PerformanceMonitorDashboard.Controls
 
         #region Context Menu Handlers
 
-        private void CopyCell_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-                {
-                    var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                    if (!string.IsNullOrEmpty(cellContent))
-                    {
-                        /* Use SetDataObject with copy=false to avoid WPF's problematic Clipboard.Flush() */
-                        Clipboard.SetDataObject(cellContent, false);
-                    }
-                }
-            }
-        }
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
 
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.SelectedItem != null)
-                {
-                    var rowText = TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem);
-                    /* Use SetDataObject with copy=false to avoid WPF's problematic Clipboard.Flush() */
-                    Clipboard.SetDataObject(rowText, false);
-                }
-            }
-        }
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
 
-        private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var sb = new StringBuilder();
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
 
-                    // Add headers
-                    var headers = new List<string>();
-                    foreach (var column in dataGrid.Columns)
-                    {
-                        if (column is DataGridBoundColumn)
-                        {
-                            headers.Add(Helpers.DataGridClipboardBehavior.GetHeaderText(column));
-                        }
-                    }
-                    sb.AppendLine(string.Join("\t", headers));
-
-                    // Add all rows
-                    foreach (var item in dataGrid.Items)
-                    {
-                        sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-                    }
-
-                    /* Use SetDataObject with copy=false to avoid WPF's problematic Clipboard.Flush() */
-                    Clipboard.SetDataObject(sb.ToString(), false);
-                }
-            }
-        }
-
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var saveFileDialog = new SaveFileDialog
-                    {
-                        FileName = $"daily_summary_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                        DefaultExt = ".csv",
-                        Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                    };
-
-                    if (saveFileDialog.ShowDialog() == true)
-                    {
-                        try
-                        {
-                            var sb = new StringBuilder();
-
-                            // Add headers
-                            var headers = new List<string>();
-                            foreach (var column in dataGrid.Columns)
-                            {
-                                if (column is DataGridBoundColumn)
-                                {
-                                    headers.Add(TabHelpers.EscapeCsvField(Helpers.DataGridClipboardBehavior.GetHeaderText(column), TabHelpers.CsvSeparator));
-                                }
-                            }
-                            sb.AppendLine(string.Join(TabHelpers.CsvSeparator, headers));
-
-                            // Add all rows
-                            foreach (var item in dataGrid.Items)
-                            {
-                                var values = TabHelpers.GetRowValues(dataGrid, item);
-                                sb.AppendLine(string.Join(TabHelpers.CsvSeparator, values.Select(v => TabHelpers.EscapeCsvField(v, TabHelpers.CsvSeparator))));
-                            }
-
-                            File.WriteAllText(saveFileDialog.FileName, sb.ToString());
-                            MessageBox.Show($"Data exported successfully to:\n{saveFileDialog.FileName}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show($"Error exporting data:\n\n{ex.Message}", "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
-                    }
-                }
-            }
-        }
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+            DataGridExport.ExportToCsv(sender, "daily_summary", TabHelpers.CsvSeparator);
 
         #endregion
-
-        // Filtering logic moved to DataGridFilterService.ApplyFilter()
     }
 }

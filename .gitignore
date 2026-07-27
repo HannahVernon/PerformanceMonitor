@@ -8,6 +8,9 @@ obj/
 publish/
 releases/
 
+# Darling bundled-Postgres runtime (built by Darling/tools/fetch-pg-runtime.ps1, never committed)
+Darling/artifacts/
+
 # Visual Studio
 *.suo
 *.user

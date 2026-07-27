@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -18,11 +19,8 @@ public sealed class McpCpuTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 4.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -32,7 +30,7 @@ public sealed class McpCpuTools
             var rows = await resolved.Value.Service.GetCpuUtilizationAsync(hours_back);
             if (rows.Count == 0)
             {
-                return "No CPU utilization data available.";
+                return McpHelpers.Status("unavailable", "No CPU utilization data available.");
             }
 
             /* Downsample to 1-minute buckets to avoid overwhelming LLM context */

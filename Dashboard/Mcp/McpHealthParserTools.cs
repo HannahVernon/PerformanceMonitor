@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -19,14 +20,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserSystemHealthAsync(hours_back);
-            if (rows.Count == 0) return "No system health data found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No system health data found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -34,7 +34,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 total_entries = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                entries = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                entries = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_system_health", ex); }
@@ -48,14 +48,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserSevereErrorsAsync(hours_back);
-            if (rows.Count == 0) return "No severe errors found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No severe errors found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -63,7 +62,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 error_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                errors = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                errors = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_severe_errors", ex); }
@@ -77,14 +76,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserIOIssuesAsync(hours_back);
-            if (rows.Count == 0) return "No I/O issues found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No I/O issues found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -92,7 +90,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 issue_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                issues = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                issues = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_io_issues", ex); }
@@ -106,14 +104,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserSchedulerIssuesAsync(hours_back);
-            if (rows.Count == 0) return "No scheduler issues found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No scheduler issues found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -121,7 +118,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 issue_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                issues = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                issues = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_scheduler_issues", ex); }
@@ -135,14 +132,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserMemoryConditionsAsync(hours_back);
-            if (rows.Count == 0) return "No memory condition events found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No memory condition events found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -150,7 +146,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_memory_conditions", ex); }
@@ -164,14 +160,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserCPUTasksAsync(hours_back);
-            if (rows.Count == 0) return "No CPU task events found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No CPU task events found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -179,7 +174,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_cpu_tasks", ex); }
@@ -193,14 +188,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserMemoryBrokerAsync(hours_back);
-            if (rows.Count == 0) return "No memory broker events found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No memory broker events found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -208,7 +202,7 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_memory_broker", ex); }
@@ -222,14 +216,13 @@ public sealed class McpHealthParserTools
         [Description("Hours of history to retrieve. Default 24.")] int hours_back = 24,
         [Description("Maximum number of entries. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetHealthParserMemoryNodeOOMAsync(hours_back);
-            if (rows.Count == 0) return "No memory node OOM events found in the requested time range.";
+            if (rows.Count == 0) return McpHelpers.Status("empty", "No memory node OOM events found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -237,20 +230,9 @@ public sealed class McpHealthParserTools
                 hours_back,
                 event_count = rows.Count,
                 shown = Math.Min(rows.Count, limit),
-                events = rows.Take(limit).Select(r => SerializeHealthItem(r))
+                events = rows.Take(limit)
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex) { return McpHelpers.FormatError("get_health_parser_memory_node_oom", ex); }
-    }
-
-    /// <summary>
-    /// Generic serializer for HealthParser items. All HealthParser models share
-    /// similar structure — uses reflection-free duck typing via dynamic.
-    /// </summary>
-    private static object SerializeHealthItem(object item)
-    {
-        // All HealthParser items share a CollectionTime property and varying detail columns.
-        // Serialize the full object and let JSON handle the properties.
-        return item;
     }
 }

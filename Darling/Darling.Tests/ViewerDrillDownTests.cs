@@ -1,0 +1,220 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using PerformanceMonitor.Darling.Viewer;
+using PerformanceMonitor.Ui;
+using Xunit;
+using static PerformanceMonitor.Ui.WaitDrillDownHelper;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// Pins the drill-down / chart-navigation parity restored from Lite (Items 1-5): the +/-30-minute window
+/// computation, the slicer-overlay metric selection, the Wait Stats "Show Queries With &lt;wait&gt;"
+/// classification + sort, and the new store reads' SQL shape. Pure logic + SQL pins only (no live Postgres).
+/// </summary>
+public sealed class ViewerDrillDownTests
+{
+    // ── +/-30-minute drill window (Items 1-3) ──
+
+    [Fact]
+    public void DrillWindowUtc_IsA60MinuteSpanCenteredOnTheConvertedTime()
+    {
+        /* Robust to whatever display mode/offset the process statics currently hold: recompute the expected
+           centre through the SAME conversion the method uses, then assert the +/-30 span around it. */
+        var clicked = new DateTime(2026, 7, 6, 14, 20, 0);
+        var (fromUtc, toUtc) = ViewerServerTab.DrillWindowUtc(clicked);
+
+        var centre = ViewerTimeHelper.DisplayToNaiveUtc(clicked);
+        Assert.Equal(centre.AddMinutes(-30), fromUtc);
+        Assert.Equal(centre.AddMinutes(30), toUtc);
+        Assert.Equal(TimeSpan.FromMinutes(60), toUtc - fromUtc);
+    }
+
+    [Fact]
+    public void DrillWindowUtc_InUtcMode_IsExactlyPlusMinus30OfTheClickedTime()
+    {
+        var savedMode = ViewerTimeHelper.CurrentDisplayMode;
+        try
+        {
+            ViewerTimeHelper.CurrentDisplayMode = TimeDisplayMode.UTC; /* identity conversion */
+            var clicked = new DateTime(2026, 7, 6, 9, 0, 0);
+            var (fromUtc, toUtc) = ViewerServerTab.DrillWindowUtc(clicked);
+
+            Assert.Equal(new DateTime(2026, 7, 6, 8, 30, 0), fromUtc);
+            Assert.Equal(new DateTime(2026, 7, 6, 9, 30, 0), toUtc);
+        }
+        finally
+        {
+            ViewerTimeHelper.CurrentDisplayMode = savedMode;
+        }
+    }
+
+    [Theory]
+    [InlineData(TimeDisplayMode.UTC, 0)]
+    [InlineData(TimeDisplayMode.ServerTime, 330)]   // e.g. IST (+5:30) — the chart X is display-time
+    [InlineData(TimeDisplayMode.ServerTime, -480)]  // e.g. PST (-8:00)
+    public void DisplayToNaiveUtc_UndoesTheChartsForDisplayShift(TimeDisplayMode mode, int offsetMinutes)
+    {
+        /* The chart plots ForDisplay(naiveUtc); a drill must recover the original naive UTC so the read
+           windows the right rows. Round-trips through the pure core (no process statics). */
+        var storedUtc = new DateTime(2026, 7, 6, 3, 15, 0);
+        var display = ViewerTimeHelper.ConvertToDisplay(storedUtc, mode, offsetMinutes);
+        var recovered = ViewerTimeHelper.ConvertFromDisplay(display, mode, offsetMinutes);
+
+        Assert.Equal(storedUtc, recovered);
+    }
+
+    // ── Slicer overlay metric selection (Item 5) ──
+
+    private static readonly List<ViewerDataService.ItemTimelinePoint> Timeline = new()
+    {
+        new(new DateTime(2026, 7, 6, 10, 0, 0), CpuMs: 10, ElapsedMs: 100, Reads: 5, Writes: 2, PhysicalReads: 1),
+        new(new DateTime(2026, 7, 6, 10, 1, 0), CpuMs: 0,  ElapsedMs: 0,   Reads: 0, Writes: 0, PhysicalReads: 0),
+        new(new DateTime(2026, 7, 6, 10, 2, 0), CpuMs: 20, ElapsedMs: 200, Reads: 7, Writes: 3, PhysicalReads: 4),
+    };
+
+    [Theory]
+    [InlineData("TotalCpu", 10.0, 20.0)]
+    [InlineData("AvgCpu", 10.0, 20.0)]
+    [InlineData("TotalElapsed", 100.0, 200.0)]
+    [InlineData("TotalReads", 5.0, 7.0)]
+    [InlineData("TotalWrites", 2.0, 3.0)]
+    [InlineData("TotalPhysReads", 1.0, 4.0)]
+    public void ComputeOverlayPoints_PicksTheFieldMatchingTheSlicerMetric_AndDropsZeroCycles(
+        string metric, double firstValue, double secondValue)
+    {
+        var points = ViewerServerTab.ComputeOverlayPoints(Timeline, metric);
+
+        /* The middle (all-zero) cycle is dropped so an idle stretch draws no flat baseline. */
+        Assert.Equal(2, points.Count);
+        Assert.Equal(firstValue, points[0].Value, precision: 3);
+        Assert.Equal(secondValue, points[1].Value, precision: 3);
+        Assert.Equal(new DateTime(2026, 7, 6, 10, 0, 0), points[0].TimeUtc);
+        Assert.Equal(new DateTime(2026, 7, 6, 10, 2, 0), points[1].TimeUtc);
+    }
+
+    [Fact]
+    public void ComputeOverlayPoints_UnknownMetric_FallsBackToElapsed()
+    {
+        /* Query Store's "Sessions" (executions) sort has no dedicated column — it falls to elapsed, like Lite. */
+        var points = ViewerServerTab.ComputeOverlayPoints(Timeline, "Sessions");
+        Assert.Equal(new[] { 100.0, 200.0 }, points.Select(p => p.Value));
+    }
+
+    // ── Wait Stats classification + sort (Item 4) ──
+
+    [Theory]
+    [InlineData("SOS_SCHEDULER_YIELD", WaitCategory.Correlated, "CpuTimeMs")]
+    [InlineData("WRITELOG", WaitCategory.Correlated, "Writes")]
+    [InlineData("RESOURCE_SEMAPHORE", WaitCategory.Correlated, "GrantedQueryMemoryGb")]
+    [InlineData("PAGEIOLATCH_SH", WaitCategory.Correlated, "Reads")]
+    [InlineData("THREADPOOL", WaitCategory.Uncapturable, "CpuTimeMs")]
+    [InlineData("LCK_M_X", WaitCategory.Chain, "")]
+    [InlineData("SOME_RANDOM_WAIT", WaitCategory.Filtered, "WaitTimeMs")]
+    public void Classify_SelectsTheBranchTheWaitDrillDownWindowRoutesOn(
+        string waitType, WaitCategory expectedCategory, string expectedSort)
+    {
+        var classification = Classify(waitType);
+        Assert.Equal(expectedCategory, classification.Category);
+        Assert.Equal(expectedSort, classification.SortProperty);
+    }
+
+    [Fact]
+    public void SortByProperty_OrdersDescendingByTheClassifiedMetric()
+    {
+        var rows = new List<ViewerQuerySnapshotRow>
+        {
+            new() { SessionId = 1, CpuTimeMs = 10, WaitTimeMs = 300 },
+            new() { SessionId = 2, CpuTimeMs = 90, WaitTimeMs = 100 },
+            new() { SessionId = 3, CpuTimeMs = 50, WaitTimeMs = 200 },
+        };
+
+        var byCpu = WaitDrillDownWindow.SortByProperty(rows, "CpuTimeMs");
+        Assert.Equal(new[] { 2, 3, 1 }, byCpu.Select(r => r.SessionId));
+
+        var byWait = WaitDrillDownWindow.SortByProperty(rows, "WaitTimeMs");
+        Assert.Equal(new[] { 1, 3, 2 }, byWait.Select(r => r.SessionId));
+    }
+
+    [Fact]
+    public void SortByProperty_UnknownProperty_LeavesOrderUnchanged()
+    {
+        var rows = new List<ViewerQuerySnapshotRow>
+        {
+            new() { SessionId = 7 },
+            new() { SessionId = 3 },
+        };
+        Assert.Same(rows, WaitDrillDownWindow.SortByProperty(rows, "")); /* the "" (chain) case: untouched */
+    }
+
+    // ── New store reads' SQL shape (Items 4-5) ──
+
+    [Fact]
+    public void QuerySnapshotsByWaitTypeSql_FiltersByWaitTypeOverTheWindow()
+    {
+        var sql = ViewerDataService.QuerySnapshotsByWaitTypeSql;
+        Assert.Contains("FROM query_snapshots", sql, StringComparison.Ordinal);
+        Assert.Contains("server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time >= $2", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $3", sql, StringComparison.Ordinal);
+        Assert.Contains("wait_type = $4", sql, StringComparison.Ordinal);
+        AssertPgPositionalDialect(sql);
+    }
+
+    [Fact]
+    public void QueryStatsItemTimelineSql_FiltersOneQueryHashOverTheWindow()
+    {
+        var sql = ViewerDataService.QueryStatsItemTimelineSql;
+        Assert.Contains("FROM query_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("server_id = $1", sql, StringComparison.Ordinal);
+        Assert.Contains("database_name = $2", sql, StringComparison.Ordinal);
+        Assert.Contains("query_hash = $3", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time >= $4", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $5", sql, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY collection_time", sql, StringComparison.Ordinal);
+        AssertPgPositionalDialect(sql);
+    }
+
+    [Fact]
+    public void ProcStatsItemTimelineSql_FiltersOneSchemaObjectOverTheWindow()
+    {
+        var sql = ViewerDataService.ProcStatsItemTimelineSql;
+        Assert.Contains("FROM procedure_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("database_name = $2", sql, StringComparison.Ordinal);
+        Assert.Contains("schema_name = $3", sql, StringComparison.Ordinal);
+        Assert.Contains("object_name = $4", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time >= $5", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $6", sql, StringComparison.Ordinal);
+        AssertPgPositionalDialect(sql);
+    }
+
+    [Fact]
+    public void QueryStoreItemTimelineSql_FiltersOneQueryPlanAndScalesByExecutionCount()
+    {
+        var sql = ViewerDataService.QueryStoreItemTimelineSql;
+        Assert.Contains("FROM query_store_stats", sql, StringComparison.Ordinal);
+        Assert.Contains("query_id = $3", sql, StringComparison.Ordinal);
+        Assert.Contains("plan_id = $4", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time >= $5", sql, StringComparison.Ordinal);
+        Assert.Contains("collection_time <= $6", sql, StringComparison.Ordinal);
+        /* Query Store stores per-execution averages; the per-interval total scales by execution_count. */
+        Assert.Contains("execution_count", sql, StringComparison.Ordinal);
+        AssertPgPositionalDialect(sql);
+    }
+
+    private static void AssertPgPositionalDialect(string sql)
+    {
+        Assert.DoesNotContain("@", sql, StringComparison.Ordinal);   // no T-SQL named params
+        Assert.DoesNotContain("N'", sql, StringComparison.Ordinal);  // no T-SQL unicode literals
+        Assert.Contains("$1", sql, StringComparison.Ordinal);
+    }
+}

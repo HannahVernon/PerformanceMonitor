@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
@@ -14,15 +15,16 @@ public sealed class McpConfigTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetLatestServerConfigAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
-                return "No server configuration data available. The config collector may not have run yet.";
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No server configuration data available. The config collector may not have run yet.");
 
             return JsonSerializer.Serialize(new
             {
@@ -52,15 +54,16 @@ public sealed class McpConfigTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Filter to a specific database. Omit for all databases.")] string? database_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetLatestDatabaseConfigAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
-                return "No database configuration data available. The config collector may not have run yet.";
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No database configuration data available. The config collector may not have run yet.");
 
             IEnumerable<DatabaseConfigRow> filtered = rows;
             if (!string.IsNullOrEmpty(database_name))
@@ -110,15 +113,16 @@ public sealed class McpConfigTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Filter to a specific database. Omit for all databases.")] string? database_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetLatestDatabaseScopedConfigAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
-                return "No database-scoped configuration data available. The config collector may not have run yet.";
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No database-scoped configuration data available. The config collector may not have run yet.");
 
             IEnumerable<DatabaseScopedConfigRow> filtered = rows;
             if (!string.IsNullOrEmpty(database_name))
@@ -156,15 +160,14 @@ public sealed class McpConfigTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetLatestTraceFlagsAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
-                return "No trace flags found (none enabled, or the config collector has not run yet).";
+                return McpHelpers.Status("empty", "No trace flags found (none enabled, or the config collector has not run yet).");
 
             return JsonSerializer.Serialize(new
             {

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -17,15 +18,14 @@ public sealed class McpServerInventoryTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetFinOpsDatabaseSizeStatsAsync();
             if (rows.Count == 0)
-                return "No database size data available. The size collector may not have run yet.";
+                return McpHelpers.Status("unavailable", "No database size data available. The size collector may not have run yet.");
 
             return JsonSerializer.Serialize(new
             {
@@ -68,9 +68,8 @@ public sealed class McpServerInventoryTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -88,7 +87,8 @@ public sealed class McpServerInventoryTools
                 socket_count = row.SocketCount,
                 cores_per_socket = row.CoresPerSocket,
                 is_hadr_enabled = row.IsHadrEnabled,
-                is_clustered = row.IsClustered
+                is_clustered = row.IsClustered,
+                hardware_unavailable_reason = row.HardwareUnavailableReason
             }, McpHelpers.JsonOptions);
         }
         catch (Exception ex)

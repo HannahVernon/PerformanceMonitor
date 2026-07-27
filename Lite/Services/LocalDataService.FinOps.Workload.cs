@@ -29,7 +29,7 @@ public partial class LocalDataService
 WITH workload AS (
     SELECT
         database_name,
-        SUM(delta_worker_time) / 1000 AS cpu_time_ms,
+        SUM(delta_worker_time) / 1000.0 AS cpu_time_ms,
         SUM(delta_logical_reads) AS logical_reads,
         SUM(delta_physical_reads) AS physical_reads,
         SUM(delta_logical_writes) AS logical_writes,
@@ -116,8 +116,10 @@ ORDER BY c.cpu_time_ms DESC";
     }
 
     /// <summary>
-    /// Gets per-application connection counts from session_stats (last 24 hours).
-    /// Aggregates snapshots of sys.dm_exec_sessions grouped by program_name.
+    /// Gets per-application connection counts plus the collected per-app resource + session-status metrics
+    /// from session_stats (last 24 hours). Aggregates snapshots of sys.dm_exec_sessions grouped by
+    /// program_name: AVG/MAX for connection/running/sleeping/dormant counts and CPU/reads/writes/logical-reads
+    /// (the resource columns are nullable, so AVG/MAX yield NULL until populated).
     /// </summary>
     public async Task<List<ApplicationConnectionRow>> GetApplicationConnectionsAsync(int serverId)
     {
@@ -131,6 +133,20 @@ SELECT
     program_name,
     CAST(AVG(connection_count) AS INTEGER) AS avg_connections,
     MAX(connection_count) AS max_connections,
+    CAST(AVG(running_count) AS INTEGER) AS avg_running,
+    MAX(running_count) AS max_running,
+    CAST(AVG(sleeping_count) AS INTEGER) AS avg_sleeping,
+    MAX(sleeping_count) AS max_sleeping,
+    CAST(AVG(dormant_count) AS INTEGER) AS avg_dormant,
+    MAX(dormant_count) AS max_dormant,
+    CAST(AVG(total_cpu_time_ms) AS BIGINT) AS avg_cpu_time_ms,
+    MAX(total_cpu_time_ms) AS max_cpu_time_ms,
+    CAST(AVG(total_reads) AS BIGINT) AS avg_reads,
+    MAX(total_reads) AS max_reads,
+    CAST(AVG(total_writes) AS BIGINT) AS avg_writes,
+    MAX(total_writes) AS max_writes,
+    CAST(AVG(total_logical_reads) AS BIGINT) AS avg_logical_reads,
+    MAX(total_logical_reads) AS max_logical_reads,
     COUNT(*) AS sample_count,
     MIN(collection_time) AS first_seen,
     MAX(collection_time) AS last_seen
@@ -152,9 +168,23 @@ ORDER BY max_connections DESC";
                 ApplicationName = reader.GetString(0),
                 AvgConnections = reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader.GetValue(1)),
                 MaxConnections = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2)),
-                SampleCount = reader.IsDBNull(3) ? 0 : ToInt64(reader.GetValue(3)),
-                FirstSeen = reader.GetDateTime(4),
-                LastSeen = reader.GetDateTime(5)
+                AvgRunning = reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3)),
+                MaxRunning = reader.IsDBNull(4) ? 0 : Convert.ToInt32(reader.GetValue(4)),
+                AvgSleeping = reader.IsDBNull(5) ? 0 : Convert.ToInt32(reader.GetValue(5)),
+                MaxSleeping = reader.IsDBNull(6) ? 0 : Convert.ToInt32(reader.GetValue(6)),
+                AvgDormant = reader.IsDBNull(7) ? 0 : Convert.ToInt32(reader.GetValue(7)),
+                MaxDormant = reader.IsDBNull(8) ? 0 : Convert.ToInt32(reader.GetValue(8)),
+                AvgCpuTimeMs = reader.IsDBNull(9) ? 0L : ToInt64(reader.GetValue(9)),
+                MaxCpuTimeMs = reader.IsDBNull(10) ? 0L : ToInt64(reader.GetValue(10)),
+                AvgReads = reader.IsDBNull(11) ? 0L : ToInt64(reader.GetValue(11)),
+                MaxReads = reader.IsDBNull(12) ? 0L : ToInt64(reader.GetValue(12)),
+                AvgWrites = reader.IsDBNull(13) ? 0L : ToInt64(reader.GetValue(13)),
+                MaxWrites = reader.IsDBNull(14) ? 0L : ToInt64(reader.GetValue(14)),
+                AvgLogicalReads = reader.IsDBNull(15) ? 0L : ToInt64(reader.GetValue(15)),
+                MaxLogicalReads = reader.IsDBNull(16) ? 0L : ToInt64(reader.GetValue(16)),
+                SampleCount = reader.IsDBNull(17) ? 0 : ToInt64(reader.GetValue(17)),
+                FirstSeen = reader.GetDateTime(18),
+                LastSeen = reader.GetDateTime(19)
             });
         }
 
@@ -175,7 +205,7 @@ ORDER BY max_connections DESC";
 WITH workload AS (
     SELECT
         database_name,
-        SUM(delta_worker_time) / 1000 AS cpu_time_ms,
+        SUM(delta_worker_time) / 1000.0 AS cpu_time_ms,
         SUM(delta_execution_count) AS execution_count
     FROM v_query_stats
     WHERE server_id = $1
@@ -256,7 +286,7 @@ LIMIT $3";
 WITH workload AS (
     SELECT
         database_name,
-        SUM(delta_worker_time) / 1000 AS cpu_time_ms,
+        SUM(delta_worker_time) / 1000.0 AS cpu_time_ms,
         SUM(delta_execution_count) AS execution_count
     FROM v_query_stats
     WHERE server_id = $1
@@ -414,7 +444,7 @@ ORDER BY bc.total_wait_time_ms DESC";
         command.CommandText = @"
 SELECT
     database_name,
-    SUM(delta_worker_time) / 1000 AS total_cpu_ms,
+    SUM(delta_worker_time) / 1000.0 AS total_cpu_ms,
     CAST(SUM(delta_worker_time) / 1000.0 / NULLIF(SUM(delta_execution_count), 0) AS DECIMAL(19,2)) AS avg_cpu_ms,
     SUM(delta_logical_reads) AS total_reads,
     CAST(SUM(delta_logical_reads) * 1.0 / NULLIF(SUM(delta_execution_count), 0) AS DECIMAL(19,0)) AS avg_reads,

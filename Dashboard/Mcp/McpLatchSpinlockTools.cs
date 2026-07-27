@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -19,9 +20,8 @@ public sealed class McpLatchSpinlockTools
         [Description("Hours of data to analyze. Default 24.")] int hours_back = 24,
         [Description("Number of top latch classes to return. Default 10.")] int top = 10)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -30,7 +30,7 @@ public sealed class McpLatchSpinlockTools
         {
             var rows = await resolved.Value.Service.GetLatchStatsTopNAsync(top, hours_back);
             if (rows.Count == 0)
-                return "No latch statistics available in the requested time range.";
+                return McpHelpers.Status("unavailable", "No latch statistics available in the requested time range.");
 
             // Service returns all snapshots for top N classes (for UI charting).
             // For MCP, return only the latest snapshot per class with aggregated deltas.
@@ -82,9 +82,8 @@ public sealed class McpLatchSpinlockTools
         [Description("Hours of data to analyze. Default 24.")] int hours_back = 24,
         [Description("Number of top spinlocks to return. Default 10.")] int top = 10)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -93,7 +92,7 @@ public sealed class McpLatchSpinlockTools
         {
             var rows = await resolved.Value.Service.GetSpinlockStatsTopNAsync(top, hours_back);
             if (rows.Count == 0)
-                return "No spinlock statistics available in the requested time range.";
+                return McpHelpers.Status("unavailable", "No spinlock statistics available in the requested time range.");
 
             // Aggregate to one row per spinlock class with totals over the period
             var latestPerClass = rows

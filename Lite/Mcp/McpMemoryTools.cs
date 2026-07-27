@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
@@ -14,18 +15,15 @@ public sealed class McpMemoryTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var stats = await dataService.GetLatestMemoryStatsAsync(resolved.Value.ServerId);
             if (stats == null)
             {
-                return "No memory stats available.";
+                return McpHelpers.Status("unavailable", "No memory stats available.");
             }
 
             return JsonSerializer.Serialize(new
@@ -56,11 +54,8 @@ public sealed class McpMemoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -97,11 +92,8 @@ public sealed class McpMemoryTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -141,11 +133,8 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -155,7 +144,7 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
             var rows = await dataService.GetMemoryPressureEventsAsync(resolved.Value.ServerId, hours_back);
             if (rows.Count == 0)
             {
-                return "No memory pressure events found in the requested time range.";
+                return McpHelpers.Status("empty", "No memory pressure events found in the requested time range.");
             }
 
             return JsonSerializer.Serialize(new
@@ -177,6 +166,58 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
         }
     }
 
+    [McpServerTool(Name = "get_resource_semaphore"), Description("Gets resource semaphore statistics from the latest snapshot: granted vs available workspace memory against the target/max-target ceiling, per resource semaphore, with waiter counts and cumulative + per-interval timeout/forced-grant pressure indicators. High waiter counts or rising timeout/forced deltas indicate memory grant pressure affecting query performance.")]
+    public static async Task<string> GetResourceSemaphore(
+        LocalDataService dataService,
+        ServerManager serverManager,
+        [Description("Server name or display name.")] string? server_name = null,
+        [Description("Hours of history to search for the latest snapshot. Default 24.")] int hours_back = 24)
+    {
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
+
+        try
+        {
+            var hoursError = McpHelpers.ValidateHoursBack(hours_back);
+            if (hoursError != null) return hoursError;
+
+            var rows = await dataService.GetResourceSemaphoreSnapshotAsync(resolved.Value.ServerId, hours_back);
+            if (rows.Count == 0)
+            {
+                return McpHelpers.Status("unavailable", "No memory grant data available.");
+            }
+
+            var result = rows.Select(r => new
+            {
+                collection_time = r.CollectionTime.ToString("o"),
+                resource_semaphore_id = r.ResourceSemaphoreId,
+                pool_id = r.PoolId,
+                target_memory_mb = Math.Round(r.TargetMemoryMb, 2),
+                max_target_memory_mb = Math.Round(r.MaxTargetMemoryMb, 2),
+                total_memory_mb = Math.Round(r.TotalMemoryMb, 2),
+                available_memory_mb = Math.Round(r.AvailableMemoryMb, 2),
+                granted_memory_mb = Math.Round(r.GrantedMemoryMb, 2),
+                used_memory_mb = Math.Round(r.UsedMemoryMb, 2),
+                grantee_count = r.GranteeCount,
+                waiter_count = r.WaiterCount,
+                timeout_error_count = r.TimeoutErrorCount,
+                forced_grant_count = r.ForcedGrantCount,
+                timeout_error_count_delta = r.TimeoutErrorCountDelta,
+                forced_grant_count_delta = r.ForcedGrantCountDelta
+            });
+
+            return JsonSerializer.Serialize(new
+            {
+                server = resolved.Value.ServerName,
+                grants = result
+            }, McpHelpers.JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return McpHelpers.FormatError("get_resource_semaphore", ex);
+        }
+    }
+
     [McpServerTool(Name = "get_memory_grants"), Description("Gets resource semaphore statistics showing granted vs available workspace memory per resource pool, waiter counts, and timeout/forced grant deltas. High waiter counts or rising timeout deltas indicate memory grant pressure affecting query performance.")]
     public static async Task<string> GetMemoryGrants(
         LocalDataService dataService,
@@ -184,11 +225,8 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 1.")] int hours_back = 1)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -198,7 +236,7 @@ Not available on Azure SQL DB (ring buffer not exposed). For actionable interpre
             var rows = await dataService.GetMemoryGrantChartDataAsync(resolved.Value.ServerId, hours_back);
             if (rows.Count == 0)
             {
-                return "No memory grant data available.";
+                return McpHelpers.Status("unavailable", "No memory grant data available.");
             }
 
             /* Return latest snapshot */

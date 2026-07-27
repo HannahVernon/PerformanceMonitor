@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -18,11 +19,8 @@ public sealed class McpWaitTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Maximum rows to return. Default 20.")] int limit = 20)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var limitError = McpHelpers.ValidateTop(limit);
         if (limitError != null) return limitError;
@@ -32,7 +30,7 @@ public sealed class McpWaitTools
             var rows = await resolved.Value.Service.GetWaitStatsAsync();
             if (rows.Count == 0)
             {
-                return "No wait stats data available.";
+                return McpHelpers.Status("unavailable", "No wait stats data available.");
             }
 
             var result = rows.Take(limit).Select(r => new
@@ -67,11 +65,8 @@ public sealed class McpWaitTools
         [Description("Hours of history. Default 24.")] int hours_back = 24,
         [Description("Top N wait types to include. Default 5.")] int top_wait_types = 5)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var hoursError = McpHelpers.ValidateHoursBack(hours_back);
         if (hoursError != null) return hoursError;
@@ -84,7 +79,7 @@ public sealed class McpWaitTools
             var points = await resolved.Value.Service.GetWaitStatsDataAsync(hours_back, topWaitTypes: top_wait_types);
             if (points.Count == 0)
             {
-                return "No wait stats trend data available.";
+                return McpHelpers.Status("unavailable", "No wait stats trend data available.");
             }
 
             var result = points.Select(p => new

@@ -11,11 +11,15 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using PerformanceMonitor.Notifications;
 using System.Windows.Threading;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorLite;
 
@@ -32,24 +36,22 @@ public partial class App : Application
     [DllImport("shell32.dll", SetLastError = true)]
     private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsIconic(IntPtr hWnd);
-
-    private const int SW_RESTORE = 9;
-
     private const string MutexName = "PerformanceMonitorLite_SingleInstance";
-    private Mutex? _singleInstanceMutex;
-    private bool _ownsMutex;
+    /* Version-aware single-instance + upgrade handoff (plans/single-instance-upgrade-handoff.md):
+       a newer build launched over an older tray-resident one closes it and takes over instead of
+       being handed back the stale in-memory version. The coordinator owns the mutex + the exit
+       listener for the life of the owning process. */
+    private const string ExitForUpgradeEventName = "PerformanceMonitorLite_ExitForUpgrade";
+    private SingleInstanceCoordinator? _instanceCoordinator;
+
+    /* Single-instance "surface the window" channel (#769, #1050). A second launch signals this named
+       event and exits; the owning instance restores its window through WPF's own Show() path
+       (MainWindow.RestoreFromTray). The old approach poked the HWND with raw Win32 ShowWindow, which
+       leaves a tray-hidden (WPF Visibility.Hidden) window visible but blank — the root cause of the
+       "blank window after relaunch" reports. */
+    private const string ShowWindowEventName = "PerformanceMonitorLite_ShowWindow";
+    private SingleInstanceSignal? _instanceSignal;
+    private MainWindow? _mainWindow;
 
     /// <summary>
     /// Gets the application data directory where config and data files are stored.
@@ -106,15 +108,37 @@ public partial class App : Application
     public static bool AlertLongRunningQueryExcludeWaitFor { get; set; } = true;
     public static bool AlertLongRunningQueryExcludeBackups { get; set; } = true;
     public static bool AlertLongRunningQueryExcludeMiscWaits { get; set; } = true;
+    public static bool AlertLongRunningQueryExcludeCdc { get; set; } = true;
     public static List<string> AlertExcludedDatabases { get; set; } = new();
     public static bool AlertTempDbSpaceEnabled { get; set; } = true;
     public static int AlertTempDbSpaceThresholdPercent { get; set; } = 80;
+    public static bool AlertLowDiskEnabled { get; set; } = true;
+    public static int AlertLowDiskThresholdPercent { get; set; } = 10; // Alert when a volume's free space < X% (0 disables this check)
+    public static int AlertLowDiskThresholdGb { get; set; } = 5;        // Alert when a volume's free space < X GB (0 disables this check)
     public static bool AlertLongRunningJobEnabled { get; set; } = true;
     public static int AlertLongRunningJobMultiplier { get; set; } = 3;
+    public static bool AlertFailedJobEnabled { get; set; } = true;
+    public static int AlertFailedJobLookbackMinutes { get; set; } = 60;  // Look back this many minutes for failed Agent job runs
     public static int AlertCooldownMinutes { get; set; } = 5;  // Tray notification cooldown between repeated alerts
     public static int EmailCooldownMinutes { get; set; } = 15; // Email cooldown between repeated alerts
+    /* #1141: deadlock/blocking notification delivery — Summary (one batched card per cycle, the default)
+       or PerEvent (one notification per distinct incident, capped, for per-incident ticketing). */
+    public static AlertNotificationMode AlertDeliveryMode { get; set; } = AlertNotificationMode.Summary;
+    public static int AlertPerEventMaxPerCycle { get; set; } = 10; // Max per-event notifications per cycle before "+N more"
     public static string MuteRuleDefaultExpiration { get; set; } = "24 hours"; // Default expiration for new mute rules
     public static bool LogAlertDismissals { get; set; } = true; // Log alert dismiss/mute actions to file
+
+    /* Automated analysis production (D0): run the triage engine and persist findings on
+       the independent AnalysisIntervalMinutes cadence. Decoupled from notification delivery
+       (AnalysisNotificationsEnabled). Default ON so the recommendations data exists. */
+    public static bool AnalysisEnabled { get; set; } = true;
+
+    /* Automated analysis notifications (scheduled triage) */
+    public static bool AnalysisNotificationsEnabled { get; set; } = false;  // Delivery gate — analysis runs regardless
+    public static int AnalysisIntervalMinutes { get; set; } = 30;           // How often scheduled analysis runs
+    public static double AnalysisNotifySeverity { get; set; } = 1.5;        // Minimum finding severity (0.0-2.0) to notify on
+    public static int AnalysisNotifyCooldownMinutes { get; set; } = 360;    // Re-notify gap per finding (keyed by StoryPathHash)
+    public static int AnalysisTimeoutSeconds { get; set; } = 120;           // Per-server analysis timeout
 
     /* Connection settings */
     public static int ConnectionTimeoutSeconds { get; set; } = 5;
@@ -137,6 +161,9 @@ public partial class App : Application
     /* Color theme ("Dark" or "Light") */
     public static string ColorTheme { get; set; } = "Dark";
 
+    /* NOC Overview tile sort ("Cpu" = CPU% descending default, or "Name") */
+    public static ServerOverviewSortMode OverviewSortMode { get; set; } = ServerOverviewSort.Default;
+
     /* Update check settings */
     public static bool CheckForUpdatesOnStartup { get; set; } = true;
 
@@ -150,8 +177,21 @@ public partial class App : Application
     public static string SlackWebhookUrl { get; set; } = "";
     public static string SlackProxyAddress { get; set; } = "";
 
+    /* Generic webhook settings (#1506) — POSTs an operator-authored JSON body to any endpoint, so an
+       alert can drive automation we ship no adapter for (PagerDuty, Opsgenie, n8n, or a GitHub
+       repository_dispatch that re-runs a workflow). The URL and the headers JSON both carry bearer
+       tokens, so — like the Teams/Slack URLs — they live in Credential Manager, never in settings.json;
+       only the enable flag, the proxy, and the body template are plain prefs. */
+    public static bool GenericWebhookEnabled { get; set; } = false;
+    public static string GenericWebhookUrl { get; set; } = "";
+    public static string GenericWebhookHeadersJson { get; set; } = "";
+    public static string GenericWebhookBodyTemplate { get; set; } = "";
+    public static string GenericWebhookProxyAddress { get; set; } = "";
+
     private const string TeamsWebhookCredentialKey = "TeamsWebhook";
     private const string SlackWebhookCredentialKey = "SlackWebhook";
+    private const string GenericWebhookCredentialKey = "GenericWebhook";
+    private const string GenericWebhookHeadersCredentialKey = "GenericWebhookHeaders";
 
     /// <summary>
     /// Gets a webhook URL from Windows Credential Manager.
@@ -243,24 +283,45 @@ public partial class App : Application
     {
         SetCurrentProcessExplicitAppUserModelID("DarlingData.PerformanceMonitor.Lite");
 
-        // Check for existing instance
-        _singleInstanceMutex = new Mutex(true, MutexName, out _ownsMutex);
-
-        if (!_ownsMutex)
+        /* Single-instance with upgrade handoff. Runs synchronously, at the top of OnStartup before
+           base.OnStartup and any window/data init, so we only open the shared DuckDB / bind the MCP
+           port after any older instance has released them. A newer build closes an older tray-resident
+           one and takes over; a same/newer one just surfaces the existing instance (today's behavior);
+           an older-but-elevated one raises an actionable error. */
+        _instanceCoordinator = new SingleInstanceCoordinator(new SingleInstanceOptions
         {
-            /* Bring the existing instance's window to the foreground instead of showing an error (#769) */
-            var hWnd = FindWindow(null, "Performance Monitor Lite");
-            if (hWnd != IntPtr.Zero)
-            {
-                if (IsIconic(hWnd))
-                    ShowWindow(hWnd, SW_RESTORE);
-                SetForegroundWindow(hWnd);
-            }
+            MutexName = MutexName,
+            ProcessName = "PerformanceMonitorLite",
+            ExitEventName = ExitForUpgradeEventName,
+            SurfaceRunningInstance = () => SingleInstanceSignal.TrySignal(ShowWindowEventName),
+            GracefulSelfExit = () => Dispatcher.BeginInvoke(new Action(Shutdown)),
+            Prompts = new MessageBoxHandoffPrompts("Performance Monitor Lite"),
+            AutoConfirm = Array.Exists(e.Args, a => string.Equals(a, HandoffArgs.AutoConfirm, StringComparison.OrdinalIgnoreCase)),
+            Log = msg => { try { AppLogger.Info("SingleInstance", msg); } catch { /* logger not yet initialized */ } },
+        });
+
+        if (!_instanceCoordinator.TryBecomeOwner())
+        {
             Shutdown();
             return;
         }
 
+        /* Own the "surface me" channel before anything slow runs, so a fast second launch finds it.
+           The callback null-checks _mainWindow, so a signal that lands before the window exists is a
+           harmless no-op (the window is about to show regardless). */
+        _instanceSignal = new SingleInstanceSignal(ShowWindowEventName, OnSurfaceWindowRequested);
+
         base.OnStartup(e);
+
+        // Right-click selects the DataGrid row under the cursor app-wide, so context-menu actions
+        // (e.g. View Plan) act on the clicked row even after an auto-refresh cleared the selection.
+        PerformanceMonitor.Ui.DataGridRowSelectionBehavior.Enable();
+
+        // #1050: WPF's GPU render thread can zombie its surface across sleep/wake or RDP, leaving a
+        // live-but-blank window. Software rendering removes the GPU dependency entirely. Charts are
+        // unaffected — ScottPlot renders via SkiaSharp (CPU) into a bitmap, not WPF's GPU path.
+        System.Windows.Media.RenderOptions.ProcessRenderMode =
+            System.Windows.Interop.RenderMode.SoftwareOnly;
 
         // Initialize paths — store data in %LOCALAPPDATA% so Velopack updates
         // can replace the app directory without losing data
@@ -276,12 +337,26 @@ public partial class App : Application
         Directory.CreateDirectory(ConfigDirectory);
         Directory.CreateDirectory(Path.Combine(appDataRoot, "archive"));
 
+        // Seed the per-user config dir from the copies bundled next to the exe on first run, so a
+        // fresh install/extract has the editable defaults present. Critical for ignored_wait_types.json:
+        // without it the wait filter is empty and benign waits flood the wait stats tab (#1240).
+        Services.ConfigSeeder.SeedMissing(
+            Path.Combine(AppContext.BaseDirectory, "config"),
+            ConfigDirectory,
+            new[] { "ignored_wait_types.json", "collection_schedule.json" });
+
         // Load settings
         LoadDefaultTimeRange();
         LoadAlertSettings();
 
+        // Wire the shared-UI time conversion hook before any chart/crosshair can
+        // render. The lambda reads CurrentDisplayMode at call time, so later
+        // display-mode switches are honored. Must precede the first window/chart.
+        PerformanceMonitor.Ui.UiTimeContext.ConvertForDisplay =
+            t => Services.ServerTimeHelper.ConvertForDisplay(t, Services.ServerTimeHelper.CurrentDisplayMode);
+
         // Apply saved color theme before the main window is shown
-        Helpers.ThemeManager.Apply(ColorTheme);
+        ThemeManager.Apply(ColorTheme);
 
         // Initialize logging
         var logDirectory = Path.Combine(appDataRoot, "logs");
@@ -300,20 +375,36 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         // Create and show main window (StartupUri removed for Velopack custom Main)
-        var mainWindow = new MainWindow();
-        mainWindow.Show();
+        _mainWindow = new MainWindow();
+        _mainWindow.Show();
     }
+
+    /// <summary>
+    /// Invoked on <see cref="SingleInstanceSignal"/>'s background thread when a second launch asks us
+    /// to surface the window. Marshals to the UI thread and restores via WPF's Show() path (#1050).
+    /// </summary>
+    private void OnSurfaceWindowRequested()
+    {
+        Dispatcher.BeginInvoke(new Action(() => _mainWindow?.RestoreFromTray()));
+    }
+
+    /// <summary>
+    /// Opens the upgrade-handoff "exit" channel once startup is past its risky init (DuckDB ready).
+    /// Called by <see cref="MainWindow"/> after initialization so a newer build won't signal/kill us
+    /// mid-init (#single-instance-upgrade-handoff). Safe to call more than once.
+    /// </summary>
+    public void EnableUpgradeHandoff() => _instanceCoordinator?.EnableUpgradeHandoff();
 
     protected override void OnExit(ExitEventArgs e)
     {
         AppLogger.Info("App", "Shutting down");
+
+        _instanceSignal?.Dispose();
+
         AppLogger.Shutdown();
 
-        if (_ownsMutex)
-        {
-            _singleInstanceMutex?.ReleaseMutex();
-        }
-        _singleInstanceMutex?.Dispose();
+        /* Releases the mutex + disposes the exit-for-upgrade listener. */
+        _instanceCoordinator?.Dispose();
 
         base.OnExit(e);
     }
@@ -438,6 +529,7 @@ public partial class App : Application
             if (root.TryGetProperty("alert_long_running_query_exclude_waitfor", out v)) AlertLongRunningQueryExcludeWaitFor = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_exclude_backups", out v)) AlertLongRunningQueryExcludeBackups = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_query_exclude_misc_waits", out v)) AlertLongRunningQueryExcludeMiscWaits = v.GetBoolean();
+            if (root.TryGetProperty("alert_long_running_query_exclude_cdc", out v)) AlertLongRunningQueryExcludeCdc = v.GetBoolean();
             if (root.TryGetProperty("alert_excluded_databases", out v) && v.ValueKind == System.Text.Json.JsonValueKind.Array)
             {
                 AlertExcludedDatabases = new List<string>();
@@ -449,10 +541,18 @@ public partial class App : Application
             }
             if (root.TryGetProperty("alert_tempdb_space_enabled", out v)) AlertTempDbSpaceEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_tempdb_space_threshold_percent", out v)) AlertTempDbSpaceThresholdPercent = v.GetInt32();
+            if (root.TryGetProperty("alert_low_disk_enabled", out v)) AlertLowDiskEnabled = v.GetBoolean();
+            if (root.TryGetProperty("alert_low_disk_threshold_percent", out v)) AlertLowDiskThresholdPercent = (int)Math.Clamp(v.GetInt64(), 0, 100);
+            if (root.TryGetProperty("alert_low_disk_threshold_gb", out v)) AlertLowDiskThresholdGb = (int)Math.Max(0, v.GetInt64());
             if (root.TryGetProperty("alert_long_running_job_enabled", out v)) AlertLongRunningJobEnabled = v.GetBoolean();
             if (root.TryGetProperty("alert_long_running_job_multiplier", out v)) AlertLongRunningJobMultiplier = v.GetInt32();
+            if (root.TryGetProperty("alert_failed_job_enabled", out v)) AlertFailedJobEnabled = v.GetBoolean();
+            if (root.TryGetProperty("alert_failed_job_lookback_minutes", out v)) AlertFailedJobLookbackMinutes = (int)Math.Clamp(v.GetInt64(), 1, 1440);
             if (root.TryGetProperty("alert_cooldown_minutes", out v)) AlertCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
             if (root.TryGetProperty("email_cooldown_minutes", out v)) EmailCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 1, 120);
+            if (root.TryGetProperty("alert_delivery_mode", out v) && Enum.TryParse<AlertNotificationMode>(v.GetString(), out var deliveryMode))
+                AlertDeliveryMode = deliveryMode;
+            if (root.TryGetProperty("alert_per_event_max_per_cycle", out v)) AlertPerEventMaxPerCycle = (int)Math.Clamp(v.GetInt64(), 1, 100);
             if (root.TryGetProperty("mute_rule_default_expiration", out v))
             {
                 var exp = v.GetString();
@@ -485,7 +585,7 @@ public partial class App : Application
                 if (t == "ServerTime" || t == "LocalTime" || t == "UTC")
                 {
                     TimeDisplayMode = t;
-                    if (Enum.TryParse<Helpers.TimeDisplayMode>(t, out var tdm))
+                    if (Enum.TryParse<TimeDisplayMode>(t, out var tdm))
                         Services.ServerTimeHelper.CurrentDisplayMode = tdm;
                 }
             }
@@ -497,6 +597,9 @@ public partial class App : Application
                 if (t == "Dark" || t == "Light" || t == "CoolBreeze") ColorTheme = t;
             }
 
+            /* NOC Overview tile sort */
+            if (root.TryGetProperty("overview_sort_mode", out v)) OverviewSortMode = ServerOverviewSort.ParseMode(v.GetString());
+
             /* Update check settings */
             if (root.TryGetProperty("check_for_updates_on_startup", out v)) CheckForUpdatesOnStartup = v.GetBoolean();
 
@@ -507,6 +610,12 @@ public partial class App : Application
             /* Slack webhook settings */
             if (root.TryGetProperty("slack_webhook_enabled", out v)) SlackWebhookEnabled = v.GetBoolean();
             if (root.TryGetProperty("slack_proxy_address", out v)) SlackProxyAddress = v.GetString() ?? "";
+
+            /* Generic webhook settings (#1506). The URL + headers JSON are secrets and load from Credential
+               Manager below; only these three are plain prefs. */
+            if (root.TryGetProperty("generic_webhook_enabled", out v)) GenericWebhookEnabled = v.GetBoolean();
+            if (root.TryGetProperty("generic_proxy_address", out v)) GenericWebhookProxyAddress = v.GetString() ?? "";
+            if (root.TryGetProperty("generic_body_template", out v)) GenericWebhookBodyTemplate = v.GetString() ?? "";
 
             /* Migrate webhook URLs from plaintext settings.json to Credential Manager */
             if (root.TryGetProperty("teams_webhook_url", out v))
@@ -526,9 +635,12 @@ public partial class App : Application
                 }
             }
 
-            /* Load webhook URLs from Credential Manager */
+            /* Load webhook URLs from Credential Manager. The generic channel's headers JSON rides the same
+               secure store as a URL — it carries the Authorization bearer token (#1506). */
             TeamsWebhookUrl = GetWebhookUrl(TeamsWebhookCredentialKey);
             SlackWebhookUrl = GetWebhookUrl(SlackWebhookCredentialKey);
+            GenericWebhookUrl = GetWebhookUrl(GenericWebhookCredentialKey);
+            GenericWebhookHeadersJson = GetWebhookUrl(GenericWebhookHeadersCredentialKey);
 
             /* SMTP settings */
             if (root.TryGetProperty("smtp_enabled", out v)) SmtpEnabled = v.GetBoolean();
@@ -538,8 +650,38 @@ public partial class App : Application
             if (root.TryGetProperty("smtp_username", out v)) SmtpUsername = v.GetString() ?? "";
             if (root.TryGetProperty("smtp_from_address", out v)) SmtpFromAddress = v.GetString() ?? "";
             if (root.TryGetProperty("smtp_recipients", out v)) SmtpRecipients = v.GetString() ?? "";
+
+            if (root.TryGetProperty("analysis_enabled", out v)) AnalysisEnabled = v.GetBoolean();
+            if (root.TryGetProperty("analysis_notifications_enabled", out v)) AnalysisNotificationsEnabled = v.GetBoolean();
+            if (root.TryGetProperty("analysis_interval_minutes", out v)) AnalysisIntervalMinutes = (int)Math.Clamp(v.GetInt64(), 5, 360);
+            if (root.TryGetProperty("analysis_notify_severity", out v)) AnalysisNotifySeverity = Math.Clamp(v.GetDouble(), 0.0, 2.0);
+            if (root.TryGetProperty("analysis_notify_cooldown_minutes", out v)) AnalysisNotifyCooldownMinutes = (int)Math.Clamp(v.GetInt64(), 30, 10080);
+            if (root.TryGetProperty("analysis_timeout_seconds", out v)) AnalysisTimeoutSeconds = (int)Math.Clamp(v.GetInt64(), 30, 600);
         }
         catch { /* Use defaults */ }
+    }
+
+    /// <summary>
+    /// Reads settings.json (or starts fresh), applies <paramref name="mutate"/>, and writes it back
+    /// indented; logs and swallows any error under <paramref name="what"/>. Shared by the single-value
+    /// Save* methods (and MainWindow's Overview sort selector) so the read/merge/write/catch boilerplate
+    /// lives in one place.
+    /// </summary>
+    public static void WriteSetting(string what, Action<JsonNode> mutate)
+    {
+        var settingsPath = Path.Combine(ConfigDirectory, "settings.json");
+        try
+        {
+            JsonNode root = File.Exists(settingsPath)
+                ? JsonNode.Parse(File.ReadAllText(settingsPath)) ?? new JsonObject()
+                : new JsonObject();
+            mutate(root);
+            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Settings", $"Failed to save {what}: {ex.Message}");
+        }
     }
 
     private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)

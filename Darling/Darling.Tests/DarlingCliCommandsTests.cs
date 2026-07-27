@@ -1,0 +1,603 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.IO;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using PerformanceMonitor.Darling.Service;
+using Xunit;
+using Host = PerformanceMonitor.Darling.Service.Mcp.DarlingMcpHostService;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// The <c>--test-connection</c>/<c>--validate-config</c> CLI verb. The connectivity probe itself needs a live
+/// SQL Server, but the verb recognition and the pure per-server PASS/FAIL formatting are unit-tested here; the
+/// probe is shared with the <c>test_connect</c> command (<see cref="DarlingServerConnector.ProbeAsync"/>), so
+/// what validates from the CLI connects identically under the running service.
+/// </summary>
+public sealed class DarlingCliCommandsTests
+{
+    [Theory]
+    [InlineData("--test-connection", true)]
+    [InlineData("--validate-config", true)]
+    [InlineData("--TEST-CONNECTION", true)]
+    [InlineData("--encrypt-password", false)]
+    [InlineData("--nonsense", false)]
+    public void IsValidateConfigVerb_RecognizesBothAliases_CaseInsensitive(string arg, bool expected)
+    {
+        Assert.Equal(expected, DarlingCliCommands.IsValidateConfigVerb(arg));
+    }
+
+    [Fact]
+    public void FormatProbeLine_Success_ShowsVersionEditionAndMsdb()
+    {
+        var probe = new ConnectionProbeResult(
+            Success: true, MajorVersion: 16, EngineEdition: 3, EngineEditionDescription: "Enterprise",
+            IsAzureSqlDb: false, IsAzureManagedInstance: false, IsAwsRds: false, HasMsdbAccess: true, Error: null);
+
+        var line = DarlingCliCommands.FormatProbeLine("SQL01", probe);
+
+        Assert.Contains("[PASS]", line, StringComparison.Ordinal);
+        Assert.Contains("SQL01", line, StringComparison.Ordinal);
+        Assert.Contains("SQL major version 16", line, StringComparison.Ordinal);
+        Assert.Contains("Enterprise", line, StringComparison.Ordinal);
+        Assert.Contains("msdb access: yes", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatProbeLine_Success_NoMsdb_WarnsFailedJobsUnavailable()
+    {
+        var probe = new ConnectionProbeResult(
+            Success: true, MajorVersion: 15, EngineEdition: 2, EngineEditionDescription: "Standard",
+            IsAzureSqlDb: false, IsAzureManagedInstance: false, IsAwsRds: false, HasMsdbAccess: false, Error: null);
+
+        var line = DarlingCliCommands.FormatProbeLine("SQL02", probe);
+
+        Assert.Contains("[PASS]", line, StringComparison.Ordinal);
+        Assert.Contains("msdb access: NO", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatProbeLine_MissingDescription_FallsBackToEditionDescriber()
+    {
+        var probe = new ConnectionProbeResult(
+            Success: true, MajorVersion: 16, EngineEdition: 8, EngineEditionDescription: null,
+            IsAzureSqlDb: false, IsAzureManagedInstance: true, IsAwsRds: false, HasMsdbAccess: true, Error: null);
+
+        var line = DarlingCliCommands.FormatProbeLine("MI01", probe);
+
+        /* Edition 8 -> Managed Instance, resolved by the shared describer when the probe carries no text. */
+        Assert.Contains("Azure SQL Managed Instance", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatProbeLine_Failure_ShowsError()
+    {
+        var probe = new ConnectionProbeResult(
+            Success: false, MajorVersion: 0, EngineEdition: 0, EngineEditionDescription: null,
+            IsAzureSqlDb: false, IsAzureManagedInstance: false, IsAwsRds: false, HasMsdbAccess: false,
+            Error: "Login failed for user 'monitor'.");
+
+        var line = DarlingCliCommands.FormatProbeLine("SQL03", probe);
+
+        Assert.Contains("[FAIL]", line, StringComparison.Ordinal);
+        Assert.Contains("SQL03", line, StringComparison.Ordinal);
+        Assert.Contains("Login failed", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DescribeEngineEdition_MapsKnownEditions()
+    {
+        Assert.Equal("Enterprise", DarlingServerConnector.DescribeEngineEdition(3));
+        Assert.Equal("Azure SQL Database", DarlingServerConnector.DescribeEngineEdition(5));
+        Assert.Equal("Azure SQL Managed Instance", DarlingServerConnector.DescribeEngineEdition(8));
+        Assert.Contains("Unknown", DarlingServerConnector.DescribeEngineEdition(999), StringComparison.Ordinal);
+    }
+}
+
+/// <summary>
+/// The #1581 startup-argument classification (Fix B): the pure <see cref="DarlingCliCommands.ClassifyStartupArgs"/>
+/// decision and the verb-recognition helpers it composes. The incident was <c>Service.exe --version</c> falling
+/// through into a real service startup and spawning a second instance — so the contract these pin is: only no-arg
+/// or a RECOGNIZED verb reaches the host; <c>--version</c>/<c>--help</c> print + exit; ANYTHING else is an unknown
+/// option that must NOT start the host.
+/// </summary>
+public sealed class DarlingStartupArgsTests
+{
+    [Theory]
+    [InlineData("--version", true)]
+    [InlineData("-v", true)]
+    [InlineData("--VERSION", true)]
+    [InlineData("-V", true)]
+    [InlineData("--help", false)]
+    [InlineData("--nonsense", false)]
+    public void IsVersionVerb_RecognizesVersionFlags_CaseInsensitive(string arg, bool expected) =>
+        Assert.Equal(expected, DarlingCliCommands.IsVersionVerb(arg));
+
+    [Theory]
+    [InlineData("--help", true)]
+    [InlineData("-h", true)]
+    [InlineData("-?", true)]
+    [InlineData("/?", true)]
+    [InlineData("--HELP", true)]
+    [InlineData("--version", false)]
+    [InlineData("--nonsense", false)]
+    public void IsHelpVerb_RecognizesHelpFlags_CaseInsensitive(string arg, bool expected) =>
+        Assert.Equal(expected, DarlingCliCommands.IsHelpVerb(arg));
+
+    [Theory]
+    [InlineData("--encrypt-password", true)]
+    [InlineData("--test-connection", true)]
+    [InlineData("--validate-config", true)]
+    [InlineData("--print-viewer-connection", true)]
+    [InlineData("--configure-network", true)]
+    [InlineData("--version", false)]   // its own classification, not a "known verb"
+    [InlineData("--help", false)]
+    [InlineData("--nonsense", false)]
+    public void IsKnownVerb_CoversEveryDispatchedVerb(string arg, bool expected) =>
+        Assert.Equal(expected, DarlingCliCommands.IsKnownVerb(arg));
+
+    [Fact]
+    public void ClassifyStartupArgs_NoArgs_StartsHost()
+    {
+        Assert.Equal(StartupAction.StartHost, DarlingCliCommands.ClassifyStartupArgs(Array.Empty<string>()));
+        Assert.Equal(StartupAction.StartHost, DarlingCliCommands.ClassifyStartupArgs(null));
+    }
+
+    [Theory]
+    [InlineData("--version", StartupAction.PrintVersion)]
+    [InlineData("-v", StartupAction.PrintVersion)]
+    [InlineData("--help", StartupAction.PrintHelp)]
+    [InlineData("-h", StartupAction.PrintHelp)]
+    [InlineData("--encrypt-password", StartupAction.RunKnownVerb)]
+    [InlineData("--test-connection", StartupAction.RunKnownVerb)]
+    [InlineData("--configure-network", StartupAction.RunKnownVerb)]
+    [InlineData("--version-bogus", StartupAction.UnknownOption)]
+    [InlineData("--nonsense", StartupAction.UnknownOption)]
+    [InlineData("/install", StartupAction.UnknownOption)]
+    public void ClassifyStartupArgs_ClassifiesFirstArg(string arg, StartupAction expected) =>
+        Assert.Equal(expected, DarlingCliCommands.ClassifyStartupArgs(new[] { arg }));
+
+    [Fact]
+    public void ClassifyStartupArgs_UsesOnlyTheFirstArg()
+    {
+        /* Extra args after a recognized first arg do not change the classification. */
+        Assert.Equal(StartupAction.PrintVersion, DarlingCliCommands.ClassifyStartupArgs(new[] { "--version", "extra" }));
+        Assert.Equal(StartupAction.RunKnownVerb, DarlingCliCommands.ClassifyStartupArgs(new[] { "--test-connection", "cfg.json" }));
+    }
+
+    [Fact]
+    public void ProductVersion_IsNonEmpty_AndStripsBuildMetadata()
+    {
+        var version = DarlingCliCommands.ProductVersion();
+        Assert.False(string.IsNullOrWhiteSpace(version));
+        /* Any SemVer +build metadata is stripped for a clean --version line. */
+        Assert.DoesNotContain('+', version);
+        /* The leading component parses as a version (e.g. "3.1.0"). */
+        Assert.NotNull(System.Version.Parse(version.Split('-', '+')[0]));
+    }
+
+    [Fact]
+    public void UsageText_ListsTheKeyVerbs_AndIsAscii()
+    {
+        var usage = DarlingCliCommands.UsageText();
+        Assert.Contains("--version", usage, StringComparison.Ordinal);
+        Assert.Contains("--help", usage, StringComparison.Ordinal);
+        Assert.Contains("--test-connection", usage, StringComparison.Ordinal);
+        Assert.Contains("--encrypt-password", usage, StringComparison.Ordinal);
+        Assert.Contains("--configure-network", usage, StringComparison.Ordinal);
+        Assert.All(usage, ch => Assert.True(ch < 128, $"usage text must be ASCII; found U+{(int)ch:X4}"));
+    }
+}
+
+/// <summary>
+/// The <c>--print-viewer-connection</c> verb (darling-network-endpoints D8): the pure connection-string /
+/// host builders (unit-testable without DPAPI or a store), plus a Windows-gated end-to-end that decrypts a
+/// temp <c>viewer</c> credential + emits the cert, asserting the paste-ready shape and the live-secret warning.
+/// </summary>
+public sealed class DarlingPrintViewerConnectionTests
+{
+    [Theory]
+    [InlineData("--print-viewer-connection", true)]
+    [InlineData("--PRINT-VIEWER-CONNECTION", true)]
+    [InlineData("--validate-config", false)]
+    [InlineData("--encrypt-password", false)]
+    [InlineData("--nonsense", false)]
+    public void IsPrintViewerConnectionVerb_RecognizesTheVerb_CaseInsensitive(string arg, bool expected)
+    {
+        Assert.Equal(expected, DarlingCliCommands.IsPrintViewerConnectionVerb(arg));
+    }
+
+    [Fact]
+    public void BuildViewerConnectionString_CarriesSearchPath_VerifyFull_RootCert_Role_HostAndPort()
+    {
+        var cs = DarlingCliCommands.BuildViewerConnectionString(
+            "192.168.1.205", 5641, "viewer", "s3cretPW", "server.crt");
+
+        Assert.Contains("Host=192.168.1.205", cs, StringComparison.Ordinal);
+        Assert.Contains("Port=5641", cs, StringComparison.Ordinal);
+        Assert.Contains("Username=viewer", cs, StringComparison.Ordinal);
+        Assert.Contains("Password=s3cretPW", cs, StringComparison.Ordinal);
+        Assert.Contains("Database=darling", cs, StringComparison.Ordinal);
+        Assert.Contains("Search Path=collect,config,public", cs, StringComparison.Ordinal);
+        Assert.Contains("SSL Mode=VerifyFull", cs, StringComparison.Ordinal);
+        Assert.Contains("Root Certificate=server.crt", cs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildViewerConnectionString_NamesTheSelectedRole()
+    {
+        /* role:admin flows through to Username= so the admin opt-in prints an admin connection. */
+        var cs = DarlingCliCommands.BuildViewerConnectionString("host", 1, "admin", "pw", "c.crt");
+        Assert.Contains("Username=admin", cs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResolveViewerHost_ConcreteIp_ReturnsTheIp()
+    {
+        /* A concrete bind IP is used verbatim — verify-full validates it against the cert's iPAddress SAN. */
+        Assert.Equal("192.168.1.205", DarlingCliCommands.ResolveViewerHost("192.168.1.205"));
+        Assert.Equal("10.0.0.7", DarlingCliCommands.ResolveViewerHost("  10.0.0.7  "));
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]     // IPv4 wildcard — can't be dialed
+    [InlineData("::")]          // IPv6 wildcard
+    [InlineData("127.0.0.1")]   // loopback
+    [InlineData("localhost")]   // not an IP
+    [InlineData("")]            // unset
+    [InlineData(null)]
+    public void ResolveViewerHost_WildcardLoopbackOrHostname_FallsBackToTheMachineDnsSan(string? listen)
+    {
+        /* The fallback is the machine hostname, which the cert carries as a dnsName SAN. */
+        Assert.Equal(Environment.MachineName, DarlingCliCommands.ResolveViewerHost(listen));
+    }
+
+    [Fact]
+    public async Task PrintViewerConnectionAsync_ByoMode_ReturnsError_WithoutTouchingDpapi()
+    {
+        var root = Directory.CreateTempSubdirectory("darling-printconn-byo-");
+        try
+        {
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            await File.WriteAllTextAsync(configPath,
+                """{ "postgres": { "connectionString": "Host=localhost;Database=darling" } }""");
+
+            var output = new StringWriter();
+            var error = new StringWriter();
+            var exit = await DarlingCliCommands.PrintViewerConnectionAsync(configPath, output, error, CancellationToken.None);
+
+            Assert.Equal(1, exit);
+            Assert.Contains("bring-your-own", error.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("", output.ToString());
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PrintViewerConnectionAsync_InvalidRole_ReturnsError()
+    {
+        var root = Directory.CreateTempSubdirectory("darling-printconn-role-");
+        try
+        {
+            var dataDirectory = Path.Combine(root.FullName, "pg");
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            var json = $$"""
+                {
+                  "postgres": {
+                    "managed": true,
+                    "port": 5641,
+                    "dataDirectory": {{JsonSerializer.Serialize(dataDirectory)}},
+                    "network": { "listen": "192.168.1.205", "allowFrom": "192.168.1.0/24", "role": "superadmin" }
+                  }
+                }
+                """;
+            await File.WriteAllTextAsync(configPath, json);
+
+            var output = new StringWriter();
+            var error = new StringWriter();
+            var exit = await DarlingCliCommands.PrintViewerConnectionAsync(configPath, output, error, CancellationToken.None);
+
+            Assert.Equal(1, exit);
+            Assert.Contains("role", error.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PrintViewerConnectionAsync_ManagedViewer_PrintsConnection_Cert_AndSecretWarning()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "DPAPI requires Windows.");
+
+        var root = Directory.CreateTempSubdirectory("darling-printconn-");
+        try
+        {
+            /* Lay down the managed layout the verb reads on the store host: the viewer role's DPAPI credential
+               and the generated server cert, both beside the data directory. */
+            var dataDirectory = Path.Combine(root.FullName, "pg");
+            var viewerCredential = PerformanceMonitor.Darling.Service.DarlingManagedPostgres.ViewerCredentialPathFor(dataDirectory);
+            File.WriteAllText(viewerCredential, PerformanceMonitor.Darling.Service.DarlingSecrets.Protect("viewer-secret-pw"));
+
+            var certPath = Path.Combine(
+                Path.GetDirectoryName(viewerCredential)!,
+                PerformanceMonitor.Darling.Service.DarlingManagedPostgres.ServerCertFileName);
+            const string pem = "-----BEGIN CERTIFICATE-----\nMIIBTESTCERTPEM\n-----END CERTIFICATE-----";
+            File.WriteAllText(certPath, pem);
+
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            var json = $$"""
+                {
+                  "postgres": {
+                    "managed": true,
+                    "port": 5641,
+                    "dataDirectory": {{JsonSerializer.Serialize(dataDirectory)}},
+                    "network": { "listen": "192.168.1.205", "allowFrom": "192.168.1.0/24", "role": "viewer" }
+                  },
+                  "servers": [ { "name": "SQL2022", "host": "SQL2022" } ]
+                }
+                """;
+            await File.WriteAllTextAsync(configPath, json);
+
+            var output = new StringWriter();
+            var error = new StringWriter();
+            var exit = await DarlingCliCommands.PrintViewerConnectionAsync(configPath, output, error, CancellationToken.None);
+            var stdout = output.ToString();
+            var stderr = error.ToString();
+
+            Assert.Equal(0, exit);
+
+            /* The paste-ready connection string on STDOUT: verify-full, the search path, the client cert path,
+               the viewer role, the decrypted password, and Host=the IP (Round 4 #12). */
+            Assert.Contains("Host=192.168.1.205", stdout, StringComparison.Ordinal);
+            Assert.Contains("Username=viewer", stdout, StringComparison.Ordinal);
+            Assert.Contains("Password=viewer-secret-pw", stdout, StringComparison.Ordinal);
+            Assert.Contains("Search Path=collect,config,public", stdout, StringComparison.Ordinal);
+            Assert.Contains("SSL Mode=VerifyFull", stdout, StringComparison.Ordinal);
+            Assert.Contains("Root Certificate=server.crt", stdout, StringComparison.Ordinal);
+
+            /* The server cert PEM is emitted so the operator can place it on the client. */
+            Assert.Contains(pem, stdout, StringComparison.Ordinal);
+
+            /* The live-secret warning is printed (to STDERR, so a STDOUT redirect keeps it visible). */
+            Assert.Contains("LIVE database password", stderr, StringComparison.Ordinal);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+}
+
+/// <summary>
+/// The <c>--configure-network</c> wizard (#1561): pure verb recognition (unconditional), plus scripted-input
+/// end-to-end runs (Windows-gated, like the sibling <c>--print-viewer-connection</c> E2E, because the wizard
+/// generates a DPAPI token and queries the Windows service). Every run drives the whole flow with a
+/// <see cref="StringReader"/> and asserts the delegated-validation contract: the edit PARSES, the REAL
+/// resolvers accept it, a timestamped backup is created, and the generated token is printed to STDOUT
+/// exactly once with the save-this warning on STDERR. The comment-surgery internals are pinned separately by
+/// <see cref="DarlingNetworkConfigEditorTests"/>.
+/// </summary>
+public sealed class DarlingConfigureNetworkTests
+{
+    private const string CertPath = @"C:\ProgramData\PerformanceMonitorDarling\server.crt";
+    private const string KeyPath = @"C:\ProgramData\PerformanceMonitorDarling\server.key";
+
+    [Theory]
+    [InlineData("--configure-network", true)]
+    [InlineData("--CONFIGURE-NETWORK", true)]
+    [InlineData("--print-viewer-connection", false)]
+    [InlineData("--validate-config", false)]
+    [InlineData("--nonsense", false)]
+    public void IsConfigureNetworkVerb_RecognizesTheVerb_CaseInsensitive(string arg, bool expected)
+    {
+        Assert.Equal(expected, DarlingCliCommands.IsConfigureNetworkVerb(arg));
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Store_WritesBlock_MakesBackup_ParsesAndResolverExposed()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service + uses DPAPI.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-store-");
+        try
+        {
+            var configPath = CopySampleTo(root.FullName);
+
+            /* choice=Store, bind IP typed directly, CIDR, role, then decline restart. */
+            var input = Script("1", "192.168.1.205", "192.168.1.0/24", "viewer", "n");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+            Assert.Equal(0, exit);
+
+            /* The written file parses and the STORE RESOLVER reports it exposed with the entered values. */
+            var written = await File.ReadAllTextAsync(configPath);
+            var config = DarlingConfig.Parse(written);
+            var decision = DarlingManagedPostgres.ResolveNetworkExposure(config.Postgres.Network, CertPath, KeyPath);
+            Assert.True(decision.Exposed);
+            Assert.Equal("192.168.1.205", decision.ListenIp);
+            Assert.Equal("192.168.1.0/24", decision.Cidr);
+            Assert.Equal("viewer", decision.Role);
+
+            /* A timestamped backup exists, and the commented template survived the edit. */
+            Assert.NotEmpty(Directory.GetFiles(root.FullName, "darling.json.bak-*"));
+            Assert.Contains("// \"network\": {", written, StringComparison.Ordinal);
+            Assert.Contains("Backup saved", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Mcp_GeneratesToken_PrintsPlaintextOnce_WarnsOnStderr_StoresEncrypted()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard generates a DPAPI-protected token.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-mcp-");
+        try
+        {
+            var configPath = CopySampleTo(root.FullName);
+
+            /* choice=MCP, bind IP, CIDR, decline restart. No existing token -> one is generated. */
+            var input = Script("2", "192.168.1.205", "192.168.1.0/24", "n");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+            Assert.Equal(0, exit);
+
+            var written = await File.ReadAllTextAsync(configPath);
+            var config = DarlingConfig.Parse(written);
+            Assert.Equal(Host.McpBindMode.NetworkAndLoopback, Host.ResolveMcpBind(config.Mcp, managed: true).Mode);
+
+            /* Stored only DPAPI-encrypted; the plaintext it decrypts to is the token printed to STDOUT. */
+            var encrypted = config.Mcp.Network!.EncryptedToken;
+            Assert.False(string.IsNullOrWhiteSpace(encrypted));
+            var plaintext = DarlingSecrets.Unprotect(encrypted!);
+
+            Assert.Equal(1, CountOccurrences(output.ToString(), plaintext));   // STDOUT: exactly once
+            Assert.Contains("SAVE THIS NOW", error.ToString(), StringComparison.Ordinal); // STDERR: the warning
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Byo_RefusesAndWritesNothing()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-byo-");
+        try
+        {
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            await File.WriteAllTextAsync(configPath,
+                """{ "postgres": { "connectionString": "Host=localhost;Database=darling" } }""");
+
+            var input = Script(); // no blocks present -> no disable offer, straight refusal
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+
+            Assert.Equal(1, exit);
+            Assert.Contains("bring-your-own", output.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(Directory.GetFiles(root.FullName, "darling.json.bak-*")); // nothing written
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_Disable_RemovesBlock_BacksUp_ResolverLoopback()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-disable-");
+        try
+        {
+            var configPath = Path.Combine(root.FullName, "darling.json");
+            await File.WriteAllTextAsync(configPath, """
+                {
+                  "postgres": {
+                    "managed": true,
+                    "port": 5641,
+                    "network": { "listen": "192.168.1.205", "allowFrom": "192.168.1.0/24", "role": "viewer" }
+                  },
+                  "servers": [ { "host": "S" } ]
+                }
+                """);
+
+            var input = Script("4", "n"); // Disable, then decline restart
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+            Assert.Equal(0, exit);
+
+            var written = await File.ReadAllTextAsync(configPath);
+            var config = DarlingConfig.Parse(written);
+            Assert.False(DarlingManagedPostgres.ResolveNetworkExposure(config.Postgres.Network, CertPath, KeyPath).Exposed);
+            Assert.NotEmpty(Directory.GetFiles(root.FullName, "darling.json.bak-*"));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConfigureNetwork_QuitAtMenu_WritesNothing()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "The wizard queries the Windows service.");
+
+        var root = Directory.CreateTempSubdirectory("darling-confignet-quit-");
+        try
+        {
+            var configPath = CopySampleTo(root.FullName);
+            var before = await File.ReadAllTextAsync(configPath);
+
+            var input = Script("q");
+            var output = new StringWriter();
+            var error = new StringWriter();
+
+            var exit = await DarlingCliCommands.ConfigureNetworkAsync(configPath, input, output, error, CancellationToken.None);
+
+            Assert.Equal(0, exit);
+            Assert.Empty(Directory.GetFiles(root.FullName, "darling.json.bak-*"));
+            Assert.Equal(before, await File.ReadAllTextAsync(configPath)); // untouched
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    private static string CopySampleTo(string directory)
+    {
+        var configPath = Path.Combine(directory, "darling.json");
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "darling.sample.json"), configPath);
+        return configPath;
+    }
+
+    private static StringReader Script(params string[] lines) => new(string.Join("\n", lines) + "\n");
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        if (string.IsNullOrEmpty(needle))
+        {
+            return 0;
+        }
+
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
+    }
+}

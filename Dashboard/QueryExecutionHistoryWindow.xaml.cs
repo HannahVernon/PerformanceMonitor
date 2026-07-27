@@ -21,6 +21,9 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard
 {
@@ -33,13 +36,14 @@ namespace PerformanceMonitorDashboard
         private readonly int _hoursBack;
         private readonly DateTime? _fromDate;
         private readonly DateTime? _toDate;
+        private readonly string? _queryText;
+        private readonly PlanNavigationController _planActions;
         private List<QueryExecutionHistoryItem> _historyData = new();
         private ScottPlot.IPanel? _legendPanel;
         private ChartHoverHelper? _chartHover;
 
         // Filter state
-        private Dictionary<string, ColumnFilterState> _filters = new();
-        private List<QueryExecutionHistoryItem>? _unfilteredData;
+        private readonly DataGridFilterManager<QueryExecutionHistoryItem> _filterManager;
         private Popup? _filterPopup;
         private ColumnFilterPopup? _filterPopupContent;
 
@@ -50,7 +54,8 @@ namespace PerformanceMonitorDashboard
             string sourceType = "Query Store",
             int hoursBack = 24,
             DateTime? fromDate = null,
-            DateTime? toDate = null)
+            DateTime? toDate = null,
+            string? queryText = null)
         {
             InitializeComponent();
 
@@ -61,13 +66,25 @@ namespace PerformanceMonitorDashboard
             _hoursBack = hoursBack;
             _fromDate = fromDate;
             _toDate = toDate;
+            _queryText = queryText;
+
+            _planActions = new PlanNavigationController(
+                this,
+                (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+                (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                    _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                "the monitored server");
+
+            _filterManager = new DataGridFilterManager<QueryExecutionHistoryItem>(HistoryDataGrid);
+            DataGridFilterColumns.AddFilterButtons(HistoryDataGrid, Filter_Click);
+            _filterManager.UpdateFilterButtonStyles();
 
             QueryIdentifierText.Text = $"Query Execution History: Query {queryId} in [{databaseName}]";
 
             ApplyThemeToChart();
             Loaded += QueryExecutionHistoryWindow_Loaded;
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-            Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
+            Closed += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void ApplyThemeToChart()
@@ -111,10 +128,7 @@ namespace PerformanceMonitorDashboard
                     _historyData = new List<QueryExecutionHistoryItem>();
                 }
 
-                _unfilteredData = _historyData;
-                _filters.Clear();
-                HistoryDataGrid.ItemsSource = _historyData;
-                UpdateFilterButtonStyles();
+                _filterManager.UpdateData(_historyData);
 
                 if (_historyData.Count > 0)
                 {
@@ -177,18 +191,8 @@ namespace PerformanceMonitorDashboard
                 .OrderBy(g => g.Key)
                 .ToList();
 
-            // Color palette for different plans
-            var colors = new[]
-            {
-                ScottPlot.Color.FromHex("#4FC3F7"),
-                ScottPlot.Color.FromHex("#81C784"),
-                ScottPlot.Color.FromHex("#FFB74D"),
-                ScottPlot.Color.FromHex("#F06292"),
-                ScottPlot.Color.FromHex("#BA68C8"),
-                ScottPlot.Color.FromHex("#4DB6AC"),
-                ScottPlot.Color.FromHex("#FF8A65"),
-                ScottPlot.Color.FromHex("#A1887F")
-            };
+            // Color palette for different plans — shared cross-app cycling palette
+            var colors = ChartPalette.CyclingPalette.Select(ScottPlot.Color.FromHex).ToArray();
 
             int colorIndex = 0;
             var scatterSeries = new List<(ScottPlot.Plottables.Scatter Scatter, string Label)>();
@@ -206,21 +210,9 @@ namespace PerformanceMonitorDashboard
                 var color = colors[colorIndex % colors.Length];
                 var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
                 scatter.Color = color;
+                ChartStyle.StyleScatter(scatter);
                 var label = $"Plan {planGroup.Key}";
                 scatter.LegendText = label;
-
-                // Sparse data: use total dataset size, not per-plan size, since
-                // data is split across plan groups
-                if (_historyData.Count <= 1)
-                {
-                    scatter.LineWidth = 0;
-                    scatter.MarkerSize = 8;
-                }
-                else
-                {
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 4;
-                }
 
                 scatterSeries.Add((scatter, label));
                 colorIndex++;
@@ -338,7 +330,7 @@ namespace PerformanceMonitorDashboard
                 };
             }
 
-            _filters.TryGetValue(columnName, out var existingFilter);
+            _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
             _filterPopupContent!.Initialize(columnName, existingFilter);
 
             _filterPopup.PlacementTarget = button;
@@ -348,14 +340,7 @@ namespace PerformanceMonitorDashboard
         private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
         {
             if (_filterPopup != null) _filterPopup.IsOpen = false;
-
-            if (e.FilterState.IsActive)
-                _filters[e.FilterState.ColumnName] = e.FilterState;
-            else
-                _filters.Remove(e.FilterState.ColumnName);
-
-            ApplyFilters();
-            UpdateFilterButtonStyles();
+            _filterManager.SetFilter(e.FilterState);
         }
 
         private void FilterPopup_FilterCleared(object? sender, EventArgs e)
@@ -363,146 +348,44 @@ namespace PerformanceMonitorDashboard
             if (_filterPopup != null) _filterPopup.IsOpen = false;
         }
 
-        private void ApplyFilters()
-        {
-            if (_unfilteredData == null) return;
-
-            if (_filters.Count == 0)
-            {
-                HistoryDataGrid.ItemsSource = _unfilteredData;
-                return;
-            }
-
-            var filtered = _unfilteredData.Where(item =>
-            {
-                foreach (var filter in _filters.Values)
-                {
-                    if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
-                        return false;
-                }
-                return true;
-            }).ToList();
-
-            HistoryDataGrid.ItemsSource = filtered;
-        }
-
-        private void UpdateFilterButtonStyles()
-        {
-            foreach (var column in HistoryDataGrid.Columns)
-            {
-                if (column.Header is StackPanel stackPanel)
-                {
-                    var filterButton = stackPanel.Children.OfType<Button>().FirstOrDefault();
-                    if (filterButton?.Tag is string columnName)
-                    {
-                        bool hasActive = _filters.TryGetValue(columnName, out var filter) && filter.IsActive;
-                        filterButton.Content = new System.Windows.Controls.TextBlock
-                        {
-                            Text = "\uE71C",
-                            FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
-                            Foreground = hasActive
-                                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD7, 0x00))
-                                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-                        };
-                        filterButton.ToolTip = hasActive && filter != null
-                            ? $"Filter: {filter.DisplayText}\n(Click to modify)"
-                            : "Click to filter";
-                    }
-                }
-            }
-        }
-
         #endregion
 
         #region Context Menu Handlers
 
-        private void CopyCell_Click(object sender, RoutedEventArgs e)
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+            DataGridExport.ExportToCsv(sender, "query_execution_history", TabHelpers.CsvSeparator);
+
+        #endregion
+
+        #region Plan Actions
+
+        private async void ViewPlan_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-                {
-                    var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                    if (!string.IsNullOrEmpty(cellContent))
-                        Clipboard.SetDataObject(cellContent, false);
-                }
-            }
+            if (GetHistoryItem(sender) is not { } item) return;
+            await _planActions.ViewPlanAsync(
+                () => _databaseService.GetQueryStorePlanXmlByCollectionIdAsync(item.CollectionId),
+                $"Est Plan - QS {_queryId}", _queryText);
         }
 
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
+        private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid?.SelectedItem != null)
-                    Clipboard.SetDataObject(TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem), false);
-            }
+            await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - QS {_queryId}");
         }
 
-        private void CopyAllRows_Click(object sender, RoutedEventArgs e)
+        private static QueryExecutionHistoryItem? GetHistoryItem(object sender)
         {
             if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
             {
                 var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var sb = new StringBuilder();
-                    var headers = new List<string>();
-                    foreach (var column in dataGrid.Columns)
-                    {
-                        if (column is DataGridBoundColumn)
-                            headers.Add(Helpers.DataGridClipboardBehavior.GetHeaderText(column));
-                    }
-                    sb.AppendLine(string.Join("\t", headers));
-                    foreach (var item in dataGrid.Items)
-                        sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-                    Clipboard.SetDataObject(sb.ToString(), false);
-                }
+                return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as QueryExecutionHistoryItem;
             }
-        }
-
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var saveFileDialog = new SaveFileDialog
-                    {
-                        FileName = $"query_execution_history_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                        DefaultExt = ".csv",
-                        Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                    };
-
-                    if (saveFileDialog.ShowDialog() == true)
-                    {
-                        try
-                        {
-                            var sb = new StringBuilder();
-                            var headers = new List<string>();
-                            foreach (var column in dataGrid.Columns)
-                            {
-                                if (column is DataGridBoundColumn)
-                                    headers.Add(TabHelpers.EscapeCsvField(Helpers.DataGridClipboardBehavior.GetHeaderText(column)));
-                            }
-                            sb.AppendLine(string.Join(",", headers));
-                            foreach (var item in dataGrid.Items)
-                            {
-                                var values = TabHelpers.GetRowValues(dataGrid, item);
-                                sb.AppendLine(string.Join(",", values.Select(v => TabHelpers.EscapeCsvField(v))));
-                            }
-                            File.WriteAllText(saveFileDialog.FileName, sb.ToString());
-                            MessageBox.Show($"Data exported successfully to:\n{saveFileDialog.FileName}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show($"Error exporting data:\n\n{ex.Message}", "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
-                    }
-                }
-            }
+            return null;
         }
 
         #endregion

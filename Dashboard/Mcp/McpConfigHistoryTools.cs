@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -18,9 +19,8 @@ public sealed class McpConfigHistoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history to retrieve. Default 168 (7 days).")] int hours_back = 168)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -29,7 +29,7 @@ public sealed class McpConfigHistoryTools
         {
             var rows = await resolved.Value.Service.GetServerConfigChangesAsync(hours_back);
             if (rows.Count == 0)
-                return "No server configuration changes found in the requested time range.";
+                return McpHelpers.Status("empty", "No server configuration changes found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -63,9 +63,8 @@ public sealed class McpConfigHistoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history to retrieve. Default 168 (7 days).")] int hours_back = 168)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -74,7 +73,7 @@ public sealed class McpConfigHistoryTools
         {
             var rows = await resolved.Value.Service.GetDatabaseConfigChangesAsync(hours_back);
             if (rows.Count == 0)
-                return "No database configuration changes found in the requested time range.";
+                return McpHelpers.Status("empty", "No database configuration changes found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {
@@ -106,9 +105,8 @@ public sealed class McpConfigHistoryTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history to retrieve. Default 168 (7 days).")] int hours_back = 168)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -117,7 +115,7 @@ public sealed class McpConfigHistoryTools
         {
             var rows = await resolved.Value.Service.GetTraceFlagChangesAsync(hours_back);
             if (rows.Count == 0)
-                return "No trace flag changes found in the requested time range.";
+                return McpHelpers.Status("empty", "No trace flag changes found in the requested time range.");
 
             return JsonSerializer.Serialize(new
             {

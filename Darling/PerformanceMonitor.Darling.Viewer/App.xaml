@@ -1,0 +1,17 @@
+<Application x:Class="PerformanceMonitor.Darling.Viewer.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <!-- The shared Dark theme is merged app-wide so copied Lite XAML resolves its {DynamicResource}
+         theme keys (ForegroundBrush, BackgroundDarkBrush, SubTabItemStyle, ColumnFilterButtonStyle,
+         NumericCell, …). OnStartup re-applies it through ThemeManager so ThemeManager owns the merged
+         dictionary at runtime (Dark is fixed for v1 — no theme picker). The two write-back windows
+         keep their own ViewerDarkTheme.xaml, which wins as the closer dictionary. -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

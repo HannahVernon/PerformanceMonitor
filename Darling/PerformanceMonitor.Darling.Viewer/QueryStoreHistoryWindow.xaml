@@ -1,0 +1,164 @@
+<Window x:Class="PerformanceMonitor.Darling.Viewer.QueryStoreHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:scottplot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+        Title="Query Store History" Width="1200" Height="800"
+        WindowStartupLocation="CenterOwner"
+        Icon="EDD.ico"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True"
+        Background="{DynamicResource BackgroundLightBrush}"
+        Foreground="{DynamicResource ForegroundBrush}">
+    <!-- Ported from Lite's Windows/QueryStoreHistoryWindow.xaml (the Query Store per-row double-click history
+         window): the selected query's per-plan metric trend over the window (one chart series per plan_id, so
+         plan switches / regressions are visible) plus a filterable grid of its per-collection snapshots. Data
+         repointed to ViewerDataService Postgres reads; "View Plan" / the per-row Download button surface the
+         STORED Query Store plan (GetQueryStorePlanTextAsync) and Lite's live "Get Actual Plan" is dropped. -->
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ViewerDarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <Style x:Key="NumericCell" TargetType="TextBlock">
+                <Setter Property="TextAlignment" Value="Right"/>
+            </Style>
+
+            <ContextMenu x:Key="DataGridContextMenu">
+                <MenuItem Header="Copy Cell" Click="CopyCell_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CB;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy Row" Click="CopyRow_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4C4;"/></MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Copy All Rows" Click="CopyAllRows_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4D1;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Export to CSV..." Click="ExportToCsv_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F4CA;"/></MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="View Stored Plan" Click="ViewPlan_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x1F50D;"/></MenuItem.Icon>
+                </MenuItem>
+                <!-- Get Actual Plan (Dashboard parity): asks the SERVICE to RE-EXECUTE this Query Store query
+                     (identifier-only: query_id + database) and float the actual plan. The informed-consent +
+                     data-modification flag runs before it executes. -->
+                <MenuItem Header="Get Actual Plan (re-run)" Click="GetActualPlan_Click">
+                    <MenuItem.Icon><TextBlock Text="&#x25B6;"/></MenuItem.Icon>
+                </MenuItem>
+            </ContextMenu>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="250"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock x:Name="QueryIdentifierText" FontSize="16" FontWeight="Bold"/>
+            <TextBlock x:Name="SummaryText" FontSize="12" Margin="0,4,0,0" Foreground="{DynamicResource ForegroundDimBrush}"/>
+        </StackPanel>
+
+        <!-- Chart -->
+        <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="3">
+            <Grid>
+                <ComboBox x:Name="MetricSelector" Width="180" Height="26"
+                          VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,6,10,0"
+                          SelectionChanged="MetricSelector_SelectionChanged">
+                    <ComboBoxItem Content="Avg CPU (ms)" Tag="AvgCpuTimeMs" IsSelected="True"/>
+                    <ComboBoxItem Content="Avg Duration (ms)" Tag="AvgDurationMs"/>
+                    <ComboBoxItem Content="Avg Logical Reads" Tag="AvgLogicalReads"/>
+                    <ComboBoxItem Content="Avg Rows" Tag="AvgRowcount"/>
+                    <ComboBoxItem Content="Execution Count" Tag="ExecutionCount"/>
+                    <ComboBoxItem Content="Total CPU (ms)" Tag="TotalCpuMs"/>
+                    <ComboBoxItem Content="Total Duration (ms)" Tag="TotalDurationMs"/>
+                </ComboBox>
+                <scottplot:WpfPlot x:Name="HistoryChart" Margin="0,0,0,0"/>
+            </Grid>
+        </Border>
+
+        <!-- Data Grid -->
+        <DataGrid Grid.Row="2" x:Name="HistoryDataGrid" Margin="0,10,0,0"
+                  Style="{StaticResource DarkGrid}"
+                  AutoGenerateColumns="False" IsReadOnly="True"
+                  CanUserSortColumns="True" CanUserReorderColumns="True"
+                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                  ContextMenu="{StaticResource DataGridContextMenu}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Collection Time" Binding="{Binding CollectionTimeLocal}" SortMemberPath="CollectionTime" SortDirection="Descending" Width="130"/>
+                <DataGridTextColumn Header="Plan ID" Binding="{Binding PlanId}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                <DataGridTextColumn Header="Exec Type" Binding="{Binding ExecutionTypeDesc}" Width="90"/>
+                <DataGridTextColumn Header="First Execution" Binding="{Binding FirstExecutionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Last Execution" Binding="{Binding LastExecutionTimeLocal}" Width="130"/>
+                <DataGridTextColumn Header="Module" Binding="{Binding ModuleName}" Width="160"/>
+                <DataGridTextColumn Header="Executions" Binding="{Binding ExecutionCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Total Duration (ms)" Binding="{Binding TotalDurationMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="130"/>
+                <DataGridTextColumn Header="Avg Duration (ms)" Binding="{Binding AvgDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Min Duration (ms)" Binding="{Binding MinDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Max Duration (ms)" Binding="{Binding MaxDurationMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Total CPU (ms)" Binding="{Binding TotalCpuMs, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="110"/>
+                <DataGridTextColumn Header="Avg CPU (ms)" Binding="{Binding AvgCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min CPU (ms)" Binding="{Binding MinCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max CPU (ms)" Binding="{Binding MaxCpuTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg CLR (ms)" Binding="{Binding AvgClrTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min CLR (ms)" Binding="{Binding MinClrTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max CLR (ms)" Binding="{Binding MaxClrTimeMs, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg Reads" Binding="{Binding AvgLogicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Min Reads" Binding="{Binding MinLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Max Reads" Binding="{Binding MaxLogicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Avg Writes" Binding="{Binding AvgLogicalWrites, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Min Writes" Binding="{Binding MinLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Max Writes" Binding="{Binding MaxLogicalWrites, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Avg Log (MB)" Binding="{Binding AvgLogMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Min Log (MB)" Binding="{Binding MinLogMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Max Log (MB)" Binding="{Binding MaxLogMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Avg Physical Reads" Binding="{Binding AvgPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Min Physical Reads" Binding="{Binding MinPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Max Physical Reads" Binding="{Binding MaxPhysicalReads, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="120"/>
+                <DataGridTextColumn Header="Avg Num Physical Reads" Binding="{Binding AvgNumPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="150"/>
+                <DataGridTextColumn Header="Min Num Physical Reads" Binding="{Binding MinNumPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="150"/>
+                <DataGridTextColumn Header="Max Num Physical Reads" Binding="{Binding MaxNumPhysicalReads, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="150"/>
+                <DataGridTextColumn Header="Avg Rows" Binding="{Binding AvgRowcount, StringFormat=N1}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Min Rows" Binding="{Binding MinRowcount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
+                <DataGridTextColumn Header="Max Rows" Binding="{Binding MaxRowcount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="85"/>
+                <DataGridTextColumn Header="Avg Memory (MB)" Binding="{Binding AvgMemoryMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Min Memory (MB)" Binding="{Binding MinMemoryMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Max Memory (MB)" Binding="{Binding MaxMemoryMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Avg tempdb (MB)" Binding="{Binding AvgTempdbMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Min tempdb (MB)" Binding="{Binding MinTempdbMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Max tempdb (MB)" Binding="{Binding MaxTempdbMb, StringFormat=N2}" ElementStyle="{StaticResource NumericCell}" Width="115"/>
+                <DataGridTextColumn Header="Min DOP" Binding="{Binding MinDop}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                <DataGridTextColumn Header="Max DOP" Binding="{Binding MaxDop}" ElementStyle="{StaticResource NumericCell}" Width="70"/>
+                <DataGridTextColumn Header="Plan Type" Binding="{Binding PlanType}" Width="100"/>
+                <DataGridCheckBoxColumn Header="Forced" Binding="{Binding IsForcedPlan}" Width="60"/>
+                <DataGridTextColumn Header="Force Failures" Binding="{Binding ForceFailureCount, StringFormat=N0}" ElementStyle="{StaticResource NumericCell}" Width="100"/>
+                <DataGridTextColumn Header="Last Failure Reason" Binding="{Binding LastForceFailureReason}" Width="150"/>
+                <DataGridTextColumn Header="Forcing Type" Binding="{Binding PlanForcingType}" Width="100"/>
+                <DataGridTextColumn Header="Compat Level" Binding="{Binding CompatibilityLevel}" ElementStyle="{StaticResource NumericCell}" Width="90"/>
+                <DataGridTextColumn Header="Query Hash" Binding="{Binding QueryHash}" Width="140"/>
+                <DataGridTextColumn Header="Query Plan Hash" Binding="{Binding QueryPlanHash}" Width="140"/>
+                <DataGridTemplateColumn Header="Plan" Width="Auto" MinWidth="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="Download" Click="DownloadPlan_Click"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    Padding="6,2"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Close" Padding="20,6" Click="Close_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

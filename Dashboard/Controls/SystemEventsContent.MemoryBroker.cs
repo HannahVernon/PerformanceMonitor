@@ -21,6 +21,8 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 
 
 namespace PerformanceMonitorDashboard.Controls
@@ -36,7 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserMemoryBrokerAsync(_memoryBrokerHoursBack, _memoryBrokerFromDate, _memoryBrokerToDate);
-                _memoryBrokerUnfilteredData = data;
                 MemoryBrokerDataGrid.ItemsSource = data;
                 MemoryBrokerNoDataMessage.Visibility = data.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 LoadMemoryBrokerChart(data, _memoryBrokerHoursBack, _memoryBrokerFromDate, _memoryBrokerToDate);
@@ -94,9 +95,8 @@ namespace PerformanceMonitorDashboard.Controls
                         var (xs, ys) = TabHelpers.FillTimeSeriesGaps(timePoints, values);
 
                         var scatter = MemoryBrokerChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = colors[colorIndex % colors.Length];
+                        ChartStyle.StyleScatter(scatter);
                         var brokerLabel = brokerGroup.Key.Length > 25 ? brokerGroup.Key.Substring(0, 25) + "..." : brokerGroup.Key;
                         scatter.LegendText = brokerLabel;
                         _memoryBrokerHover?.Add(scatter, brokerLabel);
@@ -122,9 +122,8 @@ namespace PerformanceMonitorDashboard.Controls
                         ratioData.Select(d => (double)(d.MemoryRatio ?? 0)));
 
                     var scatter = MemoryBrokerRatioChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[0];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Memory Ratio";
                     _memoryBrokerRatioHover?.Add(scatter, "Memory Ratio");
                 }
@@ -137,9 +136,8 @@ namespace PerformanceMonitorDashboard.Controls
                         overallData.Select(d => (double)(d.Overall ?? 0)));
 
                     var scatter = MemoryBrokerRatioChart.Plot.Add.Scatter(xs, ys);
-                    scatter.LineWidth = 2;
-                    scatter.MarkerSize = 5;
-                    scatter.Color = TabHelpers.ChartColors[2];
+                    scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                    ChartStyle.StyleScatter(scatter);
                     scatter.LegendText = "Overall";
                     _memoryBrokerRatioHover?.Add(scatter, "Overall");
                 }
@@ -156,7 +154,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = MemoryBrokerChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -165,7 +163,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = MemoryBrokerRatioChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
 
@@ -180,68 +178,6 @@ namespace PerformanceMonitorDashboard.Controls
 
             MemoryBrokerChart.Plot.YLabel("Currently Allocated");
             MemoryBrokerRatioChart.Plot.YLabel("Value");
-        }
-
-        private void MemoryBrokerFilter_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not Button button || button.Tag is not string columnName) return;
-
-            ShowFilterPopup(button, columnName, "MemoryBroker", _memoryBrokerFilters,
-                args => { },
-                () => { });
-        }
-
-        private void ApplyMemoryBrokerFilters()
-        {
-            if (_memoryBrokerUnfilteredData == null)
-            {
-                _memoryBrokerUnfilteredData = MemoryBrokerDataGrid.ItemsSource as List<HealthParserMemoryBrokerItem>;
-                if (_memoryBrokerUnfilteredData == null && MemoryBrokerDataGrid.ItemsSource != null)
-                {
-                    _memoryBrokerUnfilteredData = (MemoryBrokerDataGrid.ItemsSource as IEnumerable<HealthParserMemoryBrokerItem>)?.ToList();
-                }
-            }
-
-            if (_memoryBrokerUnfilteredData == null) return;
-
-            if (_memoryBrokerFilters.Count == 0)
-            {
-                MemoryBrokerDataGrid.ItemsSource = _memoryBrokerUnfilteredData;
-                return;
-            }
-
-            var filteredData = _memoryBrokerUnfilteredData.Where(item =>
-            {
-                foreach (var filter in _memoryBrokerFilters.Values)
-                {
-                    if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
-                    {
-                        return false;
-                    }
-                }
-                return true;
-            }).ToList();
-
-            MemoryBrokerDataGrid.ItemsSource = filteredData;
-        }
-
-        private void UpdateMemoryBrokerFilterButtonStyles()
-        {
-            foreach (var columnName in new[] { "CollectionTime", "Broker", "Notification", "MemoryRatio",
-                "CurrentlyAllocated", "PreviouslyAllocated", "NewTarget", "Overall", "Rate", "DeltaTime", "BrokerId" })
-            {
-                UpdateFilterButtonStyle(MemoryBrokerDataGrid, columnName, _memoryBrokerFilters);
-            }
-        }
-
-        private void MemoryBrokerFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(MemoryBrokerDataGrid, sender as TextBox);
-        }
-
-        private void MemoryBrokerNumericFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            DataGridFilterService.ApplyFilter(MemoryBrokerDataGrid, sender as TextBox);
         }
 
         #endregion

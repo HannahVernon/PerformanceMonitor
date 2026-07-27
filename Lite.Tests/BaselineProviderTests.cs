@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
+using PerformanceMonitor.Analysis.Baselines;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Database;
 using Xunit;
@@ -123,6 +125,71 @@ public class BaselineProviderTests : IDisposable
         // Should fall through to flat (7 samples total, >= 3 minimum viable)
         Assert.True(baseline.SampleCount >= 3);
         Assert.Equal(BaselineTier.Flat, baseline.Tier);
+    }
+
+    // ── DistinctDays (baseline quality gate, change 2) ──
+
+    [Fact]
+    public async Task GetBaseline_FullBucket_PopulatesDistinctDaysAndIsTrustworthy()
+    {
+        await _duckDb.InitializeAsync();
+
+        // 20 samples across 4 distinct Wednesdays at 14:xx.
+        for (int week = 0; week < 4; week++)
+        {
+            var wednesday = AnalysisTime.AddDays(-7 * (week + 1));
+            for (int i = 0; i < 5; i++)
+                await SeedCpuAsync(wednesday.AddMinutes(i * 10), 50 + i * 2);
+        }
+
+        var baseline = await _provider.GetBaselineAsync(ServerId, MetricNames.Cpu, AnalysisTime);
+
+        Assert.Equal(BaselineTier.Full, baseline.Tier);
+        Assert.Equal(4, baseline.DistinctDays);   // 4 distinct Wednesdays
+        Assert.True(baseline.IsTrustworthy);        // Full needs >= 3 distinct days; 4 clears it
+    }
+
+    [Fact]
+    public async Task GetBaseline_HourOnly_SumsDistinctDaysAcrossDowBuckets()
+    {
+        await _duckDb.InitializeAsync();
+
+        // Same hour (14:00) across 4 distinct calendar days of DIFFERENT days-of-week, 4 samples each
+        // (below Full's restore) → collapses to hour-only. Each calendar day lands in exactly one
+        // day-of-week bucket, so summing distinct-days across those buckets is exact (= 4).
+        for (int d = 0; d < 4; d++)
+        {
+            var day = AnalysisTime.AddDays(-7 - d);
+            for (int i = 0; i < 4; i++)
+                await SeedCpuAsync(day.AddMinutes(i * 10), 40 + i);
+        }
+
+        _provider.ClearCache();
+        var baseline = await _provider.GetBaselineAsync(ServerId, MetricNames.Cpu, AnalysisTime);
+
+        Assert.Equal(BaselineTier.HourOnly, baseline.Tier);
+        Assert.Equal(4, baseline.DistinctDays);   // SUM across the 4 dow buckets
+    }
+
+    [Fact]
+    public async Task GetBaseline_Flat_TakesMaxDistinctDaysAcrossBuckets()
+    {
+        await _duckDb.InitializeAsync();
+
+        // Everything on ONE calendar day (2 samples at 14:xx + 5 samples at other hours) → collapses to
+        // flat. A calendar day recurs across hour buckets, so DistinctDays is the conservative MAX (= 1),
+        // not the sum.
+        var day = AnalysisTime.AddDays(-7);
+        await SeedCpuAsync(day.AddMinutes(0), 30);
+        await SeedCpuAsync(day.AddMinutes(15), 35);
+        for (int h = 0; h < 5; h++)
+            await SeedCpuAsync(day.AddHours(-h - 1), 50 + h);
+
+        _provider.ClearCache();
+        var baseline = await _provider.GetBaselineAsync(ServerId, MetricNames.Cpu, AnalysisTime);
+
+        Assert.Equal(BaselineTier.Flat, baseline.Tier);
+        Assert.Equal(1, baseline.DistinctDays);
     }
 
     // ── Empty baseline ──

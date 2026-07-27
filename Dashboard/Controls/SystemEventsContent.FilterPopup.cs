@@ -21,6 +21,7 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 
 namespace PerformanceMonitorDashboard.Controls
@@ -72,22 +73,11 @@ namespace PerformanceMonitorDashboard.Controls
 
             switch (_currentFilterTarget)
             {
-                // SystemHealth case removed - grid removed per todo.md #18
                 case "SevereErrors":
                     UpdateFilterState(_severeErrorsFilters, e.FilterState);
                     ApplySevereErrorsFilters();
                     UpdateSevereErrorsFilterButtonStyles();
                     break;
-                // IOIssues case removed - grid removed per todo.md #19
-                // SchedulerIssues case removed - grid removed per todo.md #13
-                // MemoryConditions case removed - grid removed per todo.md #14
-                // CPUTasks case removed - grid removed per todo.md #15
-                case "MemoryBroker":
-                    UpdateFilterState(_memoryBrokerFilters, e.FilterState);
-                    ApplyMemoryBrokerFilters();
-                    UpdateMemoryBrokerFilterButtonStyles();
-                    break;
-                // MemoryNodeOOM case removed - DataGrid removed per GitHub issue #13
             }
         }
 

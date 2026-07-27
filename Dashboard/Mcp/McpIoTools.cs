@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -17,18 +18,15 @@ public sealed class McpIoTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetFileIoLatencyAsync();
             if (rows.Count == 0)
             {
-                return "No file I/O stats available.";
+                return McpHelpers.Status("unavailable", "No file I/O stats available.");
             }
 
             var result = rows.Select(r => new
@@ -64,11 +62,8 @@ public sealed class McpIoTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -78,7 +73,7 @@ public sealed class McpIoTools
             var points = await resolved.Value.Service.GetFileIoDataAsync(hours_back);
             if (points.Count == 0)
             {
-                return "No I/O trend data available.";
+                return McpHelpers.Status("unavailable", "No I/O trend data available.");
             }
 
             var result = points.Select(p => new

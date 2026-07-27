@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
@@ -15,11 +16,8 @@ public sealed class McpTempDbTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of history. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -29,7 +27,7 @@ public sealed class McpTempDbTools
             var rows = await dataService.GetTempDbTrendAsync(resolved.Value.ServerId, hours_back);
             if (rows.Count == 0)
             {
-                return "No TempDB data available.";
+                return McpHelpers.Status("unavailable", "No TempDB data available.");
             }
 
             var result = rows.Select(r => new

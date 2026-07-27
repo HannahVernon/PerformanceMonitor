@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard.Mcp;
 
@@ -17,18 +18,15 @@ public sealed class McpHealthTools
         DatabaseServiceRegistry registry,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await resolved.Value.Service.GetCollectionHealthAsync();
             if (rows.Count == 0)
             {
-                return "No collection health data available.";
+                return McpHelpers.Status("unavailable", "No collection health data available.");
             }
 
             var result = rows.Select(r => new
@@ -63,11 +61,8 @@ public sealed class McpHealthTools
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Summary date (yyyy-MM-dd). Default is today.")] string? summary_date = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, registry, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, registry, server_name);
+        if (error != null) return error;
 
         try
         {
@@ -87,7 +82,7 @@ public sealed class McpHealthTools
             var rows = await resolved.Value.Service.GetDailySummaryAsync(date);
             if (rows.Count == 0)
             {
-                return "No daily summary data available.";
+                return McpHelpers.Status("unavailable", "No daily summary data available.");
             }
 
             var result = rows.Select(r => new

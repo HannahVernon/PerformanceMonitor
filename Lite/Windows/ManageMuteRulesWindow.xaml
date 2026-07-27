@@ -77,11 +77,11 @@
             <Button Content="Add Rule..." Width="100" Height="28" Margin="0,0,8,0"
                     Click="AddRule_Click" Style="{StaticResource AccentButton}"/>
             <Button Content="Edit" Width="80" Height="28" Margin="0,0,8,0"
-                    Click="EditRule_Click" x:Name="EditButton"/>
+                    Click="EditRule_Click"/>
             <Button Content="Toggle" Width="80" Height="28" Margin="0,0,8,0"
-                    Click="ToggleRule_Click" x:Name="ToggleButton"/>
+                    Click="ToggleRule_Click"/>
             <Button Content="Delete" Width="80" Height="28" Margin="0,0,8,0"
-                    Click="DeleteRule_Click" x:Name="DeleteButton"/>
+                    Click="DeleteRule_Click"/>
             <Button Content="Purge Expired" Width="110" Height="28"
                     Click="PurgeExpired_Click"/>
         </StackPanel>

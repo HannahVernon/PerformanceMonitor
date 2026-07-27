@@ -7,7 +7,6 @@ namespace PerformanceMonitorDashboard.Models
 {
     public class TracePatternDetailItem
     {
-        public long AnalysisId { get; set; }
         public DateTime CollectionTime { get; set; }
         public string EventName { get; set; } = string.Empty;
         public string? DatabaseName { get; set; }
@@ -16,6 +15,7 @@ namespace PerformanceMonitorDashboard.Models
         public string? ApplicationName { get; set; }
         public string? HostName { get; set; }
         public int? Spid { get; set; }
+        public int? ClientProcessId { get; set; }
         public long? DurationMs { get; set; }
         public long? CpuMs { get; set; }
         public long? Reads { get; set; }

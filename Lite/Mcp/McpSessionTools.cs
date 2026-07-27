@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
@@ -18,9 +19,8 @@ public sealed class McpSessionTools
         [Description("Show only queries involved in blocking (blocking_session_id > 0 or is a head blocker).")] bool blocking_only = false,
         [Description("Maximum number of rows to return. Default 50.")] int limit = 50)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -29,7 +29,7 @@ public sealed class McpSessionTools
         {
             var rows = await dataService.GetLatestQuerySnapshotsAsync(resolved.Value.ServerId, hours_back);
             if (rows.Count == 0)
-                return "No active query snapshots found in the requested time range.";
+                return McpHelpers.Status("empty", "No active query snapshots found in the requested time range.");
 
             IEnumerable<QuerySnapshotRow> filtered = rows;
 
@@ -87,15 +87,14 @@ public sealed class McpSessionTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetLatestSessionStatsAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
-                return "No session statistics available. The session collector may not have run yet.";
+                return McpHelpers.Status("unavailable", "No session statistics available. The session collector may not have run yet.");
 
             var totalConnections = rows.Sum(r => r.ConnectionCount);
             var totalRunning = rows.Sum(r => r.RunningCount);

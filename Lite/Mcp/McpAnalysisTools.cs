@@ -1,26 +1,25 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Analysis;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
 [McpServerToolType]
 public sealed class McpAnalysisTools
 {
-    [McpServerTool(Name = "analyze_server"), Description("Runs the diagnostic inference engine against a server's collected data. Scores wait stats, blocking, memory, config, and other facts, then traverses a relationship graph to build evidence-backed stories about what's wrong and why. Anomaly detection compares the analysis window against 30-day time-bucketed baselines (hour-of-day x day-of-week) to identify deviations that are unusual for this specific time slot, not just unusual overall. Returns structured findings with severity scores, evidence chains, baseline context for anomalies, and recommended next tools to call.")]
+    [McpServerTool(Name = "analyze_server"), Description("Runs the diagnostic inference engine against a server's collected data. Scores wait stats, blocking, memory, config, and other facts, then traverses a relationship graph to build evidence-backed stories about what's wrong and why. Anomaly detection compares the analysis window against 30-day time-bucketed baselines (hour-of-day x day-of-week) to identify deviations that are unusual for this specific time slot, not just unusual overall. Returns structured findings with severity scores, evidence chains, baseline context for anomalies, and recommended next tools to call. A remediable finding also carries remediation_command: the full copy-paste T-SQL remediation (identical to the viewer card), including a two-sided risk-disclosure comment header on destructive changes; it is advisory only and never executed.")]
     public static async Task<string> AnalyzeServer(
         AnalysisService analysisService,
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of data to analyze. Default 4. Longer windows give more stable results but may miss recent spikes.")] int hours_back = 4)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -42,14 +41,18 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    status = "healthy",
-                    message = "No significant findings. All metrics are within normal ranges.",
-                    analysis_time = analysisService.LastAnalysisTime?.ToString("o")
-                }, McpHelpers.JsonOptions);
+                /* A successful analysis that found nothing wrong: a true negative ("all clear"),
+                   surfaced with the shared miss vocabulary so callers branch on it uniformly. */
+                return McpHelpers.Status(
+                    "empty",
+                    "No significant findings. All metrics are within normal ranges.",
+                    new { analysis_time = analysisService.LastAnalysisTime?.ToString("o") });
             }
+
+            // Correlate-and-focus slice 1 (review §1d): each finding's "what else fired this window".
+            var coFiredTitles = new List<(string, double)>(findings.Count);
+            foreach (var wf in findings)
+                coFiredTitles.Add((FactAdvice.GetForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
 
             return JsonSerializer.Serialize(new
             {
@@ -62,20 +65,50 @@ public sealed class McpAnalysisTools
                     start = findings[0].TimeRangeStart?.ToString("o"),
                     end = findings[0].TimeRangeEnd?.ToString("o")
                 },
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    drill_down = f.DrillDown,
-                    next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath)
+                    var advice = FactAdvice.GetForFinding(f);
+                    return new
+                    {
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        drill_down = f.DrillDown,
+                        next_tools = ToolRecommendations.GetForStoryPath(f.StoryPath),
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredTitles),
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        },
+                        suggested_remediation_sql = advice?.RemediationTsql,
+                        // The FULL copy-paste remediation command — the SAME text the viewer cards
+                        // render — from the PERSISTED RemediationAction via the shared renderer (all
+                        // seven shapes + the two-sided risk-disclosure comment header on the destructive
+                        // ones). ADDITIVE alongside suggested_remediation_sql (the older 3-shape,
+                        // drill-down-sourced advice-block SQL): this covers all seven shapes and also
+                        // renders on get_analysis_findings, where the drill-down is gone. Null when the
+                        // finding has no remediable action. PRODUCE ONLY — advisory text; the read-only
+                        // MCP never executes it.
+                        remediation_command = FactRemediation.RenderCopyPasteCommand(f.Remediation),
+                        // B3 Phase 3 (§6): two-sided risk DISCLOSURE for a destructive
+                        // remediation, read-only (Lite has no Apply path; its RCSI fields
+                        // are null/0 so the inaction side shows the weak-case baseline).
+                        destructive_risk_disclosure = advice?.Risks is null ? null : new
+                        {
+                            risks_of_changing = advice.Risks.RisksOfChanging.Select(r => r.Text).ToArray(),
+                            risks_of_not_changing = advice.Risks.RisksOfNotChanging.Select(r => r.Text).ToArray()
+                        }
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
@@ -94,11 +127,8 @@ public sealed class McpAnalysisTools
         [Description("Filter to a specific source category: waits, blocking, config, memory. Omit for all.")] string? source = null,
         [Description("Minimum severity to include. Default 0 (all facts). Use 0.5 to see only significant facts.")] double min_severity = 0)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -110,12 +140,11 @@ public sealed class McpAnalysisTools
 
             if (facts.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    fact_count = 0,
-                    message = "No facts collected. The collector may not have run yet, or no data exists in the requested time range."
-                }, McpHelpers.JsonOptions);
+                /* No scored facts means the underlying collectors produced nothing for the window —
+                   not retrievable now rather than an all-clear (mirrors get_perfmon_trend's empty case). */
+                return McpHelpers.Status(
+                    "unavailable",
+                    "No facts collected. The collector may not have run yet, or no data exists in the requested time range.");
             }
 
             var filtered = facts.AsEnumerable();
@@ -170,11 +199,8 @@ public sealed class McpAnalysisTools
         [Description("Hours back for the comparison (recent) period. Default 4.")] int hours_back = 4,
         [Description("Hours back for the baseline period start, measured from now. Default 28 (yesterday same time). The baseline period will be the same duration as the comparison period.")] int baseline_hours_back = 28)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -197,8 +223,8 @@ public sealed class McpAnalysisTools
                 baselineStart, baselineEnd,
                 comparisonStart, comparisonEnd);
 
-            var baselineByKey = baselineFacts.ToDictionary(f => f.Key, f => f);
-            var comparisonByKey = comparisonFacts.ToDictionary(f => f.Key, f => f);
+            var baselineByKey = baselineFacts.ToFactLookup();
+            var comparisonByKey = comparisonFacts.ToFactLookup();
             var allKeys = baselineByKey.Keys.Union(comparisonByKey.Keys).ToHashSet();
 
             var comparisons = allKeys
@@ -261,18 +287,15 @@ public sealed class McpAnalysisTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var facts = await analysisService.CollectAndScoreFactsAsync(
                 resolved.Value.ServerId, resolved.Value.ServerName, 1);
 
-            var factsByKey = facts.ToDictionary(f => f.Key, f => f);
+            var factsByKey = facts.ToFactLookup();
 
             var edition = factsByKey.TryGetValue("SERVER_EDITION", out var edFact) ? (int)edFact.Value : 0;
             var totalMemoryMb = factsByKey.TryGetValue("MEMORY_TOTAL_PHYSICAL_MB", out var memFact) ? memFact.Value : 0;
@@ -292,8 +315,8 @@ public sealed class McpAnalysisTools
                 11 => "Azure Synapse serverless",
                 _ => "Unknown"
             };
-            var isEnterprise = edition == 3;
-            var isExpress = edition == 4;
+            var coresPerSocket = factsByKey.TryGetValue("SERVER_HARDWARE", out var hwFact)
+                && hwFact.Metadata.TryGetValue("cores_per_socket", out var cps) ? (int)cps : 0;
 
             var recommendations = new List<ConfigRecommendation>();
 
@@ -326,39 +349,37 @@ public sealed class McpAnalysisTools
                 }
             }
 
-            // MAXDOP audit
+            // MAXDOP audit — topology-based (min(cores-per-socket, 8)), NOT edition-based.
             if (factsByKey.TryGetValue("CONFIG_MAXDOP", out var maxdopFact))
             {
                 var maxdop = (int)maxdopFact.Value;
+                var recommended = (int)FactRemediation.RecommendedMaxdop(coresPerSocket);
 
                 if (maxdop == 0)
                 {
-                    var suggested = isExpress ? 1 : isEnterprise ? 8 : 4;
-                    recommendations.Add(new("max degree of parallelism", maxdop, suggested, "warning",
-                        $"MAXDOP is 0 (unlimited). This allows queries to use all schedulers, " +
-                        $"leading to CXPACKET waits and thread exhaustion under load. " +
-                        $"For {editionName} edition, start with MAXDOP {suggested} and adjust based on workload."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "warning",
+                        $"MAXDOP is 0 (unlimited). This lets one query fan out across all schedulers, " +
+                        $"leading to CXPACKET waits and thread exhaustion under load. Microsoft's guidance is " +
+                        $"topology-based: keep MAXDOP at or under the logical processors in a single NUMA node, capped at 8. " +
+                        $"Start with {recommended} (this server's cores-per-socket, capped at 8) and adjust to the workload."));
                 }
-                else if (maxdop == 1)
+                else if (maxdop == 1 && recommended > 1)
                 {
-                    var suggested = isExpress ? 1 : 4;
-                    recommendations.Add(new("max degree of parallelism", maxdop, suggested,
-                        isExpress ? "ok" : "review",
-                        isExpress
-                            ? "MAXDOP 1 is appropriate for Express edition."
-                            : $"MAXDOP 1 forces all queries serial. Large analytical queries, index rebuilds, and DBCC operations " +
-                              $"will be significantly slower. Consider MAXDOP {suggested} unless this was set to fix a specific parallelism problem."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "review",
+                        $"MAXDOP 1 forces every query serial. Large analytical queries, index rebuilds, and DBCC operations " +
+                        $"will be significantly slower. Consider {recommended} unless this was set to fix a specific parallelism problem."));
                 }
-                else if (maxdop > 8 && !isEnterprise)
+                else if (maxdop > recommended)
                 {
-                    recommendations.Add(new("max degree of parallelism", maxdop, 4, "review",
-                        $"MAXDOP {maxdop} is high for {editionName} edition. Standard edition is limited to " +
-                        $"fewer schedulers. Consider MAXDOP 4."));
+                    recommendations.Add(new("max degree of parallelism", maxdop, recommended, "review",
+                        $"MAXDOP {maxdop} is above the topology-based guidance of {recommended} " +
+                        $"(logical processors in a single NUMA node, capped at 8). Review whether queries here genuinely " +
+                        $"benefit from the higher degree, or lower it to {recommended}."));
                 }
                 else
                 {
                     recommendations.Add(new("max degree of parallelism", maxdop, maxdop, "ok",
-                        $"MAXDOP {maxdop} is in a reasonable range for {editionName} edition."));
+                        $"MAXDOP {maxdop} is within the topology-based guidance (≤ {recommended})."));
                 }
             }
 
@@ -479,18 +500,15 @@ public sealed class McpAnalysisTools
         }
     }
 
-    [McpServerTool(Name = "get_analysis_findings"), Description("Gets persisted findings from previous analysis runs without running a new analysis. Use this to review historical findings or check if anything has changed since the last analysis.")]
+    [McpServerTool(Name = "get_analysis_findings"), Description("Gets persisted findings from previous analysis runs without running a new analysis. Use this to review historical findings or check if anything has changed since the last analysis. A remediable finding carries remediation_command: the full copy-paste T-SQL remediation (identical to the viewer card), rendered from the finding's persisted action and including a two-sided risk-disclosure comment header on destructive changes; it is advisory only and never executed.")]
     public static async Task<string> GetAnalysisFindings(
         AnalysisService analysisService,
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null,
         [Description("Hours of finding history to retrieve. Default 24.")] int hours_back = 24)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         var validation = McpHelpers.ValidateHoursBack(hours_back);
         if (validation != null) return validation;
@@ -502,37 +520,72 @@ public sealed class McpAnalysisTools
 
             if (findings.Count == 0)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    server = resolved.Value.ServerName,
-                    finding_count = 0,
-                    message = "No findings in the requested time range. Run analyze_server to generate new findings."
-                }, McpHelpers.JsonOptions);
+                return McpHelpers.Status(
+                    "empty",
+                    "No findings in the requested time range. Run analyze_server to generate new findings.");
+            }
+
+            // Correlate-and-focus slice 1 (review §1d): "what else fired", scoped per analysis run
+            // (this read can span multiple runs, unlike analyze_server's single run).
+            var coFiredByRun = new Dictionary<DateTime, List<(string, double)>>();
+            foreach (var wf in findings)
+            {
+                if (!coFiredByRun.TryGetValue(wf.AnalysisTime, out var list))
+                    coFiredByRun[wf.AnalysisTime] = list = new List<(string, double)>();
+                list.Add((FactAdvice.GetComposedForFinding(wf)?.Headline ?? wf.RootFactKey, wf.Severity));
             }
 
             return JsonSerializer.Serialize(new
             {
                 server = resolved.Value.ServerName,
                 finding_count = findings.Count,
-                findings = findings.Select(f => new
+                findings = findings.Select(f =>
                 {
-                    finding_id = f.FindingId,
-                    analysis_time = f.AnalysisTime.ToString("o"),
-                    severity = Math.Round(f.Severity, 2),
-                    confidence = Math.Round(f.Confidence, 2),
-                    category = f.Category,
-                    root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
-                    leaf_fact = f.LeafFactKey != null
-                        ? new { key = f.LeafFactKey, value = f.LeafFactValue }
-                        : null,
-                    story_path = f.StoryPath,
-                    story_path_hash = f.StoryPathHash,
-                    fact_count = f.FactCount,
-                    time_range = new
+                    // Persisted findings carry no drill-down (it is ephemeral —
+                    // see AnalysisModels.cs), so generate advice prose only.
+                    // The prose IS value-stated: GetComposedForFinding reads the
+                    // value-bearing advice (current MAXDOP/CTFP/etc.) frozen into
+                    // StoryText at analysis time, falling back to the static block.
+                    // suggested_remediation_sql STAYS omitted here: it is built from
+                    // the drill-down (gone on read-back), so it would always be null.
+                    // The FULL copy-paste command below is rendered from the PERSISTED
+                    // RemediationAction instead — which DOES survive read-back — so a
+                    // triaging agent gets the same runnable command a human sees on the
+                    // card without re-running analyze_server.
+                    var advice = FactAdvice.GetComposedForFinding(f);
+                    return new
                     {
-                        start = f.TimeRangeStart?.ToString("o"),
-                        end = f.TimeRangeEnd?.ToString("o")
-                    }
+                        finding_id = f.FindingId,
+                        analysis_time = f.AnalysisTime.ToString("o"),
+                        severity = Math.Round(f.Severity, 2),
+                        confidence = Math.Round(f.Confidence, 2),
+                        category = f.Category,
+                        root_fact = new { key = f.RootFactKey, value = f.RootFactValue },
+                        leaf_fact = f.LeafFactKey != null
+                            ? new { key = f.LeafFactKey, value = f.LeafFactValue }
+                            : null,
+                        story_path = f.StoryPath,
+                        story_path_hash = f.StoryPathHash,
+                        fact_count = f.FactCount,
+                        incident_id = f.IncidentId,
+                        co_fired = CoFiredSummary.OtherTitles(advice?.Headline ?? f.RootFactKey, coFiredByRun[f.AnalysisTime]),
+                        time_range = new
+                        {
+                            start = f.TimeRangeStart?.ToString("o"),
+                            end = f.TimeRangeEnd?.ToString("o")
+                        },
+                        advice = advice is null ? null : new
+                        {
+                            headline = advice.Headline,
+                            investigation = advice.Investigation,
+                            remediation = advice.Remediation
+                        },
+                        // The SAME copy-paste remediation command the viewer cards render, from the
+                        // persisted action via the shared renderer (all seven shapes + the two-sided
+                        // risk-disclosure comment header on the destructive ones). Null when the finding
+                        // has no remediable action. PRODUCE ONLY — the read-only MCP never executes it.
+                        remediation_command = FactRemediation.RenderCopyPasteCommand(f.Remediation)
+                    };
                 })
             }, McpHelpers.JsonOptions);
         }
@@ -555,11 +608,8 @@ public sealed class McpAnalysisTools
             int? serverId = null;
             if (server_name != null)
             {
-                var resolved = ServerResolver.Resolve(serverManager, server_name);
-                if (resolved == null)
-                {
-                    return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-                }
+                var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+                if (error != null) return error;
                 serverId = resolved.Value.ServerId;
             }
 
@@ -624,7 +674,8 @@ internal static class ToolRecommendations
         [
             new("get_file_io_stats", "Check I/O latency per database file"),
             new("get_file_io_trend", "Track I/O latency trend"),
-            new("get_memory_stats", "Check buffer pool and memory pressure")
+            new("get_memory_stats", "Check buffer pool and memory pressure"),
+            new("get_tempdb_trend", "Check whether tempdb I/O is driving the EX-mode waits")
         ],
         ["RESOURCE_SEMAPHORE"] =
         [
@@ -635,7 +686,8 @@ internal static class ToolRecommendations
         ["WRITELOG"] =
         [
             new("get_file_io_stats", "Check transaction log file latency"),
-            new("get_file_io_trend", "Track log I/O latency over time")
+            new("get_file_io_trend", "Track log I/O latency over time"),
+            new("get_perfmon_trend", "Check Transactions/sec to see commit rate driving log flush pressure", new() { ["counter_name"] = "Transactions/sec" })
         ],
         ["LCK"] =
         [
@@ -668,7 +720,8 @@ internal static class ToolRecommendations
         ["SCH_M"] =
         [
             new("get_waiting_tasks", "See what's waiting on schema locks"),
-            new("get_blocked_process_reports", "Check if DDL operations are causing blocking")
+            new("get_blocked_process_reports", "Check if DDL operations are causing blocking"),
+            new("get_running_jobs", "See whether maintenance jobs (index rebuilds, stats updates) are taking schema-modification locks")
         ],
         ["CPU_SQL_PERCENT"] =
         [
@@ -715,11 +768,18 @@ internal static class ToolRecommendations
             new("get_top_queries_by_cpu", "Find high-DOP queries", new() { ["parallel_only"] = "true" }),
             new("audit_config", "Check CTFP and MAXDOP settings")
         ],
-        ["PERFMON_PLE"] =
+        ["PARAMETER_SENSITIVITY"] =
         [
-            new("get_memory_stats", "Check buffer pool and memory allocation"),
-            new("get_memory_clerks", "See where memory is allocated"),
-            new("get_memory_trend", "Track memory usage over time")
+            new("get_top_queries_by_cpu", "Find the sensitive query in the plan cache and see its current cached parameters"),
+            new("analyze_query_plan", "Examine the plan for the operators driving the runtime variance (seek vs scan, grant size, join type)"),
+            new("get_query_trend", "Confirm the bimodal duration pattern across executions over time"),
+            new("get_memory_grants", "Check whether the bad-parameter executions are also blowing up memory grants")
+        ],
+        ["PLAN_REGRESSION"] =
+        [
+            new("analyze_query_store_plan", "Compare the regressed plan against the prior plan to see what the optimizer changed"),
+            new("get_query_trend", "Confirm the regression timing and that the new plan is consistently worse"),
+            new("get_query_store_top", "Pull the full Query Store entry including plan_id and forced-plan history before considering a force")
         ],
         ["LATCH_EX"] =
         [
@@ -736,6 +796,11 @@ internal static class ToolRecommendations
         [
             new("audit_config", "Check server-level configuration"),
             new("get_blocked_process_reports", "Check if RCSI-off databases have blocking")
+        ],
+        ["FILE_AUTOGROWTH_PERCENT"] =
+        [
+            new("get_database_sizes", "See per-file sizes and autogrowth settings"),
+            new("get_file_io_stats", "Check per-file growth and latency")
         ],
         ["RUNNING_JOBS"] =
         [
@@ -765,6 +830,31 @@ internal static class ToolRecommendations
             new("get_file_io_stats", "Check per-file I/O latency"),
             new("get_file_io_trend", "Track I/O latency over time"),
             new("get_memory_stats", "Check if buffer pool is undersized")
+        ],
+        ["ANOMALY_SESSION_SPIKE"] =
+        [
+            new("get_session_stats", "See which application is driving the session-count spike"),
+            new("get_active_queries", "Find what those sessions were doing at the spike"),
+            new("get_waiting_tasks", "Check whether the new sessions are piling up on a shared wait")
+        ],
+        ["ANOMALY_QUERY_DURATION"] =
+        [
+            new("get_query_duration_trend", "Confirm the duration shift across the analysis window"),
+            new("get_top_queries_by_cpu", "Find the queries whose runtime moved the average"),
+            new("analyze_query_plan", "Examine the plan for the queries that slowed down")
+        ],
+        ["ANOMALY_MEMORY_PRESSURE"] =
+        [
+            new("get_memory_stats", "See current memory allocation and target vs total"),
+            new("get_memory_clerks", "Find which clerks are growing"),
+            new("get_memory_pressure_events", "Pull the RING_BUFFER_RESOURCE_MONITOR notifications driving the anomaly"),
+            new("get_memory_grants", "Check whether query grants are competing with buffer pool")
+        ],
+        ["ANOMALY_BATCH_REQUESTS"] =
+        [
+            new("get_perfmon_trend", "Confirm the batch-rate change across the window", new() { ["counter_name"] = "Batch Requests/sec" }),
+            new("get_top_queries_by_cpu", "Find which queries account for the new batch volume"),
+            new("get_active_queries", "See what's actually running at the elevated rate")
         ],
         ["BAD_ACTOR"] =
         [
@@ -834,47 +924,6 @@ internal static class ToolRecommendations
         return result;
     }
 
-    private static readonly string[] DayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-    /// <summary>
-    /// Formats baseline context from anomaly fact metadata into a human-readable object
-    /// for MCP output. Example: "4.1σ above baseline for Tue 14:00, mean 68.2"
-    /// </summary>
-    private static Dictionary<string, object>? FormatBaselineContext(Dictionary<string, double> metadata)
-    {
-        var result = new Dictionary<string, object>();
-
-        if (metadata.TryGetValue("deviation_sigma", out var sigma))
-            result["deviation"] = $"{sigma:F1}σ";
-
-        if (metadata.TryGetValue("ratio", out var ratio))
-            result["ratio"] = $"{ratio:F1}x";
-
-        if (metadata.TryGetValue("baseline_mean", out var mean))
-            result["baseline_mean"] = Math.Round(mean, 2);
-
-        if (metadata.TryGetValue("baseline_mean_ms", out var meanMs))
-            result["baseline_mean"] = Math.Round(meanMs, 2);
-
-        if (metadata.TryGetValue("baseline_stddev", out var stddev))
-            result["baseline_stddev"] = Math.Round(stddev, 2);
-
-        if (metadata.TryGetValue("baseline_hour", out var hour) &&
-            metadata.TryGetValue("baseline_dow", out var dow))
-        {
-            var dowIdx = (int)dow;
-            var dayName = dowIdx >= 0 && dowIdx < DayNames.Length ? DayNames[dowIdx] : "?";
-            result["bucket"] = hour >= 0 ? $"{dayName} {(int)hour:00}:00" : "flat";
-        }
-
-        if (metadata.TryGetValue("baseline_tier", out var tier))
-            result["tier"] = tier switch { 0 => "full", 1 => "hour_only", _ => "flat" };
-
-        if (metadata.TryGetValue("baseline_samples", out var samples))
-            result["baseline_samples"] = (int)samples;
-
-        return result.Count > 0 ? result : null;
-    }
 }
 
 internal record ToolRecommendation(

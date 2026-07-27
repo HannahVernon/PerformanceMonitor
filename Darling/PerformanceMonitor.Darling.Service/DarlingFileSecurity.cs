@@ -1,0 +1,143 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.IO;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
+
+namespace PerformanceMonitor.Darling.Service;
+
+/// <summary>
+/// Restrictive Windows ACLs for the DPAPI credential files (V8 security hardening, #1262). DPAPI
+/// LocalMachine scope is deliberate — the service (a service account) writes the credential and a
+/// DIFFERENT interactive user's Viewer reads it — so the machine-bound blob is decryptable by any
+/// local code that can READ the file, and the in-source entropy is no secret. The file ACL is
+/// therefore the real access boundary: without it, any local user could read
+/// <c>pg-credential.dpapi</c>, unprotect it, and connect as the <c>darling</c> SUPERUSER
+/// (DROP / exfil / <c>COPY … TO PROGRAM</c> = RCE as the service account). This class strips the
+/// inherited world-readable access and re-grants it narrowly.
+///
+/// <para><b>Principal model (the assumption to review):</b>
+/// <list type="bullet">
+/// <item>The <b>superuser</b> credential (<c>pg-credential.dpapi</c>) and the transient init password
+/// file are readable ONLY by <c>SYSTEM</c>, <c>Administrators</c>, and the service account — never an
+/// interactive user. Post-split the Viewer no longer needs the superuser credential (it connects as
+/// admin/viewer), so the RCE vector is locked hardest.</item>
+/// <item>The <b>admin/viewer</b> credentials additionally grant read to <c>NT AUTHORITY\INTERACTIVE</c>.
+/// The Viewer runs as the interactive operator, whose identity is unknown at provisioning time;
+/// INTERACTIVE is the concrete principal that lets that Viewer read the credential with zero config
+/// while excluding exactly the non-interactive local attack primitives the design's threat model
+/// calls out (services, SSRF/sandboxed socket code, scheduled tasks — none hold an interactive token).</item>
+/// </list>
+/// On the design's default single-operator VM, INTERACTIVE == the operator, so this is tight. On a
+/// shared machine where untrusted users can log on interactively they could read the admin/viewer
+/// credentials (never the superuser one); the tightening path there is a configured operator account
+/// ACL'd specifically — a future knob, not built for the Phase 1 single-operator default.</para>
+/// </summary>
+[SupportedOSPlatform("windows")]
+public static class DarlingFileSecurity
+{
+    private static SecurityIdentifier LocalSystem => new(WellKnownSidType.LocalSystemSid, null);
+    private static SecurityIdentifier Administrators => new(WellKnownSidType.BuiltinAdministratorsSid, null);
+    private static SecurityIdentifier Interactive => new(WellKnownSidType.InteractiveSid, null);
+
+    /// <summary>The account this process runs as — the service account when hosted as a service.</summary>
+    private static SecurityIdentifier ServiceAccount =>
+        WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("Cannot resolve the current Windows identity for ACL hardening.");
+
+    /// <summary>
+    /// Locks a directory to SYSTEM + Administrators + the service account (full control, inherited by
+    /// children), removing ALL inherited access so no Users / Authenticated Users read survives. When
+    /// <paramref name="allowInteractiveTraverse"/> is set, INTERACTIVE gets traverse (not list) on THIS
+    /// folder only — so the operator's Viewer can reach the admin/viewer credential files beside the
+    /// data directory without that access flowing into the data-directory subtree.
+    /// </summary>
+    public static void HardenDirectory(string path, bool allowInteractiveTraverse)
+    {
+        var info = new DirectoryInfo(path);
+        var security = new DirectorySecurity();
+
+        /* Protect the DACL (isProtected: true) and drop inherited ACEs (preserveInheritance: false):
+           the directory's access is now EXACTLY the rules added below, nothing world-readable. */
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        const InheritanceFlags subtree = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+        AddFull(security, LocalSystem, subtree);
+        AddFull(security, Administrators, subtree);
+        AddFull(security, ServiceAccount, subtree);
+
+        if (allowInteractiveTraverse)
+        {
+            /* Traverse + synchronize, THIS FOLDER ONLY (no inheritance) — the operator can open a
+               known credential path here but cannot enumerate the folder or descend into the PG data
+               directory. */
+            security.AddAccessRule(new FileSystemAccessRule(
+                Interactive,
+                FileSystemRights.Traverse | FileSystemRights.Synchronize,
+                InheritanceFlags.None,
+                PropagationFlags.None,
+                AccessControlType.Allow));
+        }
+
+        info.SetAccessControl(security);
+    }
+
+    /// <summary>
+    /// Locks a file to SYSTEM + Administrators + the service account, dropping inherited access. When
+    /// <paramref name="allowInteractiveRead"/> is set (the admin/viewer credentials the Viewer reads),
+    /// INTERACTIVE gets read. The superuser credential and the transient init pwfile pass false.
+    /// </summary>
+    public static void HardenFile(string path, bool allowInteractiveRead)
+    {
+        var info = new FileInfo(path);
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        AddFile(security, LocalSystem, FileSystemRights.FullControl);
+        AddFile(security, Administrators, FileSystemRights.FullControl);
+        AddFile(security, ServiceAccount, FileSystemRights.FullControl);
+
+        if (allowInteractiveRead)
+        {
+            AddFile(security, Interactive, FileSystemRights.Read | FileSystemRights.Synchronize);
+        }
+
+        info.SetAccessControl(security);
+    }
+
+    /// <summary>
+    /// Is an existing credential file owned by a trusted principal (SYSTEM, Administrators, or the
+    /// service account)? A file owned by anyone else may have been PRE-PLANTED — for a role credential,
+    /// by an attacker who wrote a password they know so the service's <c>ALTER ROLE … PASSWORD</c>
+    /// re-assert would hand them that login; for the owner credential, a tamper signal. Callers must not
+    /// trust an untrusted-owned file. Returns false (untrusted) on any error reading the owner.
+    /// </summary>
+    public static bool IsTrustedOwner(string path)
+    {
+        try
+        {
+            var owner = new FileInfo(path).GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            return owner is not null
+                && (owner.Equals(LocalSystem) || owner.Equals(Administrators) || owner.Equals(ServiceAccount));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static void AddFull(DirectorySecurity security, SecurityIdentifier sid, InheritanceFlags inheritance) =>
+        security.AddAccessRule(new FileSystemAccessRule(
+            sid, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
+
+    private static void AddFile(FileSecurity security, SecurityIdentifier sid, FileSystemRights rights) =>
+        security.AddAccessRule(new FileSystemAccessRule(sid, rights, AccessControlType.Allow));
+}

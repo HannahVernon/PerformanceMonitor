@@ -13,9 +13,14 @@ using System.Linq;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using Microsoft.Win32;
+using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Services;
 using ScottPlot;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -28,7 +33,14 @@ public partial class QueryStoreHistoryWindow : Window
     private readonly long _planId;
     private readonly int _hoursBack;
     private readonly string? _connectionString;
+    private readonly string _queryText;
+    private readonly PlanNavigationController _planActions;
     private List<QueryStoreHistoryRow> _historyData = new();
+    private ChartHoverHelper? _chartHover;
+    private ScottPlot.IPanel? _legendPanel;
+    private DataGridFilterManager<QueryStoreHistoryRow>? _filterManager;
+    private Popup? _filterPopup;
+    private ColumnFilterPopup? _filterPopupContent;
 
     public QueryStoreHistoryWindow(LocalDataService dataService, int serverId, string databaseName, long queryId, long planId, string queryText, int hoursBack, string? connectionString = null)
     {
@@ -40,29 +52,44 @@ public partial class QueryStoreHistoryWindow : Window
         _planId = planId;
         _hoursBack = hoursBack;
         _connectionString = connectionString;
+        _queryText = queryText;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct,
+                productName: "SQL Server Performance Monitor Lite"),
+            "the monitored server");
+
+        _filterManager = new DataGridFilterManager<QueryStoreHistoryRow>(HistoryDataGrid);
+        DataGridFilterColumns.AddFilterButtons(HistoryDataGrid, Filter_Click);
+        _filterManager.UpdateFilterButtonStyles();
 
         var displayText = queryText.Length > 120 ? queryText[..120] + "..." : queryText;
-        QueryIdentifierText.Text = $"Query Store History: Query {queryId}, Plan {planId} in [{databaseName}]";
+        QueryIdentifierText.Text = $"Query Store History: Query {queryId} in [{databaseName}]";
         SummaryText.Text = displayText;
         Loaded += async (_, _) => await LoadHistoryAsync();
-        Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-        Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+        ThemeManager.ThemeChanged += OnThemeChanged;
+        Closed += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
     }
 
     private async System.Threading.Tasks.Task LoadHistoryAsync()
     {
         try
         {
-            _historyData = await _dataService.GetQueryStoreHistoryAsync(_serverId, _databaseName, _queryId, _planId, _hoursBack);
-            HistoryDataGrid.ItemsSource = _historyData;
+            _historyData = await _dataService.GetQueryStoreHistoryAsync(_serverId, _databaseName, _queryId, _hoursBack);
+            _filterManager!.UpdateData(_historyData);
 
             if (_historyData.Count > 0)
             {
                 var totalExec = _historyData.Sum(r => r.ExecutionCount);
+                var planCount = _historyData.Select(r => r.PlanId).Distinct().Count();
                 var first = _historyData.First().CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes);
                 var last = _historyData.Last().CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes);
                 SummaryText.Text = $"{_historyData.Count} samples from {first:MM/dd HH:mm} to {last:MM/dd HH:mm} | " +
-                                   $"Total Executions: {totalExec:N0}";
+                                   $"Total Executions: {totalExec:N0} | " +
+                                   (planCount > 1 ? $"{planCount} different plans" : "Single plan");
             }
             else
             {
@@ -86,22 +113,50 @@ public partial class QueryStoreHistoryWindow : Window
             return;
         }
 
+        if (_legendPanel != null)
+        {
+            HistoryChart.Plot.Axes.Remove(_legendPanel);
+            _legendPanel = null;
+        }
         HistoryChart.Plot.Clear();
 
         var selected = MetricSelector.SelectedItem as ComboBoxItem;
         var tag = selected?.Tag?.ToString() ?? "AvgCpuTimeMs";
         var label = selected?.Content?.ToString() ?? "Avg CPU (ms)";
 
-        var xs = _historyData.Select(r => r.CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes).ToOADate()).ToArray();
-        var ys = _historyData.Select(r => GetMetricValue(r, tag)).ToArray();
+        var unit = tag.Contains("Ms") ? "ms" : "";
+        if (_chartHover == null)
+            _chartHover = new ChartHoverHelper(HistoryChart, unit);
+        else
+            _chartHover.Unit = unit;
+        _chartHover.Clear();
 
-        var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
-        scatter.LineWidth = 2;
-        scatter.MarkerSize = 5;
-        scatter.Color = ScottPlot.Color.FromHex("#4FC3F7");
-        scatter.LegendText = label;
+        // One series per plan so plan switches/regressions are visible — same as the Dashboard drilldown.
+        var planGroups = _historyData.GroupBy(r => r.PlanId).OrderBy(g => g.Key).ToList();
+        var colors = ChartPalette.CyclingPalette.Select(ScottPlot.Color.FromHex).ToArray();
+
+        int colorIndex = 0;
+        foreach (var planGroup in planGroups)
+        {
+            var ordered = planGroup.OrderBy(r => r.CollectionTime).ToList();
+            var xs = ordered.Select(r => r.CollectionTime.AddMinutes(Services.ServerTimeHelper.UtcOffsetMinutes).ToOADate()).ToArray();
+            var ys = ordered.Select(r => GetMetricValue(r, tag)).ToArray();
+
+            var scatter = HistoryChart.Plot.Add.Scatter(xs, ys);
+            scatter.Color = colors[colorIndex % colors.Length];
+            ChartStyle.StyleScatter(scatter);
+            var seriesLabel = planGroups.Count > 1 ? $"Plan {planGroup.Key}" : label;
+            scatter.LegendText = seriesLabel;
+            _chartHover.Add(scatter, seriesLabel);
+            colorIndex++;
+        }
 
         HistoryChart.Plot.Axes.DateTimeTicksBottom();
+        if (planGroups.Count > 1)
+        {
+            _legendPanel = HistoryChart.Plot.ShowLegend(ScottPlot.Edge.Bottom);
+            HistoryChart.Plot.Legend.FontSize = 12;
+        }
         ApplyTheme(HistoryChart);
 
         HistoryChart.Refresh();
@@ -124,13 +179,15 @@ public partial class QueryStoreHistoryWindow : Window
     private async void DownloadPlan_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn) return;
-        if (string.IsNullOrEmpty(_connectionString) || string.IsNullOrEmpty(_databaseName) || _planId == 0) return;
+        // Rows can now span multiple plans — download the plan for THIS row, not the launching one.
+        var rowPlanId = (btn.DataContext as QueryStoreHistoryRow)?.PlanId ?? _planId;
+        if (string.IsNullOrEmpty(_connectionString) || string.IsNullOrEmpty(_databaseName) || rowPlanId == 0) return;
 
         btn.IsEnabled = false;
         btn.Content = "...";
         try
         {
-            var plan = await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, _planId);
+            var plan = await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, rowPlanId);
             if (string.IsNullOrEmpty(plan))
             {
                 MessageBox.Show("No query plan found in Query Store for this plan ID.", "Plan Not Found", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -141,7 +198,7 @@ public partial class QueryStoreHistoryWindow : Window
             {
                 Filter = "SQL Plan files (*.sqlplan)|*.sqlplan|All files (*.*)|*.*",
                 DefaultExt = ".sqlplan",
-                FileName = $"qs_plan_{_queryId}_{_planId}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
+                FileName = $"qs_plan_{_queryId}_{rowPlanId}_{DateTime.Now:yyyyMMdd_HHmmss}.sqlplan"
             };
 
             if (dialog.ShowDialog() != true) return;
@@ -158,48 +215,88 @@ public partial class QueryStoreHistoryWindow : Window
         }
     }
 
-    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart)
-    {
-        ScottPlot.Color figureBackground, dataBackground, textColor, gridColor;
-        if (Helpers.ThemeManager.CurrentTheme == "CoolBreeze")
-        {
-            figureBackground = ScottPlot.Color.FromHex("#EEF4FA");
-            dataBackground   = ScottPlot.Color.FromHex("#DAE6F0");
-            textColor        = ScottPlot.Color.FromHex("#1A2A3A");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else if (Helpers.ThemeManager.HasLightBackground)
-        {
-            figureBackground = ScottPlot.Color.FromHex("#FFFFFF");
-            dataBackground   = ScottPlot.Color.FromHex("#F5F7FA");
-            textColor        = ScottPlot.Color.FromHex("#1A1D23");
-            gridColor        = ScottPlot.Colors.Black.WithAlpha(20);
-        }
-        else
-        {
-            figureBackground = ScottPlot.Color.FromHex("#22252b");
-            dataBackground   = ScottPlot.Color.FromHex("#111217");
-            textColor        = ScottPlot.Color.FromHex("#E4E6EB");
-            gridColor        = ScottPlot.Colors.White.WithAlpha(40);
-        }
-        chart.Plot.FigureBackground.Color = figureBackground;
-        chart.Plot.DataBackground.Color = dataBackground;
-        chart.Plot.Axes.Color(textColor);
-        chart.Plot.Grid.MajorLineColor = gridColor;
-        chart.Plot.Axes.Bottom.TickLabelStyle.ForeColor = textColor;
-        chart.Plot.Axes.Left.TickLabelStyle.ForeColor = textColor;
-    }
+    private static void ApplyTheme(ScottPlot.WPF.WpfPlot chart) => ChartStyle.ApplyMinimalChartTheme(chart);
 
     private void OnThemeChanged(string _)
     {
         ApplyTheme(HistoryChart);
         HistoryChart.Refresh();
+        _filterManager?.UpdateFilterButtonStyles();
     }
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyCell(sender);
-    private void CopyRow_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyRow(sender);
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.CopyAllRows(sender);
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => Helpers.ContextMenuHelper.ExportToCsv(sender, "query_store_history");
+    #region Column Filter Popup
+
+    private void EnsureFilterPopup()
+    {
+        if (_filterPopup == null)
+        {
+            _filterPopupContent = new ColumnFilterPopup();
+            _filterPopup = new Popup
+            {
+                Child = _filterPopupContent,
+                StaysOpen = false,
+                Placement = PlacementMode.Bottom,
+                AllowsTransparency = true
+            };
+        }
+    }
+
+    private void Filter_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string columnName) return;
+        if (_filterManager == null) return;
+
+        EnsureFilterPopup();
+
+        _filterPopupContent!.FilterApplied -= FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared -= FilterPopup_FilterCleared;
+        _filterPopupContent.FilterApplied += FilterPopup_FilterApplied;
+        _filterPopupContent.FilterCleared += FilterPopup_FilterCleared;
+
+        _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
+        _filterPopupContent.Initialize(columnName, existingFilter);
+
+        _filterPopup!.PlacementTarget = button;
+        _filterPopup.IsOpen = true;
+    }
+
+    private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+        _filterManager?.SetFilter(e.FilterState);
+    }
+
+    private void FilterPopup_FilterCleared(object? sender, EventArgs e)
+    {
+        if (_filterPopup != null)
+            _filterPopup.IsOpen = false;
+    }
+
+    #endregion
+
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "query_store_history", App.CsvSeparator);
+
+    private long SelectedPlanId =>
+        ((HistoryDataGrid.CurrentItem ?? HistoryDataGrid.SelectedItem) as QueryStoreHistoryRow)?.PlanId ?? _planId;
+
+    private async System.Threading.Tasks.Task<string?> FetchPlanAsync(long planId)
+    {
+        if (string.IsNullOrEmpty(_connectionString) || planId == 0) return null;
+        return await LocalDataService.FetchQueryStorePlanAsync(_connectionString, _databaseName, planId);
+    }
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        var planId = SelectedPlanId;
+        await _planActions.ViewPlanAsync(() => FetchPlanAsync(planId), $"Est Plan - QS {_queryId}/{planId}", _queryText);
+    }
+
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+        => await _planActions.GetActualPlanAsync(_queryText, _databaseName, $"Actual Plan - QS {_queryId}");
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

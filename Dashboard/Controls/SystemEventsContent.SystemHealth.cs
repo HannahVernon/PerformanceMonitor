@@ -21,6 +21,8 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 
 
 namespace PerformanceMonitorDashboard.Controls
@@ -36,8 +38,6 @@ namespace PerformanceMonitorDashboard.Controls
             try
             {
                 var data = await _databaseService.GetHealthParserSystemHealthAsync(_systemHealthHoursBack, _systemHealthFromDate, _systemHealthToDate);
-                _systemHealthUnfilteredData = data;
-                // SystemHealthDataGrid removed - chart only per todo.md #18
                 LoadCorruptionEventsCharts(data, _systemHealthHoursBack, _systemHealthFromDate, _systemHealthToDate);
                 LoadContentionEventsCharts(data, _systemHealthHoursBack, _systemHealthFromDate, _systemHealthToDate);
             }
@@ -67,9 +67,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.BadPagesDetected ?? 0)));
                 var scatter = BadPagesChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[3];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                ChartStyle.StyleScatter(scatter);
                 _badPagesHover?.Add(scatter, "Bad Pages");
             }
             else
@@ -77,7 +76,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = BadPagesChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             BadPagesChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -96,9 +95,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.IntervalDumpRequests ?? 0)));
                 var scatter = DumpRequestsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[2];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                ChartStyle.StyleScatter(scatter);
                 _dumpRequestsHover?.Add(scatter, "Dump Requests");
             }
             else
@@ -106,7 +104,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = DumpRequestsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             DumpRequestsChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -125,9 +123,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.IsAccessViolationOccurred ?? 0)));
                 var scatter = AccessViolationsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[4];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(4));
+                ChartStyle.StyleScatter(scatter);
                 _accessViolationsHover?.Add(scatter, "Access Violations");
             }
             else
@@ -135,7 +132,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = AccessViolationsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             AccessViolationsChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -154,9 +151,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.WriteAccessViolationCount ?? 0)));
                 var scatter = WriteAccessViolationsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[0];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                ChartStyle.StyleScatter(scatter);
                 _writeAccessViolationsHover?.Add(scatter, "Write Access Violations");
             }
             else
@@ -164,7 +160,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = WriteAccessViolationsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             WriteAccessViolationsChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -195,9 +191,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.NonYieldingTasksReported ?? 0)));
                 var scatter = NonYieldingTasksChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[3];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(3));
+                ChartStyle.StyleScatter(scatter);
                 _nonYieldingTasksHover?.Add(scatter, "Non-Yielding Tasks");
             }
             else
@@ -205,7 +200,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = NonYieldingTasksChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             NonYieldingTasksChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -224,9 +219,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.LatchWarnings ?? 0)));
                 var scatter = LatchWarningsChart.Plot.Add.Scatter(xs, ys);
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 5;
-                scatter.Color = TabHelpers.ChartColors[2];
+                scatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(2));
+                ChartStyle.StyleScatter(scatter);
                 _latchWarningsHover?.Add(scatter, "Latch Warnings");
             }
             else
@@ -234,7 +228,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = LatchWarningsChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             LatchWarningsChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -277,9 +271,8 @@ namespace PerformanceMonitorDashboard.Controls
                             typeData.Select(d => d.CollectionTime),
                             typeData.Select(d => (double)(d.SpinlockBackoffs ?? 1))); // Use backoffs count or 1 if null
                         var scatter = SickSpinlocksChart.Plot.Add.Scatter(xs, ys);
-                        scatter.LineWidth = 2;
-                        scatter.MarkerSize = 5;
                         scatter.Color = colors[colorIndex % colors.Length];
+                        ChartStyle.StyleScatter(scatter);
                         scatter.LegendText = spinlockType ?? "Unknown";
                         _sickSpinlocksHover?.Add(scatter, spinlockType ?? "Unknown");
                         colorIndex++;
@@ -297,7 +290,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = SickSpinlocksChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             SickSpinlocksChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -322,9 +315,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.SystemCpuUtilization ?? 0)));
                 var sysScatter = CpuComparisonChart.Plot.Add.Scatter(sysXs, sysYs);
-                sysScatter.LineWidth = 2;
-                sysScatter.MarkerSize = 5;
-                sysScatter.Color = TabHelpers.ChartColors[0];
+                sysScatter.Color = ScottPlot.Color.FromHex(ChartPalette.CyclingColor(0));
+                ChartStyle.StyleScatter(sysScatter);
                 sysScatter.LegendText = "System CPU %";
                 _cpuComparisonHover?.Add(sysScatter, "System CPU %");
 
@@ -333,9 +325,8 @@ namespace PerformanceMonitorDashboard.Controls
                     orderedData.Select(d => d.CollectionTime),
                     orderedData.Select(d => (double)(d.SqlCpuUtilization ?? 0)));
                 var sqlScatter = CpuComparisonChart.Plot.Add.Scatter(sqlXs, sqlYs);
-                sqlScatter.LineWidth = 2;
-                sqlScatter.MarkerSize = 5;
-                sqlScatter.Color = TabHelpers.ChartColors[1];
+                sqlScatter.Color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("SqlCpu"));
+                ChartStyle.StyleScatter(sqlScatter);
                 sqlScatter.LegendText = "SQL CPU %";
                 _cpuComparisonHover?.Add(sqlScatter, "SQL CPU %");
 
@@ -347,7 +338,7 @@ namespace PerformanceMonitorDashboard.Controls
                 double xCenter = xMin + (xMax - xMin) / 2;
                 var noDataText = CpuComparisonChart.Plot.Add.Text("No data for selected time range", xCenter, 0.5);
                 noDataText.LabelFontSize = 14;
-                noDataText.LabelFontColor = ScottPlot.Colors.Gray;
+                noDataText.LabelFontColor = ScottPlot.Color.FromHex(ChartPalette.AccentColor("Placeholder"));
                 noDataText.LabelAlignment = ScottPlot.Alignment.MiddleCenter;
             }
             CpuComparisonChart.Plot.Axes.DateTimeTicksBottomDateChange();
@@ -357,22 +348,6 @@ namespace PerformanceMonitorDashboard.Controls
             TabHelpers.LockChartVerticalAxis(CpuComparisonChart);
             CpuComparisonChart.Refresh();
         }
-        private void SystemHealthFilter_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not Button button || button.Tag is not string columnName) return;
-
-            ShowFilterPopup(button, columnName, "SystemHealth", _systemHealthFilters,
-                args => { },  // Handled in FilterPopup_FilterApplied
-                () => { });   // Handled in FilterPopup_FilterCleared
-        }
-
-        // ApplySystemHealthFilters removed - grid removed per todo.md #18
-
-        // UpdateSystemHealthFilterButtonStyles removed - grid removed per todo.md #18
-
-        // SystemHealthFilterTextBox_TextChanged removed - grid removed per todo.md #18
-
-        // SystemHealthNumericFilterTextBox_TextChanged removed - grid removed per todo.md #18
 
         #endregion
     }

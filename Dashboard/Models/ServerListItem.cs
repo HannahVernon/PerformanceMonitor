@@ -8,6 +8,8 @@
 
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using PerformanceMonitor.Common;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Models
 {
@@ -129,9 +131,7 @@ namespace PerformanceMonitorDashboard.Models
             {
                 if (string.IsNullOrEmpty(_status.InstalledMonitorVersion))
                     return string.Empty;
-                if (System.Version.TryParse(_status.InstalledMonitorVersion, out var v))
-                    return $"Monitor v{new System.Version(v.Major, v.Minor, v.Build)}";
-                return $"Monitor v{_status.InstalledMonitorVersion}";
+                return $"Monitor v{VersionText.Normalize(_status.InstalledMonitorVersion)}";
             }
         }
 

@@ -1,0 +1,152 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using PerformanceMonitor.Collectors;
+using Xunit;
+
+namespace Darling.Tests;
+
+/// <summary>
+/// THE COVERAGE PIN (parity board Tier 0), Darling side — the mirror of Lite's
+/// <c>CollectorViewerCoverageTests</c>. Every collector table in <see cref="CollectorCatalog"/> must have
+/// a consumer in the Darling viewer's reader layer
+/// (<c>PerformanceMonitor.Darling.Viewer/ViewerDataService*.cs</c>) — referenced directly by table name or
+/// via its <c>v_</c> view — OR be listed in <see cref="KnownStoreOnlyOrUnbuiltTables"/>.
+///
+/// Darling currently reads EVERY catalog table, so the allow-list is empty and this pin is fully green.
+/// Its job is forward protection: if a new collector is added to the catalog (both apps generate/consume
+/// from it) and the Darling viewer never wires a reader for it, this goes red instead of shipping a
+/// silently-invisible collector.
+///
+/// RATCHET: same contract as the Lite mirror — the allow-list can only shrink,
+/// <see cref="AllowList_HasNoEntryThatIsActuallyRead"/> deletes stale entries the moment a reader appears,
+/// and <see cref="AllowList_NamesOnlyRealCatalogTables"/> rejects a name that is not a real catalog table.
+///
+/// Text-scans the reader source (no Postgres / WPF needed) and locates the viewer via
+/// <see cref="CallerFilePathAttribute"/>, exactly like <c>ThemeCompletenessTests</c>.
+/// </summary>
+public sealed class ViewerCollectorCoverageTests
+{
+    /// <summary>
+    /// Collector tables the Darling service stores but whose data no viewer reader surfaces yet. Empty
+    /// today — the viewer has a reader for all 35 catalog tables. A genuinely store-only/headless table
+    /// (one deliberately never shown) would go here with a comment; an unbuilt-UI table would go here with
+    /// a <c>// UNBUILT UI (parity board Tier 1) -- remove when the tab ships</c> comment.
+    /// </summary>
+    private static readonly HashSet<string> KnownStoreOnlyOrUnbuiltTables = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // (empty) -- the Darling viewer reads every collector table.
+    };
+
+    [Fact]
+    public void EveryCollectorTable_HasAViewerReader_OrIsAllowListed()
+    {
+        var readerText = ReaderLayerText();
+
+        var uncovered = new List<string>();
+        foreach (var definition in CollectorCatalog.All)
+        {
+            var table = definition.TargetTable;
+            if (ReferencedIn(readerText, table))
+            {
+                continue; // read directly or via its v_ view
+            }
+            if (KnownStoreOnlyOrUnbuiltTables.Contains(table))
+            {
+                continue; // tracked debt — the ratchet keeps this list shrinking
+            }
+            uncovered.Add(table);
+        }
+
+        Assert.True(uncovered.Count == 0,
+            "Collector table(s) have no Darling viewer reader and are not allow-listed. Add a reader in " +
+            "PerformanceMonitor.Darling.Viewer/ViewerDataService*.cs, or — if intentionally store-only/" +
+            "unbuilt — add the table to KnownStoreOnlyOrUnbuiltTables with a comment:\n  " +
+            string.Join("\n  ", uncovered.OrderBy(t => t, StringComparer.Ordinal)));
+    }
+
+    [Fact]
+    public void AllowList_NamesOnlyRealCatalogTables()
+    {
+        var catalog = CollectorCatalog.All
+            .Select(d => d.TargetTable)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var unknown = KnownStoreOnlyOrUnbuiltTables
+            .Where(t => !catalog.Contains(t))
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(unknown.Count == 0,
+            "Allow-list names table(s) that are not in CollectorCatalog (typo, or a removed/renamed " +
+            "collector): " + string.Join(", ", unknown));
+    }
+
+    [Fact]
+    public void AllowList_HasNoEntryThatIsActuallyRead()
+    {
+        // The ratchet enforcement: once a table gains a reader, its allow-list entry is stale debt and
+        // must be deleted. This fails the build until it is, so the list can only shrink.
+        var readerText = ReaderLayerText();
+
+        var stale = KnownStoreOnlyOrUnbuiltTables
+            .Where(t => ReferencedIn(readerText, t))
+            .OrderBy(t => t, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(stale.Count == 0,
+            "Allow-list entr(y/ies) now HAVE a Darling viewer reader — delete them from " +
+            "KnownStoreOnlyOrUnbuiltTables: " + string.Join(", ", stale));
+    }
+
+    /// <summary>A table is "referenced" if its name appears anywhere in the reader source — this matches
+    /// both a direct <c>FROM table</c> and the usual <c>FROM v_table</c> view form (the view name contains
+    /// the table name as a substring). No catalog table name is a substring of another, so this is
+    /// collision-free across the catalog.</summary>
+    private static bool ReferencedIn(string readerText, string table) =>
+        readerText.Contains(table, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Concatenated text of the Darling viewer's reader layer
+    /// (<c>PerformanceMonitor.Darling.Viewer/ViewerDataService*.cs</c>), located from this test file's
+    /// compile-time path (Darling.Tests sits at <c>Darling/Darling.Tests/</c>; the viewer is the sibling
+    /// <c>Darling/PerformanceMonitor.Darling.Viewer/</c>).</summary>
+    private static string ReaderLayerText([CallerFilePath] string thisFile = "")
+    {
+        var testDir = Path.GetDirectoryName(thisFile)!;
+        var readerDir = Path.GetFullPath(Path.Combine(testDir, "..", "PerformanceMonitor.Darling.Viewer"));
+
+        // Enumerate all *.cs and filter by filename prefix rather than passing "ViewerDataService*.cs" as the
+        // search pattern: Directory.EnumerateFiles matches the pattern against BOTH the long name and the 8.3
+        // short name, which makes multi-dot names (e.g. ViewerDataService.FinOps.IndexAnalysis.cs) match
+        // unreliably. A plain StartsWith is unambiguous. The obj/bin exclusion checks whole path SEGMENTS,
+        // not a substring — a substring "obj"/"bin" would wrongly match a source file whose name contains it.
+        var files = Directory
+            .EnumerateFiles(readerDir, "*.cs", SearchOption.AllDirectories)
+            .Where(f => Path.GetFileName(f).StartsWith("ViewerDataService", StringComparison.OrdinalIgnoreCase))
+            .Where(f => !HasBuildOutputSegment(f))
+            .ToList();
+
+        Assert.False(files.Count == 0,
+            $"No ViewerDataService*.cs files found under {readerDir} — the coverage pin cannot read the " +
+            "Darling viewer's reader layer (did the reader layer move?).");
+
+        return string.Join("\n", files.Select(File.ReadAllText));
+    }
+
+    /// <summary>True if any whole path segment is a build-output directory (obj/bin). Segment-based, not a
+    /// substring test — a plain Contains("obj") would false-positive on a source file whose name embeds it.</summary>
+    private static bool HasBuildOutputSegment(string path) =>
+        path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(seg => seg.Equals("obj", StringComparison.OrdinalIgnoreCase) ||
+                        seg.Equals("bin", StringComparison.OrdinalIgnoreCase));
+}

@@ -211,12 +211,25 @@
                           Foreground="{DynamicResource ForegroundBrush}" Margin="20,0,0,4"/>
                 <CheckBox x:Name="LrqExcludeMiscWaitsCheckBox"
                           Content="Exclude miscellaneous waits (XE_LIVE_TARGET_TVF)"
+                          Foreground="{DynamicResource ForegroundBrush}" Margin="20,0,0,4"/>
+                <CheckBox x:Name="LrqExcludeCdcCheckBox"
+                          Content="Exclude CDC capture jobs (sp_MScdc_capture_job, sp_cdc_scan)"
                           Foreground="{DynamicResource ForegroundBrush}" Margin="20,0,0,0"/>
                 <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
-                    <CheckBox x:Name="AlertTempDbSpaceCheckBox" Content="TempDB space usage over" VerticalAlignment="Center"
+                    <CheckBox x:Name="AlertTempDbSpaceCheckBox" Content="tempdb space usage over" VerticalAlignment="Center"
                               Foreground="{DynamicResource ForegroundBrush}"/>
                     <TextBox x:Name="AlertTempDbSpaceThresholdBox" Width="45" Text="80" Margin="6,0,0,0" VerticalAlignment="Center"/>
                     <TextBlock Text="%" VerticalAlignment="Center" Margin="2,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <CheckBox x:Name="AlertLowDiskCheckBox" Content="Volume free space under" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertLowDiskThresholdPercentBox" Width="45" Text="10" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="% or" VerticalAlignment="Center" Margin="2,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertLowDiskThresholdGbBox" Width="45" Text="5" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="GB free (Azure SQL DB excluded)" VerticalAlignment="Center" Margin="2,0,0,0"
                                Foreground="{DynamicResource ForegroundBrush}"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
@@ -224,6 +237,13 @@
                               Foreground="{DynamicResource ForegroundBrush}"/>
                     <TextBox x:Name="AlertLongRunningJobMultiplierBox" Width="35" Text="3" Margin="6,0,0,0" VerticalAlignment="Center"/>
                     <TextBlock Text="x historical average" VerticalAlignment="Center" Margin="2,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <CheckBox x:Name="AlertFailedJobCheckBox" Content="Agent job failed in the last" VerticalAlignment="Center"
+                              Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertFailedJobLookbackBox" Width="45" Text="60" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="minutes" VerticalAlignment="Center" Margin="2,0,0,0"
                                Foreground="{DynamicResource ForegroundBrush}"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="20,10,0,0">
@@ -238,6 +258,20 @@
                                Foreground="{DynamicResource ForegroundBrush}"/>
                     <TextBox x:Name="EmailCooldownBox" Width="40" TextAlignment="Center" VerticalAlignment="Center"/>
                     <TextBlock Text="minutes" VerticalAlignment="Center" Margin="4,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
+                <!-- #1141: deadlock/blocking notification delivery mode + per-event cap -->
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <TextBlock Text="Deadlock/blocking delivery:" VerticalAlignment="Center" Margin="0,0,8,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <ComboBox x:Name="AlertDeliveryModeBox" Width="260" VerticalAlignment="Center">
+                        <ComboBoxItem Content="Summary — one card per cycle" Tag="Summary"/>
+                        <ComboBoxItem Content="Per-event — one notification per incident" Tag="PerEvent"/>
+                    </ComboBox>
+                    <TextBlock Text="max" VerticalAlignment="Center" Margin="8,0,4,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AlertPerEventMaxBox" Width="40" TextAlignment="Center" VerticalAlignment="Center"/>
+                    <TextBlock Text="/cycle" VerticalAlignment="Center" Margin="4,0,0,0"
                                Foreground="{DynamicResource ForegroundBrush}"/>
                 </StackPanel>
                 <TextBlock x:Name="AlertPreviewText" FontSize="11" FontStyle="Italic"
@@ -273,6 +307,34 @@
                            Margin="20,0,0,0" TextWrapping="Wrap"/>
                 <CheckBox x:Name="LogAlertDismissalsCheckBox" Content="Log alert dismiss and mute actions"
                           Margin="20,8,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
+
+                <!-- Automated Analysis -->
+                <TextBlock Text="Automated Analysis" FontWeight="SemiBold" FontSize="12"
+                           Foreground="{DynamicResource ForegroundBrush}" Margin="20,14,0,4"/>
+                <TextBlock Text="Periodically run the triage engine and record findings in the Alerts tab. Notifications below are optional — analysis runs and stores findings even with notifications off."
+                           FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                           Margin="20,0,0,4" TextWrapping="Wrap"/>
+                <CheckBox x:Name="AnalysisEnabledCheckBox" Content="Enable automated analysis"
+                          Margin="20,4,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
+                <CheckBox x:Name="AnalysisNotificationsCheckBox" Content="Send scheduled analysis notifications"
+                          Margin="20,4,0,0" Foreground="{DynamicResource ForegroundBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <TextBlock Text="Run analysis every" VerticalAlignment="Center" Margin="0,0,8,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AnalysisIntervalBox" Width="45" TextAlignment="Center" VerticalAlignment="Center"/>
+                    <TextBlock Text="minutes" VerticalAlignment="Center" Margin="4,0,0,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="20,6,0,0">
+                    <TextBlock Text="Notify on finding severity at or above" VerticalAlignment="Center" Margin="0,0,8,0"
+                               Foreground="{DynamicResource ForegroundBrush}"/>
+                    <TextBox x:Name="AnalysisNotifySeverityBox" Width="45" TextAlignment="Center" VerticalAlignment="Center"/>
+                    <TextBlock Text="(0.0 - 2.0)" VerticalAlignment="Center" Margin="4,0,0,0"
+                               Foreground="{DynamicResource ForegroundMutedBrush}"/>
+                </StackPanel>
+                <TextBlock Text="Requires SMTP or a webhook configured below for delivery; findings are recorded in the Alerts tab either way."
+                           FontSize="11" FontStyle="Italic" Foreground="{DynamicResource ForegroundMutedBrush}"
+                           Margin="20,4,0,0" TextWrapping="Wrap"/>
             </StackPanel>
         </Border>
 
@@ -422,6 +484,72 @@
                     </Hyperlink>
                 </TextBlock>
 
+                <!-- Generic webhook -->
+                <TextBlock Text="Generic Webhook (HTTP POST)" FontSize="14" FontWeight="SemiBold"
+                           Foreground="{DynamicResource ForegroundBrush}" Margin="0,20,0,0"/>
+                <TextBlock Text="POST alerts as JSON to any endpoint — PagerDuty, Opsgenie, n8n, or a GitHub repository_dispatch that re-runs a workflow. Use this to trigger automation when an alert fires (for example, re-adding your IP to an Azure SQL firewall rule after a connection is lost)."
+                           FontSize="12" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <CheckBox x:Name="GenericWebhookEnabledCheckBox" Content="Enable generic webhook" Margin="0,8,0,0"
+                          Foreground="{DynamicResource ForegroundBrush}" Checked="GenericWebhookEnabledCheckBox_Changed" Unchecked="GenericWebhookEnabledCheckBox_Changed"/>
+                <Grid Margin="20,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="URL:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="GenericWebhookUrlBox" Margin="0,0,0,4"
+                             ToolTip="The endpoint to POST to, e.g. https://api.github.com/repos/OWNER/REPO/dispatches"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Headers (JSON):" VerticalAlignment="Top"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,4,8,4"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="GenericWebhookHeadersBox" Margin="0,0,0,4"
+                             AcceptsReturn="True" TextWrapping="Wrap" MinHeight="44" VerticalScrollBarVisibility="Auto"
+                             ToolTip="A JSON object of request headers. Stored in Windows Credential Manager — it carries your token."/>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Body (JSON):" VerticalAlignment="Top"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,4,8,4"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="GenericWebhookBodyBox" Margin="0,0,0,4"
+                             AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" VerticalScrollBarVisibility="Auto"
+                             FontFamily="Consolas"
+                             ToolTip="The JSON body to POST. Leave blank to use the built-in default. Placeholders are substituted and JSON-escaped."/>
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Proxy Address:" VerticalAlignment="Center"
+                               Foreground="{DynamicResource ForegroundBrush}" Margin="0,0,8,4"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="GenericWebhookProxyAddressBox" Margin="0,0,0,4"
+                             ToolTip="Optional HTTP proxy (e.g. http://proxy.corp:8080). Leave blank for direct connection."/>
+
+                    <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,4,0,0">
+                        <Button x:Name="TestGenericButton" Content="Send Test Notification" Click="TestGenericButton_Click"/>
+                        <TextBlock x:Name="GenericStatusText" FontSize="11" FontStyle="Italic"
+                                   Foreground="{DynamicResource ForegroundMutedBrush}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </StackPanel>
+                </Grid>
+                <TextBlock Margin="20,8,0,0" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}">
+                    <Run Text="Placeholders (each is JSON-escaped when substituted): "/>
+                    <Run FontFamily="Consolas" Text="{}{{metric}} {{server}} {{value}} {{threshold}} {{severity}} {{context}} {{timestamp}}"/>
+                </TextBlock>
+                <TextBlock Margin="20,6,0,0" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}">
+                    <Run FontWeight="SemiBold" Text="Example — re-run a GitHub Actions workflow when an alert fires:"/>
+                    <LineBreak/>
+                    <Run FontFamily="Consolas" Text="URL: https://api.github.com/repos/OWNER/REPO/dispatches"/>
+                    <LineBreak/>
+                    <Run FontFamily="Consolas" Text="{}Headers: {&quot;Authorization&quot;: &quot;Bearer ghp_YOUR_TOKEN&quot;, &quot;Accept&quot;: &quot;application/vnd.github+json&quot;}"/>
+                    <LineBreak/>
+                    <Run FontFamily="Consolas" Text="{}Body: {&quot;event_type&quot;: &quot;sql-monitor-alert&quot;, &quot;client_payload&quot;: {&quot;metric&quot;: &quot;{{metric}}&quot;, &quot;server&quot;: &quot;{{server}}&quot;}}"/>
+                    <LineBreak/>
+                    <Run Text="The repository's workflow triggers on "/>
+                    <Run FontFamily="Consolas" Text="repository_dispatch"/>
+                    <Run Text=". The token needs Contents: write on that repository."/>
+                </TextBlock>
+
                 <!-- Severity Color Reference -->
                 <TextBlock Text="Alert Severity Colors" FontWeight="SemiBold" FontSize="12"
                            Foreground="{DynamicResource ForegroundBrush}" Margin="0,16,0,4"/>
@@ -429,7 +557,7 @@
                     <Run Foreground="#DC2626" FontWeight="Bold" Text="&#x25A0; Red" /> — Critical (Deadlocks, Poison Waits, Server Unreachable)
                 </TextBlock>
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,2">
-                    <Run Foreground="#D97706" FontWeight="Bold" Text="&#x25A0; Orange" /> — Alert / Warning (Blocking, Long-Running Queries, TempDB, Jobs)
+                    <Run Foreground="#D97706" FontWeight="Bold" Text="&#x25A0; Orange" /> — Alert / Warning (Blocking, Long-Running Queries, tempdb, Jobs)
                 </TextBlock>
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}" Margin="0,0,0,2">
                     <Run Foreground="#F59E0B" FontWeight="Bold" Text="&#x25A0; Yellow" /> — Warning (High CPU)
@@ -438,7 +566,7 @@
                     <Run Foreground="#16A34A" FontWeight="Bold" Text="&#x25A0; Green" /> — Resolved (Server Restored)
                 </TextBlock>
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource ForegroundMutedBrush}">
-                    <Run Foreground="#2eaef1" FontWeight="Bold" Text="&#x25A0; Blue" /> — Info
+                    <Run Foreground="{DynamicResource InfoBrush}" FontWeight="Bold" Text="&#x25A0; Blue" /> — Info
                 </TextBlock>
             </StackPanel>
         </Border>
@@ -465,6 +593,7 @@
                           Background="Transparent" BorderThickness="0"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                           MinHeight="80" MaxHeight="200"
+                          ContextMenu="{StaticResource DataGridContextMenu}"
                           MouseDoubleClick="ServerScheduleGrid_DoubleClick">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Server" Binding="{Binding ServerName}" Width="*"/>

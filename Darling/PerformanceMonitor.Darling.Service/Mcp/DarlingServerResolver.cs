@@ -1,0 +1,171 @@
+/*
+ * Copyright (c) 2026 Erik Darling, Darling Data LLC
+ *
+ * This file is part of the SQL Server Performance Monitor.
+ *
+ * Licensed under the MIT License. See LICENSE file in the project root for full license information.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Npgsql;
+
+namespace PerformanceMonitor.Darling.Service.Mcp;
+
+/// <summary>
+/// Resolves a user-provided server name to a (server_id, storage name) for the analysis MCP
+/// tools — Lite's <c>ServerResolver</c> semantics mirrored over Darling's third-party source
+/// of truth: where Lite resolves against its in-memory ServerManager and re-derives the id
+/// via the shared hash, Darling resolves against the Postgres <c>servers</c> registry, which
+/// the worker upserts on every successful connect (<see cref="DarlingObservability"/>) with
+/// <c>server_id</c> already derived from the storage name through the shared
+/// <c>ServerIdHelper</c>. The lookup semantics are Lite's exactly: enabled servers only; a
+/// missing name auto-selects a sole server; exact match (storage name OR display name,
+/// case-insensitive) beats partial (Contains) match; a miss returns a ready-to-return error
+/// listing the available servers, with Lite's <c>[Read-Only]</c> tag derived from the
+/// storage-name <c>:RO</c> suffix (the registry's encoding of ReadOnlyIntent).
+/// </summary>
+internal static class DarlingServerResolver
+{
+    /// <summary>One enabled row from the servers registry — the resolver's pure-matching input.</summary>
+    internal sealed record RegisteredServer(int ServerId, string ServerName, string? DisplayName);
+
+    /// <summary>
+    /// The registry read — exposed const so Darling.Tests can pin the dialect ungated
+    /// ($-free: no parameters, no bare now(), no N'' literals; the DarlingAlertReadAdapter
+    /// pattern). ORDER BY keeps the listing and first-partial-match deterministic.
+    /// </summary>
+    public const string LoadEnabledServersSql = @"
+SELECT server_id, server_name, display_name
+FROM servers
+WHERE is_enabled
+ORDER BY server_name";
+
+    /// <summary>
+    /// Resolves a server name against the enabled registry rows, returning either the resolved
+    /// (server_id, storage name) or a ready-to-return error string listing the available
+    /// servers — Lite's <c>ServerResolver.ResolveOrError</c> shape, so the tools collapse the
+    /// resolve-and-bail block to: <c>var (resolved, error) = await ...; if (error != null) return error;</c>.
+    /// Unlike Lite's in-memory resolution this one READS (the registry), so a store failure
+    /// degrades to an informative error string here — the tools' always-return-a-string
+    /// contract holds instead of surfacing the MCP SDK's generic invocation error.
+    /// </summary>
+    public static async Task<((int ServerId, string ServerName)? resolved, string? error)> ResolveOrErrorAsync(
+        NpgsqlDataSource postgres,
+        string? serverName)
+    {
+        List<RegisteredServer> servers;
+        try
+        {
+            servers = await LoadEnabledAsync(postgres);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Could not read the servers registry from the Postgres store: {ex.Message}");
+        }
+
+        return ResolveOrError(servers, serverName);
+    }
+
+    /// <summary>
+    /// The pure matching half — Lite's semantics over materialized registry rows, separated
+    /// from the Postgres read so the resolution rules unit-test without a live store.
+    /// </summary>
+    internal static ((int ServerId, string ServerName)? resolved, string? error) ResolveOrError(
+        IReadOnlyList<RegisteredServer> servers,
+        string? serverName)
+    {
+        var resolved = Resolve(servers, serverName);
+        return resolved is null
+            ? (null, $"Could not resolve server. Available servers:\n{ListAvailableServers(servers)}")
+            : (resolved, null);
+    }
+
+    private static (int ServerId, string ServerName)? Resolve(
+        IReadOnlyList<RegisteredServer> servers,
+        string? serverName)
+    {
+        if (servers.Count == 0)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(serverName))
+        {
+            if (servers.Count == 1)
+            {
+                return (servers[0].ServerId, servers[0].ServerName);
+            }
+
+            return null;
+        }
+
+        /* Exact match first — the registry's server_name IS the storage name the collectors
+           stamp on every row, so the resolved name joins the collected data directly. */
+        var exact = servers.FirstOrDefault(s =>
+            string.Equals(s.ServerName, serverName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(s.DisplayName, serverName, StringComparison.OrdinalIgnoreCase));
+
+        if (exact != null)
+        {
+            return (exact.ServerId, exact.ServerName);
+        }
+
+        /* Partial match */
+        var partial = servers.FirstOrDefault(s =>
+            s.ServerName.Contains(serverName, StringComparison.OrdinalIgnoreCase) ||
+            (s.DisplayName?.Contains(serverName, StringComparison.OrdinalIgnoreCase) ?? false));
+
+        if (partial != null)
+        {
+            return (partial.ServerId, partial.ServerName);
+        }
+
+        return null;
+    }
+
+    /// <summary>Reads the enabled rows from the servers registry.</summary>
+    internal static async Task<List<RegisteredServer>> LoadEnabledAsync(NpgsqlDataSource postgres)
+    {
+        var servers = new List<RegisteredServer>();
+
+        await using var connection = await postgres.OpenConnectionAsync();
+        using var command = new NpgsqlCommand(LoadEnabledServersSql, connection);
+        using var reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            servers.Add(new RegisteredServer(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2)));
+        }
+
+        return servers;
+    }
+
+    private static string ListAvailableServers(IReadOnlyList<RegisteredServer> servers)
+    {
+        if (servers.Count == 0)
+        {
+            /* Headless deviation from Lite's "No servers are configured.": the registry is
+               populated by the worker on each server's FIRST successful connect, so an empty
+               registry usually means the service just started or nothing has connected yet. */
+            return "No servers are registered yet. The service registers each monitored server on its first successful connection.";
+        }
+
+        var lines = servers.Select(s =>
+        {
+            /* ReadOnlyIntent is encoded in the storage name (host[:database][:RO]) —
+               Lite's [Read-Only] tag, derived from the registry's identity encoding. */
+            var roTag = s.ServerName.EndsWith(":RO", StringComparison.Ordinal) ? " [Read-Only]" : "";
+            return string.IsNullOrEmpty(s.DisplayName) || s.DisplayName == s.ServerName
+                ? $"{s.ServerName}{roTag}"
+                : $"{s.DisplayName} ({s.ServerName}){roTag}";
+        });
+
+        return string.Join("\n", lines);
+    }
+}

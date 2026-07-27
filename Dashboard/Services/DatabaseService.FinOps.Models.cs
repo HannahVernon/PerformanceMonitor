@@ -84,6 +84,14 @@ namespace PerformanceMonitorDashboard.Services
         public DateTime? LastUpdated { get; set; }
         public bool? IsHadrEnabled { get; set; }
         public bool? IsClustered { get; set; }
+
+        /// <summary>
+        /// Set when the sys.dm_os_sys_info hardware read failed (e.g. an Azure SQL DB monitoring login
+        /// without VIEW DATABASE STATE). Null when hardware inventory is available. Surfaced as a
+        /// non-alarming note in the FinOps Server Inventory grid (#1535).
+        /// </summary>
+        public string? HardwareUnavailableReason { get; set; }
+
         public decimal? AvgCpuPct { get; set; }
         public decimal? StorageTotalGb { get; set; }
         public int? IdleDbCount { get; set; }

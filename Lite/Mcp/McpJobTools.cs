@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
 using PerformanceMonitorLite.Services;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorLite.Mcp;
 
@@ -14,18 +15,15 @@ public sealed class McpJobTools
         ServerManager serverManager,
         [Description("Server name or display name.")] string? server_name = null)
     {
-        var resolved = ServerResolver.Resolve(serverManager, server_name);
-        if (resolved == null)
-        {
-            return $"Could not resolve server. Available servers:\n{ServerResolver.ListAvailableServers(serverManager)}";
-        }
+        var (resolved, error) = ServerResolver.ResolveOrError(serverManager, server_name);
+        if (error != null) return error;
 
         try
         {
             var rows = await dataService.GetRunningJobsAsync(resolved.Value.ServerId);
             if (rows.Count == 0)
             {
-                return "No running SQL Agent jobs found (or collector has not run yet).";
+                return McpHelpers.Status("empty", "No running SQL Agent jobs found (or collector has not run yet).");
             }
 
             var result = rows.Select(r => new

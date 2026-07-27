@@ -32,7 +32,7 @@ namespace PerformanceMonitorDashboard.Services
 
                     bool useCustomDates = fromDate.HasValue && toDate.HasValue;
 
-                    // Phased approach: aggregate numerics first (no DECOMPRESS), rank TOP 500,
+                    // Phased approach: aggregate numerics first (no DECOMPRESS), rank TOP 50,
                     // then hydrate text/plan for only the winners. This avoids decompressing
                     // query_text and query_plan_text for every row in the table.
                     string query = @"
@@ -73,7 +73,18 @@ namespace PerformanceMonitorDashboard.Services
             max_spills = MAX(qs.max_spills),
             query_plan_hash = MAX(qs.query_plan_hash),
             sql_handle = MAX(qs.sql_handle),
-            plan_handle = MAX(qs.plan_handle)
+            plan_handle = MAX(qs.plan_handle),
+            min_used_grant_kb = MIN(qs.min_used_grant_kb),
+            max_used_grant_kb = MAX(qs.max_used_grant_kb),
+            min_ideal_grant_kb = MIN(qs.min_ideal_grant_kb),
+            max_ideal_grant_kb = MAX(qs.max_ideal_grant_kb),
+            min_reserved_threads = MIN(qs.min_reserved_threads),
+            max_reserved_threads = MAX(qs.max_reserved_threads),
+            min_used_threads = MIN(qs.min_used_threads),
+            max_used_threads = MAX(qs.max_used_threads),
+            total_clr_time = MAX(qs.total_clr_time),
+            plan_generation_num = MAX(qs.plan_generation_num),
+            worker_time_per_second = MAX(qs.worker_time_per_second)
         INTO #per_lifetime
         FROM collect.query_stats AS qs
         WHERE (
@@ -98,10 +109,10 @@ namespace PerformanceMonitorDashboard.Services
             USE HINT('ENABLE_PARALLEL_PLAN_PREFERENCE')
         );
 
-        /*Phase 2: sum across lifetimes, rank, take TOP 500*/
+        /*Phase 2: sum across lifetimes, rank, take TOP 50*/
         DROP TABLE IF EXISTS #top_ranked;
 
-        SELECT TOP (500)
+        SELECT TOP (50)
             database_name = pl.database_name,
             query_hash = pl.query_hash,
             object_type = MAX(pl.object_type),
@@ -143,7 +154,18 @@ namespace PerformanceMonitorDashboard.Services
             max_spills = MAX(pl.max_spills),
             query_plan_hash = CONVERT(nvarchar(20), MAX(pl.query_plan_hash), 1),
             sql_handle = CONVERT(nvarchar(130), MAX(pl.sql_handle), 1),
-            plan_handle = CONVERT(nvarchar(130), MAX(pl.plan_handle), 1)
+            plan_handle = CONVERT(nvarchar(130), MAX(pl.plan_handle), 1),
+            min_used_grant_kb = MIN(pl.min_used_grant_kb),
+            max_used_grant_kb = MAX(pl.max_used_grant_kb),
+            min_ideal_grant_kb = MIN(pl.min_ideal_grant_kb),
+            max_ideal_grant_kb = MAX(pl.max_ideal_grant_kb),
+            min_reserved_threads = MIN(pl.min_reserved_threads),
+            max_reserved_threads = MAX(pl.max_reserved_threads),
+            min_used_threads = MIN(pl.min_used_threads),
+            max_used_threads = MAX(pl.max_used_threads),
+            total_clr_time = SUM(pl.total_clr_time),
+            plan_generation_num = MAX(pl.plan_generation_num),
+            worker_time_per_second = MAX(pl.worker_time_per_second)
         INTO #top_ranked
         FROM #per_lifetime AS pl
         GROUP BY
@@ -157,7 +179,7 @@ namespace PerformanceMonitorDashboard.Services
             HASH GROUP
         );
 
-        /*Phase 3: hydrate text and plan XML for the TOP 500 winners only*/
+        /*Phase 3: hydrate text and plan XML for the TOP 50 winners only*/
         SELECT
             tr.database_name,
             query_hash = CONVERT(nvarchar(20), tr.query_hash, 1),
@@ -194,10 +216,24 @@ namespace PerformanceMonitorDashboard.Services
             tr.min_spills,
             tr.max_spills,
             qt.query_text,
-            qp.query_plan_xml,
+            /* query_plan_xml is hydrated on demand via GetQueryStatsPlanXmlAsync (when a plan is
+               opened) — DECOMPRESSing plan XML for all TOP (50) rows cost ~7s of CPU and the grid
+               never displays it. */
+            query_plan_xml = CONVERT(nvarchar(max), NULL),
             tr.query_plan_hash,
             tr.sql_handle,
-            tr.plan_handle
+            tr.plan_handle,
+            tr.min_used_grant_kb,
+            tr.max_used_grant_kb,
+            tr.min_ideal_grant_kb,
+            tr.max_ideal_grant_kb,
+            tr.min_reserved_threads,
+            tr.max_reserved_threads,
+            tr.min_used_threads,
+            tr.max_used_threads,
+            tr.total_clr_time,
+            tr.plan_generation_num,
+            tr.worker_time_per_second
         FROM #top_ranked AS tr
         OUTER APPLY
         (
@@ -208,16 +244,6 @@ namespace PerformanceMonitorDashboard.Services
             AND   qs2.database_name = tr.database_name
             ORDER BY qs2.collection_time DESC
         ) AS qt
-        OUTER APPLY
-        (
-            SELECT TOP (1)
-                query_plan_xml = CAST(DECOMPRESS(qs3.query_plan_text) AS nvarchar(max))
-            FROM collect.query_stats AS qs3
-            WHERE qs3.query_hash = tr.query_hash
-            AND   qs3.database_name = tr.database_name
-            AND   qs3.query_plan_text IS NOT NULL
-            ORDER BY qs3.collection_time DESC
-        ) AS qp
         ORDER BY
             tr.avg_worker_time_ms DESC;";
 
@@ -273,7 +299,18 @@ namespace PerformanceMonitorDashboard.Services
                             QueryPlanXml = reader.IsDBNull(35) ? null : reader.GetString(35),
                             QueryPlanHash = reader.IsDBNull(36) ? null : reader.GetString(36),
                             SqlHandle = reader.IsDBNull(37) ? null : reader.GetString(37),
-                            PlanHandle = reader.IsDBNull(38) ? null : reader.GetString(38)
+                            PlanHandle = reader.IsDBNull(38) ? null : reader.GetString(38),
+                            MinUsedGrantKb = reader.IsDBNull(39) ? null : reader.GetInt64(39),
+                            MaxUsedGrantKb = reader.IsDBNull(40) ? null : reader.GetInt64(40),
+                            MinIdealGrantKb = reader.IsDBNull(41) ? null : reader.GetInt64(41),
+                            MaxIdealGrantKb = reader.IsDBNull(42) ? null : reader.GetInt64(42),
+                            MinReservedThreads = reader.IsDBNull(43) ? null : reader.GetInt64(43),
+                            MaxReservedThreads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
+                            MinUsedThreads = reader.IsDBNull(45) ? null : reader.GetInt64(45),
+                            MaxUsedThreads = reader.IsDBNull(46) ? null : reader.GetInt64(46),
+                            TotalClrTime = reader.IsDBNull(47) ? 0 : reader.GetInt64(47),
+                            PlanGenerationNum = reader.IsDBNull(48) ? null : reader.GetInt64(48),
+                            WorkerTimePerSecond = reader.IsDBNull(49) ? null : Convert.ToDouble(reader.GetValue(49), CultureInfo.InvariantCulture)
                         });
                     }
 
@@ -289,7 +326,7 @@ namespace PerformanceMonitorDashboard.Services
 
                     bool useCustomDates = fromDate.HasValue && toDate.HasValue;
 
-                    // Phased approach: aggregate numerics first (no DECOMPRESS), rank TOP 500,
+                    // Phased approach: aggregate numerics first (no DECOMPRESS), rank TOP 50,
                     // then hydrate plan XML for only the winners.
                     string query = @"
         SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -352,10 +389,10 @@ namespace PerformanceMonitorDashboard.Services
             USE HINT('ENABLE_PARALLEL_PLAN_PREFERENCE')
         );
 
-        /*Phase 2: sum across lifetimes, rank, take TOP 500*/
+        /*Phase 2: sum across lifetimes, rank, take TOP 50*/
         DROP TABLE IF EXISTS #proc_top_ranked;
 
-        SELECT TOP (500)
+        SELECT TOP (50)
             database_name = pl.database_name,
             object_id = MAX(pl.object_id),
             object_name = QUOTENAME(pl.schema_name) + N'.' + QUOTENAME(pl.object_name),
@@ -406,7 +443,7 @@ namespace PerformanceMonitorDashboard.Services
             HASH GROUP
         );
 
-        /*Phase 3: hydrate plan XML for the TOP 500 winners only*/
+        /*Phase 3: hydrate plan XML for the TOP 50 winners only*/
         SELECT
             tr.database_name,
             tr.object_id,
@@ -526,16 +563,16 @@ namespace PerformanceMonitorDashboard.Services
 
                     bool useCustomDates = fromDate.HasValue && toDate.HasValue;
 
-                    // Phased approach: aggregate numerics first (no DECOMPRESS), rank TOP 500,
+                    // Phased approach: aggregate numerics first (no DECOMPRESS), rank TOP 50,
                     // then hydrate query text for only the winners.
                     // Note: query_plan_xml is NOT fetched here — use GetQueryStorePlanXmlAsync on demand.
                     string query = @"
         SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-        /*Phase 1: aggregate numerics, rank TOP 500 — no DECOMPRESS*/
+        /*Phase 1: aggregate numerics, rank TOP 50 — no DECOMPRESS*/
         DROP TABLE IF EXISTS #qs_top_ranked;
 
-        SELECT TOP (500)
+        SELECT TOP (50)
             database_name = qsd.database_name,
             query_id = qsd.query_id,
             execution_type_desc = MAX(qsd.execution_type_desc),
@@ -577,10 +614,13 @@ namespace PerformanceMonitorDashboard.Services
             force_failure_count = SUM(qsd.force_failure_count),
             last_force_failure_reason_desc = MAX(qsd.last_force_failure_reason_desc),
             plan_forcing_type = MAX(qsd.plan_forcing_type),
+            avg_clr_time_ms = SUM(qsd.avg_clr_time * qsd.count_executions) / 1000.0 / NULLIF(SUM(qsd.count_executions), 0),
             min_clr_time_ms = MIN(qsd.min_clr_time) / 1000.0,
             max_clr_time_ms = MAX(qsd.max_clr_time) / 1000.0,
+            avg_num_physical_io_reads = SUM(qsd.avg_num_physical_io_reads * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
             min_num_physical_io_reads = MIN(qsd.min_num_physical_io_reads),
             max_num_physical_io_reads = MAX(qsd.max_num_physical_io_reads),
+            avg_log_bytes_used = SUM(qsd.avg_log_bytes_used * qsd.count_executions) / NULLIF(SUM(qsd.count_executions), 0),
             min_log_bytes_used = MIN(qsd.min_log_bytes_used),
             max_log_bytes_used = MAX(qsd.max_log_bytes_used)
         INTO #qs_top_ranked
@@ -608,7 +648,7 @@ namespace PerformanceMonitorDashboard.Services
             USE HINT('ENABLE_PARALLEL_PLAN_PREFERENCE')
         );
 
-        /*Phase 2: hydrate query text for the TOP 500 winners only*/
+        /*Phase 2: hydrate query text for the TOP 50 winners only*/
         SELECT
             tr.*,
             qt.query_sql_text
@@ -680,13 +720,16 @@ namespace PerformanceMonitorDashboard.Services
                             ForceFailureCount = reader.IsDBNull(38) ? null : reader.GetInt64(38),
                             LastForceFailureReasonDesc = reader.IsDBNull(39) ? null : reader.GetString(39),
                             PlanForcingType = reader.IsDBNull(40) ? null : reader.GetString(40),
-                            MinClrTimeMs = reader.IsDBNull(41) ? null : Convert.ToDouble(reader.GetValue(41), CultureInfo.InvariantCulture),
-                            MaxClrTimeMs = reader.IsDBNull(42) ? null : Convert.ToDouble(reader.GetValue(42), CultureInfo.InvariantCulture),
-                            MinNumPhysicalIoReads = reader.IsDBNull(43) ? null : reader.GetInt64(43),
-                            MaxNumPhysicalIoReads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
-                            MinLogBytesUsed = reader.IsDBNull(45) ? null : reader.GetInt64(45),
-                            MaxLogBytesUsed = reader.IsDBNull(46) ? null : reader.GetInt64(46),
-                            QuerySqlText = reader.IsDBNull(47) ? null : reader.GetString(47)
+                            AvgClrTimeMs = reader.IsDBNull(41) ? null : Convert.ToDouble(reader.GetValue(41), CultureInfo.InvariantCulture),
+                            MinClrTimeMs = reader.IsDBNull(42) ? null : Convert.ToDouble(reader.GetValue(42), CultureInfo.InvariantCulture),
+                            MaxClrTimeMs = reader.IsDBNull(43) ? null : Convert.ToDouble(reader.GetValue(43), CultureInfo.InvariantCulture),
+                            AvgNumPhysicalIoReads = reader.IsDBNull(44) ? null : reader.GetInt64(44),
+                            MinNumPhysicalIoReads = reader.IsDBNull(45) ? null : reader.GetInt64(45),
+                            MaxNumPhysicalIoReads = reader.IsDBNull(46) ? null : reader.GetInt64(46),
+                            AvgLogBytesUsed = reader.IsDBNull(47) ? null : reader.GetInt64(47),
+                            MinLogBytesUsed = reader.IsDBNull(48) ? null : reader.GetInt64(48),
+                            MaxLogBytesUsed = reader.IsDBNull(49) ? null : reader.GetInt64(49),
+                            QuerySqlText = reader.IsDBNull(50) ? null : reader.GetString(50)
                             // QueryPlanXml is fetched on-demand via GetQueryStorePlanXmlAsync
                         });
                     }

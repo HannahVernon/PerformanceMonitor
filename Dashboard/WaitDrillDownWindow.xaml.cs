@@ -18,7 +18,10 @@ using Microsoft.Win32;
 using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
-using static PerformanceMonitorDashboard.Helpers.WaitDrillDownHelper;
+using static PerformanceMonitor.Ui.WaitDrillDownHelper;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard;
 
@@ -31,10 +34,10 @@ public partial class WaitDrillDownWindow : Window
     private readonly DateTime? _toDate;
 
     // Filter state
-    private Dictionary<string, ColumnFilterState> _filters = new();
-    private List<QuerySnapshotItem>? _unfilteredData;
+    private readonly DataGridFilterManager<QuerySnapshotItem> _filterManager;
     private Popup? _filterPopup;
     private ColumnFilterPopup? _filterPopupContent;
+    private readonly PlanNavigationController _planActions;
 
     public WaitDrillDownWindow(
         DatabaseService databaseService,
@@ -49,6 +52,17 @@ public partial class WaitDrillDownWindow : Window
         _hoursBack = hoursBack;
         _fromDate = fromDate;
         _toDate = toDate;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+            "the monitored server");
+
+        _filterManager = new DataGridFilterManager<QuerySnapshotItem>(ResultsDataGrid);
+        DataGridFilterColumns.AddFilterButtons(ResultsDataGrid, Filter_Click);
+        _filterManager.UpdateFilterButtonStyles();
 
         Title = $"Wait Drill-Down: {waitType}";
 
@@ -109,10 +123,7 @@ public partial class WaitDrillDownWindow : Window
     private void LoadDirectData(List<QuerySnapshotItem> data, WaitClassification classification)
     {
         data = SortByProperty(data, classification.SortProperty);
-        _unfilteredData = data;
-        _filters.Clear();
-        ResultsDataGrid.ItemsSource = data;
-        UpdateFilterButtonStyles();
+        _filterManager.UpdateData(data);
 
         var timeRange = GetTimeRangeDescription(data);
         var truncated = data.Count >= 500 ? " (limited to 500 rows)" : "";
@@ -133,10 +144,7 @@ public partial class WaitDrillDownWindow : Window
         if (headBlockerInfos.Count == 0)
         {
             // No chain found — fall back to showing direct data
-            _unfilteredData = data;
-            _filters.Clear();
-            ResultsDataGrid.ItemsSource = data;
-            UpdateFilterButtonStyles();
+            _filterManager.UpdateData(data);
             var timeRange = GetTimeRangeDescription(data);
             SummaryText.Text = $"{data.Count} snapshot(s) | {classification.Description} | {timeRange} | No blocking chains found, showing waiters";
             return;
@@ -162,10 +170,7 @@ public partial class WaitDrillDownWindow : Window
         if (headBlockerRows.Count == 0)
         {
             // Head blockers not in data — show original data
-            _unfilteredData = data;
-            _filters.Clear();
-            ResultsDataGrid.ItemsSource = data;
-            UpdateFilterButtonStyles();
+            _filterManager.UpdateData(data);
             var timeRange = GetTimeRangeDescription(data);
             SummaryText.Text = $"{data.Count} snapshot(s) | {classification.Description} | {timeRange} | Head blockers not in snapshots, showing waiters";
             return;
@@ -173,11 +178,10 @@ public partial class WaitDrillDownWindow : Window
 
         // Insert chain-specific columns into the existing XAML columns
         InsertChainColumns();
+        // The inserted column's filter button gets its glyph from UpdateFilterButtonStyles
+        _filterManager.UpdateFilterButtonStyles();
 
-        _unfilteredData = headBlockerRows;
-        _filters.Clear();
-        ResultsDataGrid.ItemsSource = headBlockerRows;
-        UpdateFilterButtonStyles();
+        _filterManager.UpdateData(headBlockerRows);
 
         var timeRangeDesc = GetTimeRangeDescription(headBlockerRows);
         SummaryText.Text = $"{headBlockerRows.Count} head blocker(s) from {data.Count} waiting session(s) | " +
@@ -325,7 +329,7 @@ public partial class WaitDrillDownWindow : Window
 
     private void OnThemeChanged(string _)
     {
-        UpdateFilterButtonStyles();
+        _filterManager.UpdateFilterButtonStyles();
     }
 
     #region Column Filter Popup
@@ -349,7 +353,7 @@ public partial class WaitDrillDownWindow : Window
             };
         }
 
-        _filters.TryGetValue(columnName, out var existingFilter);
+        _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
         _filterPopupContent!.Initialize(columnName, existingFilter);
 
         _filterPopup.PlacementTarget = button;
@@ -359,14 +363,7 @@ public partial class WaitDrillDownWindow : Window
     private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
     {
         if (_filterPopup != null) _filterPopup.IsOpen = false;
-
-        if (e.FilterState.IsActive)
-            _filters[e.FilterState.ColumnName] = e.FilterState;
-        else
-            _filters.Remove(e.FilterState.ColumnName);
-
-        ApplyFilters();
-        UpdateFilterButtonStyles();
+        _filterManager.SetFilter(e.FilterState);
     }
 
     private void FilterPopup_FilterCleared(object? sender, EventArgs e)
@@ -374,145 +371,82 @@ public partial class WaitDrillDownWindow : Window
         if (_filterPopup != null) _filterPopup.IsOpen = false;
     }
 
-    private void ApplyFilters()
-    {
-        if (_unfilteredData == null) return;
-
-        if (_filters.Count == 0)
-        {
-            ResultsDataGrid.ItemsSource = _unfilteredData;
-            return;
-        }
-
-        var filtered = _unfilteredData.Where(item =>
-        {
-            foreach (var filter in _filters.Values)
-            {
-                if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
-                    return false;
-            }
-            return true;
-        }).ToList();
-
-        ResultsDataGrid.ItemsSource = filtered;
-    }
-
-    private void UpdateFilterButtonStyles()
-    {
-        foreach (var column in ResultsDataGrid.Columns)
-        {
-            if (column.Header is StackPanel stackPanel)
-            {
-                var filterButton = stackPanel.Children.OfType<Button>().FirstOrDefault();
-                if (filterButton?.Tag is string columnName)
-                {
-                    bool hasActive = _filters.TryGetValue(columnName, out var filter) && filter.IsActive;
-                    filterButton.Content = new System.Windows.Controls.TextBlock
-                    {
-                        Text = "\uE71C",
-                        FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
-                        Foreground = hasActive
-                            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD7, 0x00))
-                            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-                    };
-                    filterButton.ToolTip = hasActive && filter != null
-                        ? $"Filter: {filter.DisplayText}\n(Click to modify)"
-                        : "Click to filter";
-                }
-            }
-        }
-    }
-
     #endregion
 
     #region Context Menu Handlers
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e)
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+        DataGridExport.ExportToCsv(sender, $"wait_drill_down_{_waitType}", TabHelpers.CsvSeparator);
+
+    #endregion
+
+    #region Plan Actions
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
+        if (GetSnapshotItem(sender) is not { } item) return;
+        await _planActions.ViewPlanAsync(
+            () => _databaseService.GetQuerySnapshotPlanAsync(item.CollectionTime, item.SessionId),
+            $"Est Plan - SPID {item.SessionId}", item.QueryText);
+    }
+
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetSnapshotItem(sender) is not { } item) return;
+        await _planActions.GetActualPlanAsync(item.QueryText, item.DatabaseName ?? "",
+            $"Actual Plan - SPID {item.SessionId}");
+    }
+
+    private async void DownloadWaitQueryPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.DataContext is not QuerySnapshotItem item) return;
+
+        try
         {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid != null && dataGrid.CurrentCell.Item != null)
+            // The query plan is fetched on demand (not loaded with the grid) — same as the Active Queries grid.
+            var queryPlan = await _databaseService.GetQuerySnapshotPlanAsync(item.CollectionTime, item.SessionId);
+
+            if (string.IsNullOrWhiteSpace(queryPlan))
             {
-                var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                if (!string.IsNullOrEmpty(cellContent))
-                    Clipboard.SetDataObject(cellContent, false);
+                MessageBox.Show("No query plan available.", "No Plan", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
             }
+
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+            var saveFileDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                FileName = $"wait_query_plan_{item.SessionId}_{timestamp}.sqlplan",
+                DefaultExt = ".sqlplan",
+                Filter = "SQL Plan (*.sqlplan)|*.sqlplan|XML Files (*.xml)|*.xml|All Files (*.*)|*.*",
+                Title = "Save Query Plan"
+            };
+
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                System.IO.File.WriteAllText(saveFileDialog.FileName, queryPlan);
+                MessageBox.Show($"Query plan saved to:\n{saveFileDialog.FileName}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error fetching/saving query plan:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void CopyRow_Click(object sender, RoutedEventArgs e)
+    private static QuerySnapshotItem? GetSnapshotItem(object sender)
     {
         if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
         {
             var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid?.SelectedItem != null)
-                Clipboard.SetDataObject(TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem), false);
+            return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as QuerySnapshotItem;
         }
-    }
-
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-        {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid != null && dataGrid.Items.Count > 0)
-            {
-                var sb = new StringBuilder();
-                var headers = new List<string>();
-                foreach (var column in dataGrid.Columns)
-                {
-                    if (column is DataGridBoundColumn)
-                        headers.Add(DataGridClipboardBehavior.GetHeaderText(column));
-                }
-                sb.AppendLine(string.Join("\t", headers));
-                foreach (var item in dataGrid.Items)
-                    sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-                Clipboard.SetDataObject(sb.ToString(), false);
-            }
-        }
-    }
-
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-        {
-            var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-            if (dataGrid != null && dataGrid.Items.Count > 0)
-            {
-                var dialog = new SaveFileDialog
-                {
-                    FileName = $"wait_drill_down_{_waitType}_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                    DefaultExt = ".csv",
-                    Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                };
-
-                if (dialog.ShowDialog() == true)
-                {
-                    try
-                    {
-                        var sb = new StringBuilder();
-                        var headers = new List<string>();
-                        foreach (var column in dataGrid.Columns)
-                        {
-                            if (column is DataGridBoundColumn)
-                                headers.Add(TabHelpers.EscapeCsvField(DataGridClipboardBehavior.GetHeaderText(column)));
-                        }
-                        sb.AppendLine(string.Join(",", headers));
-                        foreach (var item in dataGrid.Items)
-                        {
-                            var values = TabHelpers.GetRowValues(dataGrid, item);
-                            sb.AppendLine(string.Join(",", values.Select(v => TabHelpers.EscapeCsvField(v))));
-                        }
-                        System.IO.File.WriteAllText(dialog.FileName, sb.ToString());
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
-                }
-            }
-        }
+        return null;
     }
 
     #endregion

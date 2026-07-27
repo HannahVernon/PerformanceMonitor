@@ -31,6 +31,41 @@ jobs:
           # match every accumulated change and defeat the filter.
           base: ${{ github.event_name == 'push' && github.event.before || '' }}
           filters: |
+            # A change to a root build file (the solution, restore config, or THIS workflow) can
+            # affect every product, so it forces a full build/test/publish.
+            root:
+              - 'PerformanceMonitor.sln'
+              - 'global.json'
+              - 'nuget.config'
+              - 'NuGet.config'
+              - '.github/workflows/build.yml'
+            # The shared PerformanceMonitor.* core libraries feed Lite, the Full Dashboard, AND
+            # Darling (verified via ProjectReference), so a change here fans out to all three.
+            # NOT the CLI Installer — it references only Installer.Core.
+            core:
+              - 'PerformanceMonitor.Alerting/**'
+              - 'PerformanceMonitor.Analysis/**'
+              - 'PerformanceMonitor.Collectors/**'
+              - 'PerformanceMonitor.Common/**'
+              - 'PerformanceMonitor.Notifications/**'
+              - 'PerformanceMonitor.PlanAnalysis/**'
+              - 'PerformanceMonitor.Ui/**'
+              - '!**/*.md'
+            # Installer.Core is shared by the CLI Installer AND the Full Dashboard's integrated
+            # installer — a change rebuilds both, and nothing else.
+            installer_core:
+              - 'Installer.Core/**'
+              - '!**/*.md'
+            dashboard:
+              - 'Dashboard/**'
+              - 'Dashboard.Tests/**'
+              - '!**/*.md'
+            lite:
+              - 'Lite/**'
+              - 'Lite.Tests/**'
+              - '!**/*.md'
+            # Lite's analysis-heavy test subset — the narrower gate the workflow already used, so
+            # those slow tests run only when Lite analysis code (or shared/root code) changed.
             lite_analysis:
               - 'Lite/Analysis/**'
               - 'Lite/Services/**'
@@ -38,12 +73,16 @@ jobs:
               - 'Lite/Models/**'
               - 'Lite.Tests/**'
               - 'Lite/PerformanceMonitorLite.csproj'
+              - '!**/*.md'
             installer:
               - 'Installer/**'
-              - 'Installer.Core/**'
               - 'Installer.Tests/**'
               - 'install/**'
               - 'upgrades/**'
+              - '!**/*.md'
+            darling:
+              - 'Darling/**'
+              - '!**/*.md'
             # True when any non-documentation file changed. Documentation-only
             # changes (e.g. a CHANGELOG or README edit) skip the build/test/
             # publish steps below — there is nothing to compile. The job still
@@ -68,26 +107,38 @@ jobs:
           dotnet restore Installer/PerformanceMonitorInstaller.csproj --locked-mode
           dotnet restore Lite.Tests/Lite.Tests.csproj --locked-mode
           dotnet restore Installer.Tests/Installer.Tests.csproj --locked-mode
+          dotnet restore Darling/Darling.Tests/Darling.Tests.csproj --locked-mode
+          dotnet restore Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj --locked-mode
 
       - name: Build Lite.Tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.lite == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet build Lite.Tests/Lite.Tests.csproj -c Release --no-restore
 
       - name: Build Installer.Tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.installer == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet build Installer.Tests/Installer.Tests.csproj -c Release --no-restore
 
+      - name: Build Darling
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
+        run: |
+          dotnet build Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-restore
+          dotnet build Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release --no-restore
+
       - name: Run Lite fast tests
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.lite == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~AnomalyDetectorTests&FullyQualifiedName!~FactCollectorTests&FullyQualifiedName!~FactCollectorMiseryTests&FullyQualifiedName!~BaselineProviderTests&FullyQualifiedName!~InferenceEngineTests&FullyQualifiedName!~ScenarioTests&FullyQualifiedName!~AnalysisServiceTests"
 
       - name: Run Lite analysis-heavy tests
-        if: steps.filter.outputs.lite_analysis == 'true' || github.event_name == 'release'
+        if: steps.filter.outputs.lite_analysis == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Lite.Tests/Lite.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName~AnomalyDetectorTests|FullyQualifiedName~FactCollectorTests|FullyQualifiedName~FactCollectorMiseryTests|FullyQualifiedName~BaselineProviderTests|FullyQualifiedName~InferenceEngineTests|FullyQualifiedName~ScenarioTests|FullyQualifiedName~AnalysisServiceTests"
 
       - name: Run Installer tests
-        if: steps.filter.outputs.installer == 'true' || github.event_name == 'release'
+        if: steps.filter.outputs.installer == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet test Installer.Tests/Installer.Tests.csproj -c Release --no-build --verbosity normal --filter "FullyQualifiedName!~VersionDetectionTests&FullyQualifiedName!~IdempotencyTests&FullyQualifiedName!~AdversarialTests"
+
+      - name: Run Darling tests
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
+        run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal
 
       - name: Get version
         if: steps.filter.outputs.code != 'false'
@@ -98,7 +149,7 @@ jobs:
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
       - name: Publish Dashboard
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.dashboard == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Dashboard/Dashboard.csproj -c Release -o publish/Dashboard
 
       - name: Publish Dashboard (self-contained for Velopack)
@@ -106,7 +157,7 @@ jobs:
         run: dotnet publish Dashboard/Dashboard.csproj -c Release -r win-x64 --self-contained -o publish/Dashboard-velopack
 
       - name: Publish Lite
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.lite == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Lite/PerformanceMonitorLite.csproj -c Release -o publish/Lite
 
       - name: Publish Lite (self-contained for Velopack)
@@ -114,8 +165,44 @@ jobs:
         run: dotnet publish Lite/PerformanceMonitorLite.csproj -c Release -r win-x64 --self-contained -o publish/Lite-velopack
 
       - name: Publish CLI Installer
-        if: steps.filter.outputs.code != 'false'
+        if: steps.filter.outputs.installer == 'true' || steps.filter.outputs.installer_core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
         run: dotnet publish Installer/PerformanceMonitorInstaller.csproj -c Release
+
+      # Darling (headless edition): the Windows-service collector and the WPF viewer, published
+      # framework-dependent for the plain zip (both apps). The SERVICE stays zip-only — a Windows
+      # service has a different update story, deliberately deferred for v1. The VIEWER additionally
+      # ships as a remote-seat Velopack Setup.exe (#1555) via the self-contained publish below,
+      # exactly like Dashboard/Lite.
+      - name: Publish Darling Service
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Service/PerformanceMonitor.Darling.Service.csproj -c Release -o publish/DarlingService
+
+      - name: Publish Darling Viewer
+        if: steps.filter.outputs.darling == 'true' || steps.filter.outputs.core == 'true' || steps.filter.outputs.root == 'true' || github.event_name == 'release'
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -o publish/DarlingViewer
+
+      - name: Publish Darling Viewer (self-contained for Velopack)
+        if: github.event_name == 'release'
+        run: dotnet publish Darling/PerformanceMonitor.Darling.Viewer/PerformanceMonitor.Darling.Viewer.csproj -c Release -r win-x64 --self-contained -o publish/DarlingViewer-velopack
+
+      # Darling bundles a PostgreSQL 18 + TimescaleDB runtime (pg-runtime.zip) that ships beside
+      # the service exe; DarlingManagedPostgres extracts it on first run. The fetch script pulls
+      # ~340MB of pinned EDB/TimescaleDB archives, so this is release-only and cached. The key is
+      # the fetch script's own content hash (the SHA256 pins live inside it): a re-release with
+      # unchanged pins restores the assembled zip and skips both the download and the assembly,
+      # and any pin/version bump edits the script and invalidates the cache automatically.
+      - name: Cache Darling pg-runtime.zip
+        if: github.event_name == 'release'
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip
+        if: github.event_name == 'release' && steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
 
       - name: Package release artifacts
         if: github.event_name == 'release'
@@ -171,6 +258,29 @@ jobs:
           name: Installer-unsigned
           path: publish/Installer/
 
+      # Only our own .NET output (the service + viewer apphost exes + PerformanceMonitor.* dlls) is
+      # uploaded to SignPath, staged in the exact layout the single 'Darling' artifact-configuration
+      # signs: the service at the root, the viewer under viewer/. pg-runtime.zip is deliberately NOT
+      # here — the bundled EDB PostgreSQL binaries inside are EDB's and ship as opaque data, so the
+      # zip is placed into the package AFTER signing (see "Package Darling (signed)" below).
+      - name: Stage Darling for signing
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $stage = 'publish/Darling-signing'
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path "$stage/viewer" | Out-Null
+          Copy-Item 'publish/DarlingService/*' $stage -Recurse
+          Copy-Item 'publish/DarlingViewer/*' "$stage/viewer" -Recurse
+
+      - name: Upload Darling for signing
+        if: github.event_name == 'release'
+        id: upload-darling
+        uses: actions/upload-artifact@v6
+        with:
+          name: Darling-unsigned
+          path: publish/Darling-signing/
+
       - name: Sign Dashboard
         if: github.event_name == 'release'
         uses: signpath/github-action-submit-signing-request@v2
@@ -210,6 +320,24 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: 'signed/Installer'
 
+      # The single 'Darling' artifact-configuration slug on signpath.io signs the two apphost exes
+      # at their staged paths (PerformanceMonitor.Darling.Service.exe at the root and
+      # viewer/PerformanceMonitor.Darling.Viewer.exe) and leaves the PerformanceMonitor.* and
+      # third-party dlls alone. That config (which files get signed) lives outside this repo; until
+      # the 'Darling' slug exists this step fails the release.
+      - name: Sign Darling
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'Darling'
+          github-artifact-id: '${{ steps.upload-darling.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/Darling'
+
       - name: Replace with signed artifacts
         if: github.event_name == 'release'
         shell: pwsh
@@ -223,6 +351,98 @@ jobs:
           Remove-Item "releases/PerformanceMonitorInstaller-$version.zip" -ErrorAction SilentlyContinue
           Compress-Archive -Path 'signed/Installer/*' -DestinationPath "releases/PerformanceMonitorInstaller-$version.zip" -Force
 
+      - name: Package Darling (signed)
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          # One product, one zip (mirrors the one-zip-per-product convention above). signed/Darling
+          # already holds the signed tree in its final layout — the service at the archive root (its
+          # darling.sample.json alongside), the viewer in a viewer\ subfolder. Drop pg-runtime.zip
+          # beside the service exe, exactly where DarlingManagedPostgres looks (AppContext.BaseDirectory)
+          # and extracts it on first run. The EDB PostgreSQL binaries inside pg-runtime.zip are shipped
+          # as opaque data and were never signed.
+          Copy-Item 'Darling/artifacts/pg-runtime.zip' 'signed/Darling'
+
+          Remove-Item "releases/PerformanceMonitorDarling-$version.zip" -ErrorAction SilentlyContinue
+          Compress-Archive -Path 'signed/Darling/*' -DestinationPath "releases/PerformanceMonitorDarling-$version.zip" -Force
+
+      # The Velopack (Setup.exe) path publishes a SEPARATE self-contained build
+      # (publish/Dashboard-velopack, publish/Lite-velopack -- see the "self-contained
+      # for Velopack" steps above) that previously went straight into `vpk pack`
+      # without ever being uploaded to SignPath. Only the framework-dependent trees
+      # used for the legacy ZIPs were signed, so every Setup.exe shipped unsigned
+      # since Velopack packaging was introduced. These steps close that gap by
+      # mirroring the exact upload/sign pattern used for Dashboard/Lite/Installer
+      # above, and vpk pack below now reads from the signed output.
+      - name: Upload Dashboard (Velopack) for signing
+        if: github.event_name == 'release'
+        id: upload-dashboard-velopack
+        uses: actions/upload-artifact@v6
+        with:
+          name: Dashboard-Velopack-unsigned
+          path: publish/Dashboard-velopack/
+
+      - name: Upload Lite (Velopack) for signing
+        if: github.event_name == 'release'
+        id: upload-lite-velopack
+        uses: actions/upload-artifact@v6
+        with:
+          name: Lite-Velopack-unsigned
+          path: publish/Lite-velopack/
+
+      - name: Upload Darling Viewer (Velopack) for signing
+        if: github.event_name == 'release'
+        id: upload-darlingviewer-velopack
+        uses: actions/upload-artifact@v6
+        with:
+          name: DarlingViewer-Velopack-unsigned
+          path: publish/DarlingViewer-velopack/
+
+      - name: Sign Dashboard (Velopack)
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'Dashboard'
+          github-artifact-id: '${{ steps.upload-dashboard-velopack.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/Dashboard-Velopack'
+
+      - name: Sign Lite (Velopack)
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'Lite'
+          github-artifact-id: '${{ steps.upload-lite-velopack.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/Lite-Velopack'
+
+      # The remote-seat viewer Setup.exe (#1555) is signed with its OWN 'DarlingViewer' artifact
+      # configuration — the co-located-zip 'Darling' slug signs a service+viewer\ tree layout, which
+      # does not match this self-contained viewer-at-root publish. Like the 'Darling' slug, the
+      # 'DarlingViewer' config (which files get signed) lives outside this repo on signpath.io; until
+      # Erik creates the slug this step fails the release — the standing #1340 SignPath prerequisite.
+      - name: Sign Darling Viewer (Velopack)
+        if: github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '7969f8b6-d946-4a74-9bac-a55856d8b8e0'
+          project-slug: 'PerformanceMonitor'
+          signing-policy-slug: 'release-signing'
+          artifact-configuration-slug: 'DarlingViewer'
+          github-artifact-id: '${{ steps.upload-darlingviewer-velopack.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/DarlingViewer-Velopack'
+
       - name: Create Velopack release (Dashboard)
         if: github.event_name == 'release'
         shell: pwsh
@@ -230,17 +450,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          dotnet tool install -g vpk
+          # Pin vpk to the Velopack library version (keep in sync with the Velopack
+          # PackageReference in Dashboard.csproj / PerformanceMonitorLite.csproj).
+          dotnet tool install -g vpk --version 1.2.0
           New-Item -ItemType Directory -Force -Path releases/velopack-dashboard
           New-Item -ItemType Directory -Force -Path releases/velopack-lite
+          New-Item -ItemType Directory -Force -Path releases/velopack-darlingviewer
 
-          # Dashboard: download previous + pack
+          # Dashboard: download previous + pack (from the SIGNED velopack output, not the raw publish dir)
           vpk download github --repoUrl https://github.com/${{ github.repository }} --channel dashboard -o releases/velopack-dashboard --token $env:GH_TOKEN
-          vpk pack -u PerformanceMonitorDashboard -v $env:VERSION -p publish/Dashboard-velopack -e PerformanceMonitorDashboard.exe -o releases/velopack-dashboard --channel dashboard
+          vpk pack -u PerformanceMonitorDashboard -v $env:VERSION -p signed/Dashboard-Velopack -e PerformanceMonitorDashboard.exe -o releases/velopack-dashboard --channel dashboard
 
-          # Lite: download previous + pack
+          # Lite: download previous + pack (from the SIGNED velopack output, not the raw publish dir)
           vpk download github --repoUrl https://github.com/${{ github.repository }} --channel lite -o releases/velopack-lite --token $env:GH_TOKEN
-          vpk pack -u PerformanceMonitorLite -v $env:VERSION -p publish/Lite-velopack -e PerformanceMonitorLite.exe -o releases/velopack-lite --channel lite
+          vpk pack -u PerformanceMonitorLite -v $env:VERSION -p signed/Lite-Velopack -e PerformanceMonitorLite.exe -o releases/velopack-lite --channel lite
+
+          # Darling Viewer remote-seat installer (#1555): download previous + pack (from the SIGNED
+          # velopack output). Its own 'darlingviewer' channel/delta feed, separate from the co-located
+          # viewer inside PerformanceMonitorDarling-*.zip (which stays plain-zip only).
+          vpk download github --repoUrl https://github.com/${{ github.repository }} --channel darlingviewer -o releases/velopack-darlingviewer --token $env:GH_TOKEN
+          vpk pack -u PerformanceMonitorDarlingViewer -v $env:VERSION -p signed/DarlingViewer-Velopack -e PerformanceMonitor.Darling.Viewer.exe -o releases/velopack-darlingviewer --channel darlingviewer
 
       - name: Generate checksums
         if: github.event_name == 'release'
@@ -278,3 +507,147 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           vpk upload github --repoUrl https://github.com/${{ github.repository }} --channel lite -o releases/velopack-lite --releaseName "v$env:VERSION" --tag "v$env:VERSION" --merge --token $env:GH_TOKEN
+
+      - name: Upload Darling Viewer Velopack artifacts
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          vpk upload github --repoUrl https://github.com/${{ github.repository }} --channel darlingviewer -o releases/velopack-darlingviewer --releaseName "v$env:VERSION" --tag "v$env:VERSION" --merge --token $env:GH_TOKEN
+
+  # #1587: gated-live Darling coverage BEFORE merge, not only in the nightly. Darling.Tests has
+  # live-PostgreSQL tests (the *_AgainstDevPostgres classes) gated on DARLING_TEST_PG, which the
+  # build job above never sets — so those tests only ever ran post-merge in nightly.yml. That is
+  # exactly how #1586's alter_job(bigint) bug merged AND deployed clean: the test that catches it is
+  # gated-live, and PR CI did not run it. This job stands up a throwaway PostgreSQL + TimescaleDB
+  # from the bundled pg-runtime and runs the FULL Darling suite against it — but ONLY when Darling
+  # code (or this workflow) changed, so a Lite/Dashboard-only PR pays nothing. On a non-Darling
+  # change every step below no-ops via the path filter and the job still reports SUCCESS, so it can
+  # be made a required check without blocking unrelated PRs (the same always-runs-reports-a-result
+  # shape the build job uses for doc-only changes). Mirrors the nightly darling-pg job step-for-step;
+  # the one live-SQL-Server E2E stays skipped (DARLING_TEST_SQL unset — no SQL Server on the runner).
+  darling-pg:
+    name: Darling PostgreSQL tests
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Only do the expensive TimescaleDB work when Darling code changed — or when THIS workflow
+      # changed, so a change to the gate itself is exercised by the gate (this is what makes the PR
+      # that introduces this job validate itself end-to-end). Doc-only Darling edits don't trigger
+      # it. Skipped entirely on release: the dev push that produced the release commit already ran
+      # it, so the filter step doesn't run and every step below no-ops.
+      - name: Detect changed paths
+        id: filter
+        if: github.event_name != 'release'
+        uses: dorny/paths-filter@v3
+        with:
+          # On push, compare against the previous commit on this branch (mirrors the build job);
+          # on pull_request, an empty base makes the action diff against the PR base branch.
+          base: ${{ github.event_name == 'push' && github.event.before || '' }}
+          filters: |
+            darling:
+              - 'Darling/**'
+              - '!Darling/**/*.md'
+              - '.github/workflows/build.yml'
+
+      - name: Setup .NET 10.0
+        if: steps.filter.outputs.darling == 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # Same cache key the release job and nightly.yml use (the fetch script's own content hash), so
+      # a warm cache from any of the three means no ~340MB EDB/TimescaleDB download here.
+      - name: Cache Darling pg-runtime.zip
+        if: steps.filter.outputs.darling == 'true'
+        id: cache-pg-runtime
+        uses: actions/cache@v4
+        with:
+          path: Darling/artifacts/pg-runtime.zip
+          key: pg-runtime-${{ runner.os }}-${{ hashFiles('Darling/tools/fetch-pg-runtime.ps1') }}
+
+      - name: Build Darling pg-runtime.zip (cache miss only)
+        if: steps.filter.outputs.darling == 'true' && steps.cache-pg-runtime.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./Darling/tools/fetch-pg-runtime.ps1
+
+      - name: Extract pg-runtime
+        if: steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        run: |
+          $zip  = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime.zip"
+          $dest = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          if (-not (Test-Path "$dest\pgsql\bin\pg_ctl.exe")) { throw "pg-runtime missing pgsql\bin\pg_ctl.exe" }
+
+      - name: Restore Darling.Tests
+        if: steps.filter.outputs.darling == 'true'
+        run: dotnet restore Darling/Darling.Tests/Darling.Tests.csproj --locked-mode
+
+      - name: Build Darling.Tests
+        if: steps.filter.outputs.darling == 'true'
+        run: dotnet build Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-restore
+
+      # Throwaway cluster from the bundled runtime. initdb TRUST auth is acceptable ONLY here: an
+      # ephemeral CI runner, loopback-only, throwaway data (the product default is scram-sha-256 +
+      # a generated credential). Superuser is "darling" (not "postgres") so CREATE SCHEMA ...
+      # AUTHORIZATION darling in the V8 schema-split migration resolves. Settings mirror
+      # DarlingManagedPostgres.BuildConfAppend (timescaledb preload, port 5541, loopback bind).
+      - name: Initialize and start throwaway PostgreSQL
+        if: steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          $logFile = "$env:RUNNER_TEMP\darling-pg.log"
+          & "$bin\initdb.exe" -D $dataDir -U darling -A trust --encoding=UTF8
+          if ($LASTEXITCODE -ne 0) { throw "initdb failed ($LASTEXITCODE)" }
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "shared_preload_libraries = 'timescaledb'"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "port = 5541"
+          Add-Content -Path "$dataDir\postgresql.conf" -Value "listen_addresses = '127.0.0.1'"
+          & "$bin\pg_ctl.exe" -D $dataDir -l $logFile -w start
+          if ($LASTEXITCODE -ne 0) { if (Test-Path $logFile) { Get-Content $logFile -Tail 50 }; throw "pg_ctl start failed ($LASTEXITCODE)" }
+          & "$bin\createdb.exe" -h 127.0.0.1 -p 5541 -U darling darling
+          if ($LASTEXITCODE -ne 0) { throw "createdb failed ($LASTEXITCODE)" }
+
+      # DARLING_TEST_PG lights up the [Collection("live-postgres")] classes; DARLING_TEST_PGRUNTIME
+      # lights up the managed-bootstrap E2E. DARLING_TEST_SQL is intentionally unset — the one
+      # live-SQL-Server E2E stays skipped (no SQL Server on the runner). Full suite (not a filtered
+      # subset): the ungated ~3s overlap with the build job is negligible and a filter could hide a
+      # test the way narrow filters have bitten before.
+      - name: Run Darling PG tests
+        if: steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        env:
+          DARLING_TEST_PG: "Host=127.0.0.1;Port=5541;Username=darling;Database=darling"
+          DARLING_TEST_PGRUNTIME: ${{ github.workspace }}\Darling\artifacts\pg-runtime
+        run: dotnet test Darling/Darling.Tests/Darling.Tests.csproj -c Release --no-build --verbosity normal --logger "trx;LogFileName=darling-pr.trx" --results-directory TestResults
+
+      - name: Stop PostgreSQL
+        if: always() && steps.filter.outputs.darling == 'true'
+        shell: pwsh
+        run: |
+          $bin     = "$env:GITHUB_WORKSPACE\Darling\artifacts\pg-runtime\pgsql\bin"
+          $dataDir = "$env:RUNNER_TEMP\darling-pgdata"
+          if (Test-Path "$bin\pg_ctl.exe") { & "$bin\pg_ctl.exe" -D $dataDir -m fast -w stop }
+          exit 0
+
+      - name: Upload PG log and test results on failure
+        if: failure() && steps.filter.outputs.darling == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: darling-pg-failure
+          path: |
+            ${{ runner.temp }}/darling-pg.log
+            TestResults/
+          if-no-files-found: ignore

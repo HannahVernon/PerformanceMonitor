@@ -1,0 +1,9 @@
+<event name="wait_info" package="sqlserver" timestamp="2026-07-05T12:04:30.900Z">
+  <data name="wait_type"><type name="wait_types" package="sqlserver" /><value>66</value><text>PAGEIOLATCH_SH</text></data>
+  <data name="opcode"><type name="event_opcode" package="package0" /><value>1</value><text>End</text></data>
+  <data name="duration"><value>1500</value></data>
+  <data name="signal_duration"><value>12</value></data>
+  <data name="wait_resource"><value>7:1:12345</value></data>
+  <action name="session_id" package="sqlserver"><value>57</value></action>
+  <action name="sql_text" package="sqlserver"><value>SELECT * FROM dbo.big_table WHERE id = @p1;</value></action>
+</event>

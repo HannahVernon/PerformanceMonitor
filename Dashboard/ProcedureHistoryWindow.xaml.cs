@@ -21,6 +21,9 @@ using PerformanceMonitorDashboard.Helpers;
 using PerformanceMonitorDashboard.Models;
 using PerformanceMonitorDashboard.Services;
 using ScottPlot;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
+using PerformanceMonitor.Common;
 
 namespace PerformanceMonitorDashboard
 {
@@ -35,12 +38,12 @@ namespace PerformanceMonitorDashboard
         private readonly int _hoursBack;
         private readonly DateTime? _fromDate;
         private readonly DateTime? _toDate;
+        private readonly PlanNavigationController _planActions;
         private List<ProcedureExecutionHistoryItem> _historyData = new();
         private ChartHoverHelper? _chartHover;
 
         // Filter state
-        private Dictionary<string, ColumnFilterState> _filters = new();
-        private List<ProcedureExecutionHistoryItem>? _unfilteredData;
+        private readonly DataGridFilterManager<ProcedureExecutionHistoryItem> _filterManager;
         private Popup? _filterPopup;
         private ColumnFilterPopup? _filterPopupContent;
 
@@ -67,12 +70,23 @@ namespace PerformanceMonitorDashboard
             _fromDate = fromDate;
             _toDate = toDate;
 
+            _planActions = new PlanNavigationController(
+                this,
+                (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+                (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                    _databaseService.ConnectionString, db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct),
+                "the monitored server");
+
+            _filterManager = new DataGridFilterManager<ProcedureExecutionHistoryItem>(HistoryDataGrid);
+            DataGridFilterColumns.AddFilterButtons(HistoryDataGrid, Filter_Click);
+            _filterManager.UpdateFilterButtonStyles();
+
             ProcedureIdentifierText.Text = $"Procedure Execution History: {objectName} in [{databaseName}]";
 
             ApplyThemeToChart();
             Loaded += ProcedureHistoryWindow_Loaded;
-            Helpers.ThemeManager.ThemeChanged += OnThemeChanged;
-            Closed += (s, e) => Helpers.ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.ThemeChanged += OnThemeChanged;
+            Closed += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
         private void ApplyThemeToChart()
@@ -111,34 +125,27 @@ namespace PerformanceMonitorDashboard
                     ? await _databaseService.GetProcedureStatsHistoryAsync(_databaseName, _schemaName, _procedureName, _hoursBack, _fromDate, _toDate)
                     : await _databaseService.GetProcedureStatsHistoryAsync(_databaseName, _objectId, _hoursBack, _fromDate, _toDate);
 
-                // Compute per-interval executions. DMV counters are cumulative and reset on plan
-                // eviction, so we walk oldest→newest, detecting lifetime boundaries by CachedTime.
+                // Compute per-interval executions/spills. DMV counters are cumulative and reset on
+                // plan eviction, so we walk oldest→newest, detecting lifetime boundaries by CachedTime.
                 // Data arrives sorted by CollectionTime DESC, so walk from end to start.
+                // (Spills have no SQL-side delta column, hence the client-side walk.)
                 for (int i = _historyData.Count - 1; i >= 0; i--)
                 {
                     var item = _historyData[i];
-                    if (i == _historyData.Count - 1)
+                    var olderItem = i == _historyData.Count - 1 ? null : _historyData[i + 1];
+                    if (olderItem == null || item.CachedTime != olderItem.CachedTime)
                     {
                         item.IntervalExecutions = item.ExecutionCount;
+                        item.IntervalSpills = item.TotalSpills ?? 0;
                     }
                     else
                     {
-                        var olderItem = _historyData[i + 1];
-                        if (item.CachedTime != olderItem.CachedTime)
-                        {
-                            item.IntervalExecutions = item.ExecutionCount;
-                        }
-                        else
-                        {
-                            item.IntervalExecutions = Math.Max(0, item.ExecutionCount - olderItem.ExecutionCount);
-                        }
+                        item.IntervalExecutions = Math.Max(0, item.ExecutionCount - olderItem.ExecutionCount);
+                        item.IntervalSpills = Math.Max(0, (item.TotalSpills ?? 0) - (olderItem.TotalSpills ?? 0));
                     }
                 }
 
-                _unfilteredData = _historyData;
-                _filters.Clear();
-                HistoryDataGrid.ItemsSource = _historyData;
-                UpdateFilterButtonStyles();
+                _filterManager.UpdateData(_historyData);
 
                 if (_historyData.Count > 0)
                 {
@@ -194,21 +201,10 @@ namespace PerformanceMonitorDashboard
             var dates = orderedData.Select(h => h.CollectionTime.ToOADate()).ToArray();
             var values = orderedData.Select(h => GetMetricValue(h, metricTag)).ToArray();
 
-            var color = ScottPlot.Color.FromHex("#4FC3F7");
+            var color = ScottPlot.Color.FromHex(ChartPalette.SeriesColor("MetricTrend"));
             var scatter = HistoryChart.Plot.Add.Scatter(dates, values);
             scatter.Color = color;
-
-            // Sparse data: show only markers to avoid misleading interpolated lines
-            if (dates.Length <= 1)
-            {
-                scatter.LineWidth = 0;
-                scatter.MarkerSize = 8;
-            }
-            else
-            {
-                scatter.LineWidth = 2;
-                scatter.MarkerSize = 4;
-            }
+            ChartStyle.StyleScatter(scatter);
 
             HistoryChart.Plot.Axes.DateTimeTicksBottomDateChange();
             Helpers.TabHelpers.ReapplyAxisColors(HistoryChart);
@@ -314,7 +310,7 @@ namespace PerformanceMonitorDashboard
                 };
             }
 
-            _filters.TryGetValue(columnName, out var existingFilter);
+            _filterManager.Filters.TryGetValue(columnName, out var existingFilter);
             _filterPopupContent!.Initialize(columnName, existingFilter);
 
             _filterPopup.PlacementTarget = button;
@@ -324,14 +320,7 @@ namespace PerformanceMonitorDashboard
         private void FilterPopup_FilterApplied(object? sender, FilterAppliedEventArgs e)
         {
             if (_filterPopup != null) _filterPopup.IsOpen = false;
-
-            if (e.FilterState.IsActive)
-                _filters[e.FilterState.ColumnName] = e.FilterState;
-            else
-                _filters.Remove(e.FilterState.ColumnName);
-
-            ApplyFilters();
-            UpdateFilterButtonStyles();
+            _filterManager.SetFilter(e.FilterState);
         }
 
         private void FilterPopup_FilterCleared(object? sender, EventArgs e)
@@ -339,146 +328,41 @@ namespace PerformanceMonitorDashboard
             if (_filterPopup != null) _filterPopup.IsOpen = false;
         }
 
-        private void ApplyFilters()
-        {
-            if (_unfilteredData == null) return;
-
-            if (_filters.Count == 0)
-            {
-                HistoryDataGrid.ItemsSource = _unfilteredData;
-                return;
-            }
-
-            var filtered = _unfilteredData.Where(item =>
-            {
-                foreach (var filter in _filters.Values)
-                {
-                    if (filter.IsActive && !DataGridFilterService.MatchesFilter(item, filter))
-                        return false;
-                }
-                return true;
-            }).ToList();
-
-            HistoryDataGrid.ItemsSource = filtered;
-        }
-
-        private void UpdateFilterButtonStyles()
-        {
-            foreach (var column in HistoryDataGrid.Columns)
-            {
-                if (column.Header is StackPanel stackPanel)
-                {
-                    var filterButton = stackPanel.Children.OfType<Button>().FirstOrDefault();
-                    if (filterButton?.Tag is string columnName)
-                    {
-                        bool hasActive = _filters.TryGetValue(columnName, out var filter) && filter.IsActive;
-                        filterButton.Content = new System.Windows.Controls.TextBlock
-                        {
-                            Text = "\uE71C",
-                            FontFamily = new System.Windows.Media.FontFamily("Segoe MDL2 Assets"),
-                            Foreground = hasActive
-                                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD7, 0x00))
-                                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0xFF))
-                        };
-                        filterButton.ToolTip = hasActive && filter != null
-                            ? $"Filter: {filter.DisplayText}\n(Click to modify)"
-                            : "Click to filter";
-                    }
-                }
-            }
-        }
-
         #endregion
 
         #region Context Menu Handlers
 
-        private void CopyCell_Click(object sender, RoutedEventArgs e)
+        private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+
+        private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+
+        private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+
+        private void ExportToCsv_Click(object sender, RoutedEventArgs e) =>
+            DataGridExport.ExportToCsv(sender, "procedure_history", TabHelpers.CsvSeparator);
+
+        #endregion
+
+        #region Plan Actions
+
+        // Procedures are View Plan only — re-executing a proc without parameter values is unsafe,
+        // matching the main Procedure grid (no Get Actual case in its switch).
+        private async void ViewPlan_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.CurrentCell.Item != null)
-                {
-                    var cellContent = TabHelpers.GetCellContent(dataGrid, dataGrid.CurrentCell);
-                    if (!string.IsNullOrEmpty(cellContent))
-                        Clipboard.SetDataObject(cellContent, false);
-                }
-            }
+            if (GetHistoryItem(sender) is not { } item) return;
+            await _planActions.ViewPlanAsync(
+                () => _databaseService.GetProcedureStatsPlanXmlByCollectionIdAsync(item.CollectionId),
+                $"Est Plan - {_objectName}", queryText: null);
         }
 
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
+        private static ProcedureExecutionHistoryItem? GetHistoryItem(object sender)
         {
             if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
             {
                 var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid?.SelectedItem != null)
-                    Clipboard.SetDataObject(TabHelpers.GetRowAsText(dataGrid, dataGrid.SelectedItem), false);
+                return (dataGrid?.CurrentCell.Item ?? dataGrid?.SelectedItem) as ProcedureExecutionHistoryItem;
             }
-        }
-
-        private void CopyAllRows_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var sb = new StringBuilder();
-                    var headers = new List<string>();
-                    foreach (var column in dataGrid.Columns)
-                    {
-                        if (column is DataGridBoundColumn)
-                            headers.Add(Helpers.DataGridClipboardBehavior.GetHeaderText(column));
-                    }
-                    sb.AppendLine(string.Join("\t", headers));
-                    foreach (var item in dataGrid.Items)
-                        sb.AppendLine(TabHelpers.GetRowAsText(dataGrid, item));
-                    Clipboard.SetDataObject(sb.ToString(), false);
-                }
-            }
-        }
-
-        private void ExportToCsv_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem menuItem && menuItem.Parent is ContextMenu contextMenu)
-            {
-                var dataGrid = TabHelpers.FindDataGridFromContextMenu(contextMenu);
-                if (dataGrid != null && dataGrid.Items.Count > 0)
-                {
-                    var saveFileDialog = new SaveFileDialog
-                    {
-                        FileName = $"procedure_history_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
-                        DefaultExt = ".csv",
-                        Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
-                    };
-
-                    if (saveFileDialog.ShowDialog() == true)
-                    {
-                        try
-                        {
-                            var sb = new StringBuilder();
-                            var headers = new List<string>();
-                            foreach (var column in dataGrid.Columns)
-                            {
-                                if (column is DataGridBoundColumn)
-                                    headers.Add(TabHelpers.EscapeCsvField(Helpers.DataGridClipboardBehavior.GetHeaderText(column)));
-                            }
-                            sb.AppendLine(string.Join(",", headers));
-                            foreach (var item in dataGrid.Items)
-                            {
-                                var values = TabHelpers.GetRowValues(dataGrid, item);
-                                sb.AppendLine(string.Join(",", values.Select(v => TabHelpers.EscapeCsvField(v))));
-                            }
-                            File.WriteAllText(saveFileDialog.FileName, sb.ToString());
-                            MessageBox.Show($"Data exported successfully to:\n{saveFileDialog.FileName}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show($"Error exporting data:\n\n{ex.Message}", "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
-                    }
-                }
-            }
+            return null;
         }
 
         #endregion

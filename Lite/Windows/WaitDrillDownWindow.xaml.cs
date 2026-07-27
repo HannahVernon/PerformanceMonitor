@@ -17,7 +17,9 @@ using PerformanceMonitorLite.Controls;
 using PerformanceMonitorLite.Helpers;
 using PerformanceMonitorLite.Models;
 using PerformanceMonitorLite.Services;
-using static PerformanceMonitorLite.Helpers.WaitDrillDownHelper;
+using static PerformanceMonitor.Ui.WaitDrillDownHelper;
+using PerformanceMonitor.Ui;
+using PerformanceMonitor.PlanAnalysis;
 
 namespace PerformanceMonitorLite.Windows;
 
@@ -29,6 +31,8 @@ public partial class WaitDrillDownWindow : Window
     private readonly int _hoursBack;
     private readonly DateTime? _fromDate;
     private readonly DateTime? _toDate;
+    private readonly string? _connectionString;
+    private readonly PlanNavigationController _planActions;
 
     // Filter state
     private DataGridFilterManager<QuerySnapshotRow>? _filterManager;
@@ -41,7 +45,8 @@ public partial class WaitDrillDownWindow : Window
         string waitType,
         int hoursBack,
         DateTime? fromDate = null,
-        DateTime? toDate = null)
+        DateTime? toDate = null,
+        string? connectionString = null)
     {
         InitializeComponent();
         _dataService = dataService;
@@ -50,6 +55,15 @@ public partial class WaitDrillDownWindow : Window
         _hoursBack = hoursBack;
         _fromDate = fromDate;
         _toDate = toDate;
+        _connectionString = connectionString;
+
+        _planActions = new PlanNavigationController(
+            this,
+            (xml, label, qt) => PlanViewerWindow.ShowPlanAsync(this, xml, label, qt),
+            (db, qt, est, iso, ct) => ActualPlanExecutor.ExecuteForActualPlanAsync(
+                _connectionString ?? "", db, qt, est, iso, isAzureSqlDb: false, timeoutSeconds: 0, ct,
+                productName: "SQL Server Performance Monitor Lite"),
+            "the monitored server");
 
         _filterManager = new DataGridFilterManager<QuerySnapshotRow>(ResultsDataGrid);
 
@@ -180,7 +194,8 @@ public partial class WaitDrillDownWindow : Window
         {
             if (snapshotLookup.TryGetValue((hb.CollectionTime, hb.SessionId), out var row))
             {
-                row.ChainBlockedCount = hb.BlockedSessionCount;
+                // Overwrite the SQL-derived same-snapshot count with the chain walker's transitive count
+                row.BlockedSessionCount = hb.BlockedSessionCount;
                 row.ChainBlockingPath = hb.BlockingPath;
                 headBlockerRows.Add(row);
             }
@@ -207,12 +222,9 @@ public partial class WaitDrillDownWindow : Window
 
     private void InsertChainColumns()
     {
-        // Insert "Blocked Sessions" and "Blocking Path" columns at the beginning of the grid
-        var blockedCountCol = CreateFilterColumn("Blocked Sessions", "ChainBlockedCount", 105, isNumeric: true);
+        // Insert "Blocking Path" at the beginning — "Blocked Sessions" is a static XAML column now
         var blockingPathCol = CreateFilterColumn("Blocking Path", "ChainBlockingPath", 250);
-
-        ResultsDataGrid.Columns.Insert(0, blockedCountCol);
-        ResultsDataGrid.Columns.Insert(1, blockingPathCol);
+        ResultsDataGrid.Columns.Insert(0, blockingPathCol);
     }
 
     private DataGridTextColumn CreateFilterColumn(string headerText, string bindingPath, int width,
@@ -407,9 +419,27 @@ public partial class WaitDrillDownWindow : Window
 
     #endregion
 
-    private void CopyCell_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.CopyCell(sender);
-    private void CopyRow_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.CopyRow(sender);
-    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.CopyAllRows(sender);
-    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => ContextMenuHelper.ExportToCsv(sender, "wait_drill_down");
+    private void CopyCell_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyCell(sender);
+    private void CopyRow_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyRow(sender);
+    private void CopyAllRows_Click(object sender, RoutedEventArgs e) => DataGridExport.CopyAllRows(sender);
+    private void ExportToCsv_Click(object sender, RoutedEventArgs e) => DataGridExport.ExportToCsv(sender, "wait_drill_down", App.CsvSeparator);
+
+    private async void ViewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if ((ResultsDataGrid.CurrentItem ?? ResultsDataGrid.SelectedItem) is not QuerySnapshotRow row) return;
+        await _planActions.ViewPlanAsync(
+            () => System.Threading.Tasks.Task.FromResult<string?>(row.LiveQueryPlan ?? row.QueryPlan),
+            $"Est Plan - SPID {row.SessionId}", row.QueryText);
+    }
+
+    private async void GetActualPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if ((ResultsDataGrid.CurrentItem ?? ResultsDataGrid.SelectedItem) is not QuerySnapshotRow row) return;
+        await _planActions.GetActualPlanAsync(row.QueryText, row.DatabaseName ?? "",
+            $"Actual Plan - SPID {row.SessionId}",
+            estimatedPlanXml: row.LiveQueryPlan ?? row.QueryPlan,
+            isolationLevel: row.TransactionIsolationLevel);
+    }
+
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

@@ -1,7 +1,7 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=mscorlib"
-                    xmlns:helpers="clr-namespace:PerformanceMonitorLite.Helpers">
+                    xmlns:helpers="clr-namespace:PerformanceMonitor.Ui;assembly=PerformanceMonitor.Ui">
 
     <!-- ============================================ -->
     <!-- Darling Data Dark Theme                      -->
@@ -20,10 +20,14 @@
     <Color x:Key="BackgroundLightColor">#22252b</Color>
     <Color x:Key="BackgroundLighterColor">#2a2d35</Color>
 
-    <!-- Text Colors (off-white to reduce eye strain) -->
+    <!-- Text Colors: 3-tier readable hierarchy, all >= 4.5:1 on the dark backgrounds
+         (Foreground ~11-14:1, Dim ~8.5:1, Muted ~6:1). Foreground = primary values/headers;
+         Dim = secondary captions/labels (dimmed a step off primary); Muted = the quietest tier
+         for empty-state/placeholder text. Dim stays brighter than Muted. NOTE: no truly-dim tone
+         here on purpose; every tier must remain comfortably readable. -->
     <Color x:Key="ForegroundColor">#E4E6EB</Color>
-    <Color x:Key="ForegroundDimColor">#E4E6EB</Color>
-    <Color x:Key="ForegroundMutedColor">#6B7280</Color>
+    <Color x:Key="ForegroundDimColor">#C7CBD4</Color>
+    <Color x:Key="ForegroundMutedColor">#A8AEBA</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#2a2d35</Color>
@@ -60,13 +64,24 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
 
     <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
     <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}"/>
+    <!-- Legible warning amber for content text/borders (block-chain longest-wait, flag banner).
+         Tuned per theme so it clears >=4.5:1 as TEXT on content backgrounds; any control may adopt it. -->
+    <SolidColorBrush x:Key="WarningTextBrush" Color="#FFB347"/>
+    <!-- Apex (lead-blocker) node + legend border. Theme-aware so it clears >=3:1 as a graphical border on
+         the light node card (bright #4FA3FF is only ~2.6:1 on white). The LEAD BLOCKER badge fill keeps the
+         bright ApexBrush constant so the apex still pops. -->
+    <SolidColorBrush x:Key="ApexBorderBrush" Color="#4FA3FF"/>
+    <!-- Deadlock victim node border + VICTIM badge fill, and the "waits for" edge/arrow. Tuned per theme
+         so the victim red clears >=3:1 as a border and the edge reads as a line on the canvas. -->
+    <SolidColorBrush x:Key="DeadlockVictimBrush" Color="#FF5C5C"/>
+    <SolidColorBrush x:Key="DeadlockEdgeBrush" Color="#8B93A1"/>
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource InfoColor}"/>
 
@@ -634,6 +649,7 @@
     <!-- ============================================ -->
     <Style TargetType="DataGrid">
         <Setter Property="helpers:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+        <Setter Property="helpers:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
         <Setter Property="helpers:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
         <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}"/>
@@ -1271,6 +1287,7 @@
     <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#99000000"/>
     <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#22FFFFFF"/>
     <SolidColorBrush x:Key="SlicerHandleBrush" Color="#E4E6EB"/>
+    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="#2EAEF1"/>
     <SolidColorBrush x:Key="SlicerBorderBrush" Color="#3A3D45"/>
     <SolidColorBrush x:Key="SlicerLabelBrush" Color="#E4E6EB"/>
     <SolidColorBrush x:Key="SlicerToggleBrush" Color="#E4E6EB"/>

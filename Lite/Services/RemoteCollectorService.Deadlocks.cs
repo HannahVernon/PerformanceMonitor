@@ -6,28 +6,27 @@
  * Licensed under the MIT License. See LICENSE file in the project root for full license information.
  */
 
-using System;
 using System.Data;
-using System.Diagnostics;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Xml.Linq;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
+using PerformanceMonitor.Collectors;
 using PerformanceMonitorLite.Models;
 
 namespace PerformanceMonitorLite.Services;
 
 public partial class RemoteCollectorService
 {
-    /* We create and manage our own XE session to avoid conflicts with user's existing sessions */
-    private const string DeadlockXeSessionName = "PerformanceMonitor_Deadlock";
+    /* The session name lives in the shared definition so the ring-buffer reader and this
+       lifecycle code can never disagree on it. */
+    private const string DeadlockXeSessionName = DeadlocksCollector.XeSessionName;
 
     /// <summary>
     /// Ensures the deadlock XE session exists and is running.
     /// Creates a ring_buffer session for ALL platforms (on-prem, MI, Azure SQL DB, AWS RDS).
-    /// Uses server-scoped session for on-prem/MI/RDS, database-scoped for Azure SQL DB.
+    /// Server-scoped session for on-prem/MI/RDS; on Azure SQL DB a database-scoped session in
+    /// EVERY monitored database (#1535 — a single session only ever captured the connection's own
+    /// database, so deadlocks in the logical server's other databases never appeared).
     /// </summary>
     public async Task EnsureDeadlockXeSessionAsync(ServerConnection server, int engineEdition = 0, CancellationToken cancellationToken = default)
     {
@@ -38,28 +37,38 @@ public partial class RemoteCollectorService
             return;
         }
 
-        bool isAzureSqlDb = engineEdition == 5;
+        if (engineEdition == 5)
+        {
+            /* Azure SQL DB: one database-scoped session per monitored database, matching the
+               per-database ring-buffer read (DeadlocksCollector.RunsPerDatabase). The shared driver
+               skips master, honors ExcludedDatabases via the shared database list, self-heals
+               sessions the reader can't see, and only surfaces unhealthy when NO database could be
+               ensured. */
+            await EnsureDatabaseScopedXeSessionsAsync(
+                server, "deadlock", DeadlockXeSessionName,
+                EnsureDeadlockXeSessionAzureSqlDbAsync, cancellationToken);
+            return;
+        }
 
         try
         {
             using var connection = await CreateConnectionAsync(server, cancellationToken);
 
-            if (isAzureSqlDb)
-            {
-                /* Azure SQL DB: create database-scoped session with ring_buffer */
-                await EnsureDeadlockXeSessionAzureSqlDbAsync(connection, cancellationToken);
-            }
-            else
-            {
-                /* On-prem, Azure MI, and AWS RDS: create server-scoped session with ring_buffer */
-                await EnsureDeadlockXeSessionOnPremAsync(connection, server, cancellationToken);
-            }
+            /* On-prem, Azure MI, and AWS RDS: create server-scoped session with ring_buffer */
+            await EnsureDeadlockXeSessionOnPremAsync(connection, server, cancellationToken);
+        }
+        catch (SqlException ex) when (IsBenignXeSessionAlreadyPresent(ex))
+        {
+            /* Session already present + running -- see IsBenignXeSessionAlreadyPresent (#1251). */
+            AppLogger.Info("XeSession", $"[{server.DisplayName}] Deadlock XE session already present (benign, #1251)");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to ensure deadlock XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to ensure deadlock XE session: {ex.Message}");
+
+            /* Propagate so RunCollectorAsync marks the collector unhealthy instead
+               of letting a zero-row ring-buffer read record SUCCESS (#1086) */
+            throw new XeSessionEnsureException("deadlock", ex);
         }
     }
 
@@ -94,19 +103,17 @@ WHERE ses.name = @session_name;", connection))
                             $"ALTER EVENT SESSION [{DeadlockXeSessionName}] ON SERVER STATE = START;", connection);
                         startCmd.CommandTimeout = CommandTimeoutSeconds;
                         await startCmd.ExecuteNonQueryAsync(cancellationToken);
-                        _logger?.LogInformation("Started deadlock XE session on '{Server}'", server.DisplayName);
                         AppLogger.Info("XeSession", $"[{server.DisplayName}] Started deadlock XE session");
                     }
                     catch (SqlException ex)
                     {
-                        _logger?.LogWarning("Failed to start deadlock XE session on '{Server}': {Message}",
-                            server.DisplayName, ex.Message);
                         AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to start deadlock XE session: {ex.Message}");
+                        throw;
                     }
                 }
                 else
                 {
-                    _logger?.LogDebug("Deadlock XE session is running on '{Server}'", server.DisplayName);
+                    AppLogger.Debug("XeSession", $"Deadlock XE session is running on '{server.DisplayName}'");
                 }
                 return;
             }
@@ -135,14 +142,12 @@ WITH
 ALTER EVENT SESSION [{DeadlockXeSessionName}] ON SERVER STATE = START;", connection);
             createCmd.CommandTimeout = CommandTimeoutSeconds;
             await createCmd.ExecuteNonQueryAsync(cancellationToken);
-            _logger?.LogInformation("Created and started deadlock XE session on '{Server}'", server.DisplayName);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Created and started deadlock XE session");
         }
         catch (SqlException ex)
         {
-            _logger?.LogWarning("Failed to create deadlock XE session on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Error("XeSession", $"[{server.DisplayName}] Failed to create deadlock XE session: {ex.Message}");
+            throw;
         }
     }
 
@@ -194,11 +199,11 @@ SELECT /* PerformanceMonitorLite */
                             $"DROP EVENT SESSION [{DeadlockXeSessionName}] ON DATABASE;", connection);
                         dropCmd.CommandTimeout = CommandTimeoutSeconds;
                         await dropCmd.ExecuteNonQueryAsync(cancellationToken);
-                        AppLogger.Info("XeSession", $"[Azure SQL DB] Dropped deadlock XE session with incorrect event, will recreate");
+                        AppLogger.Info("XeSession", $"[Azure SQL DB:{connection.Database}] Dropped deadlock XE session with incorrect event, will recreate");
                     }
                     catch (SqlException ex)
                     {
-                        AppLogger.Error("XeSession", $"[Azure SQL DB] Failed to drop old deadlock XE session: {ex.Message}");
+                        AppLogger.Error("XeSession", $"[Azure SQL DB:{connection.Database}] Failed to drop old deadlock XE session: {ex.Message}");
                     }
                     /* Fall through to create with correct event */
                 }
@@ -219,8 +224,8 @@ END;", connection);
                     startCmd.CommandTimeout = CommandTimeoutSeconds;
                     await startCmd.ExecuteNonQueryAsync(cancellationToken);
 
-                    _logger?.LogDebug("Deadlock XE session already exists (database-scoped, Azure SQL DB)");
-                    AppLogger.Info("XeSession", $"[Azure SQL DB] Deadlock XE session verified (database-scoped)");
+                    /* Debug, not Info: this fires once per monitored database per cycle (#1535). */
+                    AppLogger.Debug("XeSession", $"[Azure SQL DB:{connection.Database}] Deadlock XE session verified (database-scoped)");
                     return;
                 }
             }
@@ -239,7 +244,8 @@ ADD TARGET package0.ring_buffer
 WITH
 (
     MAX_DISPATCH_LATENCY = 5 SECONDS,
-    EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS
+    EVENT_RETENTION_MODE = ALLOW_SINGLE_EVENT_LOSS,
+    STARTUP_STATE = ON
 );
 
 ALTER EVENT SESSION [{DeadlockXeSessionName}] ON DATABASE STATE = START;", connection))
@@ -248,222 +254,27 @@ ALTER EVENT SESSION [{DeadlockXeSessionName}] ON DATABASE STATE = START;", conne
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        _logger?.LogInformation("Created and started deadlock XE session (database-scoped, Azure SQL DB)");
-        AppLogger.Info("XeSession", $"[Azure SQL DB] Created and started deadlock XE session (database-scoped)");
+        AppLogger.Info("XeSession", $"[Azure SQL DB:{connection.Database}] Created and started deadlock XE session (database-scoped)");
     }
 
     /// <summary>
-    /// Collects deadlock information from the PerformanceMonitor_Deadlock extended event session.
-    /// For on-prem/MI/RDS: reads from server-scoped session.
-    /// For Azure SQL DB: reads from database-scoped session.
+    /// Collects deadlocks via the shared <see cref="DeadlocksCollector"/> definition (the
+    /// server- vs database-scoped ring-buffer reads, the deadlock_time watermark, and the
+    /// victim-inputbuf extraction live there — the cross-SKU parity contract). The XE session
+    /// lifecycle stays here; a missing/inaccessible session is tolerated as zero rows, exactly
+    /// as before.
     /// </summary>
     private async Task<int> CollectDeadlocksAsync(ServerConnection server, CancellationToken cancellationToken)
     {
-        var serverStatus = _serverManager.GetConnectionStatus(server.Id);
-        bool isAzureSqlDb = serverStatus.SqlEngineEdition == 5;
-
-        string query;
-        if (isAzureSqlDb)
-        {
-            /* Azure SQL DB: read from ring_buffer (database-scoped session)
-               Azure SQL DB uses database_xml_deadlock_report event instead of xml_deadlock_report.
-               Use .query() to get XML with structure intact, then CONVERT to nvarchar(max) */
-            query = $@"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-DECLARE
-    @PerformanceMonitor_Deadlock TABLE
-(
-    ring_buffer xml NOT NULL
-);
-
-INSERT
-    @PerformanceMonitor_Deadlock
-(
-    ring_buffer
-)
-SELECT /* PerformanceMonitorLite */
-    ring_xml = TRY_CAST(xet.target_data AS xml)
-FROM sys.dm_xe_database_session_targets AS xet
-JOIN sys.dm_xe_database_sessions AS xes
-  ON xes.address = xet.event_session_address
-WHERE xes.name = N'{DeadlockXeSessionName}'
-AND   xet.target_name = N'ring_buffer'
-OPTION(RECOMPILE);
-
-SELECT
-    deadlock_time = evt.value('(@timestamp)[1]', 'datetime2'),
-    victim_process_id = evt.value('(data[@name=""xml_report""]/value/deadlock/victim-list/victimProcess/@id)[1]', 'varchar(50)'),
-    deadlock_graph_xml = CONVERT(nvarchar(max), evt.query('data[@name=""xml_report""]/value/deadlock'))
-FROM
-(
-    SELECT
-        pmd.ring_buffer
-    FROM @PerformanceMonitor_Deadlock AS pmd
-) AS rb
-CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""database_xml_deadlock_report""]') AS q(evt)
-WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
-OPTION(RECOMPILE);";
-        }
-        else
-        {
-            /* On-prem / Azure MI / AWS RDS: read from ring_buffer (server-scoped session)
-               Use .query() to get XML with structure intact, then CONVERT to nvarchar(max) */
-            query = $@"
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-
-DECLARE
-    @PerformanceMonitor_Deadlock TABLE
-(
-    ring_buffer xml NOT NULL
-);
-
-INSERT
-    @PerformanceMonitor_Deadlock
-(
-    ring_buffer
-)
-SELECT /* PerformanceMonitorLite */
-    ring_xml = TRY_CAST(xet.target_data AS xml)
-FROM sys.dm_xe_session_targets AS xet
-JOIN sys.dm_xe_sessions AS xes
-  ON xes.address = xet.event_session_address
-WHERE xes.name = N'{DeadlockXeSessionName}'
-AND   xet.target_name = N'ring_buffer'
-OPTION(RECOMPILE);
-
-SELECT
-    deadlock_time = evt.value('(@timestamp)[1]', 'datetime2'),
-    victim_process_id = evt.value('(data[@name=""xml_report""]/value/deadlock/victim-list/victimProcess/@id)[1]', 'varchar(50)'),
-    deadlock_graph_xml = CONVERT(nvarchar(max), evt.query('data[@name=""xml_report""]/value/deadlock'))
-FROM
-(
-    SELECT
-        pmd.ring_buffer
-    FROM @PerformanceMonitor_Deadlock AS pmd
-) AS rb
-CROSS APPLY rb.ring_buffer.nodes('RingBufferTarget/event[@name=""xml_deadlock_report""]') AS q(evt)
-WHERE evt.value('(@timestamp)[1]', 'datetime2') > @cutoff_time
-OPTION(RECOMPILE);";
-        }
-
-        var serverId = GetServerId(server);
-        var collectionTime = DateTime.UtcNow;
-        var rowsCollected = 0;
-        _lastSqlMs = 0;
-        _lastDuckDbMs = 0;
-
-        /* Query the most recent deadlock_time we already have for this server.
-           Pass it to SQL Server so we only fetch events newer than what we've collected.
-           This prevents the same deadlock from being inserted multiple times as it
-           lingers in the ring buffer across collection cycles. */
-        var lastCollectedTime = await GetLastCollectedTimeAsync(
-            serverId, "deadlocks", "deadlock_time", cancellationToken);
-
-        var sqlSw = Stopwatch.StartNew();
-        using var sqlConnection = await CreateConnectionAsync(server, cancellationToken);
-        using var command = new SqlCommand(query, sqlConnection);
-        command.CommandTimeout = CommandTimeoutSeconds;
-
-        /* Use the most recent timestamp from DuckDB as the cutoff, or fall back to 10-minute window */
-        command.Parameters.Add(new SqlParameter("@cutoff_time", SqlDbType.DateTime2) { Value = lastCollectedTime ?? DateTime.UtcNow.AddMinutes(-10) });
-
         try
         {
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            sqlSw.Stop();
-            _lastSqlMs = sqlSw.ElapsedMilliseconds;
-
-            /* Read all rows and parse XML before starting DuckDB timing.
-               ExtractVictimSqlText does XElement.Parse which is expensive
-               and was previously misattributed as DuckDB time. */
-            var deadlockRows = new System.Collections.Generic.List<(DateTime? deadlockTime, string? victimProcessId, string? victimSqlText, string? graphXml)>();
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var victimProcessId = reader.IsDBNull(1) ? null : reader.GetString(1);
-                var graphXml = reader.IsDBNull(2) ? null : reader.GetString(2);
-                var victimSqlText = ExtractVictimSqlText(graphXml, victimProcessId);
-                var deadlockTime = reader.IsDBNull(0) ? (DateTime?)null : reader.GetDateTime(0);
-                deadlockRows.Add((deadlockTime, victimProcessId, victimSqlText, graphXml));
-            }
-
-            var duckSw = Stopwatch.StartNew();
-
-            using (var duckConnection = _duckDb.CreateConnection())
-            {
-                await duckConnection.OpenAsync(cancellationToken);
-
-                using (var appender = duckConnection.CreateAppender("deadlocks"))
-                {
-                    foreach (var (deadlockTime, victimProcessId, victimSqlText, graphXml) in deadlockRows)
-                    {
-                        var row = appender.CreateRow();
-                        row.AppendValue(GenerateCollectionId())
-                           .AppendValue(collectionTime)
-                           .AppendValue(serverId)
-                           .AppendValue(GetServerNameForStorage(server))
-                           .AppendValue(deadlockTime)
-                           .AppendValue(victimProcessId)
-                           .AppendValue(victimSqlText)
-                           .AppendValue(graphXml)
-                           .EndRow();
-
-                        rowsCollected++;
-                    }
-                }
-            }
-
-            duckSw.Stop();
-            _lastDuckDbMs = duckSw.ElapsedMilliseconds;
+            return await RunCollectorDefinitionAsync(DeadlocksCollector.Instance, server, cancellationToken);
         }
         catch (SqlException ex) when (ex.Number == 297 || ex.Number == 15151 || ex.Message.Contains("XE session"))
         {
             /* XE session not found or not accessible */
-            _logger?.LogDebug("Deadlock XE session not available on '{Server}': {Message}",
-                server.DisplayName, ex.Message);
             AppLogger.Info("XeSession", $"[{server.DisplayName}] Deadlock XE session not available: {ex.Message}");
             return 0;
-        }
-
-        _logger?.LogDebug("Collected {RowCount} deadlocks for server '{Server}'", rowsCollected, server.DisplayName);
-        return rowsCollected;
-    }
-
-    /// <summary>
-    /// Extracts victim SQL text from a deadlock graph XML fragment.
-    /// </summary>
-    private static string? ExtractVictimSqlText(string? graphXml, string? victimProcessId)
-    {
-        if (string.IsNullOrEmpty(graphXml))
-        {
-            return null;
-        }
-
-        try
-        {
-            var doc = XElement.Parse(graphXml);
-
-            /* Find all process nodes in the deadlock graph */
-            var processes = doc.Descendants("process").ToList();
-
-            /* If we have a victim ID, find that specific process */
-            if (!string.IsNullOrEmpty(victimProcessId))
-            {
-                var victim = processes.FirstOrDefault(p =>
-                    string.Equals(p.Attribute("id")?.Value, victimProcessId, StringComparison.OrdinalIgnoreCase));
-
-                if (victim != null)
-                {
-                    return victim.Element("inputbuf")?.Value?.Trim();
-                }
-            }
-
-            /* Fallback: return the first process inputbuf */
-            return processes.FirstOrDefault()?.Element("inputbuf")?.Value?.Trim();
-        }
-        catch
-        {
-            return null;
         }
     }
 }

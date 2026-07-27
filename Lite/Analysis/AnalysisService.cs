@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using DuckDB.NET.Data;
+using PerformanceMonitor.Analysis;
 using PerformanceMonitorLite.Database;
 using PerformanceMonitorLite.Services;
 
@@ -28,9 +29,9 @@ public class AnalysisService
     /// Minimum hours of collected data required before analysis will run.
     /// Short collection windows distort fraction-of-period calculations —
     /// 5 seconds of THREADPOOL looks alarming in a 16-minute window.
-    /// Production: 72. Dev/testing: 0.5 (raise before release).
+    /// 24 hours has been validated empirically as sufficient.
     /// </summary>
-    internal double MinimumDataHours { get; set; } = 24; // TODO: restore to 72 before release
+    internal double MinimumDataHours { get; set; } = 24;
 
     /// <summary>
     /// Raised after each analysis run completes, providing the findings for UI display.
@@ -140,15 +141,58 @@ public class AnalysisService
             // 3. Build stories via graph traversal
             var stories = _engine.BuildStories(facts);
 
-            // 4. Persist findings (filtering out muted)
-            var findings = await _findingStore.SaveFindingsAsync(stories, context);
+            // 3.5. Freeze value-stated advice (current MAXDOP/CTFP/etc.) into each story's StoryText
+            // from the FULL fact set, BEFORE the store copies StoryText onto the finding. This is the
+            // only place the raw fact VALUES are in scope; read-back cards then state the numbers
+            // (FactAdvice.GetComposedForFinding) instead of generic folklore. No schema change.
+            FactAdvice.PopulateStoryText(stories, facts);
 
-            // 5. Enrich findings with drill-down data (ephemeral, not persisted)
+            // 3.6. Cluster the run's stories into causally-related incidents (graph-connectivity) and
+            // stamp each with its own trackable id, BEFORE the store copies it onto the finding. The
+            // grouped surface renders one report per incident; the id fingerprints the incident's
+            // primary so the same recurring incident is trackable across runs.
+            var incidents = _engine.ClusterIntoIncidents(stories, facts);
+            IncidentId.StampClusters(context.ServerName, incidents);
+
+            // 3.7. Fold each ANOMALY_* story into the REGULAR finding that describes the same symptom
+            // (same run, same database) by rewriting its stamped incident id onto that parent's — so
+            // the anomaly stops rendering as its own card / its own email. No-parent anomalies stay
+            // solo; db-scoped object anomalies never cross databases. Presentation-only: nothing is
+            // dropped, only the incident tag is reconciled.
+            AnomalyIncidentReconciler.Reconcile(stories);
+
+            // 4. Mute-filter the stories into the surviving findings WITHOUT inserting yet (the
+            //    Darling twin's D2/P2 reorder) — enrichment + action-build happen on the survivors
+            //    first so the BUILT RemediationAction is persisted on each row.
+            var findings = await _findingStore.FilterMutedFindingsAsync(stories, context);
+
+            // 5. Enrich the survivors with drill-down data (ephemeral except through the built action).
             await _drillDown.EnrichFindingsAsync(findings, context);
+
+            // 6. Build + attach each finding's RemediationAction from the now drill-down-populated
+            //    finding, then persist it as remediation_action_json. The builders REQUIRE
+            //    finding.DrillDown, which the store read-back does NOT return — so the BUILT action is
+            //    persisted, exactly the artifact the read path deserializes and the Recommendations
+            //    reader renders into the copy-paste command. Same shared builders + null-coalescing
+            //    order Darling's DarlingAnalysisService uses, so Lite and Darling produce identical
+            //    commands. Lite has no in-app executor: the action drives a COPYABLE command only.
+            foreach (var finding in findings)
+            {
+                finding.Remediation =
+                    FactRemediation.BuildAction(finding)
+                    ?? FactRemediation.BuildRcsiAction(finding)
+                    ?? FactRemediation.BuildClearPlanAction(finding)
+                    ?? FactRemediation.BuildFileAutogrowthAction(finding) // advisory copy-paste (no handler)
+                    ?? FactRemediation.BuildServerConfigAction(finding)   // server-level config — MAXDOP/CTFP/memory
+                    ?? FactRemediation.BuildMissingIndexAction(finding);  // missing-index CREATE — copy-paste only
+            }
+
+            // 7. Insert the survivors in one batched pass, persisting remediation_action_json.
+            await _findingStore.InsertFindingsAsync(findings, context);
 
             LastAnalysisTime = DateTime.UtcNow;
 
-            // 5. Notify listeners
+            // 8. Notify listeners
             AnalysisCompleted?.Invoke(this, new AnalysisCompletedEventArgs
             {
                 ServerId = context.ServerId,

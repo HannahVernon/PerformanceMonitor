@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using PerformanceMonitor.Ui;
 
 namespace PerformanceMonitorDashboard.Models
 {
@@ -190,14 +191,23 @@ namespace PerformanceMonitorDashboard.Models
             }
         }
 
-        public string CpuDisplayText => TotalCpuPercent.HasValue ? $"{TotalCpuPercent}%" : "--";
+        public string CpuDisplayText
+        {
+            get
+            {
+                if (!_cpuPercent.HasValue) return "--";
+                if (!_otherCpuPercent.HasValue) return $"{_cpuPercent}%";
+                return $"{TotalCpuPercent}% (SQL {_cpuPercent}%)";
+            }
+        }
 
         public string CpuDetailText
         {
             get
             {
                 if (!_cpuPercent.HasValue && !_otherCpuPercent.HasValue) return "";
-                return $"SQL: {_cpuPercent ?? 0}% Other: {_otherCpuPercent ?? 0}%";
+                string other = _otherCpuPercent.HasValue ? $"{_otherCpuPercent}%" : "n/a";
+                return $"SQL: {_cpuPercent ?? 0}% Other: {other}";
             }
         }
 
@@ -504,6 +514,12 @@ namespace PerformanceMonitorDashboard.Models
 
         public string CollectorDetailText => $"Healthy: {_healthyCollectorCount}, Failing: {_failedCollectorCount}";
 
+        /* Low-disk / failed-job alert presence, for the server-level tab badge (#754/#749).
+           Injected from the alert engine's per-server state in UpdateTabBadge; not bound (the
+           badge reads them directly), so no change notification is needed. */
+        public bool HasLowDiskAlert { get; set; }
+        public bool HasFailedJobAlert { get; set; }
+
         // Top waits
         public string? TopWaitType
         {
@@ -553,12 +569,7 @@ namespace PerformanceMonitorDashboard.Models
             }
         }
 
-        private static string NormalizeVersion(string version)
-        {
-            if (Version.TryParse(version, out var parsed))
-                return new Version(parsed.Major, parsed.Minor, parsed.Build).ToString();
-            return version;
-        }
+        private static string NormalizeVersion(string version) => VersionText.Normalize(version);
 
         // Overall health - worst severity across all metrics
         public HealthSeverity OverallSeverity

@@ -1,7 +1,7 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=mscorlib"
-                    xmlns:helpers="clr-namespace:PerformanceMonitorDashboard.Helpers">
+                    xmlns:helpers="clr-namespace:PerformanceMonitor.Ui;assembly=PerformanceMonitor.Ui">
 
     <!-- ============================================ -->
     <!-- Darling Data Cool Breeze Theme                      -->
@@ -23,7 +23,7 @@
     <!-- Text Colors (dark on light backgrounds) -->
     <Color x:Key="ForegroundColor">#1A2A3A</Color>
     <Color x:Key="ForegroundDimColor">#1A2A3A</Color>
-    <Color x:Key="ForegroundMutedColor">#5B7A90</Color>
+    <Color x:Key="ForegroundMutedColor">#4A5D72</Color>
 
     <!-- Border Colors (subtle, low-contrast) -->
     <Color x:Key="BorderColor">#A8BDD0</Color>
@@ -60,13 +60,24 @@
 
     <SolidColorBrush x:Key="ForegroundBrush" Color="{StaticResource ForegroundColor}"/>
     <SolidColorBrush x:Key="ForegroundDimBrush" Color="{StaticResource ForegroundDimColor}"/>
-    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="ForegroundMutedBrush" Color="{StaticResource ForegroundMutedColor}"/>
 
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="BorderLightBrush" Color="{StaticResource BorderLightColor}"/>
 
     <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
     <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}"/>
+    <!-- Legible warning amber for content text/borders (block-chain longest-wait, flag banner).
+         Darker on light themes so it clears >=4.5:1 as TEXT on content backgrounds; any control may adopt it. -->
+    <SolidColorBrush x:Key="WarningTextBrush" Color="#92400E"/>
+    <!-- Apex (lead-blocker) node + legend border. Darker blue on light themes so it clears >=3:1 as a
+         graphical border on the light node card (bright #4FA3FF is only ~2.6:1 on white). The LEAD BLOCKER
+         badge fill keeps the bright ApexBrush constant so the apex still pops. -->
+    <SolidColorBrush x:Key="ApexBorderBrush" Color="#1976D2"/>
+    <!-- Deadlock victim node border + VICTIM badge fill, and the "waits for" edge/arrow. Tuned per theme
+         so the victim red clears >=3:1 as a border on the light node card and the edge reads on the canvas. -->
+    <SolidColorBrush x:Key="DeadlockVictimBrush" Color="#C62828"/>
+    <SolidColorBrush x:Key="DeadlockEdgeBrush" Color="#455A6E"/>
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}"/>
     <SolidColorBrush x:Key="InfoBrush" Color="{StaticResource InfoColor}"/>
 
@@ -708,6 +719,7 @@
     <!-- ============================================ -->
     <Style TargetType="DataGrid">
         <Setter Property="helpers:DataGridClipboardBehavior.FixHeaderCopy" Value="True"/>
+        <Setter Property="helpers:DataGridSortBehavior.SortDescendingFirst" Value="True"/>
         <Setter Property="helpers:ScrollPanBehavior.EnableMiddleClickPanning" Value="True"/>
         <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
         <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}"/>
@@ -1321,15 +1333,16 @@
     <Style TargetType="ToolTip" BasedOn="{StaticResource DarkToolTip}"/>
 
     <!-- Time Range Slicer -->
-    <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="#DAE6F0"/>
+    <SolidColorBrush x:Key="SlicerBackgroundBrush" Color="{StaticResource BackgroundDarkColor}"/>
     <SolidColorBrush x:Key="SlicerChartLineBrush" Color="#1E6FA8"/>
     <SolidColorBrush x:Key="SlicerChartFillBrush" Color="#331E6FA8"/>
-    <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#55FFFFFF"/>
-    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#11000000"/>
-    <SolidColorBrush x:Key="SlicerHandleBrush" Color="#364D61"/>
-    <SolidColorBrush x:Key="SlicerBorderBrush" Color="#B0C4D8"/>
-    <SolidColorBrush x:Key="SlicerLabelBrush" Color="#5A7A94"/>
-    <SolidColorBrush x:Key="SlicerToggleBrush" Color="#364D61"/>
+    <SolidColorBrush x:Key="SlicerOverlayBrush" Color="#40000000"/>
+    <SolidColorBrush x:Key="SlicerSelectedBrush" Color="#221E6FA8"/>
+    <SolidColorBrush x:Key="SlicerHandleBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerHandleHoverBrush" Color="#1E6FA8"/>
+    <SolidColorBrush x:Key="SlicerBorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="SlicerLabelBrush" Color="{StaticResource ForegroundColor}"/>
+    <SolidColorBrush x:Key="SlicerToggleBrush" Color="{StaticResource ForegroundColor}"/>
 
     <!-- ============================================ -->
     <!-- Plan Viewer Resources                        -->
